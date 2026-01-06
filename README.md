@@ -1,1 +1,1 @@
-# qrious
+# qriousity
