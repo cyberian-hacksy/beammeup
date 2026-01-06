@@ -35,19 +35,49 @@ export async function enumerateCameras() {
     tempStream.getTracks().forEach(t => t.stop())
 
     const devices = await navigator.mediaDevices.enumerateDevices()
-    const cameras = devices.filter(d => d.kind === 'videoinput')
+    let cameras = devices.filter(d => d.kind === 'videoinput')
+
+    // Detect mobile (iOS/Android)
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
 
     // Clear dropdown using safe DOM method
     while (elements.cameraDropdown.firstChild) {
       elements.cameraDropdown.removeChild(elements.cameraDropdown.firstChild)
     }
 
-    cameras.forEach((cam, i) => {
-      const option = document.createElement('option')
-      option.value = cam.deviceId
-      option.textContent = cam.label || ('Camera ' + (i + 1))
-      elements.cameraDropdown.appendChild(option)
-    })
+    if (isMobile) {
+      // On mobile: filter to front/back only
+      const front = cameras.find(c =>
+        c.label.toLowerCase().includes('front') ||
+        c.label.toLowerCase().includes('facetime')
+      )
+      const back = cameras.find(c =>
+        c.label.toLowerCase().includes('back') &&
+        !c.label.toLowerCase().includes('ultra') &&
+        !c.label.toLowerCase().includes('wide') &&
+        !c.label.toLowerCase().includes('tele') &&
+        !c.label.toLowerCase().includes('macro')
+      ) || cameras.find(c => c.label.toLowerCase().includes('back'))
+
+      cameras = [back, front].filter(Boolean)
+
+      cameras.forEach(cam => {
+        const option = document.createElement('option')
+        option.value = cam.deviceId
+        option.textContent = cam.label.toLowerCase().includes('front')
+          ? 'Front Camera'
+          : 'Back Camera'
+        elements.cameraDropdown.appendChild(option)
+      })
+    } else {
+      // On desktop: show all cameras
+      cameras.forEach((cam, i) => {
+        const option = document.createElement('option')
+        option.value = cam.deviceId
+        option.textContent = cam.label || ('Camera ' + (i + 1))
+        elements.cameraDropdown.appendChild(option)
+      })
+    }
 
     if (cameras.length === 0) {
       showError('No camera found on this device.')
@@ -176,22 +206,31 @@ function scanFrame() {
 
 // Show overlay around detected QR code
 function showQROverlay(location, video) {
-  const overlay = elements.qrOverlay
+  const svg = elements.qrOverlay
+  const polygon = elements.qrPolygon
+
+  // Account for video position within container
+  const videoRect = video.getBoundingClientRect()
+  const containerRect = video.parentElement.getBoundingClientRect()
+  const offsetX = videoRect.left - containerRect.left
+  const offsetY = videoRect.top - containerRect.top
 
   // Calculate scale
   const scaleX = video.offsetWidth / video.videoWidth
   const scaleY = video.offsetHeight / video.videoHeight
 
-  const minX = Math.min(location.topLeftCorner.x, location.bottomLeftCorner.x)
-  const minY = Math.min(location.topLeftCorner.y, location.topRightCorner.y)
-  const maxX = Math.max(location.topRightCorner.x, location.bottomRightCorner.x)
-  const maxY = Math.max(location.bottomLeftCorner.y, location.bottomRightCorner.y)
+  // Build polygon points from all 4 corners
+  const points = [
+    location.topLeftCorner,
+    location.topRightCorner,
+    location.bottomRightCorner,
+    location.bottomLeftCorner
+  ].map(p =>
+    `${p.x * scaleX + offsetX},${p.y * scaleY + offsetY}`
+  ).join(' ')
 
-  overlay.style.left = (minX * scaleX) + 'px'
-  overlay.style.top = (minY * scaleY) + 'px'
-  overlay.style.width = ((maxX - minX) * scaleX) + 'px'
-  overlay.style.height = ((maxY - minY) * scaleY) + 'px'
-  overlay.style.display = 'block'
+  polygon.setAttribute('points', points)
+  svg.style.display = 'block'
 }
 
 // Update receiver statistics display
@@ -293,6 +332,7 @@ export function initReceiver(errorHandler) {
     cameraDropdown: document.getElementById('camera-dropdown'),
     video: document.getElementById('camera-video'),
     qrOverlay: document.getElementById('qr-overlay'),
+    qrPolygon: document.getElementById('qr-polygon'),
     btnStartScan: document.getElementById('btn-start-scan'),
     btnStopScan: document.getElementById('btn-stop-scan'),
     progressFill: document.getElementById('progress-fill'),

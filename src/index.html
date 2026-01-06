@@ -23,6 +23,7 @@
     <header><button class="back-btn">&larr; Back</button><span>SEND MODE</span></header>
     <main>
       <div class="file-select">
+        <label for="file-input" class="visually-hidden">Select file</label>
         <input type="file" id="file-input">
         <span id="file-info" class="file-info">No file selected</span>
       </div>
@@ -33,7 +34,7 @@
       </div>
 
       <div class="controls">
-        <label>Speed:</label>
+        <label for="speed-slider">Speed:</label>
         <input type="range" id="speed-slider" min="50" max="500" value="200">
         <span id="speed-display">200ms</span>
         <button id="btn-start-send" disabled>Start</button>
@@ -58,7 +59,7 @@
     <header><button class="back-btn">&larr; Back</button><span>RECEIVE MODE</span></header>
     <main>
       <div class="camera-select">
-        <label>Camera:</label>
+        <label for="camera-dropdown">Camera:</label>
         <select id="camera-dropdown"></select>
         <button id="btn-start-scan">Start Scanning</button>
         <button id="btn-stop-scan" class="secondary" disabled>Stop</button>
@@ -66,7 +67,9 @@
 
       <div class="video-container">
         <video id="camera-video" autoplay playsinline muted></video>
-        <div class="qr-overlay" id="qr-overlay"></div>
+        <svg class="qr-overlay" id="qr-overlay">
+          <polygon id="qr-polygon" points="" />
+        </svg>
       </div>
 
       <div class="progress-container">

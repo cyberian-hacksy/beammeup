@@ -1,7 +1,7 @@
 // LT Fountain Encoder
 // Encodes file data into a stream of fountain-coded symbols
 
-import { BLOCK_SIZE, FOUNTAIN_DEGREE } from './constants.js'
+import { BLOCK_SIZE, FOUNTAIN_DEGREE, DEGREE_ONE_PROBABILITY } from './constants.js'
 import { createPRNG } from './prng.js'
 import { createPacket } from './packet.js'
 import { createMetadataPayload } from './metadata.js'
@@ -52,9 +52,18 @@ export function createEncoder(fileData, filename, mimeType, hash) {
         degree = 1
         indices = [(symbolId - 1) % k]
       } else {
-        // Fountain-coded symbol: XOR of multiple blocks, but never all
-        degree = Math.min(FOUNTAIN_DEGREE, Math.max(1, k - 1))
-        indices = rng.pickUnique(degree, k)
+        // Fountain-coded symbol: mix of degree-1 and degree-3
+        // Use PRNG's first value to decide degree (deterministic per symbol)
+        const degreeRoll = rng.next() / 0xFFFFFFFF
+        if (degreeRoll < DEGREE_ONE_PROBABILITY) {
+          // Degree-1: single random block (helps complete missing blocks faster)
+          degree = 1
+          indices = [rng.next() % k]
+        } else {
+          // Degree-3: XOR of multiple blocks, but never all
+          degree = Math.min(FOUNTAIN_DEGREE, Math.max(1, k - 1))
+          indices = rng.pickUnique(degree, k)
+        }
       }
 
       // XOR selected blocks

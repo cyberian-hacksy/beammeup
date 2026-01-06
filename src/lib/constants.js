@@ -4,3 +4,4 @@ export const BLOCK_SIZE = 200
 export const MAX_FILE_SIZE = 5 * 1024 * 1024 // 5MB
 export const METADATA_INTERVAL = 10
 export const FOUNTAIN_DEGREE = 3
+export const DEGREE_ONE_PROBABILITY = 0.15
