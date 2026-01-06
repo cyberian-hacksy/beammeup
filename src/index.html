@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Qriosity - Air-Gap Transfer</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <!-- Mode Selector -->
+  <div id="mode-select" class="screen active">
+    <h1>QRIOSITY</h1>
+    <p>Air-Gap File Transfer</p>
+    <div class="mode-buttons">
+      <button id="btn-send">SEND</button>
+      <button id="btn-receive">RECEIVE</button>
+    </div>
+    <p class="tagline">No network required. Transfer via QR.</p>
+  </div>
+
+  <!-- Sender Screen -->
+  <div id="sender" class="screen">
+    <header><button class="back-btn">&larr; Back</button><span>SEND MODE</span></header>
+    <main>
+      <div class="file-select">
+        <input type="file" id="file-input">
+        <span id="file-info" class="file-info">No file selected</span>
+      </div>
+
+      <div class="qr-container" id="qr-container">
+        <span id="qr-placeholder" style="color:#888;">Select a file to start</span>
+        <canvas id="qr-canvas" style="display:none;"></canvas>
+      </div>
+
+      <div class="controls">
+        <label>Speed:</label>
+        <input type="range" id="speed-slider" min="50" max="500" value="200">
+        <span id="speed-display">200ms</span>
+        <button id="btn-start-send" disabled>Start</button>
+        <button id="btn-pause-send" class="secondary" disabled>Pause</button>
+      </div>
+
+      <div class="stats" id="sender-stats">
+        <div class="stat">
+          <span class="stat-label">Symbol</span>
+          <span class="stat-value" id="stat-symbol">-</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Status</span>
+          <span class="stat-value" id="stat-send-status">Ready</span>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Receiver Screen -->
+  <div id="receiver" class="screen">
+    <header><button class="back-btn">&larr; Back</button><span>RECEIVE MODE</span></header>
+    <main>
+      <div class="camera-select">
+        <label>Camera:</label>
+        <select id="camera-dropdown"></select>
+        <button id="btn-start-scan">Start Scanning</button>
+        <button id="btn-stop-scan" class="secondary" disabled>Stop</button>
+      </div>
+
+      <div class="video-container">
+        <video id="camera-video" autoplay playsinline muted></video>
+        <div class="qr-overlay" id="qr-overlay"></div>
+      </div>
+
+      <div class="progress-container">
+        <div id="file-name-display" style="margin-bottom:0.5rem;color:#888;">Waiting for file...</div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill" style="width:0"></div>
+        </div>
+        <div class="progress-text" id="progress-text">0%</div>
+      </div>
+
+      <div class="stats" id="receiver-stats">
+        <div class="stat">
+          <span class="stat-label">Blocks</span>
+          <span class="stat-value" id="stat-blocks">0/0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Symbols</span>
+          <span class="stat-value" id="stat-symbols">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Rate</span>
+          <span class="stat-value" id="stat-rate">-</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">ETA</span>
+          <span class="stat-value" id="stat-eta">-</span>
+        </div>
+      </div>
+
+      <div class="download-section">
+        <span class="status" id="receive-status">Ready</span>
+        <button id="btn-download" disabled>Download</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- Error Banner -->
+  <div id="error-banner" class="hidden">
+    <span id="error-message"></span>
+    <button id="error-dismiss">&times;</button>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
