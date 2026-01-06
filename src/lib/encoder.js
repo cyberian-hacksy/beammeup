@@ -43,9 +43,19 @@ export function createEncoder(fileData, filename, mimeType, hash) {
       const seed = (fileId ^ symbolId) >>> 0
       const rng = createPRNG(seed)
 
-      // Fixed degree = 3 (or k if k < 3)
-      const degree = Math.min(FOUNTAIN_DEGREE, k)
-      const indices = rng.pickUnique(degree, k)
+      // For small k, we need degree-1 symbols to bootstrap decoding
+      // Symbol IDs 1 to k are "systematic" (degree-1, one block each)
+      // Symbol IDs > k use fountain coding with degree capped at k-1
+      let degree, indices
+      if (symbolId <= k) {
+        // Systematic symbol: just one block
+        degree = 1
+        indices = [(symbolId - 1) % k]
+      } else {
+        // Fountain-coded symbol: XOR of multiple blocks, but never all
+        degree = Math.min(FOUNTAIN_DEGREE, Math.max(1, k - 1))
+        indices = rng.pickUnique(degree, k)
+      }
 
       // XOR selected blocks
       const payload = new Uint8Array(BLOCK_SIZE)

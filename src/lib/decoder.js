@@ -101,11 +101,21 @@ export function createDecoder() {
         return true
       }
 
-      // Reconstruct indices using same PRNG seed
+      // Reconstruct indices using same logic as encoder
       const seed = (fileId ^ parsed.symbolId) >>> 0
       const rng = createPRNG(seed)
-      const degree = Math.min(FOUNTAIN_DEGREE, k)
-      const indices = rng.pickUnique(degree, k)
+
+      // Match encoder's systematic/fountain logic
+      let degree, indices
+      if (parsed.symbolId <= k) {
+        // Systematic symbol: just one block
+        degree = 1
+        indices = [(parsed.symbolId - 1) % k]
+      } else {
+        // Fountain-coded symbol
+        degree = Math.min(FOUNTAIN_DEGREE, Math.max(1, k - 1))
+        indices = rng.pickUnique(degree, k)
+      }
 
       // Add to pending and propagate
       pendingSymbols.push({ indices, payload: new Uint8Array(parsed.payload) })
