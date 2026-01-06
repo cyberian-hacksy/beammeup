@@ -1,0 +1,89 @@
+// LT Fountain Encoder
+// Encodes file data into a stream of fountain-coded symbols
+
+import { BLOCK_SIZE, FOUNTAIN_DEGREE } from './constants.js'
+import { createPRNG } from './prng.js'
+import { createPacket } from './packet.js'
+import { createMetadataPayload } from './metadata.js'
+
+export function createEncoder(fileData, filename, mimeType, hash) {
+  // Pad file to multiple of BLOCK_SIZE
+  const paddedSize = Math.ceil(fileData.byteLength / BLOCK_SIZE) * BLOCK_SIZE
+  const paddedData = new Uint8Array(paddedSize)
+  paddedData.set(new Uint8Array(fileData))
+
+  const k = paddedSize / BLOCK_SIZE
+  const fileId = (Math.random() * 0xFFFFFFFF) >>> 0
+  const originalSize = fileData.byteLength
+
+  // Split into source blocks
+  const sourceBlocks = []
+  for (let i = 0; i < k; i++) {
+    sourceBlocks.push(paddedData.slice(i * BLOCK_SIZE, (i + 1) * BLOCK_SIZE))
+  }
+
+  // Create metadata payload and pad to BLOCK_SIZE for consistent QR density
+  const rawMetadata = createMetadataPayload(filename, mimeType, originalSize, hash)
+  const metadataPayload = new Uint8Array(BLOCK_SIZE)
+  metadataPayload.set(rawMetadata)
+
+  return {
+    fileId,
+    k,
+    originalSize,
+
+    // Generate symbol by ID
+    generateSymbol(symbolId) {
+      if (symbolId === 0) {
+        // Metadata frame (padded to BLOCK_SIZE)
+        return createPacket(fileId, k, 0, metadataPayload, true)
+      }
+
+      // Seed PRNG with fileId XOR symbolId
+      const seed = (fileId ^ symbolId) >>> 0
+      const rng = createPRNG(seed)
+
+      // Fixed degree = 3 (or k if k < 3)
+      const degree = Math.min(FOUNTAIN_DEGREE, k)
+      const indices = rng.pickUnique(degree, k)
+
+      // XOR selected blocks
+      const payload = new Uint8Array(BLOCK_SIZE)
+      for (const idx of indices) {
+        for (let i = 0; i < BLOCK_SIZE; i++) {
+          payload[i] ^= sourceBlocks[idx][i]
+        }
+      }
+
+      return createPacket(fileId, k, symbolId, payload, false)
+    }
+  }
+}
+
+// Test encoder
+export async function testEncoder() {
+  // Create test file
+  const testData = new Uint8Array(500)
+  for (let i = 0; i < 500; i++) testData[i] = i % 256
+
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', testData))
+  const encoder = createEncoder(testData.buffer, 'test.bin', 'application/octet-stream', hash)
+
+  // Import parsePacket dynamically to avoid circular dependency in test
+  const { parsePacket } = await import('./packet.js')
+
+  const metaPacket = encoder.generateSymbol(0)
+  const dataPacket = encoder.generateSymbol(1)
+
+  const meta = parsePacket(metaPacket)
+  const data = parsePacket(dataPacket)
+
+  const pass = meta.isMetadata === true &&
+    meta.payload.length === BLOCK_SIZE && // Metadata now padded to BLOCK_SIZE
+    data.isMetadata === false &&
+    data.payload.length === BLOCK_SIZE &&
+    encoder.k === 3 // 500 bytes / 200 = 3 blocks
+
+  console.log('Encoder test:', pass ? 'PASS' : 'FAIL', { k: encoder.k, fileId: encoder.fileId })
+  return pass
+}
