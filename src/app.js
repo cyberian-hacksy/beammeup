@@ -7,6 +7,7 @@ import { testPacketRoundtrip } from './lib/packet.js'
 import { testMetadataRoundtrip } from './lib/metadata.js'
 import { testEncoder } from './lib/encoder.js'
 import { testCodecRoundtrip } from './lib/decoder.js'
+import { testParityMap, testParityRecovery } from './lib/precode.js'
 
 // Import UI modules
 import { initSender, resetSender } from './lib/sender.js'
@@ -22,6 +23,8 @@ window.testPacketRoundtrip = testPacketRoundtrip
 window.testMetadataRoundtrip = testMetadataRoundtrip
 window.testEncoder = testEncoder
 window.testCodecRoundtrip = testCodecRoundtrip
+window.testParityMap = testParityMap
+window.testParityRecovery = testParityRecovery
 
 // ============ ERROR HANDLING ============
 function showError(message) {
@@ -83,6 +86,8 @@ async function runAllTests() {
     prng: testPRNG(),
     packet: testPacketRoundtrip(),
     metadata: testMetadataRoundtrip(),
+    parityMap: testParityMap(),
+    parityRecovery: testParityRecovery(),
     encoder: await testEncoder(),
     codec: await testCodecRoundtrip()
   }

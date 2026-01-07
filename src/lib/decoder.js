@@ -1,17 +1,22 @@
-// LT Fountain Decoder with Belief Propagation
+// LT Fountain Decoder with Belief Propagation and Raptor-Lite Parity Recovery
 // Decodes fountain-coded symbols back into original file
 
-import { FOUNTAIN_DEGREE } from './constants.js'
+import { FOUNTAIN_DEGREE, DEGREE_ONE_PROBABILITY } from './constants.js'
 import { createPRNG } from './prng.js'
 import { parsePacket } from './packet.js'
 import { parseMetadataPayload } from './metadata.js'
+import { calculateParityParams, generateParityMap } from './precode.js'
 
 export function createDecoder() {
   let fileId = null
-  let k = null
+  let K = null          // Source block count
+  let K_prime = null    // Intermediate block count (K + parity)
+  let G = null          // Group size for parity
+  let parityMap = null  // Parity relationships
   let metadata = null
   let decodedBlocks = null
-  let solved = 0
+  let solved = 0        // Total intermediate blocks decoded
+  let solvedSource = 0  // Source blocks decoded (first K blocks)
   let receivedSymbols = new Set()
   let pendingSymbols = [] // { indices: [], payload: Uint8Array }
 
@@ -51,8 +56,14 @@ export function createDecoder() {
         } else if (reduced.indices.length === 1) {
           // Degree 1 - decode!
           const idx = reduced.indices[0]
-          decodedBlocks[idx] = reduced.payload
-          solved++
+          if (!decodedBlocks[idx]) {
+            decodedBlocks[idx] = reduced.payload
+            solved++
+            // Track source blocks separately
+            if (idx < K) {
+              solvedSource++
+            }
+          }
           pendingSymbols.splice(i, 1)
           changed = true
         } else {
@@ -63,15 +74,73 @@ export function createDecoder() {
     }
   }
 
+  // Parity recovery phase - try to recover missing blocks using parity relationships
+  function parityRecovery() {
+    if (!parityMap || !K) return 0
+
+    let totalRecovered = 0
+    let progress = true
+
+    while (progress) {
+      progress = false
+
+      for (let p = 0; p < parityMap.length; p++) {
+        const parityIdx = K + p
+        const sourceIndices = parityMap[p]
+
+        // Skip if parity block itself is not decoded
+        if (!decodedBlocks[parityIdx]) {
+          continue
+        }
+
+        // Count unknowns among source blocks in this parity relationship
+        const unknowns = sourceIndices.filter(i => !decodedBlocks[i])
+
+        if (unknowns.length === 1) {
+          // Can recover the one unknown
+          const missingIdx = unknowns[0]
+
+          // Start with parity block
+          const recovered = new Uint8Array(decodedBlocks[parityIdx])
+
+          // XOR out all known source blocks
+          for (const idx of sourceIndices) {
+            if (idx !== missingIdx && decodedBlocks[idx]) {
+              for (let i = 0; i < recovered.length; i++) {
+                recovered[i] ^= decodedBlocks[idx][i]
+              }
+            }
+          }
+
+          decodedBlocks[missingIdx] = recovered
+          solved++
+          solvedSource++
+          totalRecovered++
+          progress = true
+        }
+      }
+
+      // Re-run LT propagation after each parity pass
+      if (progress) {
+        propagate()
+      }
+    }
+
+    return totalRecovered
+  }
+
   return {
     get fileId() { return fileId },
-    get k() { return k },
+    get k() { return K },        // Source block count (for compatibility)
+    get K() { return K },        // Source block count
+    get K_prime() { return K_prime },  // Intermediate block count
     get metadata() { return metadata },
-    get solved() { return solved },
+    get solved() { return solvedSource },  // Report source blocks solved
+    get solvedTotal() { return solved },   // All intermediate blocks solved
     get uniqueSymbols() { return receivedSymbols.size },
-    get progress() { return k ? solved / k : 0 },
+    get progress() { return K ? solvedSource / K : 0 },
 
-    isComplete() { return k !== null && solved === k },
+    isComplete() { return K !== null && solvedSource === K },
 
     receive(packet) {
       const parsed = parsePacket(packet)
@@ -80,8 +149,8 @@ export function createDecoder() {
       // First packet sets session
       if (fileId === null) {
         fileId = parsed.fileId
-        k = parsed.k
-        decodedBlocks = new Array(k).fill(null)
+        K_prime = parsed.k  // Packet contains K' (intermediate block count)
+        decodedBlocks = new Array(K_prime).fill(null)
       } else if (parsed.fileId !== fileId) {
         console.warn('FileId mismatch, ignoring')
         return false
@@ -93,10 +162,15 @@ export function createDecoder() {
       }
       receivedSymbols.add(parsed.symbolId)
 
-      // Handle metadata
+      // Handle metadata - extract K and set up parity
       if (parsed.isMetadata || parsed.symbolId === 0) {
         if (!metadata) {
           metadata = parseMetadataPayload(parsed.payload)
+          // Extract K from metadata and set up parity parameters
+          K = metadata.K
+          const params = calculateParityParams(K)
+          G = params.G
+          parityMap = generateParityMap(K, G)
         }
         return true
       }
@@ -105,21 +179,32 @@ export function createDecoder() {
       const seed = (fileId ^ parsed.symbolId) >>> 0
       const rng = createPRNG(seed)
 
-      // Match encoder's systematic/fountain logic
+      // Match encoder's systematic/fountain logic (using K_prime)
       let degree, indices
-      if (parsed.symbolId <= k) {
-        // Systematic symbol: just one block
+      if (parsed.symbolId <= K_prime) {
+        // Systematic symbol: just one intermediate block
         degree = 1
-        indices = [(parsed.symbolId - 1) % k]
+        indices = [(parsed.symbolId - 1) % K_prime]
       } else {
         // Fountain-coded symbol
-        degree = Math.min(FOUNTAIN_DEGREE, Math.max(1, k - 1))
-        indices = rng.pickUnique(degree, k)
+        const degreeRoll = rng.next() / 0xFFFFFFFF
+        if (degreeRoll < DEGREE_ONE_PROBABILITY) {
+          degree = 1
+          indices = [rng.next() % K_prime]
+        } else {
+          degree = Math.min(FOUNTAIN_DEGREE, Math.max(1, K_prime - 1))
+          indices = rng.pickUnique(degree, K_prime)
+        }
       }
 
       // Add to pending and propagate
       pendingSymbols.push({ indices, payload: new Uint8Array(parsed.payload) })
       propagate()
+
+      // Try parity recovery if LT decoding has stalled
+      if (!this.isComplete() && pendingSymbols.length > 0) {
+        parityRecovery()
+      }
 
       return true
     },
@@ -127,9 +212,9 @@ export function createDecoder() {
     reconstruct() {
       if (!this.isComplete()) return null
 
-      // Concatenate all blocks and trim to original size
+      // Concatenate source blocks (first K) and trim to original size
       const result = new Uint8Array(metadata.fileSize)
-      for (let i = 0; i < k; i++) {
+      for (let i = 0; i < K; i++) {
         const block = decodedBlocks[i]
         const start = i * 200 // BLOCK_SIZE
         const end = Math.min(start + 200, metadata.fileSize)
@@ -155,7 +240,7 @@ export function createDecoder() {
   }
 }
 
-// Test full codec roundtrip
+// Test full codec roundtrip with Raptor-Lite pre-coding
 export async function testCodecRoundtrip() {
   // Import encoder dynamically to avoid circular dependency
   const { createEncoder } = await import('./encoder.js')
@@ -170,10 +255,10 @@ export async function testCodecRoundtrip() {
   const encoder = createEncoder(originalData.buffer, 'roundtrip.bin', 'application/octet-stream', hash)
   const decoder = createDecoder()
 
-  console.log('Codec test: k=' + encoder.k + ', generating symbols...')
+  console.log('Codec test: K=' + encoder.K + ', K_prime=' + encoder.K_prime + ', generating symbols...')
 
-  // Generate ~1.5x symbols (with some randomness in order)
-  const symbolCount = Math.ceil(encoder.k * 1.5)
+  // Generate ~1.2x K_prime symbols (should be enough with parity recovery)
+  const symbolCount = Math.ceil(encoder.K_prime * 1.2)
   const symbolIds = [0] // Start with metadata
   for (let i = 1; i <= symbolCount; i++) {
     symbolIds.push(i)
@@ -185,13 +270,14 @@ export async function testCodecRoundtrip() {
     decoder.receive(packet)
 
     if (decoder.isComplete()) {
-      console.log('Decoded after ' + decoder.uniqueSymbols + ' symbols (k=' + encoder.k + ')')
+      console.log('Decoded after ' + decoder.uniqueSymbols + ' symbols (K=' + encoder.K + ', K_prime=' + encoder.K_prime + ')')
       break
     }
   }
 
   if (!decoder.isComplete()) {
     console.log('Codec roundtrip test: FAIL - incomplete after', decoder.uniqueSymbols, 'symbols')
+    console.log('  Solved:', decoder.solved, '/', encoder.K, 'source blocks')
     return false
   }
 
@@ -213,7 +299,8 @@ export async function testCodecRoundtrip() {
   console.log('Codec roundtrip test:', pass ? 'PASS' : 'FAIL', {
     verified: verified,
     dataMatch: dataMatch,
-    k: encoder.k,
+    K: encoder.K,
+    K_prime: encoder.K_prime,
     symbolsNeeded: decoder.uniqueSymbols
   })
 

@@ -103,8 +103,8 @@ function senderTick() {
     renderSymbol(state.symbolId)
     elements.statSymbol.textContent = '#' + state.symbolId
     state.symbolId++
-    // Loop back after K symbols
-    if (state.encoder && state.symbolId > state.encoder.k) {
+    // Loop back after K_prime symbols (includes parity blocks)
+    if (state.encoder && state.symbolId > state.encoder.K_prime) {
       state.symbolId = 1
     }
   }
@@ -196,8 +196,8 @@ async function processFile(file) {
     state.isPaused = false
     state.isSending = false
 
-    const k = state.encoder.k
-    elements.fileInfo.textContent = file.name + ' (' + formatBytes(file.size) + ', ' + k + ' blocks)'
+    const K = state.encoder.K
+    elements.fileInfo.textContent = file.name + ' (' + formatBytes(file.size) + ', ' + K + ' blocks)'
 
     updateDropZoneState()
     updateActionButton()

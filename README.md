@@ -15,30 +15,33 @@ Air-gapped file transfer via QR codes. Transfer files between devices with zero 
 - **Single HTML file** - Download once, use offline forever
 - **Hash verification** - SHA-256 ensures file integrity
 - **Cross-device** - Works between any devices with a screen and camera
+- **Mobile-optimized** - Auto-starts camera, simple toggle for front/back cameras
+- **Drag & drop** - Drop files directly onto the sender screen
 
 ## Usage
 
 ### Quick Start
 
-1. Open `dist/index.html` or https://cyberian-hacksy.github.io/qriosity/ in a browser on both devices
-2. On the sending device: Select "Send", choose a file
-3. On the receiving device: Select "Receive", point camera at QR codes
+1. Open `dist/index.html` in a browser on both devices
+2. On the sending device: Select "Send", drop or select a file
+3. On the receiving device: Select "Receive", camera starts automatically
 4. Wait for transfer to complete, file downloads automatically
 
 ### Sending
 
-1. Click "Send File"
-2. Select a file (max 5MB)
-3. Adjust speed slider if needed (slower = more reliable)
-4. QR codes will cycle continuously until receiver is done
+1. Click "Send"
+2. Drag a file onto the drop zone or click to select (max 5MB)
+3. Click "Start" to begin transmission
+4. Adjust speed slider if needed (slower = more reliable)
+5. QR codes cycle continuously - Pause/Resume or Stop as needed
 
 ### Receiving
 
-1. Click "Receive File"
-2. Select camera from dropdown
-3. Point at the QR code stream
-4. Progress bar shows decoded blocks
-5. File downloads automatically when complete
+1. Click "Receive" - camera starts automatically
+2. Point at the QR code stream
+3. Progress bar shows decoded blocks and transfer rate
+4. File downloads automatically when complete
+5. Click "Receive Another" for additional transfers
 
 ## Development
 
@@ -58,17 +61,20 @@ pnpm build
 
 ## Technical Details
 
-- **Encoding:** LT (Luby Transform) fountain codes with fixed degree=3
-- **Block size:** 200 bytes
-- **QR payload:** ~900 bytes per code (error correction level M)
-- **Protocol:** 16-byte binary header + payload, Base64 encoded
+- **Encoding:** LT (Luby Transform) fountain codes
+  - Systematic phase: symbols 1-K contain one source block each
+  - Fountain phase: 15% degree-1, 85% degree-3 (XOR of 3 random blocks)
+- **Block size:** 200 bytes (fixed)
+- **QR payload:** ~216 bytes per code (16-byte header + 200-byte payload, Base64 encoded)
+- **QR Error Correction:** Level M (15% recovery)
+- **Protocol:** 16-byte binary header with session ID, block count, symbol ID, flags
 
 ## Limitations
 
 - Max file size: 5MB
 - Requires good lighting and steady camera positioning
 - Browser must stay active during transfer (screen lock stops it)
-- Transfer speed depends on camera quality and distance
+- Transfer speed depends on camera quality, distance, and frame rate setting
 
 ## License
 
