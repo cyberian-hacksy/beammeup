@@ -38,14 +38,49 @@ function playBeep(frequency = 800, duration = 150) {
 }
 
 function vibrate(pattern = 100) {
+  // Standard Vibration API (Android)
   if (navigator.vibrate) {
     navigator.vibrate(pattern)
+    return true
+  }
+  return false
+}
+
+function vibrateIOS() {
+  // iOS Safari 17.4+ workaround: toggle a hidden switch checkbox
+  // This triggers native haptic feedback
+  try {
+    const label = document.createElement('label')
+    label.style.display = 'none'
+    label.ariaHidden = 'true'
+
+    const input = document.createElement('input')
+    input.type = 'checkbox'
+    input.setAttribute('switch', '')
+    label.appendChild(input)
+
+    document.body.appendChild(label)
+    label.click()
+    document.body.removeChild(label)
+    return true
+  } catch (err) {
+    return false
   }
 }
 
 function notifyUser() {
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+
   if (state.isMobile) {
-    vibrate(100)
+    if (isIOS) {
+      // Try iOS haptic workaround, fall back to audio
+      if (!vibrateIOS()) {
+        playBeep()
+      }
+    } else if (!vibrate(100)) {
+      // Try Android vibration, fall back to audio
+      playBeep()
+    }
   } else {
     playBeep()
   }
