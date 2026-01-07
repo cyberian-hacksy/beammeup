@@ -204,18 +204,32 @@ async function switchCamera(deviceId) {
     state.currentCameraId = deviceId
     elements.video.srcObject = state.stream
     await elements.video.play()
-
-    elements.cameraPicker.classList.add('hidden')
   } catch (err) {
     console.error('Camera switch error:', err)
     showError('Failed to switch camera. ' + err.message)
   }
 }
 
-// Open camera picker directly
-function openCameraPicker(e) {
+// Toggle camera picker visibility (cross-platform approach)
+function toggleCameraPicker(e) {
   e.stopPropagation()
-  elements.cameraDropdown.showPicker?.()
+  const picker = elements.cameraPicker
+  const isHidden = picker.classList.contains('hidden')
+
+  if (isHidden) {
+    picker.classList.remove('hidden')
+    // Close picker when clicking outside
+    setTimeout(() => {
+      document.addEventListener('click', closeCameraPicker, { once: true })
+    }, 0)
+  } else {
+    picker.classList.add('hidden')
+  }
+}
+
+// Close camera picker
+function closeCameraPicker() {
+  elements.cameraPicker.classList.add('hidden')
 }
 
 // Scan a single frame
@@ -355,9 +369,14 @@ async function onReceiveComplete() {
 
     state.reconstructedBlob = new Blob([data], { type: metadata.mimeType })
 
+    // Calculate average transfer rate
+    const totalSeconds = totalTime / 1000
+    const avgRateKBps = totalSeconds > 0 ? (metadata.fileSize / 1024 / totalSeconds) : 0
+
     showStatus('complete')
     elements.completeFileName.textContent =
       metadata.filename + ' (' + formatBytes(metadata.fileSize) + ') in ' + formatTime(totalTime)
+    elements.completeRate.textContent = avgRateKBps.toFixed(1) + ' KB/s avg'
   } else {
     showError('File corrupted! Hash verification failed.')
     showStatus('scanning')
@@ -427,11 +446,23 @@ export function initReceiver(errorHandler) {
     statSymbols: document.getElementById('stat-symbols'),
     statRate: document.getElementById('stat-rate'),
     statEta: document.getElementById('stat-eta'),
-    btnDownload: document.getElementById('btn-download')
+    btnDownload: document.getElementById('btn-download'),
+    btnReceiveAnother: document.getElementById('btn-receive-another'),
+    completeRate: document.getElementById('complete-rate')
   }
 
   // Bind event handlers
-  elements.btnCameraSwitch.onclick = openCameraPicker
-  elements.cameraDropdown.onchange = (e) => switchCamera(e.target.value)
+  elements.btnCameraSwitch.onclick = toggleCameraPicker
+  elements.cameraDropdown.onchange = (e) => {
+    switchCamera(e.target.value)
+    closeCameraPicker()
+  }
   elements.btnDownload.onclick = downloadFile
+  elements.btnReceiveAnother.onclick = restartReceiver
+}
+
+// Restart receiver for another file
+async function restartReceiver() {
+  resetReceiver()
+  await autoStartReceiver()
 }

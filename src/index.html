@@ -62,7 +62,7 @@
         <button id="btn-camera-switch" class="floating-camera-btn" title="Switch camera">
           <span class="camera-icon"></span>
         </button>
-        <div id="camera-picker" class="camera-picker">
+        <div id="camera-picker" class="camera-picker hidden">
           <label for="camera-dropdown" class="visually-hidden">Select camera</label>
           <select id="camera-dropdown"></select>
         </div>
@@ -89,9 +89,12 @@
         <div class="status-complete hidden" id="status-complete">
           <div class="status-file-row">
             <span id="complete-file-name">-</span>
-            <button id="btn-download">Download</button>
+            <span id="complete-rate" class="complete-rate"></span>
           </div>
-          <div class="complete-message">Transfer complete</div>
+          <div class="complete-actions">
+            <button id="btn-download">Download</button>
+            <button id="btn-receive-another" class="secondary">Receive Another</button>
+          </div>
         </div>
       </div>
     </main>
