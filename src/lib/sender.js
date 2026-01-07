@@ -70,6 +70,10 @@ function senderTick() {
     renderSymbol(state.symbolId)
     elements.statSymbol.textContent = '#' + state.symbolId
     state.symbolId++
+    // Loop back after K symbols
+    if (state.encoder && state.symbolId > state.encoder.k) {
+      state.symbolId = 1
+    }
   }
 }
 

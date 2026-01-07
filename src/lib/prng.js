@@ -9,15 +9,20 @@ export function createPRNG(seed) {
   let s3 = (s2 * 1812433253 + 1) >>> 0
 
   return {
-    // Returns 0 to max-1
-    nextInt(max) {
+    // Returns raw 32-bit unsigned integer
+    next() {
       // xorshift128 algorithm
       let t = s0 ^ (s0 << 11)
       s0 = s1
       s1 = s2
       s2 = s3
       s3 = (s3 ^ (s3 >>> 19)) ^ (t ^ (t >>> 8))
-      return (s3 >>> 0) % max
+      return s3 >>> 0
+    },
+
+    // Returns 0 to max-1
+    nextInt(max) {
+      return this.next() % max
     },
 
     // Pick n unique indices from 0 to max-1

@@ -1,5 +1,6 @@
 // Receiver module - handles camera scanning and QR decoding
 import jsQR from 'jsqr'
+import { BLOCK_SIZE } from './constants.js'
 import { createDecoder } from './decoder.js'
 
 // Receiver state
@@ -11,7 +12,8 @@ const state = {
   ctx: null,
   isScanning: false,
   symbolTimes: [],
-  reconstructedBlob: null
+  reconstructedBlob: null,
+  startTime: null
 }
 
 // DOM elements (initialized on setup)
@@ -25,6 +27,20 @@ function formatBytes(bytes) {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+// Utility: format milliseconds to human readable time
+function formatTime(ms) {
+  const totalSeconds = Math.floor(ms / 1000)
+  if (totalSeconds < 60) return totalSeconds + 's'
+
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  if (minutes < 60) return minutes + 'm ' + seconds + 's'
+
+  const hours = Math.floor(minutes / 60)
+  const mins = minutes % 60
+  return hours + 'h ' + mins + 'm ' + seconds + 's'
 }
 
 // Enumerate available cameras
@@ -114,6 +130,7 @@ async function startScanning() {
     state.decoder = createDecoder()
     state.symbolTimes = []
     state.reconstructedBlob = null
+    state.startTime = Date.now()
     state.isScanning = true
 
     elements.btnStartScan.disabled = true
@@ -252,22 +269,33 @@ function updateReceiverStats() {
       decoder.metadata.filename + ' (' + formatBytes(decoder.metadata.fileSize) + ')'
   }
 
-  // Calculate rate
+  // Calculate elapsed time
+  const now = Date.now()
+  const elapsed = state.startTime ? now - state.startTime : 0
+  elements.statTime.textContent = elapsed > 0 ? formatTime(elapsed) : '-'
+
+  // Calculate rate in KB/s based on symbols received in last 5 seconds
   const times = state.symbolTimes
   if (times.length >= 2) {
-    const duration = (times[times.length - 1] - times[0]) / 1000
-    const rate = duration > 0 ? (times.length / duration).toFixed(1) : 0
-    elements.statRate.textContent = rate + '/s'
+    const windowDuration = (times[times.length - 1] - times[0]) / 1000
+    const bytesInWindow = times.length * BLOCK_SIZE
+    const rateKBps = windowDuration > 0 ? (bytesInWindow / windowDuration / 1024) : 0
+    elements.statRate.textContent = rateKBps.toFixed(1) + ' KB/s'
 
-    // Estimate remaining time
+    // Estimate remaining time based on current rate
     const remaining = k - solved
-    const eta = parseFloat(rate) > 0 ? Math.ceil(remaining / parseFloat(rate) * 1.3) : 0
-    elements.statEta.textContent = eta > 0 ? ('~' + eta + 's') : '-'
+    const remainingBytes = remaining * BLOCK_SIZE
+    const etaMs = rateKBps > 0 ? (remainingBytes / 1024 / rateKBps * 1000 * 1.3) : 0
+    elements.statEta.textContent = etaMs > 0 ? ('~' + formatTime(etaMs)) : '-'
   }
 }
 
 // Handle receive completion
 async function onReceiveComplete() {
+  // Capture final timing before stopping
+  const endTime = Date.now()
+  const totalTime = state.startTime ? endTime - state.startTime : 0
+
   stopScanning()
 
   elements.receiveStatus.textContent = 'Verifying...'
@@ -279,6 +307,12 @@ async function onReceiveComplete() {
     const metadata = state.decoder.metadata
 
     state.reconstructedBlob = new Blob([data], { type: metadata.mimeType })
+
+    // Calculate and display final stats
+    const avgRateKBps = totalTime > 0 ? (metadata.fileSize / (totalTime / 1000) / 1024) : 0
+    elements.statRate.textContent = avgRateKBps.toFixed(1) + ' KB/s'
+    elements.statTime.textContent = formatTime(totalTime)
+    elements.statEta.textContent = '-'
 
     elements.receiveStatus.textContent = 'Complete! Hash verified.'
     elements.btnDownload.disabled = false
@@ -310,6 +344,7 @@ export function resetReceiver() {
   stopScanning()
   state.decoder = null
   state.reconstructedBlob = null
+  state.startTime = null
 
   if (elements) {
     elements.progressFill.style.width = '0%'
@@ -318,6 +353,7 @@ export function resetReceiver() {
     elements.statBlocks.textContent = '0/0'
     elements.statSymbols.textContent = '0'
     elements.statRate.textContent = '-'
+    elements.statTime.textContent = '-'
     elements.statEta.textContent = '-'
     elements.receiveStatus.textContent = 'Ready'
     elements.btnDownload.disabled = true
@@ -341,6 +377,7 @@ export function initReceiver(errorHandler) {
     statBlocks: document.getElementById('stat-blocks'),
     statSymbols: document.getElementById('stat-symbols'),
     statRate: document.getElementById('stat-rate'),
+    statTime: document.getElementById('stat-time'),
     statEta: document.getElementById('stat-eta'),
     receiveStatus: document.getElementById('receive-status'),
     btnDownload: document.getElementById('btn-download')
