@@ -20,7 +20,7 @@ const state = {
   hasNotifiedFirstScan: false
 }
 
-// Audio/haptic feedback helpers
+// Audio feedback helper
 function playBeep(frequency = 800, duration = 150) {
   try {
     const ctx = new AudioContext()
@@ -34,55 +34,6 @@ function playBeep(frequency = 800, duration = 150) {
     oscillator.stop(ctx.currentTime + duration / 1000)
   } catch (err) {
     // AudioContext may fail silently
-  }
-}
-
-function vibrate(pattern = 100) {
-  // Standard Vibration API (Android)
-  if (navigator.vibrate) {
-    navigator.vibrate(pattern)
-    return true
-  }
-  return false
-}
-
-function vibrateIOS() {
-  // iOS Safari 17.4+ workaround: toggle a hidden switch checkbox
-  // This triggers native haptic feedback
-  try {
-    const label = document.createElement('label')
-    label.style.display = 'none'
-    label.ariaHidden = 'true'
-
-    const input = document.createElement('input')
-    input.type = 'checkbox'
-    input.setAttribute('switch', '')
-    label.appendChild(input)
-
-    document.body.appendChild(label)
-    label.click()
-    document.body.removeChild(label)
-    return true
-  } catch (err) {
-    return false
-  }
-}
-
-function notifyUser() {
-  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent)
-
-  if (state.isMobile) {
-    if (isIOS) {
-      // Try iOS haptic workaround, fall back to audio
-      if (!vibrateIOS()) {
-        playBeep()
-      }
-    } else if (!vibrate(100)) {
-      // Try Android vibration, fall back to audio
-      playBeep()
-    }
-  } else {
-    playBeep()
   }
 }
 
@@ -326,7 +277,7 @@ function scanFrame() {
           // Notify on first successful scan
           if (!state.hasNotifiedFirstScan) {
             state.hasNotifiedFirstScan = true
-            notifyUser()
+            playBeep()
           }
 
           const now = Date.now()
@@ -432,7 +383,7 @@ async function onReceiveComplete() {
 
   if (verified) {
     // Notify user of successful completion
-    notifyUser()
+    playBeep()
 
     const data = state.decoder.reconstruct()
     const metadata = state.decoder.metadata
