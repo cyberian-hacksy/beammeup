@@ -16,7 +16,39 @@ const state = {
   startTime: null,
   cameras: [],
   currentCameraId: null,
-  isMobile: false
+  isMobile: false,
+  hasNotifiedFirstScan: false
+}
+
+// Audio/haptic feedback helpers
+function playBeep(frequency = 800, duration = 150) {
+  try {
+    const ctx = new AudioContext()
+    const oscillator = ctx.createOscillator()
+    const gain = ctx.createGain()
+    oscillator.connect(gain)
+    gain.connect(ctx.destination)
+    oscillator.frequency.value = frequency
+    gain.gain.value = 0.3
+    oscillator.start()
+    oscillator.stop(ctx.currentTime + duration / 1000)
+  } catch (err) {
+    // AudioContext may fail silently
+  }
+}
+
+function vibrate(pattern = 100) {
+  if (navigator.vibrate) {
+    navigator.vibrate(pattern)
+  }
+}
+
+function notifyUser() {
+  if (state.isMobile) {
+    vibrate(100)
+  } else {
+    playBeep()
+  }
 }
 
 // DOM elements (initialized on setup)
@@ -256,6 +288,12 @@ function scanFrame() {
 
         const accepted = state.decoder.receive(bytes)
         if (accepted) {
+          // Notify on first successful scan
+          if (!state.hasNotifiedFirstScan) {
+            state.hasNotifiedFirstScan = true
+            notifyUser()
+          }
+
           const now = Date.now()
           state.symbolTimes.push(now)
           // Keep only last 5 seconds of times
@@ -358,6 +396,9 @@ async function onReceiveComplete() {
   const verified = await state.decoder.verify()
 
   if (verified) {
+    // Notify user of successful completion
+    notifyUser()
+
     const data = state.decoder.reconstruct()
     const metadata = state.decoder.metadata
 
@@ -399,6 +440,7 @@ export function resetReceiver() {
   state.decoder = null
   state.reconstructedBlob = null
   state.startTime = null
+  state.hasNotifiedFirstScan = false
 
   if (elements) {
     showStatus('scanning')
