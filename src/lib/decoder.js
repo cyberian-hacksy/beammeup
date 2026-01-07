@@ -59,8 +59,8 @@ export function createDecoder() {
           if (!decodedBlocks[idx]) {
             decodedBlocks[idx] = reduced.payload
             solved++
-            // Track source blocks separately
-            if (idx < K) {
+            // Track source blocks separately (only if K is known)
+            if (K !== null && idx < K) {
               solvedSource++
             }
           }
@@ -172,9 +172,30 @@ export function createDecoder() {
           G = params.G
           parityMap = generateParityMap(K, G)
           // K_prime is K + actual parity count (may differ from estimate)
-          K_prime = K + parityMap.length
-          // Resize decoded blocks array to match actual K_prime
-          decodedBlocks = new Array(K_prime).fill(null)
+          const newK_prime = K + parityMap.length
+
+          // Resize array if needed, preserve existing decoded blocks
+          if (K_prime !== newK_prime) {
+            const oldBlocks = decodedBlocks || []
+            K_prime = newK_prime
+            decodedBlocks = new Array(K_prime).fill(null)
+            // Copy over any previously decoded blocks
+            for (let i = 0; i < Math.min(oldBlocks.length, K_prime); i++) {
+              if (oldBlocks[i]) {
+                decodedBlocks[i] = oldBlocks[i]
+              }
+            }
+          }
+
+          // Recount solved blocks now that K is known
+          solved = 0
+          solvedSource = 0
+          for (let i = 0; i < K_prime; i++) {
+            if (decodedBlocks[i]) {
+              solved++
+              if (i < K) solvedSource++
+            }
+          }
         }
         return true
       }
@@ -205,8 +226,8 @@ export function createDecoder() {
       pendingSymbols.push({ indices, payload: new Uint8Array(parsed.payload) })
       propagate()
 
-      // Try parity recovery if LT decoding has stalled
-      if (!this.isComplete() && pendingSymbols.length > 0) {
+      // Try parity recovery after each symbol if we have metadata
+      if (!this.isComplete() && parityMap) {
         parityRecovery()
       }
 
