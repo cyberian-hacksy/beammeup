@@ -220,16 +220,26 @@ function toggleCameraPicker(e) {
     picker.classList.remove('hidden')
     // Close picker when clicking outside
     setTimeout(() => {
-      document.addEventListener('click', closeCameraPicker, { once: true })
+      document.addEventListener('click', handleOutsideClick)
     }, 0)
   } else {
-    picker.classList.add('hidden')
+    closeCameraPicker()
   }
+}
+
+// Handle clicks outside the picker
+function handleOutsideClick(e) {
+  // Don't close if clicking inside the picker
+  if (elements.cameraPicker.contains(e.target)) {
+    return
+  }
+  closeCameraPicker()
 }
 
 // Close camera picker
 function closeCameraPicker() {
   elements.cameraPicker.classList.add('hidden')
+  document.removeEventListener('click', handleOutsideClick)
 }
 
 // Scan a single frame
