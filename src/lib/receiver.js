@@ -15,7 +15,8 @@ const state = {
   reconstructedBlob: null,
   startTime: null,
   cameras: [],
-  currentCameraId: null
+  currentCameraId: null,
+  isMobile: false
 }
 
 // DOM elements (initialized on setup)
@@ -71,14 +72,9 @@ async function enumerateCameras() {
     let cameras = devices.filter(d => d.kind === 'videoinput')
 
     // Detect mobile (iOS/Android)
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+    state.isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
 
-    // Clear dropdown using safe DOM method
-    while (elements.cameraDropdown.firstChild) {
-      elements.cameraDropdown.removeChild(elements.cameraDropdown.firstChild)
-    }
-
-    if (isMobile) {
+    if (state.isMobile) {
       // On mobile: filter to front/back only
       const front = cameras.find(c =>
         c.label.toLowerCase().includes('front') ||
@@ -94,16 +90,18 @@ async function enumerateCameras() {
 
       cameras = [back, front].filter(Boolean)
 
-      cameras.forEach(cam => {
-        const option = document.createElement('option')
-        option.value = cam.deviceId
-        option.textContent = cam.label.toLowerCase().includes('front')
-          ? 'Front Camera'
-          : 'Back Camera'
-        elements.cameraDropdown.appendChild(option)
-      })
+      // Mobile: show toggle button, hide dropdown
+      elements.cameraPicker.classList.add('hidden')
+      elements.btnCameraSwitch.classList.remove('hidden')
     } else {
-      // On desktop: show all cameras
+      // Desktop: show dropdown directly, hide toggle button
+      elements.btnCameraSwitch.classList.add('hidden')
+      elements.cameraPicker.classList.remove('hidden')
+
+      while (elements.cameraDropdown.firstChild) {
+        elements.cameraDropdown.removeChild(elements.cameraDropdown.firstChild)
+      }
+
       cameras.forEach((cam, i) => {
         const option = document.createElement('option')
         option.value = cam.deviceId
@@ -117,6 +115,12 @@ async function enumerateCameras() {
     if (cameras.length === 0) {
       showError('No camera found on this device.')
       return null
+    }
+
+    // Hide controls entirely if only one camera
+    if (cameras.length <= 1) {
+      elements.btnCameraSwitch.classList.add('hidden')
+      elements.cameraPicker.classList.add('hidden')
     }
 
     // Return default camera ID (first one, which is back camera on mobile)
@@ -210,36 +214,16 @@ async function switchCamera(deviceId) {
   }
 }
 
-// Toggle camera picker visibility (cross-platform approach)
-function toggleCameraPicker(e) {
+// Toggle between front and back camera (mobile only)
+async function toggleMobileCamera(e) {
   e.stopPropagation()
-  const picker = elements.cameraPicker
-  const isHidden = picker.classList.contains('hidden')
+  if (state.cameras.length < 2) return
 
-  if (isHidden) {
-    picker.classList.remove('hidden')
-    // Close picker when clicking outside
-    setTimeout(() => {
-      document.addEventListener('click', handleOutsideClick)
-    }, 0)
-  } else {
-    closeCameraPicker()
-  }
-}
+  const currentIndex = state.cameras.findIndex(c => c.deviceId === state.currentCameraId)
+  const nextIndex = (currentIndex + 1) % state.cameras.length
+  const nextCamera = state.cameras[nextIndex]
 
-// Handle clicks outside the picker
-function handleOutsideClick(e) {
-  // Don't close if clicking inside the picker
-  if (elements.cameraPicker.contains(e.target)) {
-    return
-  }
-  closeCameraPicker()
-}
-
-// Close camera picker
-function closeCameraPicker() {
-  elements.cameraPicker.classList.add('hidden')
-  document.removeEventListener('click', handleOutsideClick)
+  await switchCamera(nextCamera.deviceId)
 }
 
 // Scan a single frame
@@ -462,11 +446,8 @@ export function initReceiver(errorHandler) {
   }
 
   // Bind event handlers
-  elements.btnCameraSwitch.onclick = toggleCameraPicker
-  elements.cameraDropdown.onchange = (e) => {
-    switchCamera(e.target.value)
-    closeCameraPicker()
-  }
+  elements.btnCameraSwitch.onclick = toggleMobileCamera
+  elements.cameraDropdown.onchange = (e) => switchCamera(e.target.value)
   elements.btnDownload.onclick = downloadFile
   elements.btnReceiveAnother.onclick = restartReceiver
 }
