@@ -10,7 +10,7 @@ import { testCodecRoundtrip } from './lib/decoder.js'
 
 // Import UI modules
 import { initSender, resetSender } from './lib/sender.js'
-import { initReceiver, resetReceiver, enumerateCameras } from './lib/receiver.js'
+import { initReceiver, resetReceiver, autoStartReceiver } from './lib/receiver.js'
 
 // Make libraries available globally
 window.jsQR = jsQR
@@ -54,7 +54,7 @@ function showScreen(screenId) {
 document.getElementById('btn-send').onclick = () => showScreen('sender')
 document.getElementById('btn-receive').onclick = () => {
   showScreen('receiver')
-  enumerateCameras()
+  autoStartReceiver()
 }
 
 // Back buttons with cleanup

@@ -22,33 +22,29 @@
   <div id="sender" class="screen">
     <header><button class="back-btn">&larr; Back</button><span>SEND MODE</span></header>
     <main>
-      <div class="file-select">
-        <label for="file-input" class="visually-hidden">Select file</label>
-        <input type="file" id="file-input">
-        <span id="file-info" class="file-info">No file selected</span>
-      </div>
+      <input type="file" id="file-input" class="visually-hidden">
 
-      <div class="qr-container" id="qr-container">
-        <span id="qr-placeholder" style="color:#888;">Select a file to start</span>
+      <div class="qr-container drop-zone" id="qr-container">
+        <div id="qr-placeholder" class="drop-zone-content">
+          <div class="drop-zone-icon">+</div>
+          <div>Drop file here or tap to select</div>
+        </div>
         <canvas id="qr-canvas" style="display:none;"></canvas>
       </div>
 
-      <div class="controls">
-        <label for="speed-slider">Speed:</label>
-        <input type="range" id="speed-slider" min="50" max="500" value="200">
-        <span id="speed-display">200ms</span>
-        <button id="btn-start-send" disabled>Start</button>
-        <button id="btn-pause-send" class="secondary" disabled>Pause</button>
-      </div>
-
-      <div class="stats" id="sender-stats">
-        <div class="stat">
-          <span class="stat-label">Symbol</span>
-          <span class="stat-value" id="stat-symbol">-</span>
+      <div class="sender-controls" id="sender-controls">
+        <div class="speed-control">
+          <label for="speed-slider">Speed:</label>
+          <input type="range" id="speed-slider" min="50" max="500" value="50">
+          <span id="speed-display">50ms</span>
         </div>
-        <div class="stat">
-          <span class="stat-label">Status</span>
-          <span class="stat-value" id="stat-send-status">Ready</span>
+        <div class="file-status">
+          <span id="file-info">No file</span>
+          <span id="stat-symbol" class="symbol-count"></span>
+        </div>
+        <div class="action-buttons">
+          <button id="btn-action-send" disabled>Start</button>
+          <button id="btn-stop-send" class="secondary" disabled>Stop</button>
         </div>
       </div>
     </main>
@@ -58,54 +54,45 @@
   <div id="receiver" class="screen">
     <header><button class="back-btn">&larr; Back</button><span>RECEIVE MODE</span></header>
     <main>
-      <div class="camera-select">
-        <label for="camera-dropdown">Camera:</label>
-        <select id="camera-dropdown"></select>
-        <button id="btn-start-scan">Start Scanning</button>
-        <button id="btn-stop-scan" class="secondary" disabled>Stop</button>
-      </div>
-
       <div class="video-container">
         <video id="camera-video" autoplay playsinline muted></video>
         <svg class="qr-overlay" id="qr-overlay">
           <polygon id="qr-polygon" points="" />
         </svg>
-      </div>
-
-      <div class="progress-container">
-        <div id="file-name-display" style="margin-bottom:0.5rem;color:#888;">Waiting for file...</div>
-        <div class="progress-bar">
-          <div class="progress-fill" id="progress-fill" style="width:0"></div>
-        </div>
-        <div class="progress-text" id="progress-text">0%</div>
-      </div>
-
-      <div class="stats" id="receiver-stats">
-        <div class="stat">
-          <span class="stat-label">Blocks</span>
-          <span class="stat-value" id="stat-blocks">0/0</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Symbols</span>
-          <span class="stat-value" id="stat-symbols">0</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Rate</span>
-          <span class="stat-value" id="stat-rate">-</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Time</span>
-          <span class="stat-value" id="stat-time">-</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">ETA</span>
-          <span class="stat-value" id="stat-eta">-</span>
+        <button id="btn-camera-switch" class="floating-camera-btn" title="Switch camera">
+          <span class="camera-icon"></span>
+        </button>
+        <div id="camera-picker" class="camera-picker">
+          <label for="camera-dropdown" class="visually-hidden">Select camera</label>
+          <select id="camera-dropdown"></select>
         </div>
       </div>
 
-      <div class="download-section">
-        <span class="status" id="receive-status">Ready</span>
-        <button id="btn-download" disabled>Download</button>
+      <div class="receiver-status" id="receiver-status-bar">
+        <div class="status-scanning" id="status-scanning">
+          <span>Scanning...</span>
+          <span id="stat-symbols">0 codes</span>
+        </div>
+        <div class="status-receiving hidden" id="status-receiving">
+          <div class="status-file-row">
+            <span id="file-name-display">-</span>
+            <span class="stats-inline">
+              <span id="stat-blocks">0/0</span>
+              <span id="stat-rate">-</span>
+              <span id="stat-eta">-</span>
+            </span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="progress-fill" style="width:0"></div>
+          </div>
+        </div>
+        <div class="status-complete hidden" id="status-complete">
+          <div class="status-file-row">
+            <span id="complete-file-name">-</span>
+            <button id="btn-download">Download</button>
+          </div>
+          <div class="complete-message">Transfer complete</div>
+        </div>
       </div>
     </main>
   </div>

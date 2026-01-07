@@ -13,7 +13,9 @@ const state = {
   isScanning: false,
   symbolTimes: [],
   reconstructedBlob: null,
-  startTime: null
+  startTime: null,
+  cameras: [],
+  currentCameraId: null
 }
 
 // DOM elements (initialized on setup)
@@ -43,8 +45,23 @@ function formatTime(ms) {
   return hours + 'h ' + mins + 'm ' + seconds + 's'
 }
 
+// Show the appropriate status section
+function showStatus(which) {
+  elements.statusScanning.classList.add('hidden')
+  elements.statusReceiving.classList.add('hidden')
+  elements.statusComplete.classList.add('hidden')
+
+  if (which === 'scanning') {
+    elements.statusScanning.classList.remove('hidden')
+  } else if (which === 'receiving') {
+    elements.statusReceiving.classList.remove('hidden')
+  } else if (which === 'complete') {
+    elements.statusComplete.classList.remove('hidden')
+  }
+}
+
 // Enumerate available cameras
-export async function enumerateCameras() {
+async function enumerateCameras() {
   try {
     // Request permission first (needed to get labels)
     const tempStream = await navigator.mediaDevices.getUserMedia({ video: true })
@@ -95,22 +112,28 @@ export async function enumerateCameras() {
       })
     }
 
+    state.cameras = cameras
+
     if (cameras.length === 0) {
       showError('No camera found on this device.')
+      return null
     }
+
+    // Return default camera ID (first one, which is back camera on mobile)
+    return cameras[0].deviceId
   } catch (err) {
     console.error('Camera enumeration error:', err)
     if (err.name === 'NotAllowedError') {
       showError('Camera access denied. Please allow permissions.')
     }
+    return null
   }
 }
 
-// Start scanning
-async function startScanning() {
-  const deviceId = elements.cameraDropdown.value
+// Start scanning with specified camera
+async function startScanning(deviceId) {
   if (!deviceId) {
-    showError('Please select a camera.')
+    showError('No camera available.')
     return
   }
 
@@ -118,6 +141,9 @@ async function startScanning() {
     state.stream = await navigator.mediaDevices.getUserMedia({
       video: { deviceId: { exact: deviceId }, facingMode: 'environment' }
     })
+
+    state.currentCameraId = deviceId
+    elements.cameraDropdown.value = deviceId
 
     elements.video.srcObject = state.stream
     await elements.video.play()
@@ -133,10 +159,8 @@ async function startScanning() {
     state.startTime = Date.now()
     state.isScanning = true
 
-    elements.btnStartScan.disabled = true
-    elements.btnStopScan.disabled = false
-    elements.btnDownload.disabled = true
-    elements.receiveStatus.textContent = 'Scanning...'
+    showStatus('scanning')
+    elements.statSymbols.textContent = '0 codes'
 
     // Start scan loop
     scanFrame()
@@ -159,13 +183,39 @@ function stopScanning() {
   }
 
   elements.video.srcObject = null
-  elements.btnStartScan.disabled = false
-  elements.btnStopScan.disabled = true
   elements.qrOverlay.style.display = 'none'
+}
 
-  if (!state.decoder || !state.decoder.isComplete()) {
-    elements.receiveStatus.textContent = 'Stopped'
+// Switch camera
+async function switchCamera(deviceId) {
+  if (deviceId === state.currentCameraId) return
+
+  // Stop current stream
+  if (state.stream) {
+    state.stream.getTracks().forEach(t => t.stop())
   }
+
+  // Start with new camera (preserve decoder state)
+  try {
+    state.stream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: { exact: deviceId }, facingMode: 'environment' }
+    })
+
+    state.currentCameraId = deviceId
+    elements.video.srcObject = state.stream
+    await elements.video.play()
+
+    elements.cameraPicker.classList.add('hidden')
+  } catch (err) {
+    console.error('Camera switch error:', err)
+    showError('Failed to switch camera. ' + err.message)
+  }
+}
+
+// Open camera picker directly
+function openCameraPicker(e) {
+  e.stopPropagation()
+  elements.cameraDropdown.showPicker?.()
 }
 
 // Scan a single frame
@@ -257,36 +307,35 @@ function updateReceiverStats() {
 
   const k = decoder.k || 0
   const solved = decoder.solved || 0
-  const progress = k > 0 ? (solved / k * 100) : 0
+  const uniqueSymbols = decoder.uniqueSymbols || 0
 
-  elements.progressFill.style.width = progress + '%'
-  elements.progressText.textContent = Math.round(progress) + '%'
-  elements.statBlocks.textContent = solved + '/' + k
-  elements.statSymbols.textContent = decoder.uniqueSymbols || 0
+  // If we have metadata, switch to receiving view
+  if (decoder.metadata && k > 0) {
+    showStatus('receiving')
 
-  if (decoder.metadata) {
+    const progress = (solved / k * 100)
+    elements.progressFill.style.width = progress + '%'
+    elements.statBlocks.textContent = solved + '/' + k
     elements.fileNameDisplay.textContent =
       decoder.metadata.filename + ' (' + formatBytes(decoder.metadata.fileSize) + ')'
-  }
 
-  // Calculate elapsed time
-  const now = Date.now()
-  const elapsed = state.startTime ? now - state.startTime : 0
-  elements.statTime.textContent = elapsed > 0 ? formatTime(elapsed) : '-'
+    // Calculate rate
+    const times = state.symbolTimes
+    if (times.length >= 2) {
+      const windowDuration = (times[times.length - 1] - times[0]) / 1000
+      const bytesInWindow = times.length * BLOCK_SIZE
+      const rateKBps = windowDuration > 0 ? (bytesInWindow / windowDuration / 1024) : 0
+      elements.statRate.textContent = rateKBps.toFixed(1) + ' KB/s'
 
-  // Calculate rate in KB/s based on symbols received in last 5 seconds
-  const times = state.symbolTimes
-  if (times.length >= 2) {
-    const windowDuration = (times[times.length - 1] - times[0]) / 1000
-    const bytesInWindow = times.length * BLOCK_SIZE
-    const rateKBps = windowDuration > 0 ? (bytesInWindow / windowDuration / 1024) : 0
-    elements.statRate.textContent = rateKBps.toFixed(1) + ' KB/s'
-
-    // Estimate remaining time based on current rate
-    const remaining = k - solved
-    const remainingBytes = remaining * BLOCK_SIZE
-    const etaMs = rateKBps > 0 ? (remainingBytes / 1024 / rateKBps * 1000 * 1.3) : 0
-    elements.statEta.textContent = etaMs > 0 ? ('~' + formatTime(etaMs)) : '-'
+      // Estimate remaining time
+      const remaining = k - solved
+      const remainingBytes = remaining * BLOCK_SIZE
+      const etaMs = rateKBps > 0 ? (remainingBytes / 1024 / rateKBps * 1000 * 1.3) : 0
+      elements.statEta.textContent = etaMs > 0 ? ('~' + formatTime(etaMs)) : ''
+    }
+  } else {
+    // Still in scanning phase
+    elements.statSymbols.textContent = uniqueSymbols + ' codes'
   }
 }
 
@@ -298,8 +347,6 @@ async function onReceiveComplete() {
 
   stopScanning()
 
-  elements.receiveStatus.textContent = 'Verifying...'
-
   const verified = await state.decoder.verify()
 
   if (verified) {
@@ -308,19 +355,13 @@ async function onReceiveComplete() {
 
     state.reconstructedBlob = new Blob([data], { type: metadata.mimeType })
 
-    // Calculate and display final stats
-    const avgRateKBps = totalTime > 0 ? (metadata.fileSize / (totalTime / 1000) / 1024) : 0
-    elements.statRate.textContent = avgRateKBps.toFixed(1) + ' KB/s'
-    elements.statTime.textContent = formatTime(totalTime)
-    elements.statEta.textContent = '-'
-
-    elements.receiveStatus.textContent = 'Complete! Hash verified.'
-    elements.btnDownload.disabled = false
-    elements.progressFill.style.width = '100%'
-    elements.progressText.textContent = '100%'
+    showStatus('complete')
+    elements.completeFileName.textContent =
+      metadata.filename + ' (' + formatBytes(metadata.fileSize) + ') in ' + formatTime(totalTime)
   } else {
     showError('File corrupted! Hash verification failed.')
-    elements.receiveStatus.textContent = 'Verification failed!'
+    showStatus('scanning')
+    elements.statSymbols.textContent = 'Verification failed'
   }
 }
 
@@ -347,16 +388,21 @@ export function resetReceiver() {
   state.startTime = null
 
   if (elements) {
+    showStatus('scanning')
     elements.progressFill.style.width = '0%'
-    elements.progressText.textContent = '0%'
-    elements.fileNameDisplay.textContent = 'Waiting for file...'
+    elements.fileNameDisplay.textContent = '-'
     elements.statBlocks.textContent = '0/0'
-    elements.statSymbols.textContent = '0'
+    elements.statSymbols.textContent = '0 codes'
     elements.statRate.textContent = '-'
-    elements.statTime.textContent = '-'
-    elements.statEta.textContent = '-'
-    elements.receiveStatus.textContent = 'Ready'
-    elements.btnDownload.disabled = true
+    elements.statEta.textContent = ''
+  }
+}
+
+// Auto-start receiver (called when entering receiver screen)
+export async function autoStartReceiver() {
+  const defaultCameraId = await enumerateCameras()
+  if (defaultCameraId) {
+    await startScanning(defaultCameraId)
   }
 }
 
@@ -366,25 +412,26 @@ export function initReceiver(errorHandler) {
 
   elements = {
     cameraDropdown: document.getElementById('camera-dropdown'),
+    cameraPicker: document.getElementById('camera-picker'),
+    btnCameraSwitch: document.getElementById('btn-camera-switch'),
     video: document.getElementById('camera-video'),
     qrOverlay: document.getElementById('qr-overlay'),
     qrPolygon: document.getElementById('qr-polygon'),
-    btnStartScan: document.getElementById('btn-start-scan'),
-    btnStopScan: document.getElementById('btn-stop-scan'),
+    statusScanning: document.getElementById('status-scanning'),
+    statusReceiving: document.getElementById('status-receiving'),
+    statusComplete: document.getElementById('status-complete'),
     progressFill: document.getElementById('progress-fill'),
-    progressText: document.getElementById('progress-text'),
     fileNameDisplay: document.getElementById('file-name-display'),
+    completeFileName: document.getElementById('complete-file-name'),
     statBlocks: document.getElementById('stat-blocks'),
     statSymbols: document.getElementById('stat-symbols'),
     statRate: document.getElementById('stat-rate'),
-    statTime: document.getElementById('stat-time'),
     statEta: document.getElementById('stat-eta'),
-    receiveStatus: document.getElementById('receive-status'),
     btnDownload: document.getElementById('btn-download')
   }
 
   // Bind event handlers
-  elements.btnStartScan.onclick = startScanning
-  elements.btnStopScan.onclick = stopScanning
+  elements.btnCameraSwitch.onclick = openCameraPicker
+  elements.cameraDropdown.onchange = (e) => switchCamera(e.target.value)
   elements.btnDownload.onclick = downloadFile
 }
