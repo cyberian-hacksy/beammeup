@@ -31,7 +31,10 @@ export function generateParityMap(K, G) {
     for (let j = i * G; j < Math.min((i + 1) * G, K); j++) {
       indices.push(j)
     }
-    parityMap.push(indices)
+    // Only add if we have at least 2 blocks (single block parity is useless)
+    if (indices.length >= 2) {
+      parityMap.push(indices)
+    }
   }
 
   // Layer 2: Offset groups (shifted by G/2)

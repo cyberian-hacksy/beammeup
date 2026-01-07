@@ -171,6 +171,10 @@ export function createDecoder() {
           const params = calculateParityParams(K)
           G = params.G
           parityMap = generateParityMap(K, G)
+          // K_prime is K + actual parity count (may differ from estimate)
+          K_prime = K + parityMap.length
+          // Resize decoded blocks array to match actual K_prime
+          decodedBlocks = new Array(K_prime).fill(null)
         }
         return true
       }

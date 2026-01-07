@@ -24,11 +24,14 @@ export function createEncoder(fileData, filename, mimeType, hash) {
   }
 
   // Generate Raptor-Lite parity blocks
-  const { G, M, K_prime } = calculateParityParams(K)
+  const { G } = calculateParityParams(K)
   const parityMap = generateParityMap(K, G)
   const parityBlocks = generateParityBlocks(sourceBlocks, parityMap)
 
   // Combine source and parity blocks into intermediate blocks
+  // Use actual parity count (may differ from estimate due to edge cases)
+  const M = parityBlocks.length
+  const K_prime = K + M
   const intermediateBlocks = [...sourceBlocks, ...parityBlocks]
 
   // Create metadata payload and pad to BLOCK_SIZE for consistent QR density
