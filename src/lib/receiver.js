@@ -1,6 +1,5 @@
 // Receiver module - handles camera scanning and QR decoding
 import jsQR from 'jsqr'
-import { BLOCK_SIZE } from './constants.js'
 import { createDecoder } from './decoder.js'
 
 // Receiver state
@@ -351,17 +350,19 @@ function updateReceiverStats() {
     elements.fileNameDisplay.textContent =
       decoder.metadata.filename + ' (' + formatBytes(decoder.metadata.fileSize) + ')'
 
-    // Calculate rate
+    // Calculate rate based on actual file size and progress
     const times = state.symbolTimes
-    if (times.length >= 2) {
+    const fileSize = decoder.metadata.fileSize
+    if (times.length >= 2 && fileSize > 0) {
       const windowDuration = (times[times.length - 1] - times[0]) / 1000
-      const bytesInWindow = times.length * BLOCK_SIZE
+      const bytesPerBlock = fileSize / k
+      const bytesInWindow = times.length * bytesPerBlock
       const rateKBps = windowDuration > 0 ? (bytesInWindow / windowDuration / 1024) : 0
       elements.statRate.textContent = rateKBps.toFixed(1) + ' KB/s'
 
       // Estimate remaining time
       const remaining = k - solved
-      const remainingBytes = remaining * BLOCK_SIZE
+      const remainingBytes = remaining * bytesPerBlock
       const etaMs = rateKBps > 0 ? (remainingBytes / 1024 / rateKBps * 1000 * 1.3) : 0
       elements.statEta.textContent = etaMs > 0 ? ('~' + formatTime(etaMs)) : ''
     }
@@ -399,7 +400,7 @@ async function onReceiveComplete() {
       metadata.filename + ' (' + formatBytes(metadata.fileSize) + ') in ' + formatTime(totalTime)
     elements.completeRate.textContent = avgRateKBps.toFixed(1) + ' KB/s avg'
   } else {
-    showError('File corrupted! Hash verification failed. Resetting to scan again.')
+    showError('Hash verification failed. Tap Reset to try again.')
     // Reset decoder so user can retry
     state.decoder = null
     state.reconstructedBlob = null
@@ -474,6 +475,7 @@ export function initReceiver(errorHandler) {
     statEta: document.getElementById('stat-eta'),
     btnDownload: document.getElementById('btn-download'),
     btnReceiveAnother: document.getElementById('btn-receive-another'),
+    btnResetReceiver: document.getElementById('btn-reset-receiver'),
     completeRate: document.getElementById('complete-rate')
   }
 
@@ -482,6 +484,7 @@ export function initReceiver(errorHandler) {
   elements.cameraDropdown.onchange = (e) => switchCamera(e.target.value)
   elements.btnDownload.onclick = downloadFile
   elements.btnReceiveAnother.onclick = restartReceiver
+  elements.btnResetReceiver.onclick = restartReceiver
 }
 
 // Restart receiver for another file

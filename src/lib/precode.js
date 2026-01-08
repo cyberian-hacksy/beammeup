@@ -1,7 +1,7 @@
 // Raptor-Lite Pre-coding
 // Generates XOR parity blocks for improved fountain code efficiency
 
-import { BLOCK_SIZE, PARITY_LAYERS } from './constants.js'
+import { PARITY_LAYERS } from './constants.js'
 
 /**
  * Calculate parity parameters from source block count K
@@ -76,13 +76,14 @@ export function generateParityMap(K, G) {
  */
 export function generateParityBlocks(sourceBlocks, parityMap) {
   const parityBlocks = []
+  const blockSize = sourceBlocks[0].length
 
   for (const indices of parityMap) {
-    const parity = new Uint8Array(BLOCK_SIZE)
+    const parity = new Uint8Array(blockSize)
 
     for (const idx of indices) {
       const block = sourceBlocks[idx]
-      for (let i = 0; i < BLOCK_SIZE; i++) {
+      for (let i = 0; i < blockSize; i++) {
         parity[i] ^= block[i]
       }
     }
@@ -125,11 +126,12 @@ export function recoverWithParity(decodedBlocks, K, parityMap) {
 
         // Start with parity block
         const recovered = new Uint8Array(decodedBlocks[parityIdx])
+        const blockSize = recovered.length
 
         // XOR out all known source blocks
         for (const idx of sourceIndices) {
           if (idx !== missingIdx && decodedBlocks[idx]) {
-            for (let i = 0; i < BLOCK_SIZE; i++) {
+            for (let i = 0; i < blockSize; i++) {
               recovered[i] ^= decodedBlocks[idx][i]
             }
           }
@@ -179,13 +181,14 @@ export function testParityMap() {
 export function testParityRecovery() {
   // Create test source blocks
   const K = 16
+  const testBlockSize = 200
   const { G } = calculateParityParams(K)
   const parityMap = generateParityMap(K, G)
 
   const sourceBlocks = []
   for (let i = 0; i < K; i++) {
-    const block = new Uint8Array(BLOCK_SIZE)
-    for (let j = 0; j < BLOCK_SIZE; j++) {
+    const block = new Uint8Array(testBlockSize)
+    for (let j = 0; j < testBlockSize; j++) {
       block[j] = (i * 17 + j * 13) % 256
     }
     sourceBlocks.push(block)
@@ -210,7 +213,7 @@ export function testParityRecovery() {
   // Verify recovery
   let match = true
   if (decodedBlocks[removedIdx]) {
-    for (let i = 0; i < BLOCK_SIZE; i++) {
+    for (let i = 0; i < testBlockSize; i++) {
       if (decodedBlocks[removedIdx][i] !== removedBlock[i]) {
         match = false
         break
