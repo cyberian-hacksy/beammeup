@@ -1,11 +1,15 @@
 // Sender module - handles file encoding and QR display
 import qrcode from 'qrcode-generator'
-import { MAX_FILE_SIZE, METADATA_INTERVAL } from './constants.js'
+import { MAX_FILE_SIZE, METADATA_INTERVAL, DATA_PRESETS, SIZE_PRESETS, SPEED_PRESETS } from './constants.js'
 import { createEncoder } from './encoder.js'
 
 // Sender state
 const state = {
   encoder: null,
+  fileBuffer: null,
+  fileName: null,
+  mimeType: null,
+  fileHash: null,
   intervalId: null,
   symbolId: 1,
   isPaused: false,
@@ -57,27 +61,31 @@ function updateActionButton() {
 
 // Render a symbol as QR code on canvas
 function renderSymbol(symbolId) {
+  const dataPreset = DATA_PRESETS[parseInt(elements.dataSlider.value)]
+  const sizePreset = SIZE_PRESETS[parseInt(elements.sizeSlider.value)]
+
   const packet = state.encoder.generateSymbol(symbolId)
   const base64 = btoa(String.fromCharCode.apply(null, packet))
 
-  // Use qrcode library to render to canvas
-  const qr = qrcode(0, 'M')
+  // Use dynamic ECC from preset
+  const qr = qrcode(0, dataPreset.ecc)
   qr.addData(base64)
   qr.make()
 
   const moduleCount = qr.getModuleCount()
-  const cellSize = 8
-  const size = moduleCount * cellSize
+  // Scale to fit within preset size
+  const cellSize = Math.floor(sizePreset.size / moduleCount)
+  const actualSize = moduleCount * cellSize
 
   const canvas = elements.qrCanvas
-  canvas.width = size
-  canvas.height = size
+  canvas.width = actualSize
+  canvas.height = actualSize
   canvas.style.display = 'block'
   elements.qrPlaceholder.style.display = 'none'
 
   const ctx = canvas.getContext('2d')
   ctx.fillStyle = '#ffffff'
-  ctx.fillRect(0, 0, size, size)
+  ctx.fillRect(0, 0, actualSize, actualSize)
 
   ctx.fillStyle = '#000000'
   for (let row = 0; row < moduleCount; row++) {
@@ -118,11 +126,16 @@ function startSending() {
   state.isSending = true
   updateActionButton()
 
+  // Disable data and size sliders during transmission
+  elements.dataSlider.disabled = true
+  elements.sizeSlider.disabled = true
+
   // Initial tick
   senderTick()
 
-  // Start interval
-  state.intervalId = setInterval(senderTick, parseInt(elements.speedSlider.value))
+  // Start interval using speed preset
+  const speedIndex = parseInt(elements.speedSlider.value)
+  state.intervalId = setInterval(senderTick, SPEED_PRESETS[speedIndex].interval)
 }
 
 // Pause sending
@@ -138,8 +151,9 @@ function resumeSending() {
   state.isPaused = false
   updateActionButton()
 
-  // Resume interval
-  state.intervalId = setInterval(senderTick, parseInt(elements.speedSlider.value))
+  // Resume interval using speed preset
+  const speedIndex = parseInt(elements.speedSlider.value)
+  state.intervalId = setInterval(senderTick, SPEED_PRESETS[speedIndex].interval)
 }
 
 // Stop sending and reset
@@ -149,10 +163,18 @@ function stopSending() {
     state.intervalId = null
   }
   state.encoder = null
+  state.fileBuffer = null
+  state.fileName = null
+  state.mimeType = null
+  state.fileHash = null
   state.isPaused = false
   state.isSending = false
   state.symbolId = 1
   state.frameCount = 0
+
+  // Re-enable sliders
+  elements.dataSlider.disabled = false
+  elements.sizeSlider.disabled = false
 
   elements.qrCanvas.style.display = 'none'
   elements.qrPlaceholder.style.display = 'flex'
@@ -182,7 +204,7 @@ async function processFile(file) {
   if (!file) return
 
   if (file.size > MAX_FILE_SIZE) {
-    showError('File too large. Limit: 5MB.')
+    showError('File too large. Limit: 20MB.')
     return
   }
 
@@ -190,7 +212,15 @@ async function processFile(file) {
     const buffer = await file.arrayBuffer()
     const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', buffer))
 
-    state.encoder = createEncoder(buffer, file.name, file.type || 'application/octet-stream', hash)
+    // Store file data for re-encoding on preset change
+    state.fileBuffer = buffer
+    state.fileName = file.name
+    state.mimeType = file.type || 'application/octet-stream'
+    state.fileHash = hash
+
+    const dataIndex = parseInt(elements.dataSlider.value)
+    const blockSize = DATA_PRESETS[dataIndex].blockSize
+    state.encoder = createEncoder(buffer, file.name, state.mimeType, hash, blockSize)
     state.symbolId = 1
     state.frameCount = 0
     state.isPaused = false
@@ -254,15 +284,50 @@ async function handleDrop(e) {
   }
 }
 
-// Handle speed slider change
-function handleSpeedChange() {
-  const speed = parseInt(elements.speedSlider.value)
-  elements.speedDisplay.textContent = speed + 'ms'
+// Handle data preset change
+function handleDataPresetChange() {
+  const index = parseInt(elements.dataSlider.value)
+  const preset = DATA_PRESETS[index]
+  elements.dataDisplay.textContent = preset.name + ' (' + preset.blockSize + 'B)'
 
-  // If currently sending, restart interval with new speed
+  // Re-encode if file is loaded but not sending
+  if (state.fileBuffer && !state.isSending) {
+    state.encoder = createEncoder(
+      state.fileBuffer,
+      state.fileName,
+      state.mimeType,
+      state.fileHash,
+      preset.blockSize
+    )
+    state.symbolId = 1
+    state.frameCount = 0
+    elements.fileInfo.textContent = state.fileName + ' (' + formatBytes(state.fileBuffer.byteLength) + ', ' + state.encoder.K + ' blocks)'
+    renderSymbol(0)
+  }
+}
+
+// Handle size preset change
+function handleSizePresetChange() {
+  const index = parseInt(elements.sizeSlider.value)
+  const preset = SIZE_PRESETS[index]
+  elements.sizeDisplay.textContent = preset.name + ' (' + preset.size + 'px)'
+
+  // Re-render if QR is visible
+  if (state.encoder) {
+    renderSymbol(state.isSending ? state.symbolId : 0)
+  }
+}
+
+// Handle speed preset change
+function handleSpeedPresetChange() {
+  const index = parseInt(elements.speedSlider.value)
+  const preset = SPEED_PRESETS[index]
+  elements.speedDisplay.textContent = preset.name + ' (' + preset.interval + 'ms)'
+
+  // Update interval if currently sending
   if (state.intervalId && !state.isPaused) {
     clearInterval(state.intervalId)
-    state.intervalId = setInterval(senderTick, speed)
+    state.intervalId = setInterval(senderTick, preset.interval)
   }
 }
 
@@ -284,6 +349,10 @@ export function initSender(errorHandler) {
     qrContainer: document.getElementById('qr-container'),
     qrPlaceholder: document.getElementById('qr-placeholder'),
     qrCanvas: document.getElementById('qr-canvas'),
+    dataSlider: document.getElementById('data-slider'),
+    dataDisplay: document.getElementById('data-display'),
+    sizeSlider: document.getElementById('size-slider'),
+    sizeDisplay: document.getElementById('size-display'),
     speedSlider: document.getElementById('speed-slider'),
     speedDisplay: document.getElementById('speed-display'),
     btnAction: document.getElementById('btn-action-send'),
@@ -297,7 +366,9 @@ export function initSender(errorHandler) {
 
   // Bind event handlers
   elements.fileInput.onchange = handleFileSelect
-  elements.speedSlider.oninput = handleSpeedChange
+  elements.dataSlider.oninput = handleDataPresetChange
+  elements.sizeSlider.oninput = handleSizePresetChange
+  elements.speedSlider.oninput = handleSpeedPresetChange
   elements.btnAction.onclick = handleActionClick
   elements.btnStop.onclick = stopSending
 

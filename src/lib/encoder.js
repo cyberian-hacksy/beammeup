@@ -1,26 +1,26 @@
 // LT Fountain Encoder with Raptor-Lite Pre-coding
 // Encodes file data into a stream of fountain-coded symbols
 
-import { BLOCK_SIZE, FOUNTAIN_DEGREE, DEGREE_ONE_PROBABILITY } from './constants.js'
+import { FOUNTAIN_DEGREE, DEGREE_ONE_PROBABILITY } from './constants.js'
 import { createPRNG } from './prng.js'
 import { createPacket } from './packet.js'
 import { createMetadataPayload } from './metadata.js'
 import { calculateParityParams, generateParityMap, generateParityBlocks } from './precode.js'
 
-export function createEncoder(fileData, filename, mimeType, hash) {
-  // Pad file to multiple of BLOCK_SIZE
-  const paddedSize = Math.ceil(fileData.byteLength / BLOCK_SIZE) * BLOCK_SIZE
+export function createEncoder(fileData, filename, mimeType, hash, blockSize = 200) {
+  // Pad file to multiple of blockSize
+  const paddedSize = Math.ceil(fileData.byteLength / blockSize) * blockSize
   const paddedData = new Uint8Array(paddedSize)
   paddedData.set(new Uint8Array(fileData))
 
-  const K = paddedSize / BLOCK_SIZE // Source block count
+  const K = paddedSize / blockSize // Source block count
   const fileId = (Math.random() * 0xFFFFFFFF) >>> 0
   const originalSize = fileData.byteLength
 
   // Split into source blocks
   const sourceBlocks = []
   for (let i = 0; i < K; i++) {
-    sourceBlocks.push(paddedData.slice(i * BLOCK_SIZE, (i + 1) * BLOCK_SIZE))
+    sourceBlocks.push(paddedData.slice(i * blockSize, (i + 1) * blockSize))
   }
 
   // Generate Raptor-Lite parity blocks
@@ -34,10 +34,10 @@ export function createEncoder(fileData, filename, mimeType, hash) {
   const K_prime = K + M
   const intermediateBlocks = [...sourceBlocks, ...parityBlocks]
 
-  // Create metadata payload and pad to BLOCK_SIZE for consistent QR density
+  // Create metadata payload and pad to blockSize for consistent QR density
   // Include K so receiver can derive parity parameters
   const rawMetadata = createMetadataPayload(filename, mimeType, originalSize, hash, K)
-  const metadataPayload = new Uint8Array(BLOCK_SIZE)
+  const metadataPayload = new Uint8Array(blockSize)
   metadataPayload.set(rawMetadata)
 
   return {
@@ -82,9 +82,9 @@ export function createEncoder(fileData, filename, mimeType, hash) {
       }
 
       // XOR selected intermediate blocks
-      const payload = new Uint8Array(BLOCK_SIZE)
+      const payload = new Uint8Array(blockSize)
       for (const idx of indices) {
-        for (let i = 0; i < BLOCK_SIZE; i++) {
+        for (let i = 0; i < blockSize; i++) {
           payload[i] ^= intermediateBlocks[idx][i]
         }
       }
@@ -105,6 +105,7 @@ export async function testEncoder() {
 
   // Import parsePacket dynamically to avoid circular dependency in test
   const { parsePacket } = await import('./packet.js')
+  const { BLOCK_SIZE } = await import('./constants.js')
 
   const metaPacket = encoder.generateSymbol(0)
   const dataPacket = encoder.generateSymbol(1)

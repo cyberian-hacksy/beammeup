@@ -33,10 +33,20 @@
       </div>
 
       <div class="sender-controls" id="sender-controls">
-        <div class="speed-control">
-          <label for="speed-slider">Speed:</label>
-          <input type="range" id="speed-slider" min="50" max="500" value="50">
-          <span id="speed-display">50ms</span>
+        <div class="slider-group">
+          <label for="data-slider">Data</label>
+          <input type="range" id="data-slider" min="0" max="3" value="1" step="1">
+          <span id="data-display">Normal (200B)</span>
+        </div>
+        <div class="slider-group">
+          <label for="size-slider">Size</label>
+          <input type="range" id="size-slider" min="0" max="2" value="1" step="1">
+          <span id="size-display">Medium (320px)</span>
+        </div>
+        <div class="slider-group">
+          <label for="speed-slider">Speed</label>
+          <input type="range" id="speed-slider" min="0" max="2" value="1" step="1">
+          <span id="speed-display">Normal (100ms)</span>
         </div>
         <div class="file-status">
           <span id="file-info">No file</span>
