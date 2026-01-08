@@ -42,6 +42,14 @@ body {
 }
 .mode-buttons button:hover { background: #00d4ff; color: #1a1a2e; }
 .tagline { font-size: 0.9rem; margin-top: 1rem; }
+.experiments-link {
+  margin-top: 2rem;
+  color: #666;
+  font-size: 0.8rem;
+  text-decoration: none;
+  transition: color 0.2s;
+}
+.experiments-link:hover { color: #00d4ff; }
 
 /* Screen Headers */
 header {

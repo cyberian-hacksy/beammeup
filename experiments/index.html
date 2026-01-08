@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Qriosity - Experiments</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    h1 { color: #00d4ff; margin-bottom: 10px; }
+    .subtitle { color: #888; margin-bottom: 30px; }
+    .back-link {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      color: #00d4ff;
+      text-decoration: none;
+    }
+    .back-link:hover { text-decoration: underline; }
+    .experiments {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+      width: 100%;
+      max-width: 300px;
+    }
+    .experiment {
+      background: #252540;
+      border: 2px solid #333;
+      border-radius: 8px;
+      padding: 20px;
+      text-decoration: none;
+      color: inherit;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .experiment:hover {
+      border-color: #00d4ff;
+      transform: translateY(-2px);
+    }
+    .experiment h2 {
+      color: #00d4ff;
+      font-size: 1.1em;
+      margin-bottom: 8px;
+    }
+    .experiment p {
+      color: #aaa;
+      font-size: 0.9em;
+      line-height: 1.4;
+    }
+    .experiment .tag {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 3px 8px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      font-size: 0.75em;
+      color: #888;
+    }
+  </style>
+</head>
+<body>
+  <a href="../" class="back-link">&larr; Back to Qriosity</a>
+
+  <h1>Experiments</h1>
+  <p class="subtitle">Proof-of-concept features</p>
+
+  <div class="experiments">
+    <a href="rgb-qr-sender.html" class="experiment">
+      <h2>RGB QR Sender</h2>
+      <p>Encodes 3 QR codes into RGB channels of a single image. Run on laptop/desktop.</p>
+      <span class="tag">Display device</span>
+    </a>
+
+    <a href="rgb-qr-receiver.html" class="experiment">
+      <h2>RGB QR Receiver</h2>
+      <p>Separates RGB channels from camera feed and attempts to decode 3 QR codes.</p>
+      <span class="tag">Camera device</span>
+    </a>
+  </div>
+</body>
+</html>

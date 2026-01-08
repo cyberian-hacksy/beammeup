@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RGB QR Sender - Experiment</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    h1 { margin-bottom: 10px; color: #00d4ff; }
+    .description {
+      max-width: 600px;
+      text-align: center;
+      margin-bottom: 20px;
+      color: #aaa;
+    }
+    .qr-container {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-bottom: 30px;
+    }
+    .qr-box {
+      text-align: center;
+    }
+    .qr-box canvas {
+      border: 2px solid #333;
+      border-radius: 8px;
+    }
+    .qr-box p {
+      margin-top: 8px;
+      font-size: 14px;
+    }
+    .qr-box.red p { color: #ff6b6b; }
+    .qr-box.green p { color: #6bff6b; }
+    .qr-box.blue p { color: #6b6bff; }
+    .composite-section {
+      text-align: center;
+      margin-top: 20px;
+    }
+    .composite-section h2 {
+      margin-bottom: 15px;
+      color: #00d4ff;
+    }
+    #compositeCanvas {
+      border: 3px solid #00d4ff;
+      border-radius: 8px;
+    }
+    .data-display {
+      margin-top: 20px;
+      padding: 15px;
+      background: #252540;
+      border-radius: 8px;
+      max-width: 500px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .data-display div { margin: 5px 0; }
+    .data-display .red { color: #ff6b6b; }
+    .data-display .green { color: #6bff6b; }
+    .data-display .blue { color: #6b6bff; }
+  </style>
+</head>
+<body>
+  <h1>RGB QR Experiment - Sender</h1>
+  <p class="description">
+    Three QR codes encoded into RGB channels. Point your phone's camera
+    (running rgb-qr-receiver.html) at the composite image below.
+  </p>
+
+  <div class="qr-container">
+    <div class="qr-box red">
+      <canvas id="qrRed" width="200" height="200"></canvas>
+      <p>Red Channel</p>
+    </div>
+    <div class="qr-box green">
+      <canvas id="qrGreen" width="200" height="200"></canvas>
+      <p>Green Channel</p>
+    </div>
+    <div class="qr-box blue">
+      <canvas id="qrBlue" width="200" height="200"></canvas>
+      <p>Blue Channel</p>
+    </div>
+  </div>
+
+  <div class="composite-section">
+    <h2>Composite RGB QR Code</h2>
+    <canvas id="compositeCanvas" width="400" height="400"></canvas>
+  </div>
+
+  <div class="data-display">
+    <div class="red">R: <span id="dataRed"></span></div>
+    <div class="green">G: <span id="dataGreen"></span></div>
+    <div class="blue">B: <span id="datablue"></span></div>
+  </div>
+
+  <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
+  <script>
+    // Test data for each channel
+    const DATA_RED = 'RED:CHANNEL:TEST:12345';
+    const DATA_GREEN = 'GREEN:CHANNEL:TEST:67890';
+    const DATA_BLUE = 'BLUE:CHANNEL:TEST:ABCDE';
+
+    // Display data
+    document.getElementById('dataRed').textContent = DATA_RED;
+    document.getElementById('dataGreen').textContent = DATA_GREEN;
+    document.getElementById('datablue').textContent = DATA_BLUE;
+
+    // Generate QR code and return pixel data
+    function generateQR(data, canvasId, size) {
+      const qr = qrcode(0, 'M');
+      qr.addData(data);
+      qr.make();
+
+      const moduleCount = qr.getModuleCount();
+      const canvas = document.getElementById(canvasId);
+      const ctx = canvas.getContext('2d');
+      const cellSize = size / moduleCount;
+
+      // Clear canvas
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, size, size);
+
+      // Draw QR modules
+      ctx.fillStyle = '#000000';
+      for (let row = 0; row < moduleCount; row++) {
+        for (let col = 0; col < moduleCount; col++) {
+          if (qr.isDark(row, col)) {
+            ctx.fillRect(col * cellSize, row * cellSize, cellSize, cellSize);
+          }
+        }
+      }
+
+      return ctx.getImageData(0, 0, size, size);
+    }
+
+    // Generate individual QR codes
+    const qrSize = 200;
+    const redData = generateQR(DATA_RED, 'qrRed', qrSize);
+    const greenData = generateQR(DATA_GREEN, 'qrGreen', qrSize);
+    const blueData = generateQR(DATA_BLUE, 'qrBlue', qrSize);
+
+    // Composite into RGB image
+    const compositeSize = 400;
+    const compositeCanvas = document.getElementById('compositeCanvas');
+    const compositeCtx = compositeCanvas.getContext('2d');
+
+    // Scale factor from source QR to composite
+    const scale = compositeSize / qrSize;
+
+    // Create composite image data
+    const compositeImageData = compositeCtx.createImageData(compositeSize, compositeSize);
+    const compositePixels = compositeImageData.data;
+
+    for (let y = 0; y < compositeSize; y++) {
+      for (let x = 0; x < compositeSize; x++) {
+        // Map to source QR coordinates
+        const srcX = Math.floor(x / scale);
+        const srcY = Math.floor(y / scale);
+        const srcIdx = (srcY * qrSize + srcX) * 4;
+
+        // Get black/white state from each QR (0 = black module, 255 = white module)
+        const redIsBlack = redData.data[srcIdx] < 128;
+        const greenIsBlack = greenData.data[srcIdx] < 128;
+        const blueIsBlack = blueData.data[srcIdx] < 128;
+
+        // Composite: black module = 0 in that channel, white = 255
+        const dstIdx = (y * compositeSize + x) * 4;
+        compositePixels[dstIdx] = redIsBlack ? 0 : 255;       // R
+        compositePixels[dstIdx + 1] = greenIsBlack ? 0 : 255; // G
+        compositePixels[dstIdx + 2] = blueIsBlack ? 0 : 255;  // B
+        compositePixels[dstIdx + 3] = 255;                     // A
+      }
+    }
+
+    compositeCtx.putImageData(compositeImageData, 0, 0);
+
+    console.log('RGB QR Sender ready');
+    console.log('Red data:', DATA_RED);
+    console.log('Green data:', DATA_GREEN);
+    console.log('Blue data:', DATA_BLUE);
+  </script>
+</body>
+</html>

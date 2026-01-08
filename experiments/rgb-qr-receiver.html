@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RGB QR Receiver - Experiment</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px;
+    }
+    h1 { margin-bottom: 5px; color: #00d4ff; font-size: 1.4em; }
+    .description {
+      text-align: center;
+      margin-bottom: 10px;
+      color: #aaa;
+      font-size: 0.9em;
+    }
+    #video {
+      width: 100%;
+      max-width: 400px;
+      border: 2px solid #333;
+      border-radius: 8px;
+    }
+    #captureCanvas { display: none; }
+    .channels {
+      display: flex;
+      gap: 10px;
+      margin: 15px 0;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .channel {
+      text-align: center;
+    }
+    .channel canvas {
+      border: 2px solid #333;
+      border-radius: 4px;
+      width: 100px;
+      height: 100px;
+    }
+    .channel p {
+      margin-top: 4px;
+      font-size: 12px;
+    }
+    .channel.red p { color: #ff6b6b; }
+    .channel.green p { color: #6bff6b; }
+    .channel.blue p { color: #6b6bff; }
+    .results {
+      width: 100%;
+      max-width: 400px;
+      padding: 15px;
+      background: #252540;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .result {
+      margin: 8px 0;
+      padding: 8px;
+      border-radius: 4px;
+      background: #1a1a2e;
+    }
+    .result.success { border-left: 3px solid #6bff6b; }
+    .result.failure { border-left: 3px solid #ff6b6b; }
+    .result .label { font-weight: bold; margin-bottom: 4px; }
+    .result.red .label { color: #ff6b6b; }
+    .result.green .label { color: #6bff6b; }
+    .result.blue .label { color: #6b6bff; }
+    .result .data {
+      word-break: break-all;
+      color: #fff;
+    }
+    .result .error { color: #ff6b6b; }
+    .stats {
+      margin-top: 10px;
+      padding: 10px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      text-align: center;
+    }
+    .stats span { margin: 0 10px; }
+    .stats .success-rate { color: #6bff6b; }
+    button {
+      margin: 10px;
+      padding: 10px 20px;
+      background: #00d4ff;
+      color: #1a1a2e;
+      border: none;
+      border-radius: 4px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #333;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <h1>RGB QR Receiver</h1>
+  <p class="description">Point camera at the composite RGB QR code</p>
+
+  <button id="startBtn">Start Camera</button>
+  <video id="video" autoplay playsinline></video>
+  <canvas id="captureCanvas"></canvas>
+
+  <div class="channels">
+    <div class="channel red">
+      <canvas id="redChannel" width="100" height="100"></canvas>
+      <p>Red</p>
+    </div>
+    <div class="channel green">
+      <canvas id="greenChannel" width="100" height="100"></canvas>
+      <p>Green</p>
+    </div>
+    <div class="channel blue">
+      <canvas id="blueChannel" width="100" height="100"></canvas>
+      <p>Blue</p>
+    </div>
+  </div>
+
+  <div class="results">
+    <div class="result red">
+      <div class="label">Red Channel:</div>
+      <div id="redResult" class="data">-</div>
+    </div>
+    <div class="result green">
+      <div class="label">Green Channel:</div>
+      <div id="greenResult" class="data">-</div>
+    </div>
+    <div class="result blue">
+      <div class="label">Blue Channel:</div>
+      <div id="blueResult" class="data">-</div>
+    </div>
+    <div class="stats">
+      <span>Scans: <span id="scanCount">0</span></span>
+      <span class="success-rate">Success: <span id="successRate">0/0/0</span></span>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script>
+    const video = document.getElementById('video');
+    const captureCanvas = document.getElementById('captureCanvas');
+    const captureCtx = captureCanvas.getContext('2d', { willReadFrequently: true });
+    const startBtn = document.getElementById('startBtn');
+
+    const redCanvas = document.getElementById('redChannel');
+    const greenCanvas = document.getElementById('greenChannel');
+    const blueCanvas = document.getElementById('blueChannel');
+    const redCtx = redCanvas.getContext('2d');
+    const greenCtx = greenCanvas.getContext('2d');
+    const blueCtx = blueCanvas.getContext('2d');
+
+    const redResult = document.getElementById('redResult');
+    const greenResult = document.getElementById('greenResult');
+    const blueResult = document.getElementById('blueResult');
+    const scanCountEl = document.getElementById('scanCount');
+    const successRateEl = document.getElementById('successRate');
+
+    let scanning = false;
+    let scanCount = 0;
+    let successCounts = { red: 0, green: 0, blue: 0 };
+
+    // Threshold for converting to binary (0-255)
+    const THRESHOLD = 128;
+
+    startBtn.addEventListener('click', async () => {
+      try {
+        video.srcObject = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 720 }, height: { ideal: 720 } }
+        });
+        video.play();
+        startBtn.disabled = true;
+        startBtn.textContent = 'Scanning...';
+        scanning = true;
+        requestAnimationFrame(scanFrame);
+      } catch (err) {
+        console.error('Camera error:', err);
+        alert('Failed to access camera: ' + err.message);
+      }
+    });
+
+    function extractChannel(imageData, channel) {
+      // channel: 0=R, 1=G, 2=B
+      const width = imageData.width;
+      const height = imageData.height;
+      const src = imageData.data;
+      const result = new Uint8ClampedArray(width * height * 4);
+
+      for (let i = 0; i < width * height; i++) {
+        const srcIdx = i * 4;
+        const channelValue = src[srcIdx + channel];
+        // Invert: low value in channel = black module = dark in grayscale
+        // high value in channel = white module = light in grayscale
+        const gray = channelValue < THRESHOLD ? 0 : 255;
+        result[srcIdx] = gray;
+        result[srcIdx + 1] = gray;
+        result[srcIdx + 2] = gray;
+        result[srcIdx + 3] = 255;
+      }
+
+      return new ImageData(result, width, height);
+    }
+
+    function drawChannelPreview(channelData, ctx, displaySize) {
+      // Scale down for preview
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = channelData.width;
+      tempCanvas.height = channelData.height;
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.putImageData(channelData, 0, 0);
+
+      ctx.drawImage(tempCanvas, 0, 0, displaySize, displaySize);
+    }
+
+    function scanFrame() {
+      if (!scanning) return;
+
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        // Capture frame
+        const size = Math.min(video.videoWidth, video.videoHeight);
+        captureCanvas.width = size;
+        captureCanvas.height = size;
+
+        // Center crop to square
+        const offsetX = (video.videoWidth - size) / 2;
+        const offsetY = (video.videoHeight - size) / 2;
+        captureCtx.drawImage(video, offsetX, offsetY, size, size, 0, 0, size, size);
+
+        const imageData = captureCtx.getImageData(0, 0, size, size);
+
+        // Extract channels
+        const redData = extractChannel(imageData, 0);
+        const greenData = extractChannel(imageData, 1);
+        const blueData = extractChannel(imageData, 2);
+
+        // Draw previews
+        drawChannelPreview(redData, redCtx, 100);
+        drawChannelPreview(greenData, greenCtx, 100);
+        drawChannelPreview(blueData, blueCtx, 100);
+
+        // Attempt to decode each channel
+        const redCode = jsQR(redData.data, redData.width, redData.height);
+        const greenCode = jsQR(greenData.data, greenData.width, greenData.height);
+        const blueCode = jsQR(blueData.data, blueData.width, blueData.height);
+
+        scanCount++;
+
+        // Update results
+        updateResult(redResult, redCode, 'red');
+        updateResult(greenResult, greenCode, 'green');
+        updateResult(blueResult, blueCode, 'blue');
+
+        // Update stats
+        scanCountEl.textContent = scanCount;
+        successRateEl.textContent = `${successCounts.red}/${successCounts.green}/${successCounts.blue}`;
+      }
+
+      requestAnimationFrame(scanFrame);
+    }
+
+    function updateResult(el, code, channel) {
+      const resultDiv = el.parentElement;
+      if (code) {
+        el.textContent = code.data;
+        el.classList.remove('error');
+        resultDiv.classList.add('success');
+        resultDiv.classList.remove('failure');
+        successCounts[channel]++;
+      } else {
+        el.textContent = 'No QR detected';
+        el.classList.add('error');
+        resultDiv.classList.add('failure');
+        resultDiv.classList.remove('success');
+      }
+    }
+
+    console.log('RGB QR Receiver ready');
+  </script>
+</body>
+</html>
