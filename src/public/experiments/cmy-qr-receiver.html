@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CMY QR Receiver - Experiment</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px;
+    }
+    h1 { margin-bottom: 5px; color: #00d4ff; font-size: 1.4em; }
+    .description {
+      text-align: center;
+      margin-bottom: 10px;
+      color: #aaa;
+      font-size: 0.9em;
+    }
+    #video {
+      width: 100%;
+      max-width: 400px;
+      border: 2px solid #333;
+      border-radius: 8px;
+    }
+    #captureCanvas { display: none; }
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+      max-width: 400px;
+      margin: 10px 0;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+    }
+    .auto-row { text-align: center; margin-bottom: 5px; }
+    .threshold-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .threshold-row label { width: 60px; font-size: 12px; }
+    .threshold-row.cyan label { color: #00ffff; }
+    .threshold-row.magenta label { color: #ff00ff; }
+    .threshold-row.yellow label { color: #ffff00; }
+    .threshold-row input[type="range"] { flex: 1; }
+    .threshold-row .value {
+      width: 35px;
+      text-align: right;
+      font-size: 12px;
+      color: #00d4ff;
+    }
+    .channels {
+      display: flex;
+      gap: 10px;
+      margin: 10px 0;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .channel { text-align: center; }
+    .channel canvas {
+      border: 2px solid #333;
+      border-radius: 4px;
+      width: 100px;
+      height: 100px;
+    }
+    .channel p { margin-top: 4px; font-size: 12px; }
+    .channel .avg { font-size: 10px; color: #888; }
+    .channel.cyan p { color: #00ffff; }
+    .channel.magenta p { color: #ff00ff; }
+    .channel.yellow p { color: #ffff00; }
+    .results {
+      width: 100%;
+      max-width: 400px;
+      padding: 15px;
+      background: #252540;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .result {
+      margin: 8px 0;
+      padding: 8px;
+      border-radius: 4px;
+      background: #1a1a2e;
+    }
+    .result.success { border-left: 3px solid #6bff6b; }
+    .result.failure { border-left: 3px solid #ff6b6b; }
+    .result .label { font-weight: bold; margin-bottom: 4px; }
+    .result.cyan .label { color: #00ffff; }
+    .result.magenta .label { color: #ff00ff; }
+    .result.yellow .label { color: #ffff00; }
+    .result .data { word-break: break-all; color: #fff; }
+    .result .error { color: #ff6b6b; }
+    .stats {
+      margin-top: 10px;
+      padding: 10px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      text-align: center;
+    }
+    .stats span { margin: 0 10px; }
+    .stats .success-rate { color: #6bff6b; }
+    button {
+      margin: 10px;
+      padding: 10px 20px;
+      background: #00d4ff;
+      color: #1a1a2e;
+      border: none;
+      border-radius: 4px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button:disabled { background: #333; color: #666; }
+    #autoBtn { padding: 6px 12px; font-size: 12px; margin: 0; }
+    #autoBtn.active { background: #6bff6b; color: #1a1a2e; }
+    .note {
+      margin-top: 10px;
+      padding: 8px;
+      background: #252540;
+      border-radius: 4px;
+      font-size: 11px;
+      color: #888;
+      max-width: 400px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>CMY QR Receiver</h1>
+  <p class="description">Point camera at the CMY composite QR code</p>
+
+  <button id="startBtn">Start Camera</button>
+  <video id="video" autoplay playsinline></video>
+  <canvas id="captureCanvas"></canvas>
+
+  <div class="controls">
+    <div class="auto-row">
+      <button id="autoBtn" class="active">Auto Threshold: ON</button>
+    </div>
+    <div class="threshold-row cyan">
+      <label>Cyan</label>
+      <input type="range" id="thresholdC" min="20" max="235" value="128">
+      <span class="value" id="thresholdCVal">128</span>
+    </div>
+    <div class="threshold-row magenta">
+      <label>Magenta</label>
+      <input type="range" id="thresholdM" min="20" max="235" value="128">
+      <span class="value" id="thresholdMVal">128</span>
+    </div>
+    <div class="threshold-row yellow">
+      <label>Yellow</label>
+      <input type="range" id="thresholdY" min="20" max="235" value="128">
+      <span class="value" id="thresholdYVal">128</span>
+    </div>
+  </div>
+
+  <div class="channels">
+    <div class="channel cyan">
+      <canvas id="cyanChannel" width="100" height="100"></canvas>
+      <p>Cyan</p>
+      <p class="avg" id="avgC">avg: -</p>
+    </div>
+    <div class="channel magenta">
+      <canvas id="magentaChannel" width="100" height="100"></canvas>
+      <p>Magenta</p>
+      <p class="avg" id="avgM">avg: -</p>
+    </div>
+    <div class="channel yellow">
+      <canvas id="yellowChannel" width="100" height="100"></canvas>
+      <p>Yellow</p>
+      <p class="avg" id="avgY">avg: -</p>
+    </div>
+  </div>
+
+  <div class="results">
+    <div class="result cyan">
+      <div class="label">Cyan Channel:</div>
+      <div id="cyanResult" class="data">-</div>
+    </div>
+    <div class="result magenta">
+      <div class="label">Magenta Channel:</div>
+      <div id="magentaResult" class="data">-</div>
+    </div>
+    <div class="result yellow">
+      <div class="label">Yellow Channel:</div>
+      <div id="yellowResult" class="data">-</div>
+    </div>
+    <div class="stats">
+      <span>Scans: <span id="scanCount">0</span></span>
+      <span class="success-rate">Success: <span id="successRate">0/0/0</span></span>
+    </div>
+  </div>
+
+  <div class="note">
+    CMY decoding: Cyan = inverted R, Magenta = inverted G, Yellow = inverted B.<br>
+    Low value in R channel = Cyan present (data = 1).
+  </div>
+
+  <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script>
+    const video = document.getElementById('video');
+    const captureCanvas = document.getElementById('captureCanvas');
+    const captureCtx = captureCanvas.getContext('2d', { willReadFrequently: true });
+    const startBtn = document.getElementById('startBtn');
+
+    const cyanCanvas = document.getElementById('cyanChannel');
+    const magentaCanvas = document.getElementById('magentaChannel');
+    const yellowCanvas = document.getElementById('yellowChannel');
+    const cyanCtx = cyanCanvas.getContext('2d');
+    const magentaCtx = magentaCanvas.getContext('2d');
+    const yellowCtx = yellowCanvas.getContext('2d');
+
+    const cyanResult = document.getElementById('cyanResult');
+    const magentaResult = document.getElementById('magentaResult');
+    const yellowResult = document.getElementById('yellowResult');
+    const scanCountEl = document.getElementById('scanCount');
+    const successRateEl = document.getElementById('successRate');
+
+    const thresholdC = document.getElementById('thresholdC');
+    const thresholdM = document.getElementById('thresholdM');
+    const thresholdY = document.getElementById('thresholdY');
+    const thresholdCVal = document.getElementById('thresholdCVal');
+    const thresholdMVal = document.getElementById('thresholdMVal');
+    const thresholdYVal = document.getElementById('thresholdYVal');
+    const avgC = document.getElementById('avgC');
+    const avgM = document.getElementById('avgM');
+    const avgY = document.getElementById('avgY');
+
+    const autoBtn = document.getElementById('autoBtn');
+
+    function setAutoMode(enabled) {
+      autoThreshold = enabled;
+      autoBtn.textContent = `Auto Threshold: ${enabled ? 'ON' : 'OFF'}`;
+      autoBtn.classList.toggle('active', enabled);
+    }
+
+    autoBtn.onclick = () => setAutoMode(!autoThreshold);
+
+    thresholdC.oninput = () => { thresholdCVal.textContent = thresholdC.value; setAutoMode(false); };
+    thresholdM.oninput = () => { thresholdMVal.textContent = thresholdM.value; setAutoMode(false); };
+    thresholdY.oninput = () => { thresholdYVal.textContent = thresholdY.value; setAutoMode(false); };
+
+    let autoThreshold = true;
+    let scanning = false;
+    let scanCount = 0;
+    let successCounts = { cyan: 0, magenta: 0, yellow: 0 };
+
+    startBtn.addEventListener('click', async () => {
+      try {
+        video.srcObject = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 720 }, height: { ideal: 720 } }
+        });
+        video.play();
+        startBtn.disabled = true;
+        startBtn.textContent = 'Scanning...';
+        scanning = true;
+        requestAnimationFrame(scanFrame);
+      } catch (err) {
+        console.error('Camera error:', err);
+        alert('Failed to access camera: ' + err.message);
+      }
+    });
+
+    function otsuThreshold(histogram, total) {
+      let sum = 0;
+      for (let i = 0; i < 256; i++) sum += i * histogram[i];
+
+      let sumB = 0, wB = 0, wF = 0;
+      let maxVariance = 0, threshold = 128;
+
+      for (let t = 0; t < 256; t++) {
+        wB += histogram[t];
+        if (wB === 0) continue;
+        wF = total - wB;
+        if (wF === 0) break;
+
+        sumB += t * histogram[t];
+        const mB = sumB / wB;
+        const mF = (sum - sumB) / wF;
+        const variance = wB * wF * (mB - mF) * (mB - mF);
+
+        if (variance > maxVariance) {
+          maxVariance = variance;
+          threshold = t;
+        }
+      }
+      return threshold;
+    }
+
+    // CMY extraction: look at INVERTED RGB channels
+    // Cyan = low R, Magenta = low G, Yellow = low B
+    function extractCMYChannel(imageData, rgbChannel, manualThreshold) {
+      const width = imageData.width;
+      const height = imageData.height;
+      const src = imageData.data;
+      const total = width * height;
+
+      // Build histogram for this RGB channel (inverted for CMY)
+      const histogram = new Array(256).fill(0);
+      let sum = 0;
+      for (let i = 0; i < total; i++) {
+        const val = 255 - src[i * 4 + rgbChannel]; // Invert for CMY
+        histogram[val]++;
+        sum += val;
+      }
+
+      const threshold = autoThreshold ? otsuThreshold(histogram, total) : manualThreshold;
+
+      const result = new Uint8ClampedArray(total * 4);
+      for (let i = 0; i < total; i++) {
+        const srcIdx = i * 4;
+        const inverted = 255 - src[srcIdx + rgbChannel];
+        const gray = inverted < threshold ? 0 : 255;
+        result[srcIdx] = gray;
+        result[srcIdx + 1] = gray;
+        result[srcIdx + 2] = gray;
+        result[srcIdx + 3] = 255;
+      }
+
+      const avg = Math.round(sum / total);
+      return { imageData: new ImageData(result, width, height), avg, threshold };
+    }
+
+    function drawChannelPreview(channelData, ctx, displaySize) {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = channelData.width;
+      tempCanvas.height = channelData.height;
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.putImageData(channelData, 0, 0);
+      ctx.drawImage(tempCanvas, 0, 0, displaySize, displaySize);
+    }
+
+    function scanFrame() {
+      if (!scanning) return;
+
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        const size = Math.min(video.videoWidth, video.videoHeight);
+        captureCanvas.width = size;
+        captureCanvas.height = size;
+
+        const offsetX = (video.videoWidth - size) / 2;
+        const offsetY = (video.videoHeight - size) / 2;
+        captureCtx.drawImage(video, offsetX, offsetY, size, size, 0, 0, size, size);
+
+        const imageData = captureCtx.getImageData(0, 0, size, size);
+
+        // Extract CMY channels (inverted RGB)
+        const cyan = extractCMYChannel(imageData, 0, parseInt(thresholdC.value));    // Cyan = inverted R
+        const magenta = extractCMYChannel(imageData, 1, parseInt(thresholdM.value)); // Magenta = inverted G
+        const yellow = extractCMYChannel(imageData, 2, parseInt(thresholdY.value));  // Yellow = inverted B
+
+        avgC.textContent = `avg: ${cyan.avg} | th: ${cyan.threshold}`;
+        avgM.textContent = `avg: ${magenta.avg} | th: ${magenta.threshold}`;
+        avgY.textContent = `avg: ${yellow.avg} | th: ${yellow.threshold}`;
+
+        if (autoThreshold) {
+          thresholdC.value = cyan.threshold; thresholdCVal.textContent = cyan.threshold;
+          thresholdM.value = magenta.threshold; thresholdMVal.textContent = magenta.threshold;
+          thresholdY.value = yellow.threshold; thresholdYVal.textContent = yellow.threshold;
+        }
+
+        drawChannelPreview(cyan.imageData, cyanCtx, 100);
+        drawChannelPreview(magenta.imageData, magentaCtx, 100);
+        drawChannelPreview(yellow.imageData, yellowCtx, 100);
+
+        const cyanCode = jsQR(cyan.imageData.data, cyan.imageData.width, cyan.imageData.height);
+        const magentaCode = jsQR(magenta.imageData.data, magenta.imageData.width, magenta.imageData.height);
+        const yellowCode = jsQR(yellow.imageData.data, yellow.imageData.width, yellow.imageData.height);
+
+        scanCount++;
+
+        updateResult(cyanResult, cyanCode, 'cyan');
+        updateResult(magentaResult, magentaCode, 'magenta');
+        updateResult(yellowResult, yellowCode, 'yellow');
+
+        scanCountEl.textContent = scanCount;
+        successRateEl.textContent = `${successCounts.cyan}/${successCounts.magenta}/${successCounts.yellow}`;
+      }
+
+      requestAnimationFrame(scanFrame);
+    }
+
+    function updateResult(el, code, channel) {
+      const resultDiv = el.parentElement;
+      if (code) {
+        el.textContent = code.data;
+        el.classList.remove('error');
+        resultDiv.classList.add('success');
+        resultDiv.classList.remove('failure');
+        successCounts[channel]++;
+      } else {
+        el.textContent = 'No QR detected';
+        el.classList.add('error');
+        resultDiv.classList.add('failure');
+        resultDiv.classList.remove('success');
+      }
+    }
+
+    console.log('CMY QR Receiver ready');
+  </script>
+</body>
+</html>

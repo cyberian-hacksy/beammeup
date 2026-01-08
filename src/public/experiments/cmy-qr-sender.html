@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CMY QR Sender - Experiment</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    h1 { margin-bottom: 10px; color: #00d4ff; }
+    .description {
+      max-width: 600px;
+      text-align: center;
+      margin-bottom: 20px;
+      color: #aaa;
+    }
+    .qr-container {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-bottom: 30px;
+    }
+    .qr-box { text-align: center; }
+    .qr-box canvas {
+      border: 2px solid #333;
+      border-radius: 8px;
+    }
+    .qr-box p { margin-top: 8px; font-size: 14px; }
+    .qr-box.cyan p { color: #00ffff; }
+    .qr-box.magenta p { color: #ff00ff; }
+    .qr-box.yellow p { color: #ffff00; }
+    .composite-section {
+      text-align: center;
+      margin-top: 20px;
+    }
+    .composite-section h2 {
+      margin-bottom: 15px;
+      color: #00d4ff;
+    }
+    #compositeCanvas {
+      border: 3px solid #00d4ff;
+      border-radius: 8px;
+    }
+    .data-display {
+      margin-top: 20px;
+      padding: 15px;
+      background: #252540;
+      border-radius: 8px;
+      max-width: 500px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .data-display div { margin: 5px 0; }
+    .data-display .cyan { color: #00ffff; }
+    .data-display .magenta { color: #ff00ff; }
+    .data-display .yellow { color: #ffff00; }
+    .note {
+      margin-top: 15px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #888;
+      max-width: 500px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>CMY QR Experiment - Sender</h1>
+  <p class="description">
+    Three QR codes encoded into CMY channels (Cyan, Magenta, Yellow).
+    These are brighter colors that may have better camera capture than RGB.
+  </p>
+
+  <div class="qr-container">
+    <div class="qr-box cyan">
+      <canvas id="qrCyan" width="200" height="200"></canvas>
+      <p>Cyan Channel</p>
+    </div>
+    <div class="qr-box magenta">
+      <canvas id="qrMagenta" width="200" height="200"></canvas>
+      <p>Magenta Channel</p>
+    </div>
+    <div class="qr-box yellow">
+      <canvas id="qrYellow" width="200" height="200"></canvas>
+      <p>Yellow Channel</p>
+    </div>
+  </div>
+
+  <div class="composite-section">
+    <h2>Composite CMY QR Code</h2>
+    <canvas id="compositeCanvas" width="400" height="400"></canvas>
+  </div>
+
+  <div class="data-display">
+    <div class="cyan">C: <span id="dataCyan"></span></div>
+    <div class="magenta">M: <span id="dataMagenta"></span></div>
+    <div class="yellow">Y: <span id="dataYellow"></span></div>
+  </div>
+
+  <div class="note">
+    CMY encoding: Cyan = no Red, Magenta = no Green, Yellow = no Blue.<br>
+    Receiver extracts by looking at absence of each RGB component.
+  </div>
+
+  <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
+  <script>
+    const DATA_CYAN = 'CYAN:CHANNEL:TEST:12345';
+    const DATA_MAGENTA = 'MAGENTA:CHANNEL:TEST:67890';
+    const DATA_YELLOW = 'YELLOW:CHANNEL:TEST:ABCDE';
+
+    document.getElementById('dataCyan').textContent = DATA_CYAN;
+    document.getElementById('dataMagenta').textContent = DATA_MAGENTA;
+    document.getElementById('dataYellow').textContent = DATA_YELLOW;
+
+    function generateQR(data, canvasId, size, darkColor, lightColor) {
+      const qr = qrcode(0, 'M');
+      qr.addData(data);
+      qr.make();
+
+      const moduleCount = qr.getModuleCount();
+      const canvas = document.getElementById(canvasId);
+      const ctx = canvas.getContext('2d');
+      const cellSize = size / moduleCount;
+
+      ctx.fillStyle = lightColor;
+      ctx.fillRect(0, 0, size, size);
+
+      ctx.fillStyle = darkColor;
+      for (let row = 0; row < moduleCount; row++) {
+        for (let col = 0; col < moduleCount; col++) {
+          if (qr.isDark(row, col)) {
+            ctx.fillRect(col * cellSize, row * cellSize, cellSize, cellSize);
+          }
+        }
+      }
+
+      return ctx.getImageData(0, 0, size, size);
+    }
+
+    const qrSize = 200;
+    // Generate individual colored QR codes for preview
+    generateQR(DATA_CYAN, 'qrCyan', qrSize, '#00ffff', '#ffffff');
+    generateQR(DATA_MAGENTA, 'qrMagenta', qrSize, '#ff00ff', '#ffffff');
+    generateQR(DATA_YELLOW, 'qrYellow', qrSize, '#ffff00', '#ffffff');
+
+    // Generate binary versions for compositing
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = qrSize;
+    tempCanvas.height = qrSize;
+    const tempCtx = tempCanvas.getContext('2d');
+
+    function getBinaryQR(data, size) {
+      const qr = qrcode(0, 'M');
+      qr.addData(data);
+      qr.make();
+      const moduleCount = qr.getModuleCount();
+      const cellSize = size / moduleCount;
+
+      tempCtx.fillStyle = '#ffffff';
+      tempCtx.fillRect(0, 0, size, size);
+      tempCtx.fillStyle = '#000000';
+
+      for (let row = 0; row < moduleCount; row++) {
+        for (let col = 0; col < moduleCount; col++) {
+          if (qr.isDark(row, col)) {
+            tempCtx.fillRect(col * cellSize, row * cellSize, cellSize, cellSize);
+          }
+        }
+      }
+      return tempCtx.getImageData(0, 0, size, size);
+    }
+
+    const cyanData = getBinaryQR(DATA_CYAN, qrSize);
+    const magentaData = getBinaryQR(DATA_MAGENTA, qrSize);
+    const yellowData = getBinaryQR(DATA_YELLOW, qrSize);
+
+    // Composite into CMY image
+    const compositeSize = 400;
+    const compositeCanvas = document.getElementById('compositeCanvas');
+    const compositeCtx = compositeCanvas.getContext('2d');
+    const scale = compositeSize / qrSize;
+
+    const compositeImageData = compositeCtx.createImageData(compositeSize, compositeSize);
+    const compositePixels = compositeImageData.data;
+
+    for (let y = 0; y < compositeSize; y++) {
+      for (let x = 0; x < compositeSize; x++) {
+        const srcX = Math.floor(x / scale);
+        const srcY = Math.floor(y / scale);
+        const srcIdx = (srcY * qrSize + srcX) * 4;
+
+        // Black module = data present = subtract that component from white
+        const cyanIsBlack = cyanData.data[srcIdx] < 128;
+        const magentaIsBlack = magentaData.data[srcIdx] < 128;
+        const yellowIsBlack = yellowData.data[srcIdx] < 128;
+
+        // CMY subtractive model on white background:
+        // Cyan removes Red, Magenta removes Green, Yellow removes Blue
+        const dstIdx = (y * compositeSize + x) * 4;
+        compositePixels[dstIdx] = cyanIsBlack ? 0 : 255;       // R (removed by Cyan)
+        compositePixels[dstIdx + 1] = magentaIsBlack ? 0 : 255; // G (removed by Magenta)
+        compositePixels[dstIdx + 2] = yellowIsBlack ? 0 : 255;  // B (removed by Yellow)
+        compositePixels[dstIdx + 3] = 255;
+      }
+    }
+
+    compositeCtx.putImageData(compositeImageData, 0, 0);
+    console.log('CMY QR Sender ready');
+  </script>
+</body>
+</html>
