@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GCB QR Receiver - Experiment v2</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px;
+    }
+    h1 { margin-bottom: 5px; color: #00d4ff; font-size: 1.4em; }
+    .description {
+      text-align: center;
+      margin-bottom: 10px;
+      color: #aaa;
+      font-size: 0.85em;
+    }
+    #video {
+      width: 100%;
+      max-width: 400px;
+      border: 2px solid #333;
+      border-radius: 8px;
+    }
+    #captureCanvas { display: none; }
+    .channels {
+      display: flex;
+      gap: 10px;
+      margin: 10px 0;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .channel { text-align: center; }
+    .channel canvas {
+      border: 2px solid #333;
+      border-radius: 4px;
+      width: 120px;
+      height: 120px;
+    }
+    .channel p { margin-top: 4px; font-size: 11px; color: #aaa; }
+    .channel .stats { font-size: 10px; color: #00d4ff; }
+    .results {
+      width: 100%;
+      max-width: 400px;
+      padding: 15px;
+      background: #252540;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 11px;
+    }
+    .result {
+      margin: 6px 0;
+      padding: 6px;
+      border-radius: 4px;
+      background: #1a1a2e;
+    }
+    .result.success { border-left: 3px solid #6bff6b; }
+    .result.failure { border-left: 3px solid #ff6b6b; }
+    .result .label { font-weight: bold; margin-bottom: 3px; color: #00d4ff; }
+    .result .data { word-break: break-all; color: #fff; font-size: 10px; }
+    .stats-bar {
+      margin-top: 10px;
+      padding: 8px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      text-align: center;
+      font-size: 11px;
+    }
+    button {
+      margin: 10px;
+      padding: 10px 20px;
+      background: #00d4ff;
+      color: #1a1a2e;
+      border: none;
+      border-radius: 4px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button:disabled { background: #333; color: #666; }
+    .note {
+      margin-top: 10px;
+      padding: 8px;
+      background: #252540;
+      border-radius: 4px;
+      font-size: 10px;
+      color: #888;
+      max-width: 400px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>GCB QR Receiver v2</h1>
+  <p class="description">Decodes 3 channels from Green×Blue level combinations (9 states)</p>
+
+  <button id="startBtn">Start Camera</button>
+  <video id="video" autoplay playsinline></video>
+  <canvas id="captureCanvas"></canvas>
+
+  <div class="channels">
+    <div class="channel">
+      <canvas id="ch1Preview" width="120" height="120"></canvas>
+      <p>Channel 1 (bit 0)</p>
+      <div class="stats" id="ch1Stats">-</div>
+    </div>
+    <div class="channel">
+      <canvas id="ch2Preview" width="120" height="120"></canvas>
+      <p>Channel 2 (bit 1)</p>
+      <div class="stats" id="ch2Stats">-</div>
+    </div>
+    <div class="channel">
+      <canvas id="ch3Preview" width="120" height="120"></canvas>
+      <p>Channel 3 (bit 2)</p>
+      <div class="stats" id="ch3Stats">-</div>
+    </div>
+  </div>
+
+  <div class="results">
+    <div class="result" id="result1">
+      <div class="label">Channel 1:</div>
+      <div class="data">-</div>
+    </div>
+    <div class="result" id="result2">
+      <div class="label">Channel 2:</div>
+      <div class="data">-</div>
+    </div>
+    <div class="result" id="result3">
+      <div class="label">Channel 3:</div>
+      <div class="data">-</div>
+    </div>
+    <div class="stats-bar">
+      Scans: <span id="scanCount">0</span> |
+      Success: <span id="successRate">0/0/0</span>
+    </div>
+  </div>
+
+  <div class="note">
+    Decoding: Extract G and B channels, classify into 3 levels each using adaptive thresholds.<br>
+    Map (G-level, B-level) back to 3-bit value, then extract each bit for channel reconstruction.
+  </div>
+
+  <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script>
+    const video = document.getElementById('video');
+    const captureCanvas = document.getElementById('captureCanvas');
+    const captureCtx = captureCanvas.getContext('2d', { willReadFrequently: true });
+    const startBtn = document.getElementById('startBtn');
+
+    const ch1Preview = document.getElementById('ch1Preview');
+    const ch2Preview = document.getElementById('ch2Preview');
+    const ch3Preview = document.getElementById('ch3Preview');
+    const ch1Ctx = ch1Preview.getContext('2d');
+    const ch2Ctx = ch2Preview.getContext('2d');
+    const ch3Ctx = ch3Preview.getContext('2d');
+
+    let scanning = false;
+    let scanCount = 0;
+    let successCounts = [0, 0, 0];
+
+    // Color mapping (same as sender)
+    const BIT_TO_COLOR = [
+      [0, 0], [0, 1], [0, 2], [1, 0],
+      [1, 1], [1, 2], [2, 0], [2, 1]
+    ];
+
+    // Reverse mapping: (gLevel, bLevel) -> 3-bit value
+    const COLOR_TO_BIT = {};
+    for (let i = 0; i < 8; i++) {
+      const [g, b] = BIT_TO_COLOR[i];
+      COLOR_TO_BIT[g + ',' + b] = i;
+    }
+
+    startBtn.addEventListener('click', async () => {
+      try {
+        video.srcObject = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 720 }, height: { ideal: 720 } }
+        });
+        video.play();
+        startBtn.disabled = true;
+        startBtn.textContent = 'Scanning...';
+        scanning = true;
+        requestAnimationFrame(scanFrame);
+      } catch (err) {
+        alert('Camera error: ' + err.message);
+      }
+    });
+
+    function findThresholds(histogram, total) {
+      // Find 2 thresholds to divide into 3 levels
+      // Use cumulative distribution to find 33% and 66% points
+      let cumulative = 0;
+      const thresholds = [85, 170]; // defaults
+      const targets = [total / 3, total * 2 / 3];
+      let targetIdx = 0;
+
+      for (let i = 0; i < 256 && targetIdx < 2; i++) {
+        cumulative += histogram[i];
+        if (cumulative >= targets[targetIdx]) {
+          thresholds[targetIdx] = i;
+          targetIdx++;
+        }
+      }
+
+      return thresholds;
+    }
+
+    function classifyLevel(value, thresholds) {
+      if (value < thresholds[0]) return 0;
+      if (value < thresholds[1]) return 1;
+      return 2;
+    }
+
+    function scanFrame() {
+      if (!scanning) return;
+
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        const size = Math.min(video.videoWidth, video.videoHeight);
+        captureCanvas.width = size;
+        captureCanvas.height = size;
+
+        const offsetX = (video.videoWidth - size) / 2;
+        const offsetY = (video.videoHeight - size) / 2;
+        captureCtx.drawImage(video, offsetX, offsetY, size, size, 0, 0, size, size);
+
+        const imageData = captureCtx.getImageData(0, 0, size, size);
+        const pixels = imageData.data;
+        const total = size * size;
+
+        // Build histograms for G and B channels
+        const histG = new Array(256).fill(0);
+        const histB = new Array(256).fill(0);
+
+        for (let i = 0; i < total; i++) {
+          histG[pixels[i * 4 + 1]]++;
+          histB[pixels[i * 4 + 2]]++;
+        }
+
+        // Find adaptive thresholds
+        const thresholdsG = findThresholds(histG, total);
+        const thresholdsB = findThresholds(histB, total);
+
+        // Update stats display
+        document.getElementById('ch1Stats').textContent =
+          'G: ' + thresholdsG[0] + '/' + thresholdsG[1];
+        document.getElementById('ch2Stats').textContent =
+          'B: ' + thresholdsB[0] + '/' + thresholdsB[1];
+
+        // Create 3 binary images for the 3 channels
+        const ch1Data = new Uint8ClampedArray(total * 4);
+        const ch2Data = new Uint8ClampedArray(total * 4);
+        const ch3Data = new Uint8ClampedArray(total * 4);
+
+        for (let i = 0; i < total; i++) {
+          const idx = i * 4;
+          const g = pixels[idx + 1];
+          const b = pixels[idx + 2];
+
+          const gLevel = classifyLevel(g, thresholdsG);
+          const bLevel = classifyLevel(b, thresholdsB);
+
+          // Look up 3-bit value from color mapping
+          const key = gLevel + ',' + bLevel;
+          const bitValue = COLOR_TO_BIT[key];
+
+          // Handle unmapped combinations (level 2,2 is unused)
+          const value = bitValue !== undefined ? bitValue : 7;
+
+          // Extract individual bits
+          const bit0 = value & 1;
+          const bit1 = (value >> 1) & 1;
+          const bit2 = (value >> 2) & 1;
+
+          // Channel 1: bit 0
+          const gray1 = bit0 ? 0 : 255;
+          ch1Data[idx] = gray1;
+          ch1Data[idx + 1] = gray1;
+          ch1Data[idx + 2] = gray1;
+          ch1Data[idx + 3] = 255;
+
+          // Channel 2: bit 1
+          const gray2 = bit1 ? 0 : 255;
+          ch2Data[idx] = gray2;
+          ch2Data[idx + 1] = gray2;
+          ch2Data[idx + 2] = gray2;
+          ch2Data[idx + 3] = 255;
+
+          // Channel 3: bit 2
+          const gray3 = bit2 ? 0 : 255;
+          ch3Data[idx] = gray3;
+          ch3Data[idx + 1] = gray3;
+          ch3Data[idx + 2] = gray3;
+          ch3Data[idx + 3] = 255;
+        }
+
+        // Draw previews
+        drawPreview(ch1Data, size, ch1Ctx, 120);
+        drawPreview(ch2Data, size, ch2Ctx, 120);
+        drawPreview(ch3Data, size, ch3Ctx, 120);
+
+        // Try to decode each channel
+        const code1 = jsQR(ch1Data, size, size);
+        const code2 = jsQR(ch2Data, size, size);
+        const code3 = jsQR(ch3Data, size, size);
+
+        scanCount++;
+        updateResult('result1', code1, 0);
+        updateResult('result2', code2, 1);
+        updateResult('result3', code3, 2);
+
+        document.getElementById('scanCount').textContent = scanCount;
+        document.getElementById('successRate').textContent =
+          successCounts[0] + '/' + successCounts[1] + '/' + successCounts[2];
+      }
+
+      requestAnimationFrame(scanFrame);
+    }
+
+    function drawPreview(data, srcSize, ctx, dstSize) {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = srcSize;
+      tempCanvas.height = srcSize;
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.putImageData(new ImageData(data, srcSize, srcSize), 0, 0);
+      ctx.drawImage(tempCanvas, 0, 0, dstSize, dstSize);
+    }
+
+    function updateResult(id, code, channelIdx) {
+      const el = document.getElementById(id);
+      const dataEl = el.querySelector('.data');
+      if (code) {
+        dataEl.textContent = code.data;
+        el.classList.add('success');
+        el.classList.remove('failure');
+        successCounts[channelIdx]++;
+      } else {
+        dataEl.textContent = 'No QR detected';
+        el.classList.add('failure');
+        el.classList.remove('success');
+      }
+    }
+
+    console.log('GCB QR Receiver ready');
+  </script>
+</body>
+</html>

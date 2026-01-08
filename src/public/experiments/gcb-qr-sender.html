@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GCB QR Sender - Experiment v2</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    h1 { margin-bottom: 10px; color: #00d4ff; }
+    .description {
+      max-width: 600px;
+      text-align: center;
+      margin-bottom: 20px;
+      color: #aaa;
+      font-size: 0.9em;
+    }
+    .composite-section {
+      text-align: center;
+      margin: 20px 0;
+    }
+    .composite-section h2 {
+      margin-bottom: 15px;
+      color: #00d4ff;
+    }
+    #compositeCanvas {
+      border: 3px solid #00d4ff;
+      border-radius: 8px;
+    }
+    .legend {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin: 20px 0;
+      max-width: 500px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      padding: 4px 8px;
+      background: #252540;
+      border-radius: 4px;
+    }
+    .legend-box {
+      width: 20px;
+      height: 20px;
+      border-radius: 3px;
+    }
+    .data-display {
+      margin-top: 15px;
+      padding: 15px;
+      background: #252540;
+      border-radius: 8px;
+      max-width: 500px;
+      font-family: monospace;
+      font-size: 11px;
+    }
+    .data-display div { margin: 4px 0; }
+    .note {
+      margin-top: 15px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      font-size: 11px;
+      color: #888;
+      max-width: 500px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>GCB QR Sender v2</h1>
+  <p class="description">
+    <strong>New approach:</strong> Encodes 3 bits using Green (3 levels) × Blue (3 levels) = 9 states.<br>
+    Avoids unreliable red channel entirely. Uses color levels instead of color channels.
+  </p>
+
+  <div class="composite-section">
+    <h2>9-State Green-Blue QR Code</h2>
+    <canvas id="compositeCanvas" width="400" height="400"></canvas>
+  </div>
+
+  <div class="legend" id="legend"></div>
+
+  <div class="data-display">
+    <div>Channel 1: <span id="data1"></span></div>
+    <div>Channel 2: <span id="data2"></span></div>
+    <div>Channel 3: <span id="data3"></span></div>
+  </div>
+
+  <div class="note">
+    <strong>Encoding:</strong> G×B levels map to 3-bit combinations.<br>
+    G: 0/127/255 | B: 0/127/255 | 9 colors for 8 data states + 1 unused<br>
+    Receiver uses 2 thresholds per channel to decode.
+  </div>
+
+  <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
+  <script>
+    // Test data for 3 channels
+    const DATA = [
+      'CH1:GREEN:LEVEL:TEST:12345',
+      'CH2:BLUE:LEVEL:TEST:67890',
+      'CH3:COMBO:LEVEL:TEST:ABCDE'
+    ];
+
+    document.getElementById('data1').textContent = DATA[0];
+    document.getElementById('data2').textContent = DATA[1];
+    document.getElementById('data3').textContent = DATA[2];
+
+    // 3 levels per channel: 0, 127, 255
+    const LEVELS = [0, 127, 255];
+
+    // Map 3-bit combinations (0-7) to (G, B) pairs
+    // Using 8 of 9 possible combinations
+    const BIT_TO_COLOR = [
+      [0, 0],     // 000 = black
+      [0, 1],     // 001 = dark blue
+      [0, 2],     // 010 = bright blue
+      [1, 0],     // 011 = dark green
+      [1, 1],     // 100 = dark cyan
+      [1, 2],     // 101 = green-blue
+      [2, 0],     // 110 = bright green
+      [2, 1],     // 111 = cyan
+    ];
+
+    // Generate color legend
+    const legendEl = document.getElementById('legend');
+    for (let i = 0; i < 8; i++) {
+      const [gIdx, bIdx] = BIT_TO_COLOR[i];
+      const g = LEVELS[gIdx];
+      const b = LEVELS[bIdx];
+      const bits = i.toString(2).padStart(3, '0');
+
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+
+      const box = document.createElement('div');
+      box.className = 'legend-box';
+      box.style.background = 'rgb(0,' + g + ',' + b + ')';
+
+      const label = document.createElement('span');
+      label.textContent = bits;
+
+      item.appendChild(box);
+      item.appendChild(label);
+      legendEl.appendChild(item);
+    }
+
+    // Generate 3 QR codes
+    function getQRModules(data) {
+      const qr = qrcode(0, 'M');
+      qr.addData(data);
+      qr.make();
+      const count = qr.getModuleCount();
+      const modules = [];
+      for (let r = 0; r < count; r++) {
+        modules[r] = [];
+        for (let c = 0; c < count; c++) {
+          modules[r][c] = qr.isDark(r, c) ? 1 : 0;
+        }
+      }
+      return { modules, count };
+    }
+
+    const qrs = DATA.map(d => getQRModules(d));
+    const moduleCount = qrs[0].count;
+
+    // Composite
+    const compositeSize = 400;
+    const canvas = document.getElementById('compositeCanvas');
+    const ctx = canvas.getContext('2d');
+    const cellSize = compositeSize / moduleCount;
+
+    const imageData = ctx.createImageData(compositeSize, compositeSize);
+    const pixels = imageData.data;
+
+    for (let row = 0; row < moduleCount; row++) {
+      for (let col = 0; col < moduleCount; col++) {
+        // Get 3 bits from the 3 QR codes
+        const bit0 = qrs[0].modules[row][col];
+        const bit1 = qrs[1].modules[row][col];
+        const bit2 = qrs[2].modules[row][col];
+        const value = (bit2 << 2) | (bit1 << 1) | bit0;
+
+        // Map to color
+        const [gIdx, bIdx] = BIT_TO_COLOR[value];
+        const g = LEVELS[gIdx];
+        const b = LEVELS[bIdx];
+
+        // Fill cell
+        const startX = Math.floor(col * cellSize);
+        const startY = Math.floor(row * cellSize);
+        const endX = Math.floor((col + 1) * cellSize);
+        const endY = Math.floor((row + 1) * cellSize);
+
+        for (let y = startY; y < endY; y++) {
+          for (let x = startX; x < endX; x++) {
+            const idx = (y * compositeSize + x) * 4;
+            pixels[idx] = 0;     // R = 0 (no red)
+            pixels[idx + 1] = g; // G
+            pixels[idx + 2] = b; // B
+            pixels[idx + 3] = 255;
+          }
+        }
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    console.log('GCB QR Sender ready');
+    console.log('Module count:', moduleCount);
+  </script>
+</body>
+</html>

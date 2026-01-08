@@ -119,8 +119,8 @@
   </div>
 
   <div class="section">
-    <h2>CMY Channel Multiplexing <span class="status new">New</span></h2>
-    <p class="section-note">3 QR codes in Cyan/Magenta/Yellow. Brighter colors may capture better.</p>
+    <h2>CMY Channel Multiplexing <span class="status tested">Flawed</span></h2>
+    <p class="section-note">Original CMY was identical to RGB (design error). See GCB v2 below for improved approach.</p>
     <div class="experiments">
       <a href="cmy-qr-sender.html" class="experiment">
         <h3>CMY Sender</h3>
@@ -136,8 +136,25 @@
   </div>
 
   <div class="section">
-    <h2>4-Level Grayscale <span class="status new">New</span></h2>
-    <p class="section-note">2 bits per module using 4 gray levels. Tests if camera can distinguish brightness levels.</p>
+    <h2>GCB v2 - Green×Blue Levels <span class="status new">New</span></h2>
+    <p class="section-note">3 bits via G×B (3 levels each = 9 states). Avoids red channel entirely.</p>
+    <div class="experiments">
+      <a href="gcb-qr-sender.html" class="experiment">
+        <h3>GCB Sender</h3>
+        <p>9-state encoding using Green×Blue levels</p>
+        <span class="tag sender">Laptop</span>
+      </a>
+      <a href="gcb-qr-receiver.html" class="experiment">
+        <h3>GCB Receiver</h3>
+        <p>Decodes 3 bits from G/B level combinations</p>
+        <span class="tag receiver">Phone</span>
+      </a>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>4-Level Grayscale v1 <span class="status tested">Poor</span></h2>
+    <p class="section-note">Basic 4-level test. Result: Poor separation between levels.</p>
     <div class="experiments">
       <a href="gray4-qr-sender.html" class="experiment">
         <h3>Gray4 Sender</h3>
@@ -147,6 +164,23 @@
       <a href="gray4-qr-receiver.html" class="experiment">
         <h3>Gray4 Receiver</h3>
         <p>Analyzes histogram, tests level separation</p>
+        <span class="tag receiver">Phone</span>
+      </a>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>4-Level Grayscale v2 <span class="status new">Improved</span></h2>
+    <p class="section-note">Gamma correction, wider level spacing, calibration patches.</p>
+    <div class="experiments">
+      <a href="gray4-v2-sender.html" class="experiment">
+        <h3>Gray4 v2 Sender</h3>
+        <p>Adjustable gamma and level spacing</p>
+        <span class="tag sender">Laptop</span>
+      </a>
+      <a href="gray4-v2-receiver.html" class="experiment">
+        <h3>Gray4 v2 Receiver</h3>
+        <p>Adaptive peak detection and thresholds</p>
         <span class="tag receiver">Phone</span>
       </a>
     </div>
