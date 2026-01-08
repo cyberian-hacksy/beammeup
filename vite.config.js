@@ -9,10 +9,5 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'es2020',
     minify: 'terser'
-  },
-  server: {
-    fs: {
-      allow: ['..']
-    }
   }
 })
