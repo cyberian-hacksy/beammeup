@@ -52,7 +52,7 @@ export function createEncoder(fileData, filename, mimeType, hash, blockSize = 20
     generateSymbol(symbolId) {
       if (symbolId === 0) {
         // Metadata frame (padded to BLOCK_SIZE)
-        return createPacket(fileId, K_prime, 0, metadataPayload, true)
+        return createPacket(fileId, K_prime, 0, metadataPayload, true, blockSize)
       }
 
       // Seed PRNG with fileId XOR symbolId
@@ -89,7 +89,7 @@ export function createEncoder(fileData, filename, mimeType, hash, blockSize = 20
         }
       }
 
-      return createPacket(fileId, K_prime, symbolId, payload, false)
+      return createPacket(fileId, K_prime, symbolId, payload, false, blockSize)
     }
   }
 }

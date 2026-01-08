@@ -14,6 +14,7 @@ export function createDecoder() {
   let G = null          // Group size for parity
   let parityMap = null  // Parity relationships
   let metadata = null
+  let blockSize = 200   // Block size from packet header
   let decodedBlocks = null
   let solved = 0        // Total intermediate blocks decoded
   let solvedSource = 0  // Source blocks decoded (first K blocks)
@@ -150,6 +151,7 @@ export function createDecoder() {
       if (fileId === null) {
         fileId = parsed.fileId
         K_prime = parsed.k  // Packet contains K' (intermediate block count)
+        blockSize = parsed.blockSize  // Store block size from packet
         decodedBlocks = new Array(K_prime).fill(null)
       } else if (parsed.fileId !== fileId) {
         console.warn('FileId mismatch, ignoring')
@@ -241,8 +243,8 @@ export function createDecoder() {
       const result = new Uint8Array(metadata.fileSize)
       for (let i = 0; i < K; i++) {
         const block = decodedBlocks[i]
-        const start = i * 200 // BLOCK_SIZE
-        const end = Math.min(start + 200, metadata.fileSize)
+        const start = i * blockSize
+        const end = Math.min(start + blockSize, metadata.fileSize)
         result.set(block.slice(0, end - start), start)
       }
 

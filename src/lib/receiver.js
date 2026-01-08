@@ -399,9 +399,13 @@ async function onReceiveComplete() {
       metadata.filename + ' (' + formatBytes(metadata.fileSize) + ') in ' + formatTime(totalTime)
     elements.completeRate.textContent = avgRateKBps.toFixed(1) + ' KB/s avg'
   } else {
-    showError('File corrupted! Hash verification failed.')
+    showError('File corrupted! Hash verification failed. Resetting to scan again.')
+    // Reset decoder so user can retry
+    state.decoder = null
+    state.reconstructedBlob = null
+    state.startTime = null
     showStatus('scanning')
-    elements.statSymbols.textContent = 'Verification failed'
+    elements.statSymbols.textContent = '0 codes'
   }
 }
 

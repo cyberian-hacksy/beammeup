@@ -349,3 +349,31 @@ select {
   border: 1px solid #555;
   border-radius: 4px;
 }
+
+/* Mobile styles */
+@media (max-width: 480px) {
+  .sender-controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+  .slider-group {
+    display: grid;
+    grid-template-columns: 45px 1fr auto;
+    width: 100%;
+  }
+  .slider-group input[type="range"] {
+    width: 100%;
+  }
+  .file-status {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
+  }
+  .file-status .file-info {
+    width: 100%;
+  }
+  .symbol-count {
+    align-self: flex-start;
+  }
+}

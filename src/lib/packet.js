@@ -7,9 +7,9 @@
 // Offset 13-14: Block size (2 bytes)
 // Offset 15:   Flags (1 byte) - bit0 = hasMetadata
 
-import { PROTOCOL_VERSION, BLOCK_SIZE } from './constants.js'
+import { PROTOCOL_VERSION } from './constants.js'
 
-export function createPacket(fileId, k, symbolId, payload, isMetadata = false) {
+export function createPacket(fileId, k, symbolId, payload, isMetadata = false, blockSize = 200) {
   const header = new ArrayBuffer(16)
   const view = new DataView(header)
 
@@ -17,7 +17,7 @@ export function createPacket(fileId, k, symbolId, payload, isMetadata = false) {
   view.setUint32(1, fileId, false) // big-endian
   view.setUint32(5, k, false)
   view.setUint32(9, symbolId, false)
-  view.setUint16(13, BLOCK_SIZE, false)
+  view.setUint16(13, blockSize, false)
   view.setUint8(15, isMetadata ? 1 : 0)
 
   // Combine header and payload
