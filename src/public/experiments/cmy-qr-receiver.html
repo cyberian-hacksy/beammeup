@@ -132,20 +132,18 @@
 
   <div class="controls">
     <div class="threshold-row">
-      <label>R threshold</label>
-      <input type="range" id="thresholdR" min="20" max="150" value="60">
-      <span class="value" id="thresholdRVal">60</span>
+      <label>Low threshold</label>
+      <input type="range" id="thresholdR" min="20" max="120" value="43">
+      <span class="value" id="thresholdRVal">43</span>
     </div>
     <div class="threshold-row">
-      <label>G threshold</label>
-      <input type="range" id="thresholdG" min="20" max="150" value="60">
-      <span class="value" id="thresholdGVal">60</span>
+      <label>High threshold</label>
+      <input type="range" id="thresholdG" min="80" max="200" value="128">
+      <span class="value" id="thresholdGVal">128</span>
     </div>
-    <div class="threshold-row">
-      <label>B threshold</label>
-      <input type="range" id="thresholdB" min="20" max="150" value="60">
-      <span class="value" id="thresholdBVal">60</span>
-    </div>
+    <p style="font-size: 10px; color: #666; margin-top: 5px;">
+      Low: below=0 sources, above=1+ source. High: below=1 source, above=2 sources.
+    </p>
   </div>
 
   <div class="channels">
@@ -186,9 +184,9 @@
   </div>
 
   <div class="note">
-    <strong>Additive CMY decoding:</strong><br>
-    C present if G>th AND B>th. M present if R>th AND B>th. Y present if R>th AND G>th.<br>
-    Each pixel classified → reconstruct 3 binary QR images → decode each.
+    <strong>Level-based CMY decoding:</strong><br>
+    Each RGB channel classified as level 0/1/2 (how many CMY sources contribute).<br>
+    C = (gLevel + bLevel - rLevel) / 2, M = (rLevel + bLevel - gLevel) / 2, Y = (rLevel + gLevel - bLevel) / 2
   </div>
 
   <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
@@ -205,16 +203,13 @@
     const magentaCtx = magentaCanvas.getContext('2d');
     const yellowCtx = yellowCanvas.getContext('2d');
 
-    const thresholdR = document.getElementById('thresholdR');
-    const thresholdG = document.getElementById('thresholdG');
-    const thresholdB = document.getElementById('thresholdB');
+    const thresholdR = document.getElementById('thresholdR');  // Low threshold
+    const thresholdG = document.getElementById('thresholdG');  // High threshold
     const thresholdRVal = document.getElementById('thresholdRVal');
     const thresholdGVal = document.getElementById('thresholdGVal');
-    const thresholdBVal = document.getElementById('thresholdBVal');
 
     thresholdR.oninput = () => thresholdRVal.textContent = thresholdR.value;
     thresholdG.oninput = () => thresholdGVal.textContent = thresholdG.value;
-    thresholdB.oninput = () => thresholdBVal.textContent = thresholdB.value;
 
     let scanning = false;
     let scanCount = 0;
@@ -251,9 +246,8 @@
         const pixels = imageData.data;
         const total = size * size;
 
-        const thR = parseInt(thresholdR.value);
-        const thG = parseInt(thresholdG.value);
-        const thB = parseInt(thresholdB.value);
+        const thLow = parseInt(thresholdR.value);  // Low threshold (single component)
+        const thHigh = parseInt(thresholdG.value); // High threshold (two components)
 
         // Create binary images for C, M, Y channels
         const cyanData = new Uint8ClampedArray(total * 4);
@@ -262,42 +256,38 @@
 
         let cCount = 0, mCount = 0, yCount = 0;
 
+        // Helper to get level (0, 1, or 2 contributing components)
+        function getLevel(v) {
+          if (v < thLow) return 0;       // No components contributing
+          if (v < thHigh) return 1;      // One component contributing
+          return 2;                       // Two components contributing
+        }
+
         for (let i = 0; i < total; i++) {
           const idx = i * 4;
           const r = pixels[idx];
           const g = pixels[idx + 1];
           const b = pixels[idx + 2];
 
-          // Decode CMY bits from RGB values
-          // In additive CMY: C adds G and B, M adds R and B, Y adds R and G
-          // So: C present = G>th AND B>th (and R relatively low)
-          //     M present = R>th AND B>th (and G relatively low)
-          //     Y present = R>th AND G>th (and B relatively low)
+          // Decode CMY bits using level-based approach
+          // In additive CMY with intensity 85:
+          // R = 85*M + 85*Y  -> rLevel = M + Y
+          // G = 85*C + 85*Y  -> gLevel = C + Y
+          // B = 85*C + 85*M  -> bLevel = C + M
+          //
+          // Solving the system:
+          // C = (gLevel + bLevel - rLevel) / 2
+          // M = (rLevel + bLevel - gLevel) / 2
+          // Y = (rLevel + gLevel - bLevel) / 2
 
-          // Simplified: check which components are elevated
-          const hasR = r > thR;
-          const hasG = g > thG;
-          const hasB = b > thB;
+          const rLevel = getLevel(r);
+          const gLevel = getLevel(g);
+          const bLevel = getLevel(b);
 
-          // C contributes to G and B (not R)
-          // M contributes to R and B (not G)
-          // Y contributes to R and G (not B)
-
-          // Decode: If G and B are high but not R → likely C
-          //         If R and B are high but not G → likely M
-          //         If R and G are high but not B → likely Y
-          //         Combinations give mixed colors
-
-          // Better approach: solve the linear system
-          // R = M + Y, G = C + Y, B = C + M (in terms of presence)
-          // C = (G + B - R) / 2 > 0 means C present
-          // M = (R + B - G) / 2 > 0 means M present
-          // Y = (R + G - B) / 2 > 0 means Y present
-
-          // But with thresholds, simpler: check if the combination matches expected patterns
-          const cyanBit = (hasG && hasB) ? 1 : 0;
-          const magentaBit = (hasR && hasB) ? 1 : 0;
-          const yellowBit = (hasR && hasG) ? 1 : 0;
+          // Calculate and clamp to 0 or 1
+          const cyanBit = Math.max(0, Math.min(1, Math.round((gLevel + bLevel - rLevel) / 2)));
+          const magentaBit = Math.max(0, Math.min(1, Math.round((rLevel + bLevel - gLevel) / 2)));
+          const yellowBit = Math.max(0, Math.min(1, Math.round((rLevel + gLevel - bLevel) / 2)));
 
           if (cyanBit) cCount++;
           if (magentaBit) mCount++;

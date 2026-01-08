@@ -192,23 +192,47 @@
       }
     });
 
-    function findThresholds(histogram, total) {
-      // Find 2 thresholds to divide into 3 levels
-      // Use cumulative distribution to find 33% and 66% points
-      let cumulative = 0;
-      const thresholds = [85, 170]; // defaults
-      const targets = [total / 3, total * 2 / 3];
-      let targetIdx = 0;
+    function findThresholds(histogram) {
+      // Find peaks in histogram and set thresholds between them
+      // Smooth the histogram first
+      const smoothed = [];
+      const window = 10;
+      for (let i = 0; i < 256; i++) {
+        let sum = 0, count = 0;
+        for (let j = Math.max(0, i - window); j <= Math.min(255, i + window); j++) {
+          sum += histogram[j];
+          count++;
+        }
+        smoothed[i] = sum / count;
+      }
 
-      for (let i = 0; i < 256 && targetIdx < 2; i++) {
-        cumulative += histogram[i];
-        if (cumulative >= targets[targetIdx]) {
-          thresholds[targetIdx] = i;
-          targetIdx++;
+      // Find local maxima (peaks)
+      const peaks = [];
+      const minHeight = Math.max(...smoothed) * 0.03;
+
+      for (let i = 15; i < 241; i++) {
+        if (smoothed[i] > smoothed[i - 15] &&
+            smoothed[i] > smoothed[i + 15] &&
+            smoothed[i] > minHeight) {
+          if (peaks.length === 0 || i - peaks[peaks.length - 1] > 30) {
+            peaks.push(i);
+          } else if (smoothed[i] > smoothed[peaks[peaks.length - 1]]) {
+            peaks[peaks.length - 1] = i;
+          }
         }
       }
 
-      return thresholds;
+      // If we found 3 peaks, use midpoints
+      if (peaks.length >= 3) {
+        peaks.sort((a, b) => a - b);
+        return [
+          Math.round((peaks[0] + peaks[1]) / 2),
+          Math.round((peaks[1] + peaks[2]) / 2)
+        ];
+      }
+
+      // Fallback to fixed thresholds based on expected values (0, 127, 255)
+      return [64, 191];
     }
 
     function classifyLevel(value, thresholds) {
@@ -242,9 +266,9 @@
           histB[pixels[i * 4 + 2]]++;
         }
 
-        // Find adaptive thresholds
-        const thresholdsG = findThresholds(histG, total);
-        const thresholdsB = findThresholds(histB, total);
+        // Find adaptive thresholds using peak detection
+        const thresholdsG = findThresholds(histG);
+        const thresholdsB = findThresholds(histB);
 
         // Update stats display
         document.getElementById('ch1Stats').textContent =
