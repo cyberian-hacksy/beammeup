@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PCCC Color QR Sender</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    h1 { margin-bottom: 10px; color: #00d4ff; }
+    .description {
+      max-width: 600px;
+      text-align: center;
+      margin-bottom: 20px;
+      color: #aaa;
+      font-size: 0.9em;
+    }
+    .composite-section {
+      text-align: center;
+      margin: 20px 0;
+    }
+    .composite-section h2 {
+      margin-bottom: 15px;
+      color: #00d4ff;
+    }
+    #compositeCanvas {
+      border: 3px solid #00d4ff;
+      border-radius: 8px;
+    }
+    .legend {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin: 20px 0;
+      max-width: 600px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      padding: 4px 8px;
+      background: #252540;
+      border-radius: 4px;
+    }
+    .legend-box {
+      width: 20px;
+      height: 20px;
+      border-radius: 3px;
+      border: 1px solid #444;
+    }
+    .data-display {
+      margin-top: 15px;
+      padding: 15px;
+      background: #252540;
+      border-radius: 8px;
+      max-width: 500px;
+      font-family: monospace;
+      font-size: 11px;
+    }
+    .data-display div { margin: 4px 0; }
+    .data-display .cyan { color: #00ffff; }
+    .data-display .magenta { color: #ff00ff; }
+    .data-display .yellow { color: #ffff00; }
+    .note {
+      margin-top: 15px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      font-size: 11px;
+      color: #888;
+      max-width: 600px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>PCCC Color QR Sender</h1>
+  <p class="description">
+    <strong>Per-Colorant-Channel Color barcode</strong> with reference patches for interference cancellation.<br>
+    8 calibration patches around the QR code enable the receiver to estimate the color mixing matrix.
+  </p>
+
+  <div class="composite-section">
+    <h2>PCCC Color QR Code</h2>
+    <canvas id="compositeCanvas" width="480" height="480"></canvas>
+  </div>
+
+  <div class="legend" id="legend"></div>
+
+  <div class="data-display">
+    <div class="cyan">Cyan: <span id="dataCyan"></span></div>
+    <div class="magenta">Magenta: <span id="dataMagenta"></span></div>
+    <div class="yellow">Yellow: <span id="dataYellow"></span></div>
+  </div>
+
+  <div class="note">
+    <strong>PCCC Framework:</strong> 3 independent QR codes encoded in CMY channels.<br>
+    Reference patches provide known CMY values for camera calibration.<br>
+    Receiver uses these to compute interference cancellation matrix.
+  </div>
+
+  <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
+  <script>
+    // Test data for each channel
+    const DATA_CYAN = 'CYAN:PCCC:TEST:12345';
+    const DATA_MAGENTA = 'MAGENTA:PCCC:TEST:67890';
+    const DATA_YELLOW = 'YELLOW:PCCC:TEST:ABCDE';
+
+    document.getElementById('dataCyan').textContent = DATA_CYAN;
+    document.getElementById('dataMagenta').textContent = DATA_MAGENTA;
+    document.getElementById('dataYellow').textContent = DATA_YELLOW;
+
+    // CMY to RGB conversion (subtractive on white background)
+    // C=1 removes red, M=1 removes green, Y=1 removes blue
+    function cmyToRgb(c, m, y) {
+      return [
+        Math.round(255 * (1 - c)),
+        Math.round(255 * (1 - m)),
+        Math.round(255 * (1 - y))
+      ];
+    }
+
+    // All 8 CMY combinations and their RGB values
+    const CALIBRATION_COLORS = [
+      { cmy: [0, 0, 0], label: 'White' },      // White
+      { cmy: [1, 0, 0], label: 'Cyan' },       // Cyan
+      { cmy: [0, 1, 0], label: 'Magenta' },    // Magenta
+      { cmy: [0, 0, 1], label: 'Yellow' },     // Yellow
+      { cmy: [1, 1, 0], label: 'Blue' },       // Cyan + Magenta = Blue
+      { cmy: [1, 0, 1], label: 'Green' },      // Cyan + Yellow = Green
+      { cmy: [0, 1, 1], label: 'Red' },        // Magenta + Yellow = Red
+      { cmy: [1, 1, 1], label: 'Black' }       // All = Black
+    ];
+
+    // Add RGB values to calibration colors
+    CALIBRATION_COLORS.forEach(c => {
+      c.rgb = cmyToRgb(...c.cmy);
+    });
+
+    // Generate legend
+    const legendEl = document.getElementById('legend');
+    CALIBRATION_COLORS.forEach((c, i) => {
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+
+      const box = document.createElement('div');
+      box.className = 'legend-box';
+      box.style.background = `rgb(${c.rgb[0]},${c.rgb[1]},${c.rgb[2]})`;
+
+      const label = document.createElement('span');
+      label.textContent = `${c.label} (${c.cmy.join('')})`;
+
+      item.appendChild(box);
+      item.appendChild(label);
+      legendEl.appendChild(item);
+    });
+
+    // Generate QR and return module data
+    function getQRModules(data) {
+      const qr = qrcode(0, 'M');
+      qr.addData(data);
+      qr.make();
+      const count = qr.getModuleCount();
+      const modules = [];
+      for (let r = 0; r < count; r++) {
+        modules[r] = [];
+        for (let c = 0; c < count; c++) {
+          modules[r][c] = qr.isDark(r, c) ? 1 : 0;
+        }
+      }
+      return { modules, count };
+    }
+
+    // Generate 3 QR codes
+    const qrCyan = getQRModules(DATA_CYAN);
+    const qrMagenta = getQRModules(DATA_MAGENTA);
+    const qrYellow = getQRModules(DATA_YELLOW);
+    const moduleCount = qrCyan.count;
+
+    // Canvas setup
+    const canvasSize = 480;
+    const patchSize = 40;  // Size of calibration patches
+    const qrAreaSize = canvasSize - 2 * patchSize;  // QR area in center
+    const cellSize = qrAreaSize / moduleCount;
+
+    const canvas = document.getElementById('compositeCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Fill background with gray (neutral)
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, canvasSize, canvasSize);
+
+    // Draw calibration patches around the border
+    // Top row: 4 patches
+    // Bottom row: 4 patches
+    const patchPositions = [
+      // Top row (left to right)
+      { x: 0, y: 0, colorIdx: 0 },                           // White
+      { x: patchSize + qrAreaSize/3, y: 0, colorIdx: 1 },    // Cyan
+      { x: patchSize + 2*qrAreaSize/3, y: 0, colorIdx: 2 },  // Magenta
+      { x: canvasSize - patchSize, y: 0, colorIdx: 3 },      // Yellow
+      // Bottom row (left to right)
+      { x: 0, y: canvasSize - patchSize, colorIdx: 4 },                           // Blue
+      { x: patchSize + qrAreaSize/3, y: canvasSize - patchSize, colorIdx: 5 },    // Green
+      { x: patchSize + 2*qrAreaSize/3, y: canvasSize - patchSize, colorIdx: 6 },  // Red
+      { x: canvasSize - patchSize, y: canvasSize - patchSize, colorIdx: 7 }       // Black
+    ];
+
+    // Draw each calibration patch
+    patchPositions.forEach(pos => {
+      const color = CALIBRATION_COLORS[pos.colorIdx];
+      ctx.fillStyle = `rgb(${color.rgb[0]},${color.rgb[1]},${color.rgb[2]})`;
+      ctx.fillRect(pos.x, pos.y, patchSize, patchSize);
+
+      // Add border for visibility
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(pos.x, pos.y, patchSize, patchSize);
+
+      // Add label
+      ctx.fillStyle = color.cmy[0] + color.cmy[1] + color.cmy[2] > 1.5 ? '#fff' : '#000';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(color.cmy.join(''), pos.x + patchSize/2, pos.y + patchSize/2 + 4);
+    });
+
+    // Fill left and right margins with neutral gray
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, patchSize, patchSize, qrAreaSize);
+    ctx.fillRect(canvasSize - patchSize, patchSize, patchSize, qrAreaSize);
+
+    // Draw the composite QR code in the center
+    const qrOffsetX = patchSize;
+    const qrOffsetY = patchSize;
+
+    for (let row = 0; row < moduleCount; row++) {
+      for (let col = 0; col < moduleCount; col++) {
+        // Get CMY values from the 3 QR codes
+        const c = qrCyan.modules[row][col];
+        const m = qrMagenta.modules[row][col];
+        const y = qrYellow.modules[row][col];
+
+        // Convert to RGB
+        const rgb = cmyToRgb(c, m, y);
+
+        // Calculate pixel position
+        const x = qrOffsetX + col * cellSize;
+        const yPos = qrOffsetY + row * cellSize;
+
+        // Fill the cell
+        ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+        ctx.fillRect(x, yPos, cellSize + 0.5, cellSize + 0.5);
+      }
+    }
+
+    // Store calibration data as data attribute for reference
+    canvas.dataset.calibration = JSON.stringify(CALIBRATION_COLORS.map(c => ({
+      cmy: c.cmy,
+      rgb: c.rgb
+    })));
+    canvas.dataset.patchSize = patchSize;
+    canvas.dataset.qrAreaSize = qrAreaSize;
+
+    console.log('PCCC Sender ready');
+    console.log('Module count:', moduleCount);
+    console.log('Calibration colors:', CALIBRATION_COLORS);
+  </script>
+</body>
+</html>

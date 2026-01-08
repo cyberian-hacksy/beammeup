@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PCCC Color QR Receiver</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px;
+    }
+    h1 { margin-bottom: 5px; color: #00d4ff; font-size: 1.4em; }
+    .description {
+      text-align: center;
+      margin-bottom: 10px;
+      color: #aaa;
+      font-size: 0.85em;
+    }
+    #video {
+      width: 100%;
+      max-width: 400px;
+      border: 2px solid #333;
+      border-radius: 8px;
+    }
+    #captureCanvas { display: none; }
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin: 10px 0;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      padding: 10px 20px;
+      background: #00d4ff;
+      color: #1a1a2e;
+      border: none;
+      border-radius: 4px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button:disabled { background: #333; color: #666; }
+    button.secondary { background: #444; color: #fff; }
+    .calibration-status {
+      width: 100%;
+      max-width: 400px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      margin: 10px 0;
+      font-size: 11px;
+    }
+    .calibration-status h3 {
+      color: #00d4ff;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .patch-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 5px;
+    }
+    .patch {
+      text-align: center;
+      padding: 5px;
+      background: #1a1a2e;
+      border-radius: 4px;
+    }
+    .patch .color-box {
+      width: 30px;
+      height: 30px;
+      margin: 0 auto 3px;
+      border-radius: 3px;
+      border: 1px solid #444;
+    }
+    .patch .label { font-size: 9px; color: #888; }
+    .patch .values { font-size: 8px; color: #00d4ff; }
+    .matrix-display {
+      margin-top: 10px;
+      padding: 8px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 9px;
+      white-space: pre-line;
+    }
+    .channels {
+      display: flex;
+      gap: 8px;
+      margin: 10px 0;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .channel { text-align: center; }
+    .channel canvas {
+      border: 2px solid #333;
+      border-radius: 4px;
+      width: 110px;
+      height: 110px;
+    }
+    .channel p { margin-top: 4px; font-size: 10px; }
+    .channel.cyan p { color: #00ffff; }
+    .channel.magenta p { color: #ff00ff; }
+    .channel.yellow p { color: #ffff00; }
+    .results {
+      width: 100%;
+      max-width: 400px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      font-size: 11px;
+    }
+    .result {
+      margin: 5px 0;
+      padding: 6px;
+      border-radius: 4px;
+      background: #1a1a2e;
+    }
+    .result.success { border-left: 3px solid #6bff6b; }
+    .result.failure { border-left: 3px solid #ff6b6b; }
+    .result .label { font-weight: bold; margin-bottom: 3px; }
+    .result.cyan .label { color: #00ffff; }
+    .result.magenta .label { color: #ff00ff; }
+    .result.yellow .label { color: #ffff00; }
+    .result .data { word-break: break-all; color: #fff; font-size: 10px; }
+    .stats-bar {
+      margin-top: 10px;
+      padding: 8px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      text-align: center;
+      font-size: 11px;
+    }
+    .note {
+      margin-top: 10px;
+      padding: 8px;
+      background: #252540;
+      border-radius: 4px;
+      font-size: 10px;
+      color: #888;
+      max-width: 400px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>PCCC Color QR Receiver</h1>
+  <p class="description">Per-Colorant-Channel decoding with interference cancellation</p>
+
+  <div class="controls">
+    <button id="startBtn">Start Camera</button>
+    <button id="calibrateBtn" class="secondary" disabled>Calibrate</button>
+  </div>
+
+  <video id="video" autoplay playsinline></video>
+  <canvas id="captureCanvas"></canvas>
+
+  <div class="calibration-status">
+    <h3>Calibration Patches (Captured RGB)</h3>
+    <div class="patch-grid" id="patchGrid">
+      <!-- Patches will be populated here -->
+    </div>
+    <div class="matrix-display" id="matrixDisplay">
+      Interference Matrix: Not calibrated
+    </div>
+  </div>
+
+  <div class="channels">
+    <div class="channel cyan">
+      <canvas id="cyanChannel" width="110" height="110"></canvas>
+      <p>Cyan</p>
+    </div>
+    <div class="channel magenta">
+      <canvas id="magentaChannel" width="110" height="110"></canvas>
+      <p>Magenta</p>
+    </div>
+    <div class="channel yellow">
+      <canvas id="yellowChannel" width="110" height="110"></canvas>
+      <p>Yellow</p>
+    </div>
+  </div>
+
+  <div class="results">
+    <div class="result cyan">
+      <div class="label">Cyan Channel:</div>
+      <div id="cyanResult" class="data">-</div>
+    </div>
+    <div class="result magenta">
+      <div class="label">Magenta Channel:</div>
+      <div id="magentaResult" class="data">-</div>
+    </div>
+    <div class="result yellow">
+      <div class="label">Yellow Channel:</div>
+      <div id="yellowResult" class="data">-</div>
+    </div>
+    <div class="stats-bar">
+      Scans: <span id="scanCount">0</span> |
+      Success: <span id="successRate">0/0/0</span>
+    </div>
+  </div>
+
+  <div class="note">
+    <strong>Interference Cancellation:</strong> Samples 8 reference patches to build
+    a 3x3 color correction matrix. Applies matrix to recover true CMY values.
+  </div>
+
+  <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script>
+    const video = document.getElementById('video');
+    const captureCanvas = document.getElementById('captureCanvas');
+    const captureCtx = captureCanvas.getContext('2d', { willReadFrequently: true });
+    const startBtn = document.getElementById('startBtn');
+    const calibrateBtn = document.getElementById('calibrateBtn');
+
+    const cyanCanvas = document.getElementById('cyanChannel');
+    const magentaCanvas = document.getElementById('magentaChannel');
+    const yellowCanvas = document.getElementById('yellowChannel');
+    const cyanCtx = cyanCanvas.getContext('2d');
+    const magentaCtx = magentaCanvas.getContext('2d');
+    const yellowCtx = yellowCanvas.getContext('2d');
+
+    let scanning = false;
+    let scanCount = 0;
+    let successCounts = { cyan: 0, magenta: 0, yellow: 0 };
+
+    // Known calibration colors (ideal display RGB for each CMY combination)
+    const CALIBRATION_COLORS = [
+      { cmy: [0, 0, 0], rgb: [255, 255, 255], label: 'W' },   // White
+      { cmy: [1, 0, 0], rgb: [0, 255, 255], label: 'C' },     // Cyan
+      { cmy: [0, 1, 0], rgb: [255, 0, 255], label: 'M' },     // Magenta
+      { cmy: [0, 0, 1], rgb: [255, 255, 0], label: 'Y' },     // Yellow
+      { cmy: [1, 1, 0], rgb: [0, 0, 255], label: 'B' },       // Blue
+      { cmy: [1, 0, 1], rgb: [0, 255, 0], label: 'G' },       // Green
+      { cmy: [0, 1, 1], rgb: [255, 0, 0], label: 'R' },       // Red
+      { cmy: [1, 1, 1], rgb: [0, 0, 0], label: 'K' }          // Black
+    ];
+
+    // Captured RGB values for each patch
+    let capturedPatches = new Array(8).fill(null);
+
+    // Color correction matrix (3x3) - identity by default
+    let correctionMatrix = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1]
+    ];
+
+    // Initialize patch grid display
+    const patchGrid = document.getElementById('patchGrid');
+    CALIBRATION_COLORS.forEach((c, i) => {
+      const patch = document.createElement('div');
+      patch.className = 'patch';
+      patch.id = 'patch' + i;
+
+      const colorBox = document.createElement('div');
+      colorBox.className = 'color-box';
+      colorBox.style.background = '#333';
+
+      const label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = c.label + ' (' + c.cmy.join('') + ')';
+
+      const values = document.createElement('div');
+      values.className = 'values';
+      values.textContent = '-';
+
+      patch.appendChild(colorBox);
+      patch.appendChild(label);
+      patch.appendChild(values);
+      patchGrid.appendChild(patch);
+    });
+
+    startBtn.addEventListener('click', async () => {
+      try {
+        video.srcObject = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 720 }, height: { ideal: 720 } }
+        });
+        video.play();
+        startBtn.disabled = true;
+        startBtn.textContent = 'Scanning...';
+        calibrateBtn.disabled = false;
+        scanning = true;
+        requestAnimationFrame(scanFrame);
+      } catch (err) {
+        alert('Camera error: ' + err.message);
+      }
+    });
+
+    calibrateBtn.addEventListener('click', () => {
+      calibrateFromPatches();
+    });
+
+    // Sample average RGB from a region
+    function sampleRegion(imageData, x, y, size) {
+      const pixels = imageData.data;
+      const width = imageData.width;
+      let rSum = 0, gSum = 0, bSum = 0, count = 0;
+
+      // Sample center portion of the patch (avoid edges)
+      const margin = Math.floor(size * 0.2);
+      const startX = Math.floor(x) + margin;
+      const startY = Math.floor(y) + margin;
+      const endX = Math.floor(x + size) - margin;
+      const endY = Math.floor(y + size) - margin;
+
+      for (let py = startY; py < endY; py++) {
+        for (let px = startX; px < endX; px++) {
+          const idx = (py * width + px) * 4;
+          rSum += pixels[idx];
+          gSum += pixels[idx + 1];
+          bSum += pixels[idx + 2];
+          count++;
+        }
+      }
+
+      if (count === 0) return [128, 128, 128];
+      return [
+        Math.round(rSum / count),
+        Math.round(gSum / count),
+        Math.round(bSum / count)
+      ];
+    }
+
+    // Solve least squares: find matrix M such that ideal = M * captured
+    function solveLeastSquares(captured, ideal) {
+      const result = [[0,0,0], [0,0,0], [0,0,0]];
+
+      // Solve for each output channel separately
+      for (let outCh = 0; outCh < 3; outCh++) {
+        // Compute X^T X (3x3)
+        const XtX = [[0,0,0], [0,0,0], [0,0,0]];
+        for (let i = 0; i < 3; i++) {
+          for (let j = 0; j < 3; j++) {
+            for (let k = 0; k < 8; k++) {
+              XtX[i][j] += captured[k][i] * captured[k][j];
+            }
+          }
+        }
+
+        // Compute X^T y (3x1)
+        const Xty = [0, 0, 0];
+        for (let i = 0; i < 3; i++) {
+          for (let k = 0; k < 8; k++) {
+            Xty[i] += captured[k][i] * ideal[k][outCh];
+          }
+        }
+
+        // Solve using Cramer's rule
+        const det = XtX[0][0] * (XtX[1][1]*XtX[2][2] - XtX[1][2]*XtX[2][1])
+                  - XtX[0][1] * (XtX[1][0]*XtX[2][2] - XtX[1][2]*XtX[2][0])
+                  + XtX[0][2] * (XtX[1][0]*XtX[2][1] - XtX[1][1]*XtX[2][0]);
+
+        if (Math.abs(det) < 1e-10) {
+          result[outCh][outCh] = 1;
+          continue;
+        }
+
+        // Compute inverse of XtX
+        const inv = [[0,0,0], [0,0,0], [0,0,0]];
+        inv[0][0] = (XtX[1][1]*XtX[2][2] - XtX[1][2]*XtX[2][1]) / det;
+        inv[0][1] = (XtX[0][2]*XtX[2][1] - XtX[0][1]*XtX[2][2]) / det;
+        inv[0][2] = (XtX[0][1]*XtX[1][2] - XtX[0][2]*XtX[1][1]) / det;
+        inv[1][0] = (XtX[1][2]*XtX[2][0] - XtX[1][0]*XtX[2][2]) / det;
+        inv[1][1] = (XtX[0][0]*XtX[2][2] - XtX[0][2]*XtX[2][0]) / det;
+        inv[1][2] = (XtX[0][2]*XtX[1][0] - XtX[0][0]*XtX[1][2]) / det;
+        inv[2][0] = (XtX[1][0]*XtX[2][1] - XtX[1][1]*XtX[2][0]) / det;
+        inv[2][1] = (XtX[0][1]*XtX[2][0] - XtX[0][0]*XtX[2][1]) / det;
+        inv[2][2] = (XtX[0][0]*XtX[1][1] - XtX[0][1]*XtX[1][0]) / det;
+
+        for (let i = 0; i < 3; i++) {
+          result[outCh][i] = inv[i][0]*Xty[0] + inv[i][1]*Xty[1] + inv[i][2]*Xty[2];
+        }
+      }
+
+      return result;
+    }
+
+    function calibrateFromPatches() {
+      if (capturedPatches.some(p => p === null)) {
+        alert('Not all patches detected yet');
+        return;
+      }
+
+      // Build matrices
+      const captured = capturedPatches.map(p => [p[0]/255, p[1]/255, p[2]/255]);
+      const ideal = CALIBRATION_COLORS.map(c => [c.rgb[0]/255, c.rgb[1]/255, c.rgb[2]/255]);
+
+      correctionMatrix = solveLeastSquares(captured, ideal);
+
+      // Display matrix using textContent (safe)
+      const matrixDisplay = document.getElementById('matrixDisplay');
+      const matrixText = 'Correction Matrix:\n' +
+        correctionMatrix.map(row =>
+          row.map(v => v.toFixed(3)).join('  ')
+        ).join('\n');
+      matrixDisplay.textContent = matrixText;
+
+      console.log('Calibration complete. Matrix:', correctionMatrix);
+    }
+
+    // Apply correction matrix to RGB
+    function applyCorrection(r, g, b) {
+      const input = [r/255, g/255, b/255];
+      const output = [0, 0, 0];
+
+      for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+          output[i] += correctionMatrix[i][j] * input[j];
+        }
+        output[i] = Math.max(0, Math.min(1, output[i]));
+      }
+
+      return output.map(v => Math.round(v * 255));
+    }
+
+    // Convert corrected RGB to CMY
+    function rgbToCmy(r, g, b) {
+      return [
+        1 - r/255,
+        1 - g/255,
+        1 - b/255
+      ];
+    }
+
+    function scanFrame() {
+      if (!scanning) return;
+
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        const size = Math.min(video.videoWidth, video.videoHeight);
+        captureCanvas.width = size;
+        captureCanvas.height = size;
+
+        const offsetX = (video.videoWidth - size) / 2;
+        const offsetY = (video.videoHeight - size) / 2;
+        captureCtx.drawImage(video, offsetX, offsetY, size, size, 0, 0, size, size);
+
+        const imageData = captureCtx.getImageData(0, 0, size, size);
+
+        // Estimate patch positions based on expected layout
+        const scale = size / 480;
+        const patchSize = 40 * scale;
+        const qrAreaSize = 400 * scale;
+
+        // Patch positions (matching sender layout)
+        const patchPositions = [
+          { x: 0, y: 0 },
+          { x: patchSize + qrAreaSize/3, y: 0 },
+          { x: patchSize + 2*qrAreaSize/3, y: 0 },
+          { x: size - patchSize, y: 0 },
+          { x: 0, y: size - patchSize },
+          { x: patchSize + qrAreaSize/3, y: size - patchSize },
+          { x: patchSize + 2*qrAreaSize/3, y: size - patchSize },
+          { x: size - patchSize, y: size - patchSize }
+        ];
+
+        // Sample each patch
+        patchPositions.forEach((pos, i) => {
+          const rgb = sampleRegion(imageData, pos.x, pos.y, patchSize);
+          capturedPatches[i] = rgb;
+
+          // Update display
+          const patchEl = document.getElementById('patch' + i);
+          const colorBox = patchEl.querySelector('.color-box');
+          const values = patchEl.querySelector('.values');
+
+          colorBox.style.background = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
+          values.textContent = rgb.join(',');
+        });
+
+        // Process entire image
+        const pixels = imageData.data;
+        const total = size * size;
+
+        // Create binary images for each CMY channel
+        const cyanData = new Uint8ClampedArray(total * 4);
+        const magentaData = new Uint8ClampedArray(total * 4);
+        const yellowData = new Uint8ClampedArray(total * 4);
+
+        for (let y = 0; y < size; y++) {
+          for (let x = 0; x < size; x++) {
+            const idx = (y * size + x) * 4;
+            const r = pixels[idx];
+            const g = pixels[idx + 1];
+            const b = pixels[idx + 2];
+
+            // Apply color correction
+            const corrected = applyCorrection(r, g, b);
+
+            // Convert to CMY
+            const cmy = rgbToCmy(corrected[0], corrected[1], corrected[2]);
+
+            // Threshold at 0.5 to get binary values
+            const cBit = cmy[0] > 0.5 ? 1 : 0;
+            const mBit = cmy[1] > 0.5 ? 1 : 0;
+            const yBit = cmy[2] > 0.5 ? 1 : 0;
+
+            // Create grayscale images (dark = 1, light = 0 for QR)
+            const cGray = cBit ? 0 : 255;
+            const mGray = mBit ? 0 : 255;
+            const yGray = yBit ? 0 : 255;
+
+            cyanData[idx] = cGray;
+            cyanData[idx + 1] = cGray;
+            cyanData[idx + 2] = cGray;
+            cyanData[idx + 3] = 255;
+
+            magentaData[idx] = mGray;
+            magentaData[idx + 1] = mGray;
+            magentaData[idx + 2] = mGray;
+            magentaData[idx + 3] = 255;
+
+            yellowData[idx] = yGray;
+            yellowData[idx + 1] = yGray;
+            yellowData[idx + 2] = yGray;
+            yellowData[idx + 3] = 255;
+          }
+        }
+
+        // Draw previews
+        drawPreview(cyanData, size, cyanCtx, 110);
+        drawPreview(magentaData, size, magentaCtx, 110);
+        drawPreview(yellowData, size, yellowCtx, 110);
+
+        // Try to decode
+        const cyanCode = jsQR(cyanData, size, size);
+        const magentaCode = jsQR(magentaData, size, size);
+        const yellowCode = jsQR(yellowData, size, size);
+
+        scanCount++;
+        updateResult('cyanResult', cyanCode, 'cyan');
+        updateResult('magentaResult', magentaCode, 'magenta');
+        updateResult('yellowResult', yellowCode, 'yellow');
+
+        document.getElementById('scanCount').textContent = scanCount;
+        document.getElementById('successRate').textContent =
+          successCounts.cyan + '/' + successCounts.magenta + '/' + successCounts.yellow;
+      }
+
+      requestAnimationFrame(scanFrame);
+    }
+
+    function drawPreview(data, srcSize, ctx, dstSize) {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = srcSize;
+      tempCanvas.height = srcSize;
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.putImageData(new ImageData(data, srcSize, srcSize), 0, 0);
+      ctx.drawImage(tempCanvas, 0, 0, dstSize, dstSize);
+    }
+
+    function updateResult(id, code, channel) {
+      const el = document.getElementById(id);
+      const resultDiv = el.parentElement;
+      if (code) {
+        el.textContent = code.data;
+        resultDiv.classList.add('success');
+        resultDiv.classList.remove('failure');
+        successCounts[channel]++;
+      } else {
+        el.textContent = 'No QR detected';
+        resultDiv.classList.add('failure');
+        resultDiv.classList.remove('success');
+      }
+    }
+
+    console.log('PCCC Receiver ready');
+  </script>
+</body>
+</html>

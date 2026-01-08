@@ -91,116 +91,62 @@
       border-radius: 4px;
       margin-left: 5px;
     }
-    .status.tested { background: #2a4a2a; color: #6bff6b; }
     .status.new { background: #4a4a2a; color: #ffff6b; }
+    .info-box {
+      width: 100%;
+      max-width: 600px;
+      padding: 15px;
+      background: #252540;
+      border-radius: 8px;
+      font-size: 0.85em;
+      color: #aaa;
+      line-height: 1.5;
+    }
+    .info-box h3 {
+      color: #00d4ff;
+      margin-bottom: 10px;
+    }
+    .info-box ul {
+      margin-left: 20px;
+    }
+    .info-box li {
+      margin: 5px 0;
+    }
   </style>
 </head>
 <body>
   <a href="../index.html" class="back-link">&larr; Back to Qriosity</a>
 
   <h1>Experiments</h1>
-  <p class="subtitle">Proof-of-concept throughput improvements</p>
+  <p class="subtitle">Per-Colorant-Channel Color QR Codes</p>
 
   <div class="section">
-    <h2>RGB Channel Multiplexing <span class="status tested">Tested</span></h2>
-    <p class="section-note">3 QR codes in RGB channels. Result: Green+Blue reliable, Red unreliable (~4%)</p>
+    <h2>PCCC Framework <span class="status new">New</span></h2>
+    <p class="section-note">
+      Based on research: 3 independent QR codes in CMY channels with interference cancellation.
+      Uses 8 calibration patches to compute a 3x3 color correction matrix.
+    </p>
     <div class="experiments">
-      <a href="rgb-qr-sender.html" class="experiment">
-        <h3>RGB Sender</h3>
-        <p>Encodes 3 QR codes into R/G/B channels</p>
+      <a href="pccc-sender.html" class="experiment">
+        <h3>PCCC Sender</h3>
+        <p>CMY-encoded QR with 8 reference color patches for calibration</p>
         <span class="tag sender">Laptop</span>
       </a>
-      <a href="rgb-qr-receiver.html" class="experiment">
-        <h3>RGB Receiver</h3>
-        <p>Separates RGB channels, decodes each</p>
+      <a href="pccc-receiver.html" class="experiment">
+        <h3>PCCC Receiver</h3>
+        <p>Interference cancellation via least-squares matrix estimation</p>
         <span class="tag receiver">Phone</span>
       </a>
     </div>
   </div>
 
-  <div class="section">
-    <h2>CMY Channel Multiplexing <span class="status new">Fixed</span></h2>
-    <p class="section-note">Additive CMY on black (8 colors from 3 half-intensity layers). Different encoding than RGB.</p>
-    <div class="experiments">
-      <a href="cmy-qr-sender.html" class="experiment">
-        <h3>CMY Sender</h3>
-        <p>Encodes 3 QR codes into C/M/Y channels</p>
-        <span class="tag sender">Laptop</span>
-      </a>
-      <a href="cmy-qr-receiver.html" class="experiment">
-        <h3>CMY Receiver</h3>
-        <p>Extracts CMY via inverted RGB</p>
-        <span class="tag receiver">Phone</span>
-      </a>
-    </div>
-  </div>
-
-  <div class="section">
-    <h2>GCB v2 - Green×Blue Levels <span class="status new">New</span></h2>
-    <p class="section-note">3 bits via G×B (3 levels each = 9 states). Avoids red channel entirely.</p>
-    <div class="experiments">
-      <a href="gcb-qr-sender.html" class="experiment">
-        <h3>GCB Sender</h3>
-        <p>9-state encoding using Green×Blue levels</p>
-        <span class="tag sender">Laptop</span>
-      </a>
-      <a href="gcb-qr-receiver.html" class="experiment">
-        <h3>GCB Receiver</h3>
-        <p>Decodes 3 bits from G/B level combinations</p>
-        <span class="tag receiver">Phone</span>
-      </a>
-    </div>
-  </div>
-
-  <div class="section">
-    <h2>4-Level Grayscale v1 <span class="status tested">Poor</span></h2>
-    <p class="section-note">Basic 4-level test. Result: Poor separation between levels.</p>
-    <div class="experiments">
-      <a href="gray4-qr-sender.html" class="experiment">
-        <h3>Gray4 Sender</h3>
-        <p>QR with 4 brightness levels</p>
-        <span class="tag sender">Laptop</span>
-      </a>
-      <a href="gray4-qr-receiver.html" class="experiment">
-        <h3>Gray4 Receiver</h3>
-        <p>Analyzes histogram, tests level separation</p>
-        <span class="tag receiver">Phone</span>
-      </a>
-    </div>
-  </div>
-
-  <div class="section">
-    <h2>4-Level Grayscale v2 <span class="status new">Improved</span></h2>
-    <p class="section-note">Gamma correction, wider level spacing, calibration patches.</p>
-    <div class="experiments">
-      <a href="gray4-v2-sender.html" class="experiment">
-        <h3>Gray4 v2 Sender</h3>
-        <p>Adjustable gamma and level spacing</p>
-        <span class="tag sender">Laptop</span>
-      </a>
-      <a href="gray4-v2-receiver.html" class="experiment">
-        <h3>Gray4 v2 Receiver</h3>
-        <p>Adaptive peak detection and thresholds</p>
-        <span class="tag receiver">Phone</span>
-      </a>
-    </div>
-  </div>
-
-  <div class="section">
-    <h2>3-Level Grayscale <span class="status new">New</span></h2>
-    <p class="section-note">Simplified approach: only 3 levels (0/127/255) for maximum separation. ~1.58 bits per module.</p>
-    <div class="experiments">
-      <a href="gray3-qr-sender.html" class="experiment">
-        <h3>Gray3 Sender</h3>
-        <p>2 QR codes encoded in 3 brightness levels</p>
-        <span class="tag sender">Laptop</span>
-      </a>
-      <a href="gray3-qr-receiver.html" class="experiment">
-        <h3>Gray3 Receiver</h3>
-        <p>Reconstructs 2 QR codes from 3 levels</p>
-        <span class="tag receiver">Phone</span>
-      </a>
-    </div>
+  <div class="info-box">
+    <h3>How It Works</h3>
+    <ul>
+      <li><strong>Sender:</strong> Generates 3 QR codes (Cyan, Magenta, Yellow channels) and composites them. Adds 8 calibration patches with known CMY values around the border.</li>
+      <li><strong>Receiver:</strong> Samples the calibration patches to measure how the camera distorts colors. Computes a 3x3 correction matrix via least squares. Applies this matrix to recover true CMY values before thresholding.</li>
+      <li><strong>Key insight:</strong> Camera sensors have cross-channel interference (red bleeds into green, etc.). The correction matrix compensates for this device-specific distortion.</li>
+    </ul>
   </div>
 </body>
 </html>
