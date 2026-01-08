@@ -30,10 +30,40 @@
       border-radius: 8px;
     }
     #captureCanvas { display: none; }
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+      max-width: 400px;
+      margin: 10px 0;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+    }
+    .threshold-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .threshold-row label {
+      width: 50px;
+      font-size: 12px;
+    }
+    .threshold-row.red label { color: #ff6b6b; }
+    .threshold-row.green label { color: #6bff6b; }
+    .threshold-row.blue label { color: #6b6bff; }
+    .threshold-row input[type="range"] { flex: 1; }
+    .threshold-row .value {
+      width: 35px;
+      text-align: right;
+      font-size: 12px;
+      color: #00d4ff;
+    }
     .channels {
       display: flex;
       gap: 10px;
-      margin: 15px 0;
+      margin: 10px 0;
       flex-wrap: wrap;
       justify-content: center;
     }
@@ -49,6 +79,10 @@
     .channel p {
       margin-top: 4px;
       font-size: 12px;
+    }
+    .channel .avg {
+      font-size: 10px;
+      color: #888;
     }
     .channel.red p { color: #ff6b6b; }
     .channel.green p { color: #6bff6b; }
@@ -112,18 +146,39 @@
   <video id="video" autoplay playsinline></video>
   <canvas id="captureCanvas"></canvas>
 
+  <div class="controls">
+    <div class="threshold-row red">
+      <label>Red</label>
+      <input type="range" id="thresholdR" min="20" max="235" value="128">
+      <span class="value" id="thresholdRVal">128</span>
+    </div>
+    <div class="threshold-row green">
+      <label>Green</label>
+      <input type="range" id="thresholdG" min="20" max="235" value="128">
+      <span class="value" id="thresholdGVal">128</span>
+    </div>
+    <div class="threshold-row blue">
+      <label>Blue</label>
+      <input type="range" id="thresholdB" min="20" max="235" value="128">
+      <span class="value" id="thresholdBVal">128</span>
+    </div>
+  </div>
+
   <div class="channels">
     <div class="channel red">
       <canvas id="redChannel" width="100" height="100"></canvas>
       <p>Red</p>
+      <p class="avg" id="avgR">avg: -</p>
     </div>
     <div class="channel green">
       <canvas id="greenChannel" width="100" height="100"></canvas>
       <p>Green</p>
+      <p class="avg" id="avgG">avg: -</p>
     </div>
     <div class="channel blue">
       <canvas id="blueChannel" width="100" height="100"></canvas>
       <p>Blue</p>
+      <p class="avg" id="avgB">avg: -</p>
     </div>
   </div>
 
@@ -166,12 +221,24 @@
     const scanCountEl = document.getElementById('scanCount');
     const successRateEl = document.getElementById('successRate');
 
+    // Threshold sliders
+    const thresholdR = document.getElementById('thresholdR');
+    const thresholdG = document.getElementById('thresholdG');
+    const thresholdB = document.getElementById('thresholdB');
+    const thresholdRVal = document.getElementById('thresholdRVal');
+    const thresholdGVal = document.getElementById('thresholdGVal');
+    const thresholdBVal = document.getElementById('thresholdBVal');
+    const avgR = document.getElementById('avgR');
+    const avgG = document.getElementById('avgG');
+    const avgB = document.getElementById('avgB');
+
+    thresholdR.oninput = () => thresholdRVal.textContent = thresholdR.value;
+    thresholdG.oninput = () => thresholdGVal.textContent = thresholdG.value;
+    thresholdB.oninput = () => thresholdBVal.textContent = thresholdB.value;
+
     let scanning = false;
     let scanCount = 0;
     let successCounts = { red: 0, green: 0, blue: 0 };
-
-    // Threshold for converting to binary (0-255)
-    const THRESHOLD = 128;
 
     startBtn.addEventListener('click', async () => {
       try {
@@ -189,36 +256,34 @@
       }
     });
 
-    function extractChannel(imageData, channel) {
-      // channel: 0=R, 1=G, 2=B
+    function extractChannel(imageData, channel, threshold) {
       const width = imageData.width;
       const height = imageData.height;
       const src = imageData.data;
       const result = new Uint8ClampedArray(width * height * 4);
+      let sum = 0;
 
       for (let i = 0; i < width * height; i++) {
         const srcIdx = i * 4;
         const channelValue = src[srcIdx + channel];
-        // Invert: low value in channel = black module = dark in grayscale
-        // high value in channel = white module = light in grayscale
-        const gray = channelValue < THRESHOLD ? 0 : 255;
+        sum += channelValue;
+        const gray = channelValue < threshold ? 0 : 255;
         result[srcIdx] = gray;
         result[srcIdx + 1] = gray;
         result[srcIdx + 2] = gray;
         result[srcIdx + 3] = 255;
       }
 
-      return new ImageData(result, width, height);
+      const avg = Math.round(sum / (width * height));
+      return { imageData: new ImageData(result, width, height), avg };
     }
 
     function drawChannelPreview(channelData, ctx, displaySize) {
-      // Scale down for preview
       const tempCanvas = document.createElement('canvas');
       tempCanvas.width = channelData.width;
       tempCanvas.height = channelData.height;
       const tempCtx = tempCanvas.getContext('2d');
       tempCtx.putImageData(channelData, 0, 0);
-
       ctx.drawImage(tempCanvas, 0, 0, displaySize, displaySize);
     }
 
@@ -226,41 +291,42 @@
       if (!scanning) return;
 
       if (video.readyState === video.HAVE_ENOUGH_DATA) {
-        // Capture frame
         const size = Math.min(video.videoWidth, video.videoHeight);
         captureCanvas.width = size;
         captureCanvas.height = size;
 
-        // Center crop to square
         const offsetX = (video.videoWidth - size) / 2;
         const offsetY = (video.videoHeight - size) / 2;
         captureCtx.drawImage(video, offsetX, offsetY, size, size, 0, 0, size, size);
 
         const imageData = captureCtx.getImageData(0, 0, size, size);
 
-        // Extract channels
-        const redData = extractChannel(imageData, 0);
-        const greenData = extractChannel(imageData, 1);
-        const blueData = extractChannel(imageData, 2);
+        // Extract channels with per-channel thresholds
+        const red = extractChannel(imageData, 0, parseInt(thresholdR.value));
+        const green = extractChannel(imageData, 1, parseInt(thresholdG.value));
+        const blue = extractChannel(imageData, 2, parseInt(thresholdB.value));
+
+        // Update average displays
+        avgR.textContent = `avg: ${red.avg}`;
+        avgG.textContent = `avg: ${green.avg}`;
+        avgB.textContent = `avg: ${blue.avg}`;
 
         // Draw previews
-        drawChannelPreview(redData, redCtx, 100);
-        drawChannelPreview(greenData, greenCtx, 100);
-        drawChannelPreview(blueData, blueCtx, 100);
+        drawChannelPreview(red.imageData, redCtx, 100);
+        drawChannelPreview(green.imageData, greenCtx, 100);
+        drawChannelPreview(blue.imageData, blueCtx, 100);
 
         // Attempt to decode each channel
-        const redCode = jsQR(redData.data, redData.width, redData.height);
-        const greenCode = jsQR(greenData.data, greenData.width, greenData.height);
-        const blueCode = jsQR(blueData.data, blueData.width, blueData.height);
+        const redCode = jsQR(red.imageData.data, red.imageData.width, red.imageData.height);
+        const greenCode = jsQR(green.imageData.data, green.imageData.width, green.imageData.height);
+        const blueCode = jsQR(blue.imageData.data, blue.imageData.width, blue.imageData.height);
 
         scanCount++;
 
-        // Update results
         updateResult(redResult, redCode, 'red');
         updateResult(greenResult, greenCode, 'green');
         updateResult(blueResult, blueCode, 'blue');
 
-        // Update stats
         scanCountEl.textContent = scanCount;
         successRateEl.textContent = `${successCounts.red}/${successCounts.green}/${successCounts.blue}`;
       }
