@@ -143,6 +143,22 @@ export function createDecoder() {
 
     isComplete() { return K !== null && solvedSource === K },
 
+    // Reset decoder state for a new session
+    reset() {
+      fileId = null
+      K = null
+      K_prime = null
+      G = null
+      parityMap = null
+      metadata = null
+      blockSize = 200
+      decodedBlocks = null
+      solved = 0
+      solvedSource = 0
+      receivedSymbols = new Set()
+      pendingSymbols = []
+    },
+
     receive(packet) {
       const parsed = parsePacket(packet)
       if (!parsed) return false
@@ -154,8 +170,8 @@ export function createDecoder() {
         blockSize = parsed.blockSize  // Store block size from packet
         decodedBlocks = new Array(K_prime).fill(null)
       } else if (parsed.fileId !== fileId) {
-        console.warn('FileId mismatch, ignoring')
-        return false
+        // New session detected - return special value so receiver can reset
+        return 'new_session'
       }
 
       // Track unique symbols

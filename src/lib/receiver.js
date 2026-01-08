@@ -271,7 +271,23 @@ function scanFrame() {
           bytes[i] = binary.charCodeAt(i)
         }
 
-        const accepted = state.decoder.receive(bytes)
+        let accepted = state.decoder.receive(bytes)
+
+        // Handle new session (sender changed settings)
+        if (accepted === 'new_session') {
+          console.log('New session detected, resetting receiver')
+          state.decoder.reset()
+          state.symbolTimes = []
+          state.startTime = Date.now()
+          state.hasNotifiedFirstScan = false
+          // Reset UI to scanning state
+          showStatus('scanning')
+          elements.progressFill.style.width = '0%'
+          elements.statSymbols.textContent = '0 codes'
+          // Re-receive the packet with fresh decoder
+          accepted = state.decoder.receive(bytes)
+        }
+
         if (accepted) {
           // Notify on first successful scan
           if (!state.hasNotifiedFirstScan) {
