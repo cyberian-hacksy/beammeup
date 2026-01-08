@@ -136,6 +136,19 @@
       background: #333;
       color: #666;
     }
+    .auto-row {
+      text-align: center;
+      margin-bottom: 5px;
+    }
+    #autoBtn {
+      padding: 6px 12px;
+      font-size: 12px;
+      margin: 0;
+    }
+    #autoBtn.active {
+      background: #6bff6b;
+      color: #1a1a2e;
+    }
   </style>
 </head>
 <body>
@@ -147,6 +160,9 @@
   <canvas id="captureCanvas"></canvas>
 
   <div class="controls">
+    <div class="auto-row">
+      <button id="autoBtn" class="active">Auto Threshold: ON</button>
+    </div>
     <div class="threshold-row red">
       <label>Red</label>
       <input type="range" id="thresholdR" min="20" max="235" value="128">
@@ -232,10 +248,21 @@
     const avgG = document.getElementById('avgG');
     const avgB = document.getElementById('avgB');
 
-    thresholdR.oninput = () => thresholdRVal.textContent = thresholdR.value;
-    thresholdG.oninput = () => thresholdGVal.textContent = thresholdG.value;
-    thresholdB.oninput = () => thresholdBVal.textContent = thresholdB.value;
+    const autoBtn = document.getElementById('autoBtn');
 
+    function setAutoMode(enabled) {
+      autoThreshold = enabled;
+      autoBtn.textContent = `Auto Threshold: ${enabled ? 'ON' : 'OFF'}`;
+      autoBtn.classList.toggle('active', enabled);
+    }
+
+    autoBtn.onclick = () => setAutoMode(!autoThreshold);
+
+    thresholdR.oninput = () => { thresholdRVal.textContent = thresholdR.value; setAutoMode(false); };
+    thresholdG.oninput = () => { thresholdGVal.textContent = thresholdG.value; setAutoMode(false); };
+    thresholdB.oninput = () => { thresholdBVal.textContent = thresholdB.value; setAutoMode(false); };
+
+    let autoThreshold = true; // Start with auto-threshold enabled
     let scanning = false;
     let scanCount = 0;
     let successCounts = { red: 0, green: 0, blue: 0 };
@@ -256,26 +283,64 @@
       }
     });
 
-    function extractChannel(imageData, channel, threshold) {
+    // Otsu's method for automatic threshold calculation
+    function otsuThreshold(histogram, total) {
+      let sum = 0;
+      for (let i = 0; i < 256; i++) sum += i * histogram[i];
+
+      let sumB = 0, wB = 0, wF = 0;
+      let maxVariance = 0, threshold = 128;
+
+      for (let t = 0; t < 256; t++) {
+        wB += histogram[t];
+        if (wB === 0) continue;
+        wF = total - wB;
+        if (wF === 0) break;
+
+        sumB += t * histogram[t];
+        const mB = sumB / wB;
+        const mF = (sum - sumB) / wF;
+        const variance = wB * wF * (mB - mF) * (mB - mF);
+
+        if (variance > maxVariance) {
+          maxVariance = variance;
+          threshold = t;
+        }
+      }
+      return threshold;
+    }
+
+    function extractChannel(imageData, channel, manualThreshold) {
       const width = imageData.width;
       const height = imageData.height;
       const src = imageData.data;
-      const result = new Uint8ClampedArray(width * height * 4);
-      let sum = 0;
+      const total = width * height;
 
-      for (let i = 0; i < width * height; i++) {
+      // Build histogram for this channel
+      const histogram = new Array(256).fill(0);
+      let sum = 0;
+      for (let i = 0; i < total; i++) {
+        const val = src[i * 4 + channel];
+        histogram[val]++;
+        sum += val;
+      }
+
+      // Calculate threshold (auto or manual)
+      const threshold = autoThreshold ? otsuThreshold(histogram, total) : manualThreshold;
+
+      // Apply threshold
+      const result = new Uint8ClampedArray(total * 4);
+      for (let i = 0; i < total; i++) {
         const srcIdx = i * 4;
-        const channelValue = src[srcIdx + channel];
-        sum += channelValue;
-        const gray = channelValue < threshold ? 0 : 255;
+        const gray = src[srcIdx + channel] < threshold ? 0 : 255;
         result[srcIdx] = gray;
         result[srcIdx + 1] = gray;
         result[srcIdx + 2] = gray;
         result[srcIdx + 3] = 255;
       }
 
-      const avg = Math.round(sum / (width * height));
-      return { imageData: new ImageData(result, width, height), avg };
+      const avg = Math.round(sum / total);
+      return { imageData: new ImageData(result, width, height), avg, threshold };
     }
 
     function drawChannelPreview(channelData, ctx, displaySize) {
@@ -306,10 +371,17 @@
         const green = extractChannel(imageData, 1, parseInt(thresholdG.value));
         const blue = extractChannel(imageData, 2, parseInt(thresholdB.value));
 
-        // Update average displays
-        avgR.textContent = `avg: ${red.avg}`;
-        avgG.textContent = `avg: ${green.avg}`;
-        avgB.textContent = `avg: ${blue.avg}`;
+        // Update displays (show auto-calculated threshold if in auto mode)
+        avgR.textContent = `avg: ${red.avg} | th: ${red.threshold}`;
+        avgG.textContent = `avg: ${green.avg} | th: ${green.threshold}`;
+        avgB.textContent = `avg: ${blue.avg} | th: ${blue.threshold}`;
+
+        // Update sliders to show auto values
+        if (autoThreshold) {
+          thresholdR.value = red.threshold; thresholdRVal.textContent = red.threshold;
+          thresholdG.value = green.threshold; thresholdGVal.textContent = green.threshold;
+          thresholdB.value = blue.threshold; thresholdBVal.textContent = blue.threshold;
+        }
 
         // Draw previews
         drawChannelPreview(red.imageData, redCtx, 100);
