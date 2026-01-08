@@ -21,7 +21,7 @@
       text-align: center;
       margin-bottom: 10px;
       color: #aaa;
-      font-size: 0.9em;
+      font-size: 0.85em;
     }
     #video {
       width: 100%;
@@ -41,23 +41,15 @@
       background: #252540;
       border-radius: 8px;
     }
-    .auto-row { text-align: center; margin-bottom: 5px; }
     .threshold-row {
       display: flex;
       align-items: center;
       gap: 10px;
+      font-size: 11px;
     }
-    .threshold-row label { width: 60px; font-size: 12px; }
-    .threshold-row.cyan label { color: #00ffff; }
-    .threshold-row.magenta label { color: #ff00ff; }
-    .threshold-row.yellow label { color: #ffff00; }
+    .threshold-row label { width: 80px; color: #888; }
     .threshold-row input[type="range"] { flex: 1; }
-    .threshold-row .value {
-      width: 35px;
-      text-align: right;
-      font-size: 12px;
-      color: #00d4ff;
-    }
+    .threshold-row .value { width: 30px; text-align: right; color: #00d4ff; }
     .channels {
       display: flex;
       gap: 10px;
@@ -72,11 +64,11 @@
       width: 100px;
       height: 100px;
     }
-    .channel p { margin-top: 4px; font-size: 12px; }
-    .channel .avg { font-size: 10px; color: #888; }
+    .channel p { margin-top: 4px; font-size: 11px; }
     .channel.cyan p { color: #00ffff; }
     .channel.magenta p { color: #ff00ff; }
     .channel.yellow p { color: #ffff00; }
+    .channel .stats { font-size: 10px; color: #888; }
     .results {
       width: 100%;
       max-width: 400px;
@@ -84,31 +76,29 @@
       background: #252540;
       border-radius: 8px;
       font-family: monospace;
-      font-size: 12px;
+      font-size: 11px;
     }
     .result {
-      margin: 8px 0;
-      padding: 8px;
+      margin: 6px 0;
+      padding: 6px;
       border-radius: 4px;
       background: #1a1a2e;
     }
     .result.success { border-left: 3px solid #6bff6b; }
     .result.failure { border-left: 3px solid #ff6b6b; }
-    .result .label { font-weight: bold; margin-bottom: 4px; }
+    .result .label { font-weight: bold; margin-bottom: 3px; }
     .result.cyan .label { color: #00ffff; }
     .result.magenta .label { color: #ff00ff; }
     .result.yellow .label { color: #ffff00; }
-    .result .data { word-break: break-all; color: #fff; }
-    .result .error { color: #ff6b6b; }
-    .stats {
+    .result .data { word-break: break-all; color: #fff; font-size: 10px; }
+    .stats-bar {
       margin-top: 10px;
-      padding: 10px;
+      padding: 8px;
       background: #1a1a2e;
       border-radius: 4px;
       text-align: center;
+      font-size: 11px;
     }
-    .stats span { margin: 0 10px; }
-    .stats .success-rate { color: #6bff6b; }
     button {
       margin: 10px;
       padding: 10px 20px;
@@ -120,14 +110,12 @@
       cursor: pointer;
     }
     button:disabled { background: #333; color: #666; }
-    #autoBtn { padding: 6px 12px; font-size: 12px; margin: 0; }
-    #autoBtn.active { background: #6bff6b; color: #1a1a2e; }
     .note {
       margin-top: 10px;
       padding: 8px;
       background: #252540;
       border-radius: 4px;
-      font-size: 11px;
+      font-size: 10px;
       color: #888;
       max-width: 400px;
       text-align: center;
@@ -135,31 +123,28 @@
   </style>
 </head>
 <body>
-  <h1>CMY QR Receiver</h1>
-  <p class="description">Point camera at the CMY composite QR code</p>
+  <h1>CMY QR Receiver (Fixed)</h1>
+  <p class="description">Decodes additive CMY encoding (8 distinct colors → 3 bits)</p>
 
   <button id="startBtn">Start Camera</button>
   <video id="video" autoplay playsinline></video>
   <canvas id="captureCanvas"></canvas>
 
   <div class="controls">
-    <div class="auto-row">
-      <button id="autoBtn" class="active">Auto Threshold: ON</button>
+    <div class="threshold-row">
+      <label>R threshold</label>
+      <input type="range" id="thresholdR" min="20" max="150" value="60">
+      <span class="value" id="thresholdRVal">60</span>
     </div>
-    <div class="threshold-row cyan">
-      <label>Cyan</label>
-      <input type="range" id="thresholdC" min="20" max="235" value="128">
-      <span class="value" id="thresholdCVal">128</span>
+    <div class="threshold-row">
+      <label>G threshold</label>
+      <input type="range" id="thresholdG" min="20" max="150" value="60">
+      <span class="value" id="thresholdGVal">60</span>
     </div>
-    <div class="threshold-row magenta">
-      <label>Magenta</label>
-      <input type="range" id="thresholdM" min="20" max="235" value="128">
-      <span class="value" id="thresholdMVal">128</span>
-    </div>
-    <div class="threshold-row yellow">
-      <label>Yellow</label>
-      <input type="range" id="thresholdY" min="20" max="235" value="128">
-      <span class="value" id="thresholdYVal">128</span>
+    <div class="threshold-row">
+      <label>B threshold</label>
+      <input type="range" id="thresholdB" min="20" max="150" value="60">
+      <span class="value" id="thresholdBVal">60</span>
     </div>
   </div>
 
@@ -167,17 +152,17 @@
     <div class="channel cyan">
       <canvas id="cyanChannel" width="100" height="100"></canvas>
       <p>Cyan</p>
-      <p class="avg" id="avgC">avg: -</p>
+      <div class="stats" id="cyanStats">-</div>
     </div>
     <div class="channel magenta">
       <canvas id="magentaChannel" width="100" height="100"></canvas>
       <p>Magenta</p>
-      <p class="avg" id="avgM">avg: -</p>
+      <div class="stats" id="magentaStats">-</div>
     </div>
     <div class="channel yellow">
       <canvas id="yellowChannel" width="100" height="100"></canvas>
       <p>Yellow</p>
-      <p class="avg" id="avgY">avg: -</p>
+      <div class="stats" id="yellowStats">-</div>
     </div>
   </div>
 
@@ -194,15 +179,16 @@
       <div class="label">Yellow Channel:</div>
       <div id="yellowResult" class="data">-</div>
     </div>
-    <div class="stats">
-      <span>Scans: <span id="scanCount">0</span></span>
-      <span class="success-rate">Success: <span id="successRate">0/0/0</span></span>
+    <div class="stats-bar">
+      Scans: <span id="scanCount">0</span> |
+      Success: <span id="successRate">0/0/0</span>
     </div>
   </div>
 
   <div class="note">
-    CMY decoding: Cyan = inverted R, Magenta = inverted G, Yellow = inverted B.<br>
-    Low value in R channel = Cyan present (data = 1).
+    <strong>Additive CMY decoding:</strong><br>
+    C present if G>th AND B>th. M present if R>th AND B>th. Y present if R>th AND G>th.<br>
+    Each pixel classified → reconstruct 3 binary QR images → decode each.
   </div>
 
   <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
@@ -219,37 +205,17 @@
     const magentaCtx = magentaCanvas.getContext('2d');
     const yellowCtx = yellowCanvas.getContext('2d');
 
-    const cyanResult = document.getElementById('cyanResult');
-    const magentaResult = document.getElementById('magentaResult');
-    const yellowResult = document.getElementById('yellowResult');
-    const scanCountEl = document.getElementById('scanCount');
-    const successRateEl = document.getElementById('successRate');
+    const thresholdR = document.getElementById('thresholdR');
+    const thresholdG = document.getElementById('thresholdG');
+    const thresholdB = document.getElementById('thresholdB');
+    const thresholdRVal = document.getElementById('thresholdRVal');
+    const thresholdGVal = document.getElementById('thresholdGVal');
+    const thresholdBVal = document.getElementById('thresholdBVal');
 
-    const thresholdC = document.getElementById('thresholdC');
-    const thresholdM = document.getElementById('thresholdM');
-    const thresholdY = document.getElementById('thresholdY');
-    const thresholdCVal = document.getElementById('thresholdCVal');
-    const thresholdMVal = document.getElementById('thresholdMVal');
-    const thresholdYVal = document.getElementById('thresholdYVal');
-    const avgC = document.getElementById('avgC');
-    const avgM = document.getElementById('avgM');
-    const avgY = document.getElementById('avgY');
+    thresholdR.oninput = () => thresholdRVal.textContent = thresholdR.value;
+    thresholdG.oninput = () => thresholdGVal.textContent = thresholdG.value;
+    thresholdB.oninput = () => thresholdBVal.textContent = thresholdB.value;
 
-    const autoBtn = document.getElementById('autoBtn');
-
-    function setAutoMode(enabled) {
-      autoThreshold = enabled;
-      autoBtn.textContent = `Auto Threshold: ${enabled ? 'ON' : 'OFF'}`;
-      autoBtn.classList.toggle('active', enabled);
-    }
-
-    autoBtn.onclick = () => setAutoMode(!autoThreshold);
-
-    thresholdC.oninput = () => { thresholdCVal.textContent = thresholdC.value; setAutoMode(false); };
-    thresholdM.oninput = () => { thresholdMVal.textContent = thresholdM.value; setAutoMode(false); };
-    thresholdY.oninput = () => { thresholdYVal.textContent = thresholdY.value; setAutoMode(false); };
-
-    let autoThreshold = true;
     let scanning = false;
     let scanCount = 0;
     let successCounts = { cyan: 0, magenta: 0, yellow: 0 };
@@ -265,79 +231,9 @@
         scanning = true;
         requestAnimationFrame(scanFrame);
       } catch (err) {
-        console.error('Camera error:', err);
-        alert('Failed to access camera: ' + err.message);
+        alert('Camera error: ' + err.message);
       }
     });
-
-    function otsuThreshold(histogram, total) {
-      let sum = 0;
-      for (let i = 0; i < 256; i++) sum += i * histogram[i];
-
-      let sumB = 0, wB = 0, wF = 0;
-      let maxVariance = 0, threshold = 128;
-
-      for (let t = 0; t < 256; t++) {
-        wB += histogram[t];
-        if (wB === 0) continue;
-        wF = total - wB;
-        if (wF === 0) break;
-
-        sumB += t * histogram[t];
-        const mB = sumB / wB;
-        const mF = (sum - sumB) / wF;
-        const variance = wB * wF * (mB - mF) * (mB - mF);
-
-        if (variance > maxVariance) {
-          maxVariance = variance;
-          threshold = t;
-        }
-      }
-      return threshold;
-    }
-
-    // CMY extraction: look at INVERTED RGB channels
-    // Cyan = low R, Magenta = low G, Yellow = low B
-    function extractCMYChannel(imageData, rgbChannel, manualThreshold) {
-      const width = imageData.width;
-      const height = imageData.height;
-      const src = imageData.data;
-      const total = width * height;
-
-      // Build histogram for this RGB channel (inverted for CMY)
-      const histogram = new Array(256).fill(0);
-      let sum = 0;
-      for (let i = 0; i < total; i++) {
-        const val = 255 - src[i * 4 + rgbChannel]; // Invert for CMY
-        histogram[val]++;
-        sum += val;
-      }
-
-      const threshold = autoThreshold ? otsuThreshold(histogram, total) : manualThreshold;
-
-      const result = new Uint8ClampedArray(total * 4);
-      for (let i = 0; i < total; i++) {
-        const srcIdx = i * 4;
-        const inverted = 255 - src[srcIdx + rgbChannel];
-        const gray = inverted < threshold ? 0 : 255;
-        result[srcIdx] = gray;
-        result[srcIdx + 1] = gray;
-        result[srcIdx + 2] = gray;
-        result[srcIdx + 3] = 255;
-      }
-
-      const avg = Math.round(sum / total);
-      return { imageData: new ImageData(result, width, height), avg, threshold };
-    }
-
-    function drawChannelPreview(channelData, ctx, displaySize) {
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = channelData.width;
-      tempCanvas.height = channelData.height;
-      const tempCtx = tempCanvas.getContext('2d');
-      tempCtx.putImageData(channelData, 0, 0);
-      ctx.drawImage(tempCanvas, 0, 0, displaySize, displaySize);
-    }
 
     function scanFrame() {
       if (!scanning) return;
@@ -352,60 +248,137 @@
         captureCtx.drawImage(video, offsetX, offsetY, size, size, 0, 0, size, size);
 
         const imageData = captureCtx.getImageData(0, 0, size, size);
+        const pixels = imageData.data;
+        const total = size * size;
 
-        // Extract CMY channels (inverted RGB)
-        const cyan = extractCMYChannel(imageData, 0, parseInt(thresholdC.value));    // Cyan = inverted R
-        const magenta = extractCMYChannel(imageData, 1, parseInt(thresholdM.value)); // Magenta = inverted G
-        const yellow = extractCMYChannel(imageData, 2, parseInt(thresholdY.value));  // Yellow = inverted B
+        const thR = parseInt(thresholdR.value);
+        const thG = parseInt(thresholdG.value);
+        const thB = parseInt(thresholdB.value);
 
-        avgC.textContent = `avg: ${cyan.avg} | th: ${cyan.threshold}`;
-        avgM.textContent = `avg: ${magenta.avg} | th: ${magenta.threshold}`;
-        avgY.textContent = `avg: ${yellow.avg} | th: ${yellow.threshold}`;
+        // Create binary images for C, M, Y channels
+        const cyanData = new Uint8ClampedArray(total * 4);
+        const magentaData = new Uint8ClampedArray(total * 4);
+        const yellowData = new Uint8ClampedArray(total * 4);
 
-        if (autoThreshold) {
-          thresholdC.value = cyan.threshold; thresholdCVal.textContent = cyan.threshold;
-          thresholdM.value = magenta.threshold; thresholdMVal.textContent = magenta.threshold;
-          thresholdY.value = yellow.threshold; thresholdYVal.textContent = yellow.threshold;
+        let cCount = 0, mCount = 0, yCount = 0;
+
+        for (let i = 0; i < total; i++) {
+          const idx = i * 4;
+          const r = pixels[idx];
+          const g = pixels[idx + 1];
+          const b = pixels[idx + 2];
+
+          // Decode CMY bits from RGB values
+          // In additive CMY: C adds G and B, M adds R and B, Y adds R and G
+          // So: C present = G>th AND B>th (and R relatively low)
+          //     M present = R>th AND B>th (and G relatively low)
+          //     Y present = R>th AND G>th (and B relatively low)
+
+          // Simplified: check which components are elevated
+          const hasR = r > thR;
+          const hasG = g > thG;
+          const hasB = b > thB;
+
+          // C contributes to G and B (not R)
+          // M contributes to R and B (not G)
+          // Y contributes to R and G (not B)
+
+          // Decode: If G and B are high but not R → likely C
+          //         If R and B are high but not G → likely M
+          //         If R and G are high but not B → likely Y
+          //         Combinations give mixed colors
+
+          // Better approach: solve the linear system
+          // R = M + Y, G = C + Y, B = C + M (in terms of presence)
+          // C = (G + B - R) / 2 > 0 means C present
+          // M = (R + B - G) / 2 > 0 means M present
+          // Y = (R + G - B) / 2 > 0 means Y present
+
+          // But with thresholds, simpler: check if the combination matches expected patterns
+          const cyanBit = (hasG && hasB) ? 1 : 0;
+          const magentaBit = (hasR && hasB) ? 1 : 0;
+          const yellowBit = (hasR && hasG) ? 1 : 0;
+
+          if (cyanBit) cCount++;
+          if (magentaBit) mCount++;
+          if (yellowBit) yCount++;
+
+          // Cyan channel: dark if cyan bit is set
+          const cGray = cyanBit ? 0 : 255;
+          cyanData[idx] = cGray;
+          cyanData[idx + 1] = cGray;
+          cyanData[idx + 2] = cGray;
+          cyanData[idx + 3] = 255;
+
+          // Magenta channel
+          const mGray = magentaBit ? 0 : 255;
+          magentaData[idx] = mGray;
+          magentaData[idx + 1] = mGray;
+          magentaData[idx + 2] = mGray;
+          magentaData[idx + 3] = 255;
+
+          // Yellow channel
+          const yGray = yellowBit ? 0 : 255;
+          yellowData[idx] = yGray;
+          yellowData[idx + 1] = yGray;
+          yellowData[idx + 2] = yGray;
+          yellowData[idx + 3] = 255;
         }
 
-        drawChannelPreview(cyan.imageData, cyanCtx, 100);
-        drawChannelPreview(magenta.imageData, magentaCtx, 100);
-        drawChannelPreview(yellow.imageData, yellowCtx, 100);
+        // Update stats
+        document.getElementById('cyanStats').textContent = Math.round(cCount / total * 100) + '% dark';
+        document.getElementById('magentaStats').textContent = Math.round(mCount / total * 100) + '% dark';
+        document.getElementById('yellowStats').textContent = Math.round(yCount / total * 100) + '% dark';
 
-        const cyanCode = jsQR(cyan.imageData.data, cyan.imageData.width, cyan.imageData.height);
-        const magentaCode = jsQR(magenta.imageData.data, magenta.imageData.width, magenta.imageData.height);
-        const yellowCode = jsQR(yellow.imageData.data, yellow.imageData.width, yellow.imageData.height);
+        // Draw previews
+        drawPreview(cyanData, size, cyanCtx, 100);
+        drawPreview(magentaData, size, magentaCtx, 100);
+        drawPreview(yellowData, size, yellowCtx, 100);
+
+        // Try to decode
+        const cyanCode = jsQR(cyanData, size, size);
+        const magentaCode = jsQR(magentaData, size, size);
+        const yellowCode = jsQR(yellowData, size, size);
 
         scanCount++;
 
-        updateResult(cyanResult, cyanCode, 'cyan');
-        updateResult(magentaResult, magentaCode, 'magenta');
-        updateResult(yellowResult, yellowCode, 'yellow');
+        updateResult('cyanResult', cyanCode, 'cyan');
+        updateResult('magentaResult', magentaCode, 'magenta');
+        updateResult('yellowResult', yellowCode, 'yellow');
 
-        scanCountEl.textContent = scanCount;
-        successRateEl.textContent = `${successCounts.cyan}/${successCounts.magenta}/${successCounts.yellow}`;
+        document.getElementById('scanCount').textContent = scanCount;
+        document.getElementById('successRate').textContent =
+          successCounts.cyan + '/' + successCounts.magenta + '/' + successCounts.yellow;
       }
 
       requestAnimationFrame(scanFrame);
     }
 
-    function updateResult(el, code, channel) {
+    function drawPreview(data, srcSize, ctx, dstSize) {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = srcSize;
+      tempCanvas.height = srcSize;
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.putImageData(new ImageData(data, srcSize, srcSize), 0, 0);
+      ctx.drawImage(tempCanvas, 0, 0, dstSize, dstSize);
+    }
+
+    function updateResult(id, code, channel) {
+      const el = document.getElementById(id);
       const resultDiv = el.parentElement;
       if (code) {
         el.textContent = code.data;
-        el.classList.remove('error');
         resultDiv.classList.add('success');
         resultDiv.classList.remove('failure');
         successCounts[channel]++;
       } else {
         el.textContent = 'No QR detected';
-        el.classList.add('error');
         resultDiv.classList.add('failure');
         resultDiv.classList.remove('success');
       }
     }
 
-    console.log('CMY QR Receiver ready');
+    console.log('CMY QR Receiver (Fixed) ready');
   </script>
 </body>
 </html>

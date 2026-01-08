@@ -22,13 +22,14 @@
       text-align: center;
       margin-bottom: 20px;
       color: #aaa;
+      font-size: 0.9em;
     }
     .qr-container {
       display: flex;
       gap: 20px;
       flex-wrap: wrap;
       justify-content: center;
-      margin-bottom: 30px;
+      margin-bottom: 20px;
     }
     .qr-box { text-align: center; }
     .qr-box canvas {
@@ -51,8 +52,31 @@
       border: 3px solid #00d4ff;
       border-radius: 8px;
     }
+    .legend {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin: 20px 0;
+      max-width: 500px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      padding: 3px 6px;
+      background: #252540;
+      border-radius: 4px;
+    }
+    .legend-box {
+      width: 18px;
+      height: 18px;
+      border-radius: 2px;
+      border: 1px solid #444;
+    }
     .data-display {
-      margin-top: 20px;
+      margin-top: 15px;
       padding: 15px;
       background: #252540;
       border-radius: 8px;
@@ -69,7 +93,7 @@
       padding: 10px;
       background: #252540;
       border-radius: 8px;
-      font-size: 12px;
+      font-size: 11px;
       color: #888;
       max-width: 500px;
       text-align: center;
@@ -77,23 +101,23 @@
   </style>
 </head>
 <body>
-  <h1>CMY QR Experiment - Sender</h1>
+  <h1>CMY QR Sender (Fixed)</h1>
   <p class="description">
-    Three QR codes encoded into CMY channels (Cyan, Magenta, Yellow).
-    These are brighter colors that may have better camera capture than RGB.
+    <strong>Corrected implementation:</strong> Additive CMY on black background using half-intensity colors.<br>
+    Each combination produces a distinct color (8 total). Different from RGB encoding.
   </p>
 
   <div class="qr-container">
     <div class="qr-box cyan">
-      <canvas id="qrCyan" width="200" height="200"></canvas>
+      <canvas id="qrCyan" width="150" height="150"></canvas>
       <p>Cyan Channel</p>
     </div>
     <div class="qr-box magenta">
-      <canvas id="qrMagenta" width="200" height="200"></canvas>
+      <canvas id="qrMagenta" width="150" height="150"></canvas>
       <p>Magenta Channel</p>
     </div>
     <div class="qr-box yellow">
-      <canvas id="qrYellow" width="200" height="200"></canvas>
+      <canvas id="qrYellow" width="150" height="150"></canvas>
       <p>Yellow Channel</p>
     </div>
   </div>
@@ -103,6 +127,8 @@
     <canvas id="compositeCanvas" width="400" height="400"></canvas>
   </div>
 
+  <div class="legend" id="legend"></div>
+
   <div class="data-display">
     <div class="cyan">C: <span id="dataCyan"></span></div>
     <div class="magenta">M: <span id="dataMagenta"></span></div>
@@ -110,8 +136,9 @@
   </div>
 
   <div class="note">
-    CMY encoding: Cyan = no Red, Magenta = no Green, Yellow = no Blue.<br>
-    Receiver extracts by looking at absence of each RGB component.
+    <strong>Additive CMY:</strong> C=(0,85,85), M=(85,0,85), Y=(85,85,0) on black.<br>
+    Colors add: C+M=(85,85,170), C+Y=(85,170,85), M+Y=(170,85,85), C+M+Y=(170,170,170).<br>
+    8 distinct colors for 3-bit encoding. Receiver decodes by color classification.
   </div>
 
   <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
@@ -124,100 +151,133 @@
     document.getElementById('dataMagenta').textContent = DATA_MAGENTA;
     document.getElementById('dataYellow').textContent = DATA_YELLOW;
 
-    function generateQR(data, canvasId, size, darkColor, lightColor) {
+    // Half-intensity CMY colors (so they don't clip when combined)
+    const CMY_INTENSITY = 85; // 255/3, so max 3 combined = 255
+    const CYAN = [0, CMY_INTENSITY, CMY_INTENSITY];
+    const MAGENTA = [CMY_INTENSITY, 0, CMY_INTENSITY];
+    const YELLOW = [CMY_INTENSITY, CMY_INTENSITY, 0];
+
+    // All 8 possible color combinations
+    const COLORS = [
+      [0, 0, 0],                                                           // 000: Black
+      CYAN,                                                                 // 001: Cyan
+      MAGENTA,                                                              // 010: Magenta
+      [CYAN[0]+MAGENTA[0], CYAN[1]+MAGENTA[1], CYAN[2]+MAGENTA[2]],        // 011: C+M (blue-ish)
+      YELLOW,                                                               // 100: Yellow
+      [CYAN[0]+YELLOW[0], CYAN[1]+YELLOW[1], CYAN[2]+YELLOW[2]],           // 101: C+Y (green-ish)
+      [MAGENTA[0]+YELLOW[0], MAGENTA[1]+YELLOW[1], MAGENTA[2]+YELLOW[2]],  // 110: M+Y (red-ish)
+      [CYAN[0]+MAGENTA[0]+YELLOW[0], CYAN[1]+MAGENTA[1]+YELLOW[1], CYAN[2]+MAGENTA[2]+YELLOW[2]] // 111: C+M+Y (gray)
+    ];
+
+    // Generate color legend
+    const legendEl = document.getElementById('legend');
+    const labels = ['000 (none)', '001 (C)', '010 (M)', '011 (C+M)', '100 (Y)', '101 (C+Y)', '110 (M+Y)', '111 (all)'];
+    for (let i = 0; i < 8; i++) {
+      const [r, g, b] = COLORS[i];
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+
+      const box = document.createElement('div');
+      box.className = 'legend-box';
+      box.style.background = 'rgb(' + r + ',' + g + ',' + b + ')';
+
+      const label = document.createElement('span');
+      label.textContent = labels[i];
+
+      item.appendChild(box);
+      item.appendChild(label);
+      legendEl.appendChild(item);
+    }
+
+    // Generate QR and return module data
+    function getQRModules(data) {
       const qr = qrcode(0, 'M');
       qr.addData(data);
       qr.make();
+      const count = qr.getModuleCount();
+      const modules = [];
+      for (let r = 0; r < count; r++) {
+        modules[r] = [];
+        for (let c = 0; c < count; c++) {
+          modules[r][c] = qr.isDark(r, c) ? 1 : 0;
+        }
+      }
+      return { modules, count };
+    }
 
-      const moduleCount = qr.getModuleCount();
+    // Draw individual QR preview with color
+    function drawColoredQR(canvasId, modules, count, color) {
       const canvas = document.getElementById(canvasId);
       const ctx = canvas.getContext('2d');
-      const cellSize = size / moduleCount;
+      const size = canvas.width;
+      const cellSize = size / count;
 
-      ctx.fillStyle = lightColor;
+      ctx.fillStyle = '#000000';
       ctx.fillRect(0, 0, size, size);
 
-      ctx.fillStyle = darkColor;
-      for (let row = 0; row < moduleCount; row++) {
-        for (let col = 0; col < moduleCount; col++) {
-          if (qr.isDark(row, col)) {
-            ctx.fillRect(col * cellSize, row * cellSize, cellSize, cellSize);
+      ctx.fillStyle = 'rgb(' + color[0] + ',' + color[1] + ',' + color[2] + ')';
+      for (let row = 0; row < count; row++) {
+        for (let col = 0; col < count; col++) {
+          if (modules[row][col]) {
+            ctx.fillRect(col * cellSize, row * cellSize, cellSize + 0.5, cellSize + 0.5);
           }
         }
       }
-
-      return ctx.getImageData(0, 0, size, size);
     }
 
-    const qrSize = 200;
-    // Generate individual colored QR codes for preview
-    generateQR(DATA_CYAN, 'qrCyan', qrSize, '#00ffff', '#ffffff');
-    generateQR(DATA_MAGENTA, 'qrMagenta', qrSize, '#ff00ff', '#ffffff');
-    generateQR(DATA_YELLOW, 'qrYellow', qrSize, '#ffff00', '#ffffff');
+    // Get QR data for all three channels
+    const cyanQR = getQRModules(DATA_CYAN);
+    const magentaQR = getQRModules(DATA_MAGENTA);
+    const yellowQR = getQRModules(DATA_YELLOW);
+    const moduleCount = cyanQR.count;
 
-    // Generate binary versions for compositing
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = qrSize;
-    tempCanvas.height = qrSize;
-    const tempCtx = tempCanvas.getContext('2d');
+    // Draw individual previews with full-intensity colors for visibility
+    drawColoredQR('qrCyan', cyanQR.modules, moduleCount, [0, 255, 255]);
+    drawColoredQR('qrMagenta', magentaQR.modules, moduleCount, [255, 0, 255]);
+    drawColoredQR('qrYellow', yellowQR.modules, moduleCount, [255, 255, 0]);
 
-    function getBinaryQR(data, size) {
-      const qr = qrcode(0, 'M');
-      qr.addData(data);
-      qr.make();
-      const moduleCount = qr.getModuleCount();
-      const cellSize = size / moduleCount;
-
-      tempCtx.fillStyle = '#ffffff';
-      tempCtx.fillRect(0, 0, size, size);
-      tempCtx.fillStyle = '#000000';
-
-      for (let row = 0; row < moduleCount; row++) {
-        for (let col = 0; col < moduleCount; col++) {
-          if (qr.isDark(row, col)) {
-            tempCtx.fillRect(col * cellSize, row * cellSize, cellSize, cellSize);
-          }
-        }
-      }
-      return tempCtx.getImageData(0, 0, size, size);
-    }
-
-    const cyanData = getBinaryQR(DATA_CYAN, qrSize);
-    const magentaData = getBinaryQR(DATA_MAGENTA, qrSize);
-    const yellowData = getBinaryQR(DATA_YELLOW, qrSize);
-
-    // Composite into CMY image
+    // Composite using additive CMY
     const compositeSize = 400;
-    const compositeCanvas = document.getElementById('compositeCanvas');
-    const compositeCtx = compositeCanvas.getContext('2d');
-    const scale = compositeSize / qrSize;
+    const canvas = document.getElementById('compositeCanvas');
+    const ctx = canvas.getContext('2d');
+    const cellSize = compositeSize / moduleCount;
 
-    const compositeImageData = compositeCtx.createImageData(compositeSize, compositeSize);
-    const compositePixels = compositeImageData.data;
+    const imageData = ctx.createImageData(compositeSize, compositeSize);
+    const pixels = imageData.data;
 
-    for (let y = 0; y < compositeSize; y++) {
-      for (let x = 0; x < compositeSize; x++) {
-        const srcX = Math.floor(x / scale);
-        const srcY = Math.floor(y / scale);
-        const srcIdx = (srcY * qrSize + srcX) * 4;
+    for (let row = 0; row < moduleCount; row++) {
+      for (let col = 0; col < moduleCount; col++) {
+        // Get bits from each QR
+        const cBit = cyanQR.modules[row][col];
+        const mBit = magentaQR.modules[row][col];
+        const yBit = yellowQR.modules[row][col];
 
-        // Black module = data present = subtract that component from white
-        const cyanIsBlack = cyanData.data[srcIdx] < 128;
-        const magentaIsBlack = magentaData.data[srcIdx] < 128;
-        const yellowIsBlack = yellowData.data[srcIdx] < 128;
+        // Calculate color by adding CMY components
+        const r = mBit * CMY_INTENSITY + yBit * CMY_INTENSITY;
+        const g = cBit * CMY_INTENSITY + yBit * CMY_INTENSITY;
+        const b = cBit * CMY_INTENSITY + mBit * CMY_INTENSITY;
 
-        // CMY subtractive model on white background:
-        // Cyan removes Red, Magenta removes Green, Yellow removes Blue
-        const dstIdx = (y * compositeSize + x) * 4;
-        compositePixels[dstIdx] = cyanIsBlack ? 0 : 255;       // R (removed by Cyan)
-        compositePixels[dstIdx + 1] = magentaIsBlack ? 0 : 255; // G (removed by Magenta)
-        compositePixels[dstIdx + 2] = yellowIsBlack ? 0 : 255;  // B (removed by Yellow)
-        compositePixels[dstIdx + 3] = 255;
+        // Fill cell
+        const startX = Math.floor(col * cellSize);
+        const startY = Math.floor(row * cellSize);
+        const endX = Math.floor((col + 1) * cellSize);
+        const endY = Math.floor((row + 1) * cellSize);
+
+        for (let y = startY; y < endY; y++) {
+          for (let x = startX; x < endX; x++) {
+            const idx = (y * compositeSize + x) * 4;
+            pixels[idx] = r;
+            pixels[idx + 1] = g;
+            pixels[idx + 2] = b;
+            pixels[idx + 3] = 255;
+          }
+        }
       }
     }
 
-    compositeCtx.putImageData(compositeImageData, 0, 0);
-    console.log('CMY QR Sender ready');
+    ctx.putImageData(imageData, 0, 0);
+    console.log('CMY QR Sender (Fixed) ready');
+    console.log('Colors:', COLORS);
   </script>
 </body>
 </html>
