@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Palette-RGB Sender</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    h1 { margin-bottom: 10px; color: #00d4ff; }
+    .description {
+      max-width: 600px;
+      text-align: center;
+      margin-bottom: 20px;
+      color: #aaa;
+      font-size: 0.9em;
+    }
+    .controls {
+      margin-bottom: 15px;
+    }
+    .composite-section {
+      text-align: center;
+      margin: 20px 0;
+    }
+    .composite-section h2 {
+      margin-bottom: 15px;
+      color: #00d4ff;
+    }
+    #compositeCanvas {
+      border: 3px solid #00d4ff;
+      border-radius: 8px;
+      image-rendering: pixelated;
+    }
+    .palette-section {
+      margin: 20px 0;
+      padding: 20px;
+      background: #252540;
+      border-radius: 8px;
+      max-width: 600px;
+    }
+    .palette-section h3 {
+      color: #00d4ff;
+      margin-bottom: 15px;
+      text-align: center;
+      font-size: 14px;
+    }
+    .palette-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+    .palette-entry {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px;
+      background: #1a1a2e;
+      border-radius: 6px;
+      border: 1px solid #333;
+    }
+    .palette-swatch {
+      width: 40px;
+      height: 40px;
+      border-radius: 4px;
+      border: 2px solid #444;
+      margin-bottom: 8px;
+    }
+    .palette-index {
+      font-size: 16px;
+      font-weight: bold;
+      color: #00d4ff;
+    }
+    .palette-name {
+      font-size: 11px;
+      color: #888;
+      margin-top: 2px;
+    }
+    .palette-rgb {
+      font-size: 10px;
+      color: #666;
+      font-family: monospace;
+      margin-top: 4px;
+    }
+    .data-display {
+      margin-top: 15px;
+      padding: 15px;
+      background: #252540;
+      border-radius: 8px;
+      max-width: 500px;
+      font-family: monospace;
+      font-size: 11px;
+    }
+    .data-display div { margin: 4px 0; }
+    .data-display .red { color: #ff6666; }
+    .data-display .green { color: #66ff66; }
+    .data-display .blue { color: #6666ff; }
+    .note {
+      margin-top: 15px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      font-size: 11px;
+      color: #888;
+      max-width: 600px;
+      text-align: center;
+    }
+    .approach-comparison {
+      margin-top: 15px;
+      padding: 15px;
+      background: #1a2a3a;
+      border: 1px solid #00d4ff33;
+      border-radius: 8px;
+      max-width: 600px;
+      font-size: 12px;
+    }
+    .approach-comparison h3 {
+      color: #00d4ff;
+      margin-bottom: 10px;
+      font-size: 13px;
+    }
+    .approach-comparison ul {
+      list-style: none;
+      padding: 0;
+    }
+    .approach-comparison li {
+      margin: 5px 0;
+      padding-left: 15px;
+      position: relative;
+    }
+    .approach-comparison li::before {
+      content: "-";
+      position: absolute;
+      left: 0;
+      color: #00d4ff;
+    }
+  </style>
+</head>
+<body>
+  <h1>Palette-RGB Sender</h1>
+  <p class="description">
+    <strong>8-Color Palette Encoding:</strong> Each QR module is assigned a color from a fixed 8-color palette.<br>
+    Three data channels (R, G, B) combine into a 3-bit index (0-7) that selects the palette color.<br>
+    Receiver uses nearest-neighbor classification to map scanned colors back to palette indices.
+  </p>
+
+  <div id="controls" class="controls"></div>
+
+  <div class="composite-section">
+    <h2>Palette-RGB QR Code</h2>
+    <canvas id="compositeCanvas" width="440" height="440"></canvas>
+  </div>
+
+  <div class="palette-section">
+    <h3>8-Color Palette (3-bit index = R*4 + G*2 + B)</h3>
+    <div class="palette-grid" id="paletteGrid"></div>
+  </div>
+
+  <div class="data-display">
+    <div class="red">Red channel (bit 2): <span id="dataRed"></span></div>
+    <div class="green">Green channel (bit 1): <span id="dataGreen"></span></div>
+    <div class="blue">Blue channel (bit 0): <span id="dataBlue"></span></div>
+  </div>
+
+  <div class="approach-comparison">
+    <h3>Palette Classification Approach</h3>
+    <ul>
+      <li><strong>Encoding:</strong> 3-bit index (0-7) selects color from fixed palette</li>
+      <li><strong>Decoding:</strong> Nearest-neighbor finds closest palette color</li>
+      <li>Holistic classification - treats each module as single color</li>
+      <li>Robust to color drift if palette colors remain distinguishable</li>
+      <li>Alternative: Channel separation decodes R, G, B bits independently</li>
+    </ul>
+  </div>
+
+  <div class="note" id="noteDisplay">
+    <strong>Layout:</strong> <span id="noteSize">440x440</span> square with <span id="noteMargin">10</span>px margin.<br>
+    Finder patterns remain black/white for detection compatibility.
+  </div>
+
+  <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
+  <script type="module">
+    import { createDisplaySizeSelector, displaySizeStyles } from './shared/display-size.js';
+
+    // Inject display size selector styles
+    const style = document.createElement('style');
+    style.textContent = displaySizeStyles;
+    document.head.appendChild(style);
+
+    // Test data for each channel
+    const DATA_RED = 'RED:QRGB:V1:12345';
+    const DATA_GREEN = 'GREEN:QRGB:V1:67890';
+    const DATA_BLUE = 'BLUE:QRGB:V1:ABCDE';
+
+    document.getElementById('dataRed').textContent = DATA_RED;
+    document.getElementById('dataGreen').textContent = DATA_GREEN;
+    document.getElementById('dataBlue').textContent = DATA_BLUE;
+
+    // Fixed 8-color palette indexed by 3-bit value
+    const PALETTE = [
+      { index: 0, name: 'Black',   rgb: [0, 0, 0] },
+      { index: 1, name: 'Blue',    rgb: [0, 0, 255] },
+      { index: 2, name: 'Green',   rgb: [0, 255, 0] },
+      { index: 3, name: 'Cyan',    rgb: [0, 255, 255] },
+      { index: 4, name: 'Red',     rgb: [255, 0, 0] },
+      { index: 5, name: 'Magenta', rgb: [255, 0, 255] },
+      { index: 6, name: 'Yellow',  rgb: [255, 255, 0] },
+      { index: 7, name: 'White',   rgb: [255, 255, 255] }
+    ];
+
+    // Palette lookup function
+    function getPaletteColor(index) {
+      return PALETTE[index].rgb;
+    }
+
+    // Generate palette display
+    const paletteGrid = document.getElementById('paletteGrid');
+    PALETTE.forEach((entry) => {
+      const div = document.createElement('div');
+      div.className = 'palette-entry';
+
+      const swatch = document.createElement('div');
+      swatch.className = 'palette-swatch';
+      swatch.style.background = 'rgb(' + entry.rgb.join(',') + ')';
+
+      const indexLabel = document.createElement('div');
+      indexLabel.className = 'palette-index';
+      indexLabel.textContent = entry.index;
+
+      const nameLabel = document.createElement('div');
+      nameLabel.className = 'palette-name';
+      nameLabel.textContent = entry.name;
+
+      const rgbLabel = document.createElement('div');
+      rgbLabel.className = 'palette-rgb';
+      rgbLabel.textContent = '[' + entry.rgb.join(', ') + ']';
+
+      div.appendChild(swatch);
+      div.appendChild(indexLabel);
+      div.appendChild(nameLabel);
+      div.appendChild(rgbLabel);
+      paletteGrid.appendChild(div);
+    });
+
+    // Generate QR modules
+    function getQRModules(data) {
+      const qr = qrcode(0, 'M');
+      qr.addData(data);
+      qr.make();
+      const count = qr.getModuleCount();
+      const modules = [];
+      for (let r = 0; r < count; r++) {
+        modules[r] = [];
+        for (let c = 0; c < count; c++) {
+          modules[r][c] = qr.isDark(r, c) ? 1 : 0;
+        }
+      }
+      return { modules, count };
+    }
+
+    // Check if position is finder/timing pattern
+    function isFinderOrTiming(row, col, size) {
+      // Top-left finder (includes separator)
+      if (row < 8 && col < 8) return true;
+      // Top-right finder
+      if (row < 8 && col >= size - 8) return true;
+      // Bottom-left finder
+      if (row >= size - 8 && col < 8) return true;
+      // Timing patterns
+      if (row === 6 || col === 6) return true;
+      // Alignment pattern for larger QR codes
+      if (size > 25) {
+        const alignPos = size - 7;
+        if (row >= alignPos - 2 && row <= alignPos + 2 &&
+            col >= alignPos - 2 && col <= alignPos + 2) return true;
+      }
+      return false;
+    }
+
+    // Pre-generate QR modules for each channel
+    const qrRed = getQRModules(DATA_RED);
+    const qrGreen = getQRModules(DATA_GREEN);
+    const qrBlue = getQRModules(DATA_BLUE);
+    const moduleCount = qrRed.count;
+
+    const canvas = document.getElementById('compositeCanvas');
+    const ctx = canvas.getContext('2d');
+    const noteSizeEl = document.getElementById('noteSize');
+    const noteMarginEl = document.getElementById('noteMargin');
+
+    // Fixed margin around QR code
+    const MARGIN = 10;
+
+    // Render QR code at specified canvas size using palette lookup
+    function renderQR(canvasSize) {
+      // QR fills canvas minus margin on each side
+      const qrSize = canvasSize - MARGIN * 2;
+
+      // Update canvas dimensions
+      canvas.width = canvasSize;
+      canvas.height = canvasSize;
+
+      // Fill with black background
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, canvasSize, canvasSize);
+
+      // Draw QR code centered with margin
+      const cellSize = qrSize / moduleCount;
+      const qrOffsetX = MARGIN;
+      const qrOffsetY = MARGIN;
+
+      for (let row = 0; row < moduleCount; row++) {
+        for (let col = 0; col < moduleCount; col++) {
+          // Get bit values from each channel's QR code
+          // Dark module (1) = bit ON, Light module (0) = bit OFF
+          const rBit = qrRed.modules[row][col];    // bit 2
+          const gBit = qrGreen.modules[row][col];  // bit 1
+          const bBit = qrBlue.modules[row][col];   // bit 0
+
+          let color;
+          if (isFinderOrTiming(row, col, moduleCount)) {
+            // Keep finder patterns black/white for detection
+            color = rBit ? [0, 0, 0] : [255, 255, 255];
+          } else {
+            // Palette lookup: combine bits into 3-bit index, then lookup color
+            const paletteIndex = rBit * 4 + gBit * 2 + bBit;
+            color = getPaletteColor(paletteIndex);
+          }
+
+          const x = qrOffsetX + col * cellSize;
+          const yPos = qrOffsetY + row * cellSize;
+
+          ctx.fillStyle = 'rgb(' + color.join(',') + ')';
+          ctx.fillRect(x, yPos, cellSize + 0.5, cellSize + 0.5);
+        }
+      }
+
+      // Update note display
+      noteSizeEl.textContent = canvasSize + 'x' + canvasSize;
+      noteMarginEl.textContent = MARGIN;
+
+      console.log('Palette-RGB Sender rendered at', canvasSize + 'x' + canvasSize);
+      console.log('Module count:', moduleCount);
+      console.log('Margin:', MARGIN, 'px');
+      console.log('Approach: 8-color palette lookup');
+    }
+
+    // Create size selector
+    const getSize = createDisplaySizeSelector(
+      document.getElementById('controls'),
+      (newSize) => renderQR(newSize),
+      440 // default size
+    );
+
+    // Initial render
+    renderQR(440);
+
+    console.log('Palette-RGB Sender ready');
+    console.log('Palette colors:', PALETTE.map(p => p.name).join(', '));
+    console.log('Decoding approach: Nearest-neighbor classification to palette');
+  </script>
+</body>
+</html>

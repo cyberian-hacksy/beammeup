@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QRGB-Corner Receiver</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px;
+    }
+    h1 { margin-bottom: 5px; color: #00d4ff; font-size: 1.4em; }
+    .description {
+      text-align: center;
+      margin-bottom: 10px;
+      color: #aaa;
+      font-size: 0.85em;
+    }
+    #video {
+      width: 100%;
+      max-width: 400px;
+      border: 2px solid #333;
+      border-radius: 8px;
+    }
+    #captureCanvas { display: none; }
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin: 10px 0;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      padding: 10px 20px;
+      background: #00d4ff;
+      color: #1a1a2e;
+      border: none;
+      border-radius: 4px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button:disabled { background: #333; color: #666; }
+    .calibration-status {
+      width: 100%;
+      max-width: 400px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      margin: 10px 0;
+      font-size: 11px;
+    }
+    .calibration-status h3 {
+      color: #00d4ff;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .corner-patches {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5px;
+    }
+    .corner-patch {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px;
+      background: #1a1a2e;
+      border-radius: 4px;
+    }
+    .corner-patch .color-box {
+      width: 30px;
+      height: 30px;
+      border-radius: 4px;
+      border: 1px solid #444;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: bold;
+    }
+    .corner-patch .info {
+      font-size: 9px;
+    }
+    .corner-patch .info .label { color: #888; }
+    .corner-patch .info .values { color: #fff; font-family: monospace; }
+    .status-text {
+      text-align: center;
+      margin-top: 8px;
+      padding: 5px;
+      background: #1a1a2e;
+      border-radius: 4px;
+    }
+    .status-text.good { color: #6bff6b; }
+    .status-text.bad { color: #ff6b6b; }
+    .status-text.detecting { color: #ffff6b; }
+    .confidence-stats {
+      display: flex;
+      gap: 15px;
+      justify-content: center;
+      margin-top: 8px;
+      padding: 8px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      font-size: 10px;
+    }
+    .confidence-stats .high { color: #00ff00; }
+    .confidence-stats .medium { color: #ffff00; }
+    .confidence-stats .low { color: #ff0000; }
+    .channels {
+      display: flex;
+      gap: 8px;
+      margin: 10px 0;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .channel { text-align: center; }
+    .channel canvas {
+      border: 2px solid #333;
+      border-radius: 4px;
+      width: 110px;
+      height: 110px;
+    }
+    .channel p { margin-top: 4px; font-size: 10px; }
+    .channel.red p { color: #ff4444; }
+    .channel.green p { color: #44ff44; }
+    .channel.blue p { color: #4444ff; }
+    .results {
+      width: 100%;
+      max-width: 400px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      font-size: 11px;
+    }
+    .result {
+      margin: 5px 0;
+      padding: 6px;
+      border-radius: 4px;
+      background: #1a1a2e;
+    }
+    .result.success { border-left: 3px solid #6bff6b; }
+    .result.failure { border-left: 3px solid #ff6b6b; }
+    .result .label { font-weight: bold; margin-bottom: 3px; }
+    .result.red .label { color: #ff4444; }
+    .result.green .label { color: #44ff44; }
+    .result.blue .label { color: #4444ff; }
+    .result .data { word-break: break-all; color: #fff; font-size: 10px; }
+    .stats-bar {
+      margin-top: 10px;
+      padding: 8px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      text-align: center;
+      font-size: 11px;
+    }
+    .debug-info {
+      margin-top: 10px;
+      padding: 8px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      font-size: 9px;
+      color: #666;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <h1>QRGB-Corner Receiver</h1>
+  <p class="description">Corner calibration with RGB additive model and confidence metrics</p>
+
+  <div class="controls">
+    <button id="startBtn">Start Camera</button>
+  </div>
+
+  <video id="video" autoplay playsinline></video>
+  <canvas id="captureCanvas"></canvas>
+
+  <div class="calibration-status">
+    <h3>Corner Calibration (from QR boundary)</h3>
+    <div class="corner-patches">
+      <div class="corner-patch" id="cornerTL">
+        <div class="color-box" style="background:#333">W</div>
+        <div class="info">
+          <div class="label">Top-Left (White)</div>
+          <div class="values">---</div>
+        </div>
+      </div>
+      <div class="corner-patch" id="cornerTR">
+        <div class="color-box" style="background:#333">R</div>
+        <div class="info">
+          <div class="label">Top-Right (Red)</div>
+          <div class="values">---</div>
+        </div>
+      </div>
+      <div class="corner-patch" id="cornerBL">
+        <div class="color-box" style="background:#333">G</div>
+        <div class="info">
+          <div class="label">Bottom-Left (Green)</div>
+          <div class="values">---</div>
+        </div>
+      </div>
+      <div class="corner-patch" id="cornerBR">
+        <div class="color-box" style="background:#333">B</div>
+        <div class="info">
+          <div class="label">Bottom-Right (Blue)</div>
+          <div class="values">---</div>
+        </div>
+      </div>
+    </div>
+    <div class="status-text detecting" id="calibStatus">Looking for QR code...</div>
+    <div class="confidence-stats">
+      <span>Confidence: avg <span id="avgConfidence">-</span></span>
+      <span>High: <span id="highCount" class="high">-</span></span>
+      <span>Medium: <span id="medCount" class="medium">-</span></span>
+      <span>Low: <span id="lowCount" class="low">-</span></span>
+    </div>
+    <div class="debug-info" id="debugInfo">QR: not found</div>
+  </div>
+
+  <div class="channels">
+    <div class="channel red">
+      <canvas id="redChannel" width="110" height="110"></canvas>
+      <p>Red</p>
+    </div>
+    <div class="channel green">
+      <canvas id="greenChannel" width="110" height="110"></canvas>
+      <p>Green</p>
+    </div>
+    <div class="channel blue">
+      <canvas id="blueChannel" width="110" height="110"></canvas>
+      <p>Blue</p>
+    </div>
+  </div>
+
+  <div class="results">
+    <div class="result red">
+      <div class="label">Red Channel:</div>
+      <div id="redResult" class="data">-</div>
+    </div>
+    <div class="result green">
+      <div class="label">Green Channel:</div>
+      <div id="greenResult" class="data">-</div>
+    </div>
+    <div class="result blue">
+      <div class="label">Blue Channel:</div>
+      <div id="blueResult" class="data">-</div>
+    </div>
+    <div class="stats-bar">
+      Scans: <span id="scanCount">0</span> |
+      Success: <span id="successRate">0/0/0</span>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script type="module">
+    import { gammaDecode } from './shared/gamma.js';
+    import { paletteConfidence, confidenceLevel } from './shared/confidence.js';
+    import { sampleRegion } from './shared/calibration.js';
+
+    const video = document.getElementById('video');
+    const captureCanvas = document.getElementById('captureCanvas');
+    const captureCtx = captureCanvas.getContext('2d', { willReadFrequently: true });
+    const startBtn = document.getElementById('startBtn');
+
+    const redCanvas = document.getElementById('redChannel');
+    const greenCanvas = document.getElementById('greenChannel');
+    const blueCanvas = document.getElementById('blueChannel');
+    const redCtx = redCanvas.getContext('2d');
+    const greenCtx = greenCanvas.getContext('2d');
+    const blueCtx = blueCanvas.getContext('2d');
+
+    let scanning = false;
+    let scanCount = 0;
+    let successCounts = { red: 0, green: 0, blue: 0 };
+
+    // Calibration data from corner patches
+    // corners[0] = White (TL), corners[1] = Red (TR), corners[2] = Green (BL), corners[3] = Blue (BR)
+    let corners = [null, null, null, null];
+
+    // Reusable buffers to avoid per-frame allocations
+    let channelBuffers = { red: null, green: null, blue: null };
+    let lastBufferSize = 0;
+
+    // Cached canvas for drawPreview
+    const previewTempCanvas = document.createElement('canvas');
+    const previewTempCtx = previewTempCanvas.getContext('2d');
+
+    // All 8 RGB color combinations (additive model)
+    // RGB: channel ON = bit 1 (adds light to black)
+    const RGB_COLORS = [
+      [0, 0, 0], // Black (no channels)
+      [1, 0, 0], // Red
+      [0, 1, 0], // Green
+      [0, 0, 1], // Blue
+      [1, 1, 0], // Yellow (R+G)
+      [1, 0, 1], // Magenta (R+B)
+      [0, 1, 1], // Cyan (G+B)
+      [1, 1, 1]  // White (R+G+B)
+    ];
+
+    startBtn.addEventListener('click', async () => {
+      try {
+        video.srcObject = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 720 }, height: { ideal: 720 } }
+        });
+        video.play();
+        startBtn.disabled = true;
+        startBtn.textContent = 'Scanning...';
+        scanning = true;
+        requestAnimationFrame(scanFrame);
+      } catch (err) {
+        alert('Camera error: ' + err.message);
+      }
+    });
+
+    // Build expected RGB for each color combination using linear interpolation with gamma decoding
+    // RGB additive model: color = Black + r*(R-Black) + g*(G-Black) + b*(B-Black)
+    // Where Black is derived as the opposite of White in the calibration
+    function buildExpectedColors() {
+      if (!corners[0] || !corners[1] || !corners[2] || !corners[3]) return null;
+
+      // Apply gamma decoding to convert from sRGB to linear space
+      const W_linear = gammaDecode(corners[0][0], corners[0][1], corners[0][2]);
+      const R_linear = gammaDecode(corners[1][0], corners[1][1], corners[1][2]);
+      const G_linear = gammaDecode(corners[2][0], corners[2][1], corners[2][2]);
+      const B_linear = gammaDecode(corners[3][0], corners[3][1], corners[3][2]);
+
+      // For RGB additive model, we need to derive Black
+      // Black = W - R - G - B + 2*common_base (since R,G,B each contain partial white)
+      // Simpler approach: Black_component = max(0, R + G + B - 2*W) or infer from pattern
+      // Best approach: Black = R + G + B - 2*W (in linear space, clamped to 0)
+      // Actually for display-based RGB: Black is close to [0,0,0] but camera sees ambient
+      // Let's derive Black as: if all channels OFF, we get background/black
+      // Estimate Black from: W = Black + (R-Black) + (G-Black) + (B-Black) = R + G + B - 2*Black
+      // So Black = (R + G + B - W) / 2
+      const Black_linear = [
+        Math.max(0, (R_linear[0] + G_linear[0] + B_linear[0] - W_linear[0]) / 2),
+        Math.max(0, (R_linear[1] + G_linear[1] + B_linear[1] - W_linear[1]) / 2),
+        Math.max(0, (R_linear[2] + G_linear[2] + B_linear[2] - W_linear[2]) / 2)
+      ];
+
+      // Linear interpolation in linear color space for RGB additive:
+      // RGB(r,g,b) = Black + r*(R-Black) + g*(G-Black) + b*(B-Black)
+      const expected = [];
+      for (const rgb of RGB_COLORS) {
+        const r_bit = rgb[0], g_bit = rgb[1], b_bit = rgb[2];
+        const out_r = Black_linear[0] + r_bit * (R_linear[0] - Black_linear[0]) + g_bit * (G_linear[0] - Black_linear[0]) + b_bit * (B_linear[0] - Black_linear[0]);
+        const out_g = Black_linear[1] + r_bit * (R_linear[1] - Black_linear[1]) + g_bit * (G_linear[1] - Black_linear[1]) + b_bit * (B_linear[1] - Black_linear[1]);
+        const out_b = Black_linear[2] + r_bit * (R_linear[2] - Black_linear[2]) + g_bit * (G_linear[2] - Black_linear[2]) + b_bit * (B_linear[2] - Black_linear[2]);
+        // Store as linear values for distance calculations
+        expected.push([out_r, out_g, out_b]);
+      }
+
+      return expected;
+    }
+
+    // Classify color using nearest neighbor to expected colors, returns RGB pattern and confidence
+    function classifyColor(r, g, b, expectedColors) {
+      // Convert input to linear space for comparison
+      const [r_linear, g_linear, b_linear] = gammaDecode(r, g, b);
+
+      let minDist = Infinity;
+      let bestIdx = 0;
+      const distances = [];
+
+      for (let i = 0; i < 8; i++) {
+        const e = expectedColors[i];
+        const dist = Math.sqrt(
+          (r_linear - e[0]) ** 2 +
+          (g_linear - e[1]) ** 2 +
+          (b_linear - e[2]) ** 2
+        );
+        distances.push(dist);
+        if (dist < minDist) {
+          minDist = dist;
+          bestIdx = i;
+        }
+      }
+
+      const confidence = paletteConfidence(distances);
+      return { rgb: RGB_COLORS[bestIdx], confidence };
+    }
+
+    // Convert image to grayscale for QR detection
+    function toGrayscale(imageData) {
+      const gray = new Uint8ClampedArray(imageData.width * imageData.height * 4);
+      const pixels = imageData.data;
+
+      for (let i = 0; i < pixels.length; i += 4) {
+        const g = Math.round(pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114);
+        gray[i] = g;
+        gray[i + 1] = g;
+        gray[i + 2] = g;
+        gray[i + 3] = 255;
+      }
+
+      return gray;
+    }
+
+    // Update corner patch display
+    function updateCornerDisplay(id, rgb) {
+      const el = document.getElementById(id);
+      const box = el.querySelector('.color-box');
+      const values = el.querySelector('.values');
+
+      if (rgb) {
+        box.style.background = 'rgb(' + rgb.join(',') + ')';
+        box.style.color = (rgb[0] + rgb[1] + rgb[2]) > 380 ? '#000' : '#fff';
+        values.textContent = rgb.join(', ');
+      }
+    }
+
+    // Reset confidence display when no QR detected
+    function resetConfidenceDisplay() {
+      document.getElementById('avgConfidence').textContent = '-';
+      document.getElementById('highCount').textContent = '-';
+      document.getElementById('medCount').textContent = '-';
+      document.getElementById('lowCount').textContent = '-';
+    }
+
+    function scanFrame() {
+      if (!scanning) return;
+
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const size = Math.min(vw, vh);
+
+        captureCanvas.width = size;
+        captureCanvas.height = size;
+
+        const offsetX = (vw - size) / 2;
+        const offsetY = (vh - size) / 2;
+        captureCtx.drawImage(video, offsetX, offsetY, size, size, 0, 0, size, size);
+
+        const imageData = captureCtx.getImageData(0, 0, size, size);
+        const pixels = imageData.data;
+
+        // Step 1: Convert to grayscale and try to find QR code
+        const grayData = toGrayscale(imageData);
+        const qrDetect = jsQR(grayData, size, size);
+
+        const debugInfo = document.getElementById('debugInfo');
+        const calibStatus = document.getElementById('calibStatus');
+
+        if (!qrDetect) {
+          debugInfo.textContent = 'QR: not found';
+          calibStatus.textContent = 'Looking for QR code...';
+          calibStatus.className = 'status-text detecting';
+          resetConfidenceDisplay();
+          requestAnimationFrame(scanFrame);
+          return;
+        }
+
+        // Step 2: QR found! Calculate the bounding box
+        const loc = qrDetect.location;
+        const topLeft = loc.topLeftCorner;
+        const topRight = loc.topRightCorner;
+        const bottomLeft = loc.bottomLeftCorner;
+        const bottomRight = loc.bottomRightCorner;
+
+        // Calculate QR code bounds
+        const qrLeft = Math.min(topLeft.x, bottomLeft.x);
+        const qrRight = Math.max(topRight.x, bottomRight.x);
+        const qrTop = Math.min(topLeft.y, topRight.y);
+        const qrBottom = Math.max(bottomLeft.y, bottomRight.y);
+        const qrWidth = qrRight - qrLeft;
+        const qrHeight = qrBottom - qrTop;
+
+        debugInfo.textContent = 'QR: ' + Math.round(qrLeft) + ',' + Math.round(qrTop) +
+          ' size: ' + Math.round(qrWidth) + 'x' + Math.round(qrHeight);
+
+        // Step 3: Calculate corner patch positions
+        // Sender layout: 440x440 total, 20px corners, 400px QR in center
+        // Corner ratio: 20/440 = ~4.5% of total, or 20/400 = 5% of QR size
+        const patchRatio = 0.05; // Corner patch is ~5% of QR size
+        const patchSize = qrWidth * patchRatio;
+
+        // Corner positions (outside QR bounds)
+        const cornerPositions = [
+          { x: qrLeft - patchSize, y: qrTop - patchSize, id: 'cornerTL' },     // White
+          { x: qrRight, y: qrTop - patchSize, id: 'cornerTR' },                 // Red
+          { x: qrLeft - patchSize, y: qrBottom, id: 'cornerBL' },               // Green
+          { x: qrRight, y: qrBottom, id: 'cornerBR' }                           // Blue
+        ];
+
+        // Step 4: Sample corner patches
+        let allCornersValid = true;
+        for (let i = 0; i < 4; i++) {
+          const pos = cornerPositions[i];
+          // Check if patch is within image bounds
+          if (pos.x < 0 || pos.y < 0 || pos.x + patchSize > size || pos.y + patchSize > size) {
+            allCornersValid = false;
+            corners[i] = null;
+          } else {
+            corners[i] = sampleRegion(imageData, pos.x, pos.y, patchSize, patchSize);
+            if (!corners[i]) allCornersValid = false;
+          }
+          updateCornerDisplay(pos.id, corners[i]);
+        }
+
+        if (!allCornersValid) {
+          calibStatus.textContent = 'QR found but corners not visible - zoom out';
+          calibStatus.className = 'status-text bad';
+          resetConfidenceDisplay();
+          requestAnimationFrame(scanFrame);
+          return;
+        }
+
+        // Step 5: Validate calibration (basic sanity checks)
+        const wLum = corners[0][0] + corners[0][1] + corners[0][2];
+        const rLum = corners[1][0] + corners[1][1] + corners[1][2];
+        const gLum = corners[2][0] + corners[2][1] + corners[2][2];
+        const bLum = corners[3][0] + corners[3][1] + corners[3][2];
+
+        // White should be brightest
+        if (wLum < Math.max(rLum, gLum, bLum)) {
+          calibStatus.textContent = 'Calibration issue: white not brightest';
+          calibStatus.className = 'status-text bad';
+        } else {
+          calibStatus.textContent = 'Calibration OK - processing...';
+          calibStatus.className = 'status-text good';
+        }
+
+        // Step 6: Build expected colors from calibration (with gamma decoding)
+        const expectedColors = buildExpectedColors();
+        if (!expectedColors) {
+          requestAnimationFrame(scanFrame);
+          return;
+        }
+
+        // Step 7: Process pixels using calibrated nearest-neighbor with confidence tracking
+        // Reuse buffers if size unchanged, otherwise allocate new ones
+        const bufferSize = size * size * 4;
+        if (bufferSize !== lastBufferSize) {
+          channelBuffers.red = new Uint8ClampedArray(bufferSize);
+          channelBuffers.green = new Uint8ClampedArray(bufferSize);
+          channelBuffers.blue = new Uint8ClampedArray(bufferSize);
+          lastBufferSize = bufferSize;
+        }
+        const redData = channelBuffers.red;
+        const greenData = channelBuffers.green;
+        const blueData = channelBuffers.blue;
+
+        // Sample confidence from every Nth pixel to avoid unbounded array growth
+        const CONFIDENCE_SAMPLE_STEP = 10;
+        let confidenceSum = 0;
+        let confidenceCount = 0;
+        let highCount = 0, mediumCount = 0, lowCount = 0;
+
+        for (let py = 0; py < size; py++) {
+          for (let px = 0; px < size; px++) {
+            const idx = (py * size + px) * 4;
+            const r = pixels[idx];
+            const g = pixels[idx + 1];
+            const b = pixels[idx + 2];
+
+            // Only process pixels inside the QR area
+            let rgb;
+            if (px >= qrLeft && px < qrRight && py >= qrTop && py < qrBottom) {
+              const result = classifyColor(r, g, b, expectedColors);
+              rgb = result.rgb;
+              // Sample confidence at regular intervals
+              if ((px + py) % CONFIDENCE_SAMPLE_STEP === 0) {
+                confidenceSum += result.confidence;
+                confidenceCount++;
+                const level = confidenceLevel(result.confidence);
+                if (level === 'high') highCount++;
+                else if (level === 'medium') mediumCount++;
+                else lowCount++;
+              }
+            } else {
+              // Outside QR - treat as white (all channels ON for RGB additive)
+              rgb = [1, 1, 1];
+            }
+
+            // Create binary channel images
+            // RGB additive: channel ON (bit=1) = bright pixel (white in QR = light module)
+            // For QR decoding, dark modules = data, so we invert:
+            // bit=1 (channel ON) -> dark (0), bit=0 (channel OFF) -> light (255)
+            const rGray = rgb[0] ? 0 : 255;
+            const gGray = rgb[1] ? 0 : 255;
+            const bGray = rgb[2] ? 0 : 255;
+
+            redData[idx] = rGray;
+            redData[idx + 1] = rGray;
+            redData[idx + 2] = rGray;
+            redData[idx + 3] = 255;
+
+            greenData[idx] = gGray;
+            greenData[idx + 1] = gGray;
+            greenData[idx + 2] = gGray;
+            greenData[idx + 3] = 255;
+
+            blueData[idx] = bGray;
+            blueData[idx + 1] = bGray;
+            blueData[idx + 2] = bGray;
+            blueData[idx + 3] = 255;
+          }
+        }
+
+        // Update confidence display using sampled values
+        if (confidenceCount > 0) {
+          const avgConfidence = confidenceSum / confidenceCount;
+          document.getElementById('avgConfidence').textContent = (avgConfidence * 100).toFixed(1) + '%';
+          document.getElementById('highCount').textContent = highCount;
+          document.getElementById('medCount').textContent = mediumCount;
+          document.getElementById('lowCount').textContent = lowCount;
+        }
+
+        // Step 8: Draw channel previews
+        drawPreview(redData, size, redCtx, 110);
+        drawPreview(greenData, size, greenCtx, 110);
+        drawPreview(blueData, size, blueCtx, 110);
+
+        // Step 9: Try to decode each channel
+        const redCode = jsQR(redData, size, size);
+        const greenCode = jsQR(greenData, size, size);
+        const blueCode = jsQR(blueData, size, size);
+
+        scanCount++;
+        updateResult('redResult', redCode, 'red');
+        updateResult('greenResult', greenCode, 'green');
+        updateResult('blueResult', blueCode, 'blue');
+
+        document.getElementById('scanCount').textContent = scanCount;
+        document.getElementById('successRate').textContent =
+          successCounts.red + '/' + successCounts.green + '/' + successCounts.blue;
+      }
+
+      requestAnimationFrame(scanFrame);
+    }
+
+    function drawPreview(data, srcSize, ctx, dstSize) {
+      // Use cached canvas to avoid per-frame DOM allocations
+      if (previewTempCanvas.width !== srcSize || previewTempCanvas.height !== srcSize) {
+        previewTempCanvas.width = srcSize;
+        previewTempCanvas.height = srcSize;
+      }
+      previewTempCtx.putImageData(new ImageData(data, srcSize, srcSize), 0, 0);
+      ctx.drawImage(previewTempCanvas, 0, 0, dstSize, dstSize);
+    }
+
+    function updateResult(id, code, channel) {
+      const el = document.getElementById(id);
+      const resultDiv = el.parentElement;
+      if (code) {
+        el.textContent = code.data;
+        resultDiv.classList.add('success');
+        resultDiv.classList.remove('failure');
+        successCounts[channel]++;
+      } else {
+        el.textContent = 'No QR detected';
+        resultDiv.classList.add('failure');
+        resultDiv.classList.remove('success');
+      }
+    }
+
+    console.log('QRGB-Corner Receiver ready');
+    console.log('Workflow: Grayscale QR detect -> Corner calibration (W/R/G/B) -> RGB additive model -> Channel decode');
+  </script>
+</body>
+</html>

@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FMT Sender</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    h1 { margin-bottom: 10px; color: #00d4ff; }
+    .description {
+      max-width: 600px;
+      text-align: center;
+      margin-bottom: 20px;
+      color: #aaa;
+      font-size: 0.9em;
+    }
+    .controls {
+      margin-bottom: 15px;
+    }
+    .composite-section {
+      text-align: center;
+      margin: 20px 0;
+    }
+    .composite-section h2 {
+      margin-bottom: 15px;
+      color: #00d4ff;
+    }
+    #compositeCanvas {
+      border: 3px solid #00d4ff;
+      border-radius: 8px;
+      image-rendering: pixelated;
+    }
+    .legend {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin: 20px 0;
+      max-width: 600px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      padding: 4px 8px;
+      background: #252540;
+      border-radius: 4px;
+    }
+    .legend-box {
+      width: 20px;
+      height: 20px;
+      border-radius: 3px;
+      border: 1px solid #444;
+    }
+    .data-display {
+      margin-top: 15px;
+      padding: 15px;
+      background: #252540;
+      border-radius: 8px;
+      max-width: 500px;
+      font-family: monospace;
+      font-size: 11px;
+    }
+    .data-display div { margin: 4px 0; }
+    .data-display .red { color: #ff6666; }
+    .data-display .green { color: #66ff66; }
+    .data-display .blue { color: #6666ff; }
+    .note {
+      margin-top: 15px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      font-size: 11px;
+      color: #888;
+      max-width: 600px;
+      text-align: center;
+    }
+    .approach-comparison {
+      margin-top: 15px;
+      padding: 15px;
+      background: #1a2a3a;
+      border: 1px solid #00d4ff33;
+      border-radius: 8px;
+      max-width: 600px;
+      font-size: 12px;
+    }
+    .approach-comparison h3 {
+      color: #00d4ff;
+      margin-bottom: 10px;
+      font-size: 13px;
+    }
+    .approach-comparison ul {
+      list-style: none;
+      padding: 0;
+    }
+    .approach-comparison li {
+      margin: 5px 0;
+      padding-left: 15px;
+      position: relative;
+    }
+    .approach-comparison li::before {
+      content: "-";
+      position: absolute;
+      left: 0;
+      color: #00d4ff;
+    }
+  </style>
+</head>
+<body>
+  <h1>FMT Sender</h1>
+  <p class="description">
+    <strong>Format Mathematical Transform:</strong> Direct mathematical mapping from 3-bit values to RGB colors.<br>
+    Each module encodes a 3-bit value (0-7) as one of 8 colors using the formula:<br>
+    <code>R = bit2, G = bit1, B = bit0</code> where each bit maps to 0 or 255.
+  </p>
+
+  <div id="controls" class="controls"></div>
+
+  <div class="composite-section">
+    <h2>FMT Color QR Code</h2>
+    <canvas id="compositeCanvas" width="440" height="440"></canvas>
+  </div>
+
+  <div class="legend" id="legend"></div>
+
+  <div class="data-display">
+    <div class="red">Red channel (bit 2): <span id="dataRed"></span></div>
+    <div class="green">Green channel (bit 1): <span id="dataGreen"></span></div>
+    <div class="blue">Blue channel (bit 0): <span id="dataBlue"></span></div>
+  </div>
+
+  <div class="approach-comparison">
+    <h3>FMT vs QRGB Approach</h3>
+    <ul>
+      <li><strong>FMT:</strong> Single QR code, mathematical transform maps 3-bit value to RGB</li>
+      <li><strong>QRGB:</strong> Three separate QR codes composited by channel layers</li>
+      <li>Both produce identical visual output (same 8-color palette)</li>
+      <li>FMT uses: encode(v) = [floor(v/4)%2*255, floor(v/2)%2*255, v%2*255]</li>
+    </ul>
+  </div>
+
+  <div class="note" id="noteDisplay">
+    <strong>Layout:</strong> <span id="noteSize">440x440</span> square with <span id="noteMargin">10</span>px margin.<br>
+    Finder patterns remain black/white for detection compatibility.
+  </div>
+
+  <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
+  <script type="module">
+    import { createDisplaySizeSelector, displaySizeStyles } from './shared/display-size.js';
+
+    // Inject display size selector styles
+    const style = document.createElement('style');
+    style.textContent = displaySizeStyles;
+    document.head.appendChild(style);
+
+    // Test data for each channel (same as QRGB for comparison)
+    const DATA_RED = 'RED:QRGB:V1:12345';
+    const DATA_GREEN = 'GREEN:QRGB:V1:67890';
+    const DATA_BLUE = 'BLUE:QRGB:V1:ABCDE';
+
+    document.getElementById('dataRed').textContent = DATA_RED;
+    document.getElementById('dataGreen').textContent = DATA_GREEN;
+    document.getElementById('dataBlue').textContent = DATA_BLUE;
+
+    // FMT Mathematical Transform: 3-bit value (0-7) to RGB color
+    // value = 0bRGB where R=bit2, G=bit1, B=bit0
+    function encode(value) {
+      const r = Math.floor(value / 4) % 2;  // bit 2
+      const g = Math.floor(value / 2) % 2;  // bit 1
+      const b = value % 2;                   // bit 0
+      return [r * 255, g * 255, b * 255];
+    }
+
+    // All 8 RGB combinations for legend (ordered by 3-bit value)
+    const ALL_COLORS = [
+      { value: 0, binary: '000', label: 'Black (0)' },
+      { value: 1, binary: '001', label: 'Blue (1)' },
+      { value: 2, binary: '010', label: 'Green (2)' },
+      { value: 3, binary: '011', label: 'Cyan (3)' },
+      { value: 4, binary: '100', label: 'Red (4)' },
+      { value: 5, binary: '101', label: 'Magenta (5)' },
+      { value: 6, binary: '110', label: 'Yellow (6)' },
+      { value: 7, binary: '111', label: 'White (7)' }
+    ];
+
+    // Pre-compute colors using FMT encode function
+    ALL_COLORS.forEach(c => { c.color = encode(c.value); });
+
+    // Generate legend
+    const legendEl = document.getElementById('legend');
+    ALL_COLORS.forEach((c) => {
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+
+      const box = document.createElement('div');
+      box.className = 'legend-box';
+      box.style.background = 'rgb(' + c.color.join(',') + ')';
+
+      const label = document.createElement('span');
+      label.textContent = c.label;
+
+      item.appendChild(box);
+      item.appendChild(label);
+      legendEl.appendChild(item);
+    });
+
+    // Generate QR modules
+    function getQRModules(data) {
+      const qr = qrcode(0, 'M');
+      qr.addData(data);
+      qr.make();
+      const count = qr.getModuleCount();
+      const modules = [];
+      for (let r = 0; r < count; r++) {
+        modules[r] = [];
+        for (let c = 0; c < count; c++) {
+          modules[r][c] = qr.isDark(r, c) ? 1 : 0;
+        }
+      }
+      return { modules, count };
+    }
+
+    // Check if position is finder/timing pattern
+    function isFinderOrTiming(row, col, size) {
+      // Top-left finder (includes separator)
+      if (row < 8 && col < 8) return true;
+      // Top-right finder
+      if (row < 8 && col >= size - 8) return true;
+      // Bottom-left finder
+      if (row >= size - 8 && col < 8) return true;
+      // Timing patterns
+      if (row === 6 || col === 6) return true;
+      // Alignment pattern for larger QR codes
+      if (size > 25) {
+        const alignPos = size - 7;
+        if (row >= alignPos - 2 && row <= alignPos + 2 &&
+            col >= alignPos - 2 && col <= alignPos + 2) return true;
+      }
+      return false;
+    }
+
+    // Pre-generate QR modules for each channel
+    const qrRed = getQRModules(DATA_RED);
+    const qrGreen = getQRModules(DATA_GREEN);
+    const qrBlue = getQRModules(DATA_BLUE);
+    const moduleCount = qrRed.count;
+
+    const canvas = document.getElementById('compositeCanvas');
+    const ctx = canvas.getContext('2d');
+    const noteSizeEl = document.getElementById('noteSize');
+    const noteMarginEl = document.getElementById('noteMargin');
+
+    // Fixed margin around QR code
+    const MARGIN = 10;
+
+    // Render QR code at specified canvas size using FMT approach
+    function renderQR(canvasSize) {
+      // QR fills canvas minus margin on each side
+      const qrSize = canvasSize - MARGIN * 2;
+
+      // Update canvas dimensions
+      canvas.width = canvasSize;
+      canvas.height = canvasSize;
+
+      // Fill with black background
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, canvasSize, canvasSize);
+
+      // Draw QR code centered with margin
+      const cellSize = qrSize / moduleCount;
+      const qrOffsetX = MARGIN;
+      const qrOffsetY = MARGIN;
+
+      for (let row = 0; row < moduleCount; row++) {
+        for (let col = 0; col < moduleCount; col++) {
+          // Get bit values from each channel's QR code
+          // Dark module (1) = bit ON, Light module (0) = bit OFF
+          const rBit = qrRed.modules[row][col];    // bit 2
+          const gBit = qrGreen.modules[row][col];  // bit 1
+          const bBit = qrBlue.modules[row][col];   // bit 0
+
+          let color;
+          if (isFinderOrTiming(row, col, moduleCount)) {
+            // Keep finder patterns black/white for detection
+            color = rBit ? [0, 0, 0] : [255, 255, 255];
+          } else {
+            // FMT: Combine bits into 3-bit value, then encode to RGB
+            // value = R*4 + G*2 + B*1
+            const value = rBit * 4 + gBit * 2 + bBit;
+            color = encode(value);
+          }
+
+          const x = qrOffsetX + col * cellSize;
+          const yPos = qrOffsetY + row * cellSize;
+
+          ctx.fillStyle = 'rgb(' + color.join(',') + ')';
+          ctx.fillRect(x, yPos, cellSize + 0.5, cellSize + 0.5);
+        }
+      }
+
+      // Update note display
+      noteSizeEl.textContent = canvasSize + 'x' + canvasSize;
+      noteMarginEl.textContent = MARGIN;
+
+      console.log('FMT Sender rendered at', canvasSize + 'x' + canvasSize);
+      console.log('Module count:', moduleCount);
+      console.log('Margin:', MARGIN, 'px');
+      console.log('Approach: Mathematical transform (3-bit value to RGB)');
+    }
+
+    // Create size selector
+    const getSize = createDisplaySizeSelector(
+      document.getElementById('controls'),
+      (newSize) => renderQR(newSize),
+      440 // default size
+    );
+
+    // Initial render
+    renderQR(440);
+
+    console.log('FMT Sender ready');
+    console.log('FMT encode function: encode(v) = [floor(v/4)%2*255, floor(v/2)%2*255, v%2*255]');
+  </script>
+</body>
+</html>

@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Palette-RGB Receiver</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px;
+    }
+    h1 { margin-bottom: 5px; color: #00d4ff; font-size: 1.4em; }
+    .description {
+      text-align: center;
+      margin-bottom: 10px;
+      color: #aaa;
+      font-size: 0.85em;
+    }
+    #video {
+      width: 100%;
+      max-width: 400px;
+      border: 2px solid #333;
+      border-radius: 8px;
+    }
+    #captureCanvas { display: none; }
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin: 10px 0;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      padding: 10px 20px;
+      background: #00d4ff;
+      color: #1a1a2e;
+      border: none;
+      border-radius: 4px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button:disabled { background: #333; color: #666; }
+    .palette-display {
+      width: 100%;
+      max-width: 400px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      margin: 10px 0;
+    }
+    .palette-display h3 {
+      color: #00d4ff;
+      font-size: 12px;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+    .palette-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .palette-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 5px;
+      background: #1a1a2e;
+      border-radius: 4px;
+    }
+    .palette-item .swatch {
+      width: 36px;
+      height: 36px;
+      border-radius: 4px;
+      border: 1px solid #444;
+      margin-bottom: 4px;
+    }
+    .palette-item .label {
+      font-size: 8px;
+      color: #888;
+      text-align: center;
+    }
+    .palette-item .bits {
+      font-size: 10px;
+      font-family: monospace;
+      color: #fff;
+    }
+    .calibration-status {
+      width: 100%;
+      max-width: 400px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      margin: 10px 0;
+      font-size: 11px;
+    }
+    .calibration-status h3 {
+      color: #00d4ff;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .finder-refs {
+      display: flex;
+      gap: 15px;
+      justify-content: center;
+      margin-bottom: 10px;
+    }
+    .finder-ref {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      background: #1a1a2e;
+      border-radius: 4px;
+    }
+    .finder-ref .color-box {
+      width: 30px;
+      height: 30px;
+      border-radius: 4px;
+      border: 1px solid #444;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: bold;
+    }
+    .finder-ref .info {
+      font-size: 9px;
+    }
+    .finder-ref .info .label { color: #888; }
+    .finder-ref .info .values { color: #fff; font-family: monospace; }
+    .status-text {
+      text-align: center;
+      margin-top: 8px;
+      padding: 5px;
+      background: #1a1a2e;
+      border-radius: 4px;
+    }
+    .status-text.good { color: #6bff6b; }
+    .status-text.bad { color: #ff6b6b; }
+    .status-text.detecting { color: #ffff6b; }
+    .confidence-stats {
+      display: flex;
+      gap: 15px;
+      justify-content: center;
+      margin-top: 8px;
+      padding: 8px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      font-size: 10px;
+    }
+    .confidence-stats .high { color: #00ff00; }
+    .confidence-stats .medium { color: #ffff00; }
+    .confidence-stats .low { color: #ff0000; }
+    .channels {
+      display: flex;
+      gap: 8px;
+      margin: 10px 0;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .channel { text-align: center; }
+    .channel canvas {
+      border: 2px solid #333;
+      border-radius: 4px;
+      width: 110px;
+      height: 110px;
+    }
+    .channel p { margin-top: 4px; font-size: 10px; }
+    .channel.red p { color: #ff6666; }
+    .channel.green p { color: #66ff66; }
+    .channel.blue p { color: #6666ff; }
+    .results {
+      width: 100%;
+      max-width: 400px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      font-size: 11px;
+    }
+    .result {
+      margin: 5px 0;
+      padding: 6px;
+      border-radius: 4px;
+      background: #1a1a2e;
+    }
+    .result.success { border-left: 3px solid #6bff6b; }
+    .result.failure { border-left: 3px solid #ff6b6b; }
+    .result .label { font-weight: bold; margin-bottom: 3px; }
+    .result.red .label { color: #ff6666; }
+    .result.green .label { color: #66ff66; }
+    .result.blue .label { color: #6666ff; }
+    .result .data { word-break: break-all; color: #fff; font-size: 10px; }
+    .stats-bar {
+      margin-top: 10px;
+      padding: 8px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      text-align: center;
+      font-size: 11px;
+    }
+    .debug-info {
+      margin-top: 10px;
+      padding: 8px;
+      background: #1a1a2e;
+      border-radius: 4px;
+      font-size: 9px;
+      color: #666;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <h1>Palette-RGB Receiver</h1>
+  <p class="description">Nearest-neighbor classification in linear RGB space using fixed 8-color palette</p>
+
+  <div class="palette-display">
+    <h3>8-Color RGB Palette (3-bit encoding)</h3>
+    <div class="palette-grid">
+      <div class="palette-item">
+        <div class="swatch" style="background:rgb(0,0,0)"></div>
+        <div class="bits">000</div>
+        <div class="label">Black</div>
+      </div>
+      <div class="palette-item">
+        <div class="swatch" style="background:rgb(0,0,255)"></div>
+        <div class="bits">001</div>
+        <div class="label">Blue</div>
+      </div>
+      <div class="palette-item">
+        <div class="swatch" style="background:rgb(0,255,0)"></div>
+        <div class="bits">010</div>
+        <div class="label">Green</div>
+      </div>
+      <div class="palette-item">
+        <div class="swatch" style="background:rgb(0,255,255)"></div>
+        <div class="bits">011</div>
+        <div class="label">Cyan</div>
+      </div>
+      <div class="palette-item">
+        <div class="swatch" style="background:rgb(255,0,0)"></div>
+        <div class="bits">100</div>
+        <div class="label">Red</div>
+      </div>
+      <div class="palette-item">
+        <div class="swatch" style="background:rgb(255,0,255)"></div>
+        <div class="bits">101</div>
+        <div class="label">Magenta</div>
+      </div>
+      <div class="palette-item">
+        <div class="swatch" style="background:rgb(255,255,0)"></div>
+        <div class="bits">110</div>
+        <div class="label">Yellow</div>
+      </div>
+      <div class="palette-item">
+        <div class="swatch" style="background:rgb(255,255,255)"></div>
+        <div class="bits">111</div>
+        <div class="label">White</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="startBtn">Start Camera</button>
+  </div>
+
+  <video id="video" autoplay playsinline></video>
+  <canvas id="captureCanvas"></canvas>
+
+  <div class="calibration-status">
+    <h3>Finder Pattern Calibration (from QR finder patterns)</h3>
+    <div class="finder-refs">
+      <div class="finder-ref" id="whiteRef">
+        <div class="color-box" style="background:#333">W</div>
+        <div class="info">
+          <div class="label">White Reference</div>
+          <div class="values">---</div>
+        </div>
+      </div>
+      <div class="finder-ref" id="blackRef">
+        <div class="color-box" style="background:#333">B</div>
+        <div class="info">
+          <div class="label">Black Reference</div>
+          <div class="values">---</div>
+        </div>
+      </div>
+    </div>
+    <div class="status-text detecting" id="calibStatus">Looking for QR code...</div>
+    <div class="confidence-stats">
+      <span>Confidence: avg <span id="avgConfidence">-</span></span>
+      <span>High: <span id="highCount" class="high">-</span></span>
+      <span>Medium: <span id="medCount" class="medium">-</span></span>
+      <span>Low: <span id="lowCount" class="low">-</span></span>
+    </div>
+    <div class="debug-info" id="debugInfo">QR: not found</div>
+  </div>
+
+  <div class="channels">
+    <div class="channel red">
+      <canvas id="redChannel" width="110" height="110"></canvas>
+      <p>Red</p>
+    </div>
+    <div class="channel green">
+      <canvas id="greenChannel" width="110" height="110"></canvas>
+      <p>Green</p>
+    </div>
+    <div class="channel blue">
+      <canvas id="blueChannel" width="110" height="110"></canvas>
+      <p>Blue</p>
+    </div>
+  </div>
+
+  <div class="results">
+    <div class="result red">
+      <div class="label">Red Channel:</div>
+      <div id="redResult" class="data">-</div>
+    </div>
+    <div class="result green">
+      <div class="label">Green Channel:</div>
+      <div id="greenResult" class="data">-</div>
+    </div>
+    <div class="result blue">
+      <div class="label">Blue Channel:</div>
+      <div id="blueResult" class="data">-</div>
+    </div>
+    <div class="stats-bar">
+      Scans: <span id="scanCount">0</span> |
+      Success: <span id="successRate">0/0/0</span>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script type="module">
+    import { paletteConfidence, confidenceLevel } from './shared/confidence.js';
+    import { calibrateFromFinders, normalizeRgb } from './shared/calibration.js';
+
+    const video = document.getElementById('video');
+    const captureCanvas = document.getElementById('captureCanvas');
+    const captureCtx = captureCanvas.getContext('2d', { willReadFrequently: true });
+    const startBtn = document.getElementById('startBtn');
+
+    const redCanvas = document.getElementById('redChannel');
+    const greenCanvas = document.getElementById('greenChannel');
+    const blueCanvas = document.getElementById('blueChannel');
+    const redCtx = redCanvas.getContext('2d');
+    const greenCtx = greenCanvas.getContext('2d');
+    const blueCtx = blueCanvas.getContext('2d');
+
+    let scanning = false;
+    let scanCount = 0;
+    let successCounts = { red: 0, green: 0, blue: 0 };
+
+    // Calibration data from finder patterns
+    let calibration = null; // {white: [r,g,b], black: [r,g,b]}
+
+    // Reusable buffers to avoid per-frame allocations
+    let channelBuffers = { red: null, green: null, blue: null };
+    let lastBufferSize = 0;
+
+    // Cached canvas for drawPreview
+    const previewTempCanvas = document.createElement('canvas');
+    const previewTempCtx = previewTempCanvas.getContext('2d');
+
+    // Fixed 8-color RGB palette (in linear space [0,1] for distance calculation)
+    // Index encodes RGB bits: bit2=R, bit1=G, bit0=B
+    const PALETTE_RGB = [
+      [0, 0, 0],       // 0: Black   (000)
+      [0, 0, 1],       // 1: Blue    (001)
+      [0, 1, 0],       // 2: Green   (010)
+      [0, 1, 1],       // 3: Cyan    (011)
+      [1, 0, 0],       // 4: Red     (100)
+      [1, 0, 1],       // 5: Magenta (101)
+      [1, 1, 0],       // 6: Yellow  (110)
+      [1, 1, 1]        // 7: White   (111)
+    ];
+
+    startBtn.addEventListener('click', async () => {
+      try {
+        video.srcObject = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 720 }, height: { ideal: 720 } }
+        });
+        video.play();
+        startBtn.disabled = true;
+        startBtn.textContent = 'Scanning...';
+        scanning = true;
+        requestAnimationFrame(scanFrame);
+      } catch (err) {
+        alert('Camera error: ' + err.message);
+      }
+    });
+
+    // Calculate Euclidean distance in linear RGB space
+    function euclideanDistance(color1, color2) {
+      const dr = color1[0] - color2[0];
+      const dg = color1[1] - color2[1];
+      const db = color1[2] - color2[2];
+      return Math.sqrt(dr * dr + dg * dg + db * db);
+    }
+
+    // Extract individual bits from palette index (3-bit value)
+    // Index encodes: bit2=R, bit1=G, bit0=B
+    function extractBits(index) {
+      const r_bit = (index >> 2) & 1;
+      const g_bit = (index >> 1) & 1;
+      const b_bit = index & 1;
+      return [r_bit, g_bit, b_bit];
+    }
+
+    // Classify color using nearest-neighbor in linear RGB space
+    function classifyColor(r, g, b, white, black) {
+      // Step 1: Normalize RGB against white/black references with gamma decoding
+      const [normR, normG, normB] = normalizeRgb(r, g, b, white, black, true);
+
+      // Step 2: Calculate Euclidean distance to each palette color
+      const distances = [];
+      for (const paletteColor of PALETTE_RGB) {
+        const dist = euclideanDistance([normR, normG, normB], paletteColor);
+        distances.push(dist);
+      }
+
+      // Step 3: Find closest palette color (nearest neighbor)
+      let minIndex = 0;
+      let minDist = distances[0];
+      for (let i = 1; i < distances.length; i++) {
+        if (distances[i] < minDist) {
+          minDist = distances[i];
+          minIndex = i;
+        }
+      }
+
+      // Step 4: Extract RGB bits from palette index
+      const rgb = extractBits(minIndex);
+
+      // Step 5: Calculate confidence using palette confidence metric
+      const confidence = paletteConfidence(distances);
+
+      return { rgb, confidence, value: minIndex };
+    }
+
+    // Convert image to grayscale for QR detection
+    function toGrayscale(imageData) {
+      const gray = new Uint8ClampedArray(imageData.width * imageData.height * 4);
+      const pixels = imageData.data;
+
+      for (let i = 0; i < pixels.length; i += 4) {
+        const g = Math.round(pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114);
+        gray[i] = g;
+        gray[i + 1] = g;
+        gray[i + 2] = g;
+        gray[i + 3] = 255;
+      }
+
+      return gray;
+    }
+
+    // Update finder reference display
+    function updateRefDisplay(id, rgb, label) {
+      const el = document.getElementById(id);
+      const box = el.querySelector('.color-box');
+      const values = el.querySelector('.values');
+
+      if (rgb) {
+        box.style.background = 'rgb(' + rgb.join(',') + ')';
+        box.style.color = (rgb[0] + rgb[1] + rgb[2]) > 380 ? '#000' : '#fff';
+        values.textContent = rgb.join(', ');
+      } else {
+        box.style.background = '#333';
+        values.textContent = '---';
+      }
+    }
+
+    // Reset confidence display when no QR detected
+    function resetConfidenceDisplay() {
+      document.getElementById('avgConfidence').textContent = '-';
+      document.getElementById('highCount').textContent = '-';
+      document.getElementById('medCount').textContent = '-';
+      document.getElementById('lowCount').textContent = '-';
+    }
+
+    function scanFrame() {
+      if (!scanning) return;
+
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const size = Math.min(vw, vh);
+
+        captureCanvas.width = size;
+        captureCanvas.height = size;
+
+        const offsetX = (vw - size) / 2;
+        const offsetY = (vh - size) / 2;
+        captureCtx.drawImage(video, offsetX, offsetY, size, size, 0, 0, size, size);
+
+        const imageData = captureCtx.getImageData(0, 0, size, size);
+        const pixels = imageData.data;
+
+        // Step 1: Convert to grayscale and try to find QR code
+        const grayData = toGrayscale(imageData);
+        const qrDetect = jsQR(grayData, size, size);
+
+        const debugInfo = document.getElementById('debugInfo');
+        const calibStatus = document.getElementById('calibStatus');
+
+        if (!qrDetect) {
+          debugInfo.textContent = 'QR: not found';
+          calibStatus.textContent = 'Looking for QR code...';
+          calibStatus.className = 'status-text detecting';
+          calibration = null;
+          updateRefDisplay('whiteRef', null);
+          updateRefDisplay('blackRef', null);
+          resetConfidenceDisplay();
+          requestAnimationFrame(scanFrame);
+          return;
+        }
+
+        // Step 2: QR found! Calculate the bounding box
+        const loc = qrDetect.location;
+        const topLeft = loc.topLeftCorner;
+        const topRight = loc.topRightCorner;
+        const bottomLeft = loc.bottomLeftCorner;
+        const bottomRight = loc.bottomRightCorner;
+
+        // Calculate QR code bounds
+        const qrLeft = Math.min(topLeft.x, bottomLeft.x);
+        const qrRight = Math.max(topRight.x, bottomRight.x);
+        const qrTop = Math.min(topLeft.y, topRight.y);
+        const qrBottom = Math.max(bottomLeft.y, bottomRight.y);
+        const qrWidth = qrRight - qrLeft;
+        const qrHeight = qrBottom - qrTop;
+
+        debugInfo.textContent = 'QR: ' + Math.round(qrLeft) + ',' + Math.round(qrTop) +
+          ' size: ' + Math.round(qrWidth) + 'x' + Math.round(qrHeight);
+
+        // Step 3: Calibrate from finder patterns
+        calibration = calibrateFromFinders(loc, imageData);
+
+        if (!calibration) {
+          calibStatus.textContent = 'Could not extract finder calibration';
+          calibStatus.className = 'status-text bad';
+          resetConfidenceDisplay();
+          requestAnimationFrame(scanFrame);
+          return;
+        }
+
+        // Update calibration display
+        updateRefDisplay('whiteRef', calibration.white);
+        updateRefDisplay('blackRef', calibration.black);
+
+        // Step 4: Validate calibration (basic sanity checks)
+        const wLum = calibration.white[0] + calibration.white[1] + calibration.white[2];
+        const bLum = calibration.black[0] + calibration.black[1] + calibration.black[2];
+
+        if (wLum <= bLum) {
+          calibStatus.textContent = 'Calibration issue: white not brighter than black';
+          calibStatus.className = 'status-text bad';
+        } else {
+          calibStatus.textContent = 'Calibration OK - Palette nearest-neighbor active';
+          calibStatus.className = 'status-text good';
+        }
+
+        // Step 5: Process pixels using nearest-neighbor palette classification
+        // Reuse buffers if size unchanged, otherwise allocate new ones
+        const bufferSize = size * size * 4;
+        if (bufferSize !== lastBufferSize) {
+          channelBuffers.red = new Uint8ClampedArray(bufferSize);
+          channelBuffers.green = new Uint8ClampedArray(bufferSize);
+          channelBuffers.blue = new Uint8ClampedArray(bufferSize);
+          lastBufferSize = bufferSize;
+        }
+        const redData = channelBuffers.red;
+        const greenData = channelBuffers.green;
+        const blueData = channelBuffers.blue;
+
+        // Sample confidence from every Nth pixel to avoid unbounded array growth
+        const CONFIDENCE_SAMPLE_STEP = 10;
+        let confidenceSum = 0;
+        let confidenceCount = 0;
+        let highCount = 0, mediumCount = 0, lowCount = 0;
+
+        for (let py = 0; py < size; py++) {
+          for (let px = 0; px < size; px++) {
+            const idx = (py * size + px) * 4;
+            const r = pixels[idx];
+            const g = pixels[idx + 1];
+            const b = pixels[idx + 2];
+
+            // Only process pixels inside the QR area
+            let rgb;
+            if (px >= qrLeft && px < qrRight && py >= qrTop && py < qrBottom) {
+              const result = classifyColor(r, g, b, calibration.white, calibration.black);
+              rgb = result.rgb;
+              // Sample confidence at regular intervals
+              if ((px + py) % CONFIDENCE_SAMPLE_STEP === 0) {
+                confidenceSum += result.confidence;
+                confidenceCount++;
+                const level = confidenceLevel(result.confidence);
+                if (level === 'high') highCount++;
+                else if (level === 'medium') mediumCount++;
+                else lowCount++;
+              }
+            } else {
+              // Outside QR - treat as white (all channels ON in additive RGB)
+              rgb = [1, 1, 1];
+            }
+
+            // Create binary channel images
+            // For QR decoding: channel ON (bit 1) = dark module, channel OFF (bit 0) = light module
+            const rGray = rgb[0] ? 0 : 255;
+            const gGray = rgb[1] ? 0 : 255;
+            const bGray = rgb[2] ? 0 : 255;
+
+            redData[idx] = rGray;
+            redData[idx + 1] = rGray;
+            redData[idx + 2] = rGray;
+            redData[idx + 3] = 255;
+
+            greenData[idx] = gGray;
+            greenData[idx + 1] = gGray;
+            greenData[idx + 2] = gGray;
+            greenData[idx + 3] = 255;
+
+            blueData[idx] = bGray;
+            blueData[idx + 1] = bGray;
+            blueData[idx + 2] = bGray;
+            blueData[idx + 3] = 255;
+          }
+        }
+
+        // Update confidence display using sampled values
+        if (confidenceCount > 0) {
+          const avgConfidence = confidenceSum / confidenceCount;
+          document.getElementById('avgConfidence').textContent = (avgConfidence * 100).toFixed(1) + '%';
+          document.getElementById('highCount').textContent = highCount;
+          document.getElementById('medCount').textContent = mediumCount;
+          document.getElementById('lowCount').textContent = lowCount;
+        }
+
+        // Step 6: Draw channel previews
+        drawPreview(redData, size, redCtx, 110);
+        drawPreview(greenData, size, greenCtx, 110);
+        drawPreview(blueData, size, blueCtx, 110);
+
+        // Step 7: Try to decode each channel
+        const redCode = jsQR(redData, size, size);
+        const greenCode = jsQR(greenData, size, size);
+        const blueCode = jsQR(blueData, size, size);
+
+        scanCount++;
+        updateResult('redResult', redCode, 'red');
+        updateResult('greenResult', greenCode, 'green');
+        updateResult('blueResult', blueCode, 'blue');
+
+        document.getElementById('scanCount').textContent = scanCount;
+        document.getElementById('successRate').textContent =
+          successCounts.red + '/' + successCounts.green + '/' + successCounts.blue;
+      }
+
+      requestAnimationFrame(scanFrame);
+    }
+
+    function drawPreview(data, srcSize, ctx, dstSize) {
+      // Use cached canvas to avoid per-frame DOM allocations
+      if (previewTempCanvas.width !== srcSize || previewTempCanvas.height !== srcSize) {
+        previewTempCanvas.width = srcSize;
+        previewTempCanvas.height = srcSize;
+      }
+      previewTempCtx.putImageData(new ImageData(data, srcSize, srcSize), 0, 0);
+      ctx.drawImage(previewTempCanvas, 0, 0, dstSize, dstSize);
+    }
+
+    function updateResult(id, code, channel) {
+      const el = document.getElementById(id);
+      const resultDiv = el.parentElement;
+      if (code) {
+        el.textContent = code.data;
+        resultDiv.classList.add('success');
+        resultDiv.classList.remove('failure');
+        successCounts[channel]++;
+      } else {
+        el.textContent = 'No QR detected';
+        resultDiv.classList.add('failure');
+        resultDiv.classList.remove('success');
+      }
+    }
+
+    console.log('Palette-RGB Receiver ready');
+    console.log('Workflow: Grayscale QR detect -> Finder pattern calibration (W/B) -> Nearest-neighbor palette classification -> Channel extraction -> Decode');
+    console.log('8-color palette: Black(000), Blue(001), Green(010), Cyan(011), Red(100), Magenta(101), Yellow(110), White(111)');
+  </script>
+</body>
+</html>

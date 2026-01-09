@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Qriosity - Experiments</title>
+  <title>Qriosity - Colored QR Experiments</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -17,7 +17,7 @@
       padding: 20px;
     }
     h1 { color: #00d4ff; margin-bottom: 10px; }
-    .subtitle { color: #888; margin-bottom: 30px; }
+    .subtitle { color: #888; margin-bottom: 30px; text-align: center; }
     .back-link {
       position: absolute;
       top: 20px;
@@ -28,34 +28,35 @@
     .back-link:hover { text-decoration: underline; }
     .section {
       width: 100%;
-      max-width: 600px;
-      margin-bottom: 30px;
+      max-width: 700px;
+      margin-bottom: 25px;
     }
     .section h2 {
       color: #00d4ff;
       font-size: 1em;
-      margin-bottom: 10px;
+      margin-bottom: 8px;
       padding-bottom: 5px;
       border-bottom: 1px solid #333;
     }
     .section-note {
-      font-size: 0.8em;
+      font-size: 0.75em;
       color: #666;
       margin-bottom: 10px;
+      line-height: 1.4;
     }
     .experiments {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 10px;
+      gap: 8px;
     }
-    @media (max-width: 500px) {
+    @media (max-width: 600px) {
       .experiments { grid-template-columns: 1fr; }
     }
     .experiment {
       background: #252540;
       border: 2px solid #333;
       border-radius: 8px;
-      padding: 15px;
+      padding: 12px;
       text-decoration: none;
       color: inherit;
       transition: border-color 0.2s, transform 0.2s;
@@ -66,86 +67,203 @@
     }
     .experiment h3 {
       color: #00d4ff;
-      font-size: 0.95em;
-      margin-bottom: 6px;
+      font-size: 0.9em;
+      margin-bottom: 4px;
     }
     .experiment p {
       color: #aaa;
-      font-size: 0.8em;
+      font-size: 0.75em;
       line-height: 1.3;
     }
     .experiment .tag {
       display: inline-block;
-      margin-top: 8px;
+      margin-top: 6px;
       padding: 2px 6px;
       background: #1a1a2e;
       border-radius: 4px;
-      font-size: 0.7em;
+      font-size: 0.65em;
       color: #888;
     }
     .experiment .tag.sender { color: #6bff6b; }
     .experiment .tag.receiver { color: #ff6b6b; }
-    .status {
+    .paradigm-label {
       font-size: 0.7em;
-      padding: 2px 6px;
-      border-radius: 4px;
-      margin-left: 5px;
+      color: #888;
+      margin-left: 8px;
     }
-    .status.new { background: #4a4a2a; color: #ffff6b; }
     .info-box {
       width: 100%;
-      max-width: 600px;
+      max-width: 700px;
       padding: 15px;
       background: #252540;
       border-radius: 8px;
-      font-size: 0.85em;
+      font-size: 0.8em;
       color: #aaa;
       line-height: 1.5;
+      margin-bottom: 20px;
     }
     .info-box h3 {
       color: #00d4ff;
       margin-bottom: 10px;
     }
-    .info-box ul {
-      margin-left: 20px;
-    }
-    .info-box li {
-      margin: 5px 0;
-    }
+    .info-box ul { margin-left: 20px; }
+    .info-box li { margin: 5px 0; }
   </style>
 </head>
 <body>
   <a href="../index.html" class="back-link">&larr; Back to Qriosity</a>
 
-  <h1>Experiments</h1>
-  <p class="subtitle">Per-Colorant-Channel Color QR Codes</p>
+  <h1>Colored QR Experiments</h1>
+  <p class="subtitle">Comparing CMY, RGB, and Palette-based approaches</p>
 
+  <!-- Layered CMY -->
   <div class="section">
-    <h2>PCCC Framework v3 <span class="status new">Latest</span></h2>
+    <h2>Layered CMY (PCCC) <span class="paradigm-label">Subtractive Color</span></h2>
     <p class="section-note">
-      QR-first detection with corner calibration. Square layout for reliable capture.
-      Finder patterns kept black/white. Linear interpolation for color estimation.
+      3 QR codes composited as Cyan, Magenta, Yellow layers. 8 possible colors from CMY combinations.
+    </p>
+    <div class="experiments">
+      <a href="pccc-corner-sender.html" class="experiment">
+        <h3>PCCC-Corner Sender</h3>
+        <p>Corner patches (W,C,M,Y) for calibration</p>
+        <span class="tag sender">Sender</span>
+      </a>
+      <a href="pccc-corner-receiver.html" class="experiment">
+        <h3>PCCC-Corner Receiver</h3>
+        <p>Gamma-corrected nearest-neighbor</p>
+        <span class="tag receiver">Receiver</span>
+      </a>
+      <a href="pccc-finder-sender.html" class="experiment">
+        <h3>PCCC-Finder Sender</h3>
+        <p>No corner patches, finder-only calibration</p>
+        <span class="tag sender">Sender</span>
+      </a>
+      <a href="pccc-finder-receiver.html" class="experiment">
+        <h3>PCCC-Finder Receiver</h3>
+        <p>W/B from finder patterns, threshold per channel</p>
+        <span class="tag receiver">Receiver</span>
+      </a>
+    </div>
+  </div>
+
+  <!-- Layered RGB -->
+  <div class="section">
+    <h2>Layered RGB (QRGB) <span class="paradigm-label">Additive Color</span></h2>
+    <p class="section-note">
+      3 QR codes composited as Red, Green, Blue layers. 8 possible colors from RGB combinations.
+    </p>
+    <div class="experiments">
+      <a href="qrgb-corner-sender.html" class="experiment">
+        <h3>QRGB-Corner Sender</h3>
+        <p>Corner patches (W,R,G,B) for calibration</p>
+        <span class="tag sender">Sender</span>
+      </a>
+      <a href="qrgb-corner-receiver.html" class="experiment">
+        <h3>QRGB-Corner Receiver</h3>
+        <p>Gamma-corrected nearest-neighbor</p>
+        <span class="tag receiver">Receiver</span>
+      </a>
+      <a href="qrgb-finder-sender.html" class="experiment">
+        <h3>QRGB-Finder Sender</h3>
+        <p>No corner patches, finder-only calibration</p>
+        <span class="tag sender">Sender</span>
+      </a>
+      <a href="qrgb-finder-receiver.html" class="experiment">
+        <h3>QRGB-Finder Receiver</h3>
+        <p>W/B from finder patterns, threshold per channel</p>
+        <span class="tag receiver">Receiver</span>
+      </a>
+    </div>
+  </div>
+
+  <!-- FMT -->
+  <div class="section">
+    <h2>Format Mathematical Transform</h2>
+    <p class="section-note">
+      Mathematical encoding: 3-bit value directly mapped to RGB. Same output as QRGB-Finder.
+    </p>
+    <div class="experiments">
+      <a href="fmt-sender.html" class="experiment">
+        <h3>FMT Sender</h3>
+        <p>encode(v) = [v/4%2, v/2%2, v%2] * 255</p>
+        <span class="tag sender">Sender</span>
+      </a>
+      <a href="fmt-receiver.html" class="experiment">
+        <h3>FMT Receiver</h3>
+        <p>decode(r,g,b) = r*4 + g*2 + b</p>
+        <span class="tag receiver">Receiver</span>
+      </a>
+    </div>
+  </div>
+
+  <!-- Direct Palette -->
+  <div class="section">
+    <h2>Direct Palette Classification <span class="paradigm-label">Holistic</span></h2>
+    <p class="section-note">
+      Each module classified against fixed palette. Compares RGB vs OKLCH color space.
+    </p>
+    <div class="experiments">
+      <a href="palette-rgb-sender.html" class="experiment">
+        <h3>Palette-RGB Sender</h3>
+        <p>8-color palette, 3 bits/module</p>
+        <span class="tag sender">Sender</span>
+      </a>
+      <a href="palette-rgb-receiver.html" class="experiment">
+        <h3>Palette-RGB Receiver</h3>
+        <p>Nearest-neighbor in linear RGB</p>
+        <span class="tag receiver">Receiver</span>
+      </a>
+      <a href="palette-oklch-8-sender.html" class="experiment">
+        <h3>Palette-OKLCH-8 Sender</h3>
+        <p>8-color palette for OKLCH receiver</p>
+        <span class="tag sender">Sender</span>
+      </a>
+      <a href="palette-oklch-8-receiver.html" class="experiment">
+        <h3>Palette-OKLCH-8 Receiver</h3>
+        <p>Nearest-neighbor in OKLCH space</p>
+        <span class="tag receiver">Receiver</span>
+      </a>
+      <a href="palette-oklch-16-sender.html" class="experiment">
+        <h3>Palette-OKLCH-16 Sender</h3>
+        <p>16-color palette, 4 bits/module</p>
+        <span class="tag sender">Sender</span>
+      </a>
+      <a href="palette-oklch-16-receiver.html" class="experiment">
+        <h3>Palette-OKLCH-16 Receiver</h3>
+        <p>16 colors in perceptual OKLCH</p>
+        <span class="tag receiver">Receiver</span>
+      </a>
+    </div>
+  </div>
+
+  <!-- Legacy -->
+  <div class="section">
+    <h2>Legacy (Original PCCC)</h2>
+    <p class="section-note">
+      Original implementation before refactoring. Preserved for reference.
     </p>
     <div class="experiments">
       <a href="pccc-sender.html" class="experiment">
-        <h3>PCCC Sender</h3>
-        <p>440x440 square layout with 4 corner calibration patches (W, C, M, Y)</p>
-        <span class="tag sender">Laptop</span>
+        <h3>PCCC Sender (v3)</h3>
+        <p>Original corner-calibrated sender</p>
+        <span class="tag sender">Sender</span>
       </a>
       <a href="pccc-receiver.html" class="experiment">
-        <h3>PCCC Receiver</h3>
-        <p>Grayscale QR detection first, then calibrated color classification</p>
-        <span class="tag receiver">Phone</span>
+        <h3>PCCC Receiver (v3)</h3>
+        <p>Original receiver without shared modules</p>
+        <span class="tag receiver">Receiver</span>
       </a>
     </div>
   </div>
 
   <div class="info-box">
-    <h3>How It Works</h3>
+    <h3>Experiment Paradigms</h3>
     <ul>
-      <li><strong>Sender:</strong> Generates 3 QR codes (Cyan, Magenta, Yellow channels) and composites them in a 440x440 square. Adds 4 corner calibration patches (White, Cyan, Magenta, Yellow) at 20px each.</li>
-      <li><strong>Receiver:</strong> First detects QR using grayscale conversion (finder patterns are B/W). Uses detected QR position to locate corner patches. Samples corner colors and interpolates all 8 CMY combinations using a linear model.</li>
-      <li><strong>Key insight:</strong> By detecting the QR first, we know exactly where calibration patches should be. Linear interpolation from 4 base colors estimates all 8 possible CMY combinations for nearest-neighbor classification.</li>
+      <li><strong>Layered (CMY/RGB):</strong> 3 separate QR codes composited into one image. Each channel decoded independently.</li>
+      <li><strong>FMT:</strong> Mathematical transform directly maps 3-bit values to RGB colors.</li>
+      <li><strong>Palette:</strong> Single QR with multi-color modules. Nearest-neighbor classification to recover bits.</li>
+      <li><strong>Corner vs Finder:</strong> Corner patches provide known calibration colors. Finder-only uses B/W reference from QR structure.</li>
+      <li><strong>RGB vs OKLCH:</strong> OKLCH is perceptually uniform - better color discrimination under varying lighting.</li>
     </ul>
   </div>
 </body>

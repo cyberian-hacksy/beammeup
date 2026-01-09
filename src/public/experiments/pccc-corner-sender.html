@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PCCC-Corner Sender</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    h1 { margin-bottom: 10px; color: #00d4ff; }
+    .description {
+      max-width: 600px;
+      text-align: center;
+      margin-bottom: 20px;
+      color: #aaa;
+      font-size: 0.9em;
+    }
+    .controls {
+      margin-bottom: 15px;
+    }
+    .composite-section {
+      text-align: center;
+      margin: 20px 0;
+    }
+    .composite-section h2 {
+      margin-bottom: 15px;
+      color: #00d4ff;
+    }
+    #compositeCanvas {
+      border: 3px solid #00d4ff;
+      border-radius: 8px;
+      image-rendering: pixelated;
+    }
+    .legend {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin: 20px 0;
+      max-width: 600px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      padding: 4px 8px;
+      background: #252540;
+      border-radius: 4px;
+    }
+    .legend-box {
+      width: 20px;
+      height: 20px;
+      border-radius: 3px;
+      border: 1px solid #444;
+    }
+    .data-display {
+      margin-top: 15px;
+      padding: 15px;
+      background: #252540;
+      border-radius: 8px;
+      max-width: 500px;
+      font-family: monospace;
+      font-size: 11px;
+    }
+    .data-display div { margin: 4px 0; }
+    .data-display .cyan { color: #00ffff; }
+    .data-display .magenta { color: #ff00ff; }
+    .data-display .yellow { color: #ffff00; }
+    .note {
+      margin-top: 15px;
+      padding: 10px;
+      background: #252540;
+      border-radius: 8px;
+      font-size: 11px;
+      color: #888;
+      max-width: 600px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>PCCC-Corner Sender</h1>
+  <p class="description">
+    <strong>Square layout with corner calibration:</strong> 4 corner patches for camera calibration.<br>
+    QR finder patterns kept black/white. CMY encoded data area.
+  </p>
+
+  <div id="controls" class="controls"></div>
+
+  <div class="composite-section">
+    <h2>PCCC Color QR Code</h2>
+    <canvas id="compositeCanvas" width="440" height="440"></canvas>
+  </div>
+
+  <div class="legend" id="legend"></div>
+
+  <div class="data-display">
+    <div class="cyan">Cyan: <span id="dataCyan"></span></div>
+    <div class="magenta">Magenta: <span id="dataMagenta"></span></div>
+    <div class="yellow">Yellow: <span id="dataYellow"></span></div>
+  </div>
+
+  <div class="note" id="noteDisplay">
+    <strong>Layout:</strong> <span id="noteSize">440x440</span> square. <span id="noteCorner">22</span>px corner patches (White, Cyan, Magenta, Yellow).<br>
+    QR code centered. Finder patterns are black/white for detection.
+  </div>
+
+  <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
+  <script type="module">
+    import { createDisplaySizeSelector, displaySizeStyles } from './shared/display-size.js';
+
+    // Inject display size selector styles
+    const style = document.createElement('style');
+    style.textContent = displaySizeStyles;
+    document.head.appendChild(style);
+
+    // Test data for each channel
+    const DATA_CYAN = 'CYAN:PCCC:V3:12345';
+    const DATA_MAGENTA = 'MAGENTA:PCCC:V3:67890';
+    const DATA_YELLOW = 'YELLOW:PCCC:V3:ABCDE';
+
+    document.getElementById('dataCyan').textContent = DATA_CYAN;
+    document.getElementById('dataMagenta').textContent = DATA_MAGENTA;
+    document.getElementById('dataYellow').textContent = DATA_YELLOW;
+
+    // CMY to RGB conversion
+    function cmyToRgb(c, m, y) {
+      return [
+        Math.round(255 * (1 - c)),
+        Math.round(255 * (1 - m)),
+        Math.round(255 * (1 - y))
+      ];
+    }
+
+    // All 8 CMY combinations for legend
+    const ALL_COLORS = [
+      { cmy: [0, 0, 0], label: 'W (000)' },
+      { cmy: [1, 0, 0], label: 'C (100)' },
+      { cmy: [0, 1, 0], label: 'M (010)' },
+      { cmy: [0, 0, 1], label: 'Y (001)' },
+      { cmy: [1, 1, 0], label: 'B (110)' },
+      { cmy: [1, 0, 1], label: 'G (101)' },
+      { cmy: [0, 1, 1], label: 'R (011)' },
+      { cmy: [1, 1, 1], label: 'K (111)' }
+    ];
+
+    ALL_COLORS.forEach(c => { c.rgb = cmyToRgb(...c.cmy); });
+
+    // Generate legend
+    const legendEl = document.getElementById('legend');
+    ALL_COLORS.forEach((c, i) => {
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+
+      const box = document.createElement('div');
+      box.className = 'legend-box';
+      box.style.background = 'rgb(' + c.rgb.join(',') + ')';
+
+      const label = document.createElement('span');
+      label.textContent = c.label;
+
+      item.appendChild(box);
+      item.appendChild(label);
+      legendEl.appendChild(item);
+    });
+
+    // Generate QR
+    function getQRModules(data) {
+      const qr = qrcode(0, 'M');
+      qr.addData(data);
+      qr.make();
+      const count = qr.getModuleCount();
+      const modules = [];
+      for (let r = 0; r < count; r++) {
+        modules[r] = [];
+        for (let c = 0; c < count; c++) {
+          modules[r][c] = qr.isDark(r, c) ? 1 : 0;
+        }
+      }
+      return { modules, count };
+    }
+
+    // Check if position is finder/timing pattern
+    function isFinderOrTiming(row, col, size) {
+      // Top-left finder (includes separator)
+      if (row < 8 && col < 8) return true;
+      // Top-right finder
+      if (row < 8 && col >= size - 8) return true;
+      // Bottom-left finder
+      if (row >= size - 8 && col < 8) return true;
+      // Timing patterns
+      if (row === 6 || col === 6) return true;
+      // Alignment pattern for larger QR codes
+      if (size > 25) {
+        const alignPos = size - 7;
+        if (row >= alignPos - 2 && row <= alignPos + 2 &&
+            col >= alignPos - 2 && col <= alignPos + 2) return true;
+      }
+      return false;
+    }
+
+    // Pre-generate QR modules (these don't change with canvas size)
+    const qrCyan = getQRModules(DATA_CYAN);
+    const qrMagenta = getQRModules(DATA_MAGENTA);
+    const qrYellow = getQRModules(DATA_YELLOW);
+    const moduleCount = qrCyan.count;
+
+    const canvas = document.getElementById('compositeCanvas');
+    const ctx = canvas.getContext('2d');
+    const noteSizeEl = document.getElementById('noteSize');
+    const noteCornerEl = document.getElementById('noteCorner');
+
+    // Render QR code at specified canvas size
+    function renderQR(canvasSize) {
+      // Corner size is 5% of canvas
+      const cornerSize = Math.round(canvasSize * 0.05);
+      const qrSize = canvasSize - cornerSize * 2;
+
+      // Update canvas dimensions
+      canvas.width = canvasSize;
+      canvas.height = canvasSize;
+
+      // Fill with neutral gray background
+      ctx.fillStyle = '#808080';
+      ctx.fillRect(0, 0, canvasSize, canvasSize);
+
+      // Draw corner calibration patches
+      // Top-left: White
+      ctx.fillStyle = 'rgb(255, 255, 255)';
+      ctx.fillRect(0, 0, cornerSize, cornerSize);
+
+      // Top-right: Cyan
+      ctx.fillStyle = 'rgb(0, 255, 255)';
+      ctx.fillRect(canvasSize - cornerSize, 0, cornerSize, cornerSize);
+
+      // Bottom-left: Magenta
+      ctx.fillStyle = 'rgb(255, 0, 255)';
+      ctx.fillRect(0, canvasSize - cornerSize, cornerSize, cornerSize);
+
+      // Bottom-right: Yellow
+      ctx.fillStyle = 'rgb(255, 255, 0)';
+      ctx.fillRect(canvasSize - cornerSize, canvasSize - cornerSize, cornerSize, cornerSize);
+
+      // Draw QR code in center (offset by cornerSize)
+      const cellSize = qrSize / moduleCount;
+      const qrOffsetX = cornerSize;
+      const qrOffsetY = cornerSize;
+
+      for (let row = 0; row < moduleCount; row++) {
+        for (let col = 0; col < moduleCount; col++) {
+          const c = qrCyan.modules[row][col];
+          const m = qrMagenta.modules[row][col];
+          const y = qrYellow.modules[row][col];
+
+          let rgb;
+          if (isFinderOrTiming(row, col, moduleCount)) {
+            // Keep finder patterns black/white (use first QR's pattern)
+            rgb = c ? [0, 0, 0] : [255, 255, 255];
+          } else {
+            // Data area: encode CMY
+            rgb = cmyToRgb(c, m, y);
+          }
+
+          const x = qrOffsetX + col * cellSize;
+          const yPos = qrOffsetY + row * cellSize;
+
+          ctx.fillStyle = 'rgb(' + rgb.join(',') + ')';
+          ctx.fillRect(x, yPos, cellSize + 0.5, cellSize + 0.5);
+        }
+      }
+
+      // Add small labels to corners (scale font with corner size)
+      const fontSize = Math.max(8, Math.round(cornerSize * 0.5));
+      ctx.font = 'bold ' + fontSize + 'px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      ctx.fillStyle = '#000';
+      ctx.fillText('W', cornerSize/2, cornerSize/2);
+      ctx.fillText('C', canvasSize - cornerSize/2, cornerSize/2);
+      ctx.fillText('M', cornerSize/2, canvasSize - cornerSize/2);
+      ctx.fillText('Y', canvasSize - cornerSize/2, canvasSize - cornerSize/2);
+
+      // Update note display using textContent (safe DOM method)
+      noteSizeEl.textContent = canvasSize + 'x' + canvasSize;
+      noteCornerEl.textContent = cornerSize;
+
+      console.log('PCCC-Corner Sender rendered at', canvasSize + 'x' + canvasSize);
+      console.log('Module count:', moduleCount);
+      console.log('Corner patches:', cornerSize, 'px');
+    }
+
+    // Create size selector
+    const getSize = createDisplaySizeSelector(
+      document.getElementById('controls'),
+      (newSize) => renderQR(newSize),
+      440 // default size
+    );
+
+    // Initial render
+    renderQR(440);
+
+    console.log('PCCC-Corner Sender ready');
+  </script>
+</body>
+</html>
