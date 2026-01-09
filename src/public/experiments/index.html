@@ -121,20 +121,20 @@
   <p class="subtitle">Per-Colorant-Channel Color QR Codes</p>
 
   <div class="section">
-    <h2>PCCC Framework <span class="status new">New</span></h2>
+    <h2>PCCC Framework v3 <span class="status new">Latest</span></h2>
     <p class="section-note">
-      Based on research: 3 independent QR codes in CMY channels with interference cancellation.
-      Uses 8 calibration patches to compute a 3x3 color correction matrix.
+      QR-first detection with corner calibration. Square layout for reliable capture.
+      Finder patterns kept black/white. Linear interpolation for color estimation.
     </p>
     <div class="experiments">
       <a href="pccc-sender.html" class="experiment">
         <h3>PCCC Sender</h3>
-        <p>CMY-encoded QR with 8 reference color patches for calibration</p>
+        <p>440x440 square layout with 4 corner calibration patches (W, C, M, Y)</p>
         <span class="tag sender">Laptop</span>
       </a>
       <a href="pccc-receiver.html" class="experiment">
         <h3>PCCC Receiver</h3>
-        <p>Interference cancellation via least-squares matrix estimation</p>
+        <p>Grayscale QR detection first, then calibrated color classification</p>
         <span class="tag receiver">Phone</span>
       </a>
     </div>
@@ -143,9 +143,9 @@
   <div class="info-box">
     <h3>How It Works</h3>
     <ul>
-      <li><strong>Sender:</strong> Generates 3 QR codes (Cyan, Magenta, Yellow channels) and composites them. Adds 8 calibration patches with known CMY values around the border.</li>
-      <li><strong>Receiver:</strong> Samples the calibration patches to measure how the camera distorts colors. Computes a 3x3 correction matrix via least squares. Applies this matrix to recover true CMY values before thresholding.</li>
-      <li><strong>Key insight:</strong> Camera sensors have cross-channel interference (red bleeds into green, etc.). The correction matrix compensates for this device-specific distortion.</li>
+      <li><strong>Sender:</strong> Generates 3 QR codes (Cyan, Magenta, Yellow channels) and composites them in a 440x440 square. Adds 4 corner calibration patches (White, Cyan, Magenta, Yellow) at 20px each.</li>
+      <li><strong>Receiver:</strong> First detects QR using grayscale conversion (finder patterns are B/W). Uses detected QR position to locate corner patches. Samples corner colors and interpolates all 8 CMY combinations using a linear model.</li>
+      <li><strong>Key insight:</strong> By detecting the QR first, we know exactly where calibration patches should be. Linear interpolation from 4 base colors estimates all 8 possible CMY combinations for nearest-neighbor classification.</li>
     </ul>
   </div>
 </body>

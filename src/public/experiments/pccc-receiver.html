@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PCCC Color QR Receiver</title>
+  <title>PCCC Color QR Receiver v3</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -47,7 +47,6 @@
       cursor: pointer;
     }
     button:disabled { background: #333; color: #666; }
-    button.secondary { background: #444; color: #fff; }
     .calibration-status {
       width: 100%;
       max-width: 400px;
@@ -62,35 +61,45 @@
       font-size: 12px;
       margin-bottom: 8px;
     }
-    .patch-grid {
+    .corner-patches {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: 1fr 1fr;
       gap: 5px;
     }
-    .patch {
-      text-align: center;
+    .corner-patch {
+      display: flex;
+      align-items: center;
+      gap: 8px;
       padding: 5px;
       background: #1a1a2e;
       border-radius: 4px;
     }
-    .patch .color-box {
+    .corner-patch .color-box {
       width: 30px;
       height: 30px;
-      margin: 0 auto 3px;
-      border-radius: 3px;
+      border-radius: 4px;
       border: 1px solid #444;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: bold;
     }
-    .patch .label { font-size: 9px; color: #888; }
-    .patch .values { font-size: 8px; color: #00d4ff; }
-    .matrix-display {
-      margin-top: 10px;
-      padding: 8px;
+    .corner-patch .info {
+      font-size: 9px;
+    }
+    .corner-patch .info .label { color: #888; }
+    .corner-patch .info .values { color: #fff; font-family: monospace; }
+    .status-text {
+      text-align: center;
+      margin-top: 8px;
+      padding: 5px;
       background: #1a1a2e;
       border-radius: 4px;
-      font-family: monospace;
-      font-size: 9px;
-      white-space: pre-line;
     }
+    .status-text.good { color: #6bff6b; }
+    .status-text.bad { color: #ff6b6b; }
+    .status-text.detecting { color: #ffff6b; }
     .channels {
       display: flex;
       gap: 8px;
@@ -138,38 +147,62 @@
       text-align: center;
       font-size: 11px;
     }
-    .note {
+    .debug-info {
       margin-top: 10px;
       padding: 8px;
-      background: #252540;
+      background: #1a1a2e;
       border-radius: 4px;
-      font-size: 10px;
-      color: #888;
-      max-width: 400px;
-      text-align: center;
+      font-size: 9px;
+      color: #666;
+      font-family: monospace;
     }
   </style>
 </head>
 <body>
-  <h1>PCCC Color QR Receiver</h1>
-  <p class="description">Per-Colorant-Channel decoding with interference cancellation</p>
+  <h1>PCCC Receiver v3</h1>
+  <p class="description">QR-first detection with corner calibration and matrix correction</p>
 
   <div class="controls">
     <button id="startBtn">Start Camera</button>
-    <button id="calibrateBtn" class="secondary" disabled>Calibrate</button>
   </div>
 
   <video id="video" autoplay playsinline></video>
   <canvas id="captureCanvas"></canvas>
 
   <div class="calibration-status">
-    <h3>Calibration Patches (Captured RGB)</h3>
-    <div class="patch-grid" id="patchGrid">
-      <!-- Patches will be populated here -->
+    <h3>Corner Calibration (from QR boundary)</h3>
+    <div class="corner-patches">
+      <div class="corner-patch" id="cornerTL">
+        <div class="color-box" style="background:#333">W</div>
+        <div class="info">
+          <div class="label">Top-Left (White)</div>
+          <div class="values">---</div>
+        </div>
+      </div>
+      <div class="corner-patch" id="cornerTR">
+        <div class="color-box" style="background:#333">C</div>
+        <div class="info">
+          <div class="label">Top-Right (Cyan)</div>
+          <div class="values">---</div>
+        </div>
+      </div>
+      <div class="corner-patch" id="cornerBL">
+        <div class="color-box" style="background:#333">M</div>
+        <div class="info">
+          <div class="label">Bottom-Left (Magenta)</div>
+          <div class="values">---</div>
+        </div>
+      </div>
+      <div class="corner-patch" id="cornerBR">
+        <div class="color-box" style="background:#333">Y</div>
+        <div class="info">
+          <div class="label">Bottom-Right (Yellow)</div>
+          <div class="values">---</div>
+        </div>
+      </div>
     </div>
-    <div class="matrix-display" id="matrixDisplay">
-      Interference Matrix: Not calibrated
-    </div>
+    <div class="status-text detecting" id="calibStatus">Looking for QR code...</div>
+    <div class="debug-info" id="debugInfo">QR: not found</div>
   </div>
 
   <div class="channels">
@@ -206,18 +239,12 @@
     </div>
   </div>
 
-  <div class="note">
-    <strong>Interference Cancellation:</strong> Samples 8 reference patches to build
-    a 3x3 color correction matrix. Applies matrix to recover true CMY values.
-  </div>
-
   <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
   <script>
     const video = document.getElementById('video');
     const captureCanvas = document.getElementById('captureCanvas');
     const captureCtx = captureCanvas.getContext('2d', { willReadFrequently: true });
     const startBtn = document.getElementById('startBtn');
-    const calibrateBtn = document.getElementById('calibrateBtn');
 
     const cyanCanvas = document.getElementById('cyanChannel');
     const magentaCanvas = document.getElementById('magentaChannel');
@@ -230,52 +257,21 @@
     let scanCount = 0;
     let successCounts = { cyan: 0, magenta: 0, yellow: 0 };
 
-    // Known calibration colors (ideal display RGB for each CMY combination)
-    const CALIBRATION_COLORS = [
-      { cmy: [0, 0, 0], rgb: [255, 255, 255], label: 'W' },   // White
-      { cmy: [1, 0, 0], rgb: [0, 255, 255], label: 'C' },     // Cyan
-      { cmy: [0, 1, 0], rgb: [255, 0, 255], label: 'M' },     // Magenta
-      { cmy: [0, 0, 1], rgb: [255, 255, 0], label: 'Y' },     // Yellow
-      { cmy: [1, 1, 0], rgb: [0, 0, 255], label: 'B' },       // Blue
-      { cmy: [1, 0, 1], rgb: [0, 255, 0], label: 'G' },       // Green
-      { cmy: [0, 1, 1], rgb: [255, 0, 0], label: 'R' },       // Red
-      { cmy: [1, 1, 1], rgb: [0, 0, 0], label: 'K' }          // Black
+    // Calibration data from corner patches
+    // corners[0] = White (TL), corners[1] = Cyan (TR), corners[2] = Magenta (BL), corners[3] = Yellow (BR)
+    let corners = [null, null, null, null];
+
+    // All 8 CMY color combinations - we'll interpolate these from calibration
+    const CMY_COLORS = [
+      [0, 0, 0], // White
+      [1, 0, 0], // Cyan
+      [0, 1, 0], // Magenta
+      [0, 0, 1], // Yellow
+      [1, 1, 0], // Blue (C+M)
+      [1, 0, 1], // Green (C+Y)
+      [0, 1, 1], // Red (M+Y)
+      [1, 1, 1]  // Black (C+M+Y)
     ];
-
-    // Captured RGB values for each patch
-    let capturedPatches = new Array(8).fill(null);
-
-    // Color correction matrix (3x3) - identity by default
-    let correctionMatrix = [
-      [1, 0, 0],
-      [0, 1, 0],
-      [0, 0, 1]
-    ];
-
-    // Initialize patch grid display
-    const patchGrid = document.getElementById('patchGrid');
-    CALIBRATION_COLORS.forEach((c, i) => {
-      const patch = document.createElement('div');
-      patch.className = 'patch';
-      patch.id = 'patch' + i;
-
-      const colorBox = document.createElement('div');
-      colorBox.className = 'color-box';
-      colorBox.style.background = '#333';
-
-      const label = document.createElement('div');
-      label.className = 'label';
-      label.textContent = c.label + ' (' + c.cmy.join('') + ')';
-
-      const values = document.createElement('div');
-      values.className = 'values';
-      values.textContent = '-';
-
-      patch.appendChild(colorBox);
-      patch.appendChild(label);
-      patch.appendChild(values);
-      patchGrid.appendChild(patch);
-    });
 
     startBtn.addEventListener('click', async () => {
       try {
@@ -285,7 +281,6 @@
         video.play();
         startBtn.disabled = true;
         startBtn.textContent = 'Scanning...';
-        calibrateBtn.disabled = false;
         scanning = true;
         requestAnimationFrame(scanFrame);
       } catch (err) {
@@ -293,22 +288,19 @@
       }
     });
 
-    calibrateBtn.addEventListener('click', () => {
-      calibrateFromPatches();
-    });
-
     // Sample average RGB from a region
-    function sampleRegion(imageData, x, y, size) {
+    function sampleRegion(imageData, x, y, w, h) {
       const pixels = imageData.data;
       const width = imageData.width;
       let rSum = 0, gSum = 0, bSum = 0, count = 0;
 
-      // Sample center portion of the patch (avoid edges)
-      const margin = Math.floor(size * 0.2);
-      const startX = Math.floor(x) + margin;
-      const startY = Math.floor(y) + margin;
-      const endX = Math.floor(x + size) - margin;
-      const endY = Math.floor(y + size) - margin;
+      // Sample center portion
+      const marginX = Math.floor(w * 0.25);
+      const marginY = Math.floor(h * 0.25);
+      const startX = Math.max(0, Math.floor(x) + marginX);
+      const startY = Math.max(0, Math.floor(y) + marginY);
+      const endX = Math.min(width, Math.floor(x + w) - marginX);
+      const endY = Math.min(imageData.height, Math.floor(y + h) - marginY);
 
       for (let py = startY; py < endY; py++) {
         for (let px = startX; px < endX; px++) {
@@ -320,7 +312,7 @@
         }
       }
 
-      if (count === 0) return [128, 128, 128];
+      if (count === 0) return null;
       return [
         Math.round(rSum / count),
         Math.round(gSum / count),
@@ -328,183 +320,215 @@
       ];
     }
 
-    // Solve least squares: find matrix M such that ideal = M * captured
-    function solveLeastSquares(captured, ideal) {
-      const result = [[0,0,0], [0,0,0], [0,0,0]];
+    // Build expected RGB for each CMY combination using linear interpolation from calibration
+    function buildExpectedColors() {
+      if (!corners[0] || !corners[1] || !corners[2] || !corners[3]) return null;
 
-      // Solve for each output channel separately
-      for (let outCh = 0; outCh < 3; outCh++) {
-        // Compute X^T X (3x3)
-        const XtX = [[0,0,0], [0,0,0], [0,0,0]];
-        for (let i = 0; i < 3; i++) {
-          for (let j = 0; j < 3; j++) {
-            for (let k = 0; k < 8; k++) {
-              XtX[i][j] += captured[k][i] * captured[k][j];
-            }
-          }
-        }
+      const W = corners[0]; // White (000)
+      const C = corners[1]; // Cyan (100)
+      const M = corners[2]; // Magenta (010)
+      const Y = corners[3]; // Yellow (001)
 
-        // Compute X^T y (3x1)
-        const Xty = [0, 0, 0];
-        for (let i = 0; i < 3; i++) {
-          for (let k = 0; k < 8; k++) {
-            Xty[i] += captured[k][i] * ideal[k][outCh];
-          }
-        }
+      // Estimate what each CMY combination looks like
+      // Using linear model: RGB(c,m,y) = W + c*(C-W) + m*(M-W) + y*(Y-W)
+      // This assumes additive interference
 
-        // Solve using Cramer's rule
-        const det = XtX[0][0] * (XtX[1][1]*XtX[2][2] - XtX[1][2]*XtX[2][1])
-                  - XtX[0][1] * (XtX[1][0]*XtX[2][2] - XtX[1][2]*XtX[2][0])
-                  + XtX[0][2] * (XtX[1][0]*XtX[2][1] - XtX[1][1]*XtX[2][0]);
+      const expected = [];
+      for (const cmy of CMY_COLORS) {
+        const c = cmy[0], m = cmy[1], y = cmy[2];
+        const r = W[0] + c * (C[0] - W[0]) + m * (M[0] - W[0]) + y * (Y[0] - W[0]);
+        const g = W[1] + c * (C[1] - W[1]) + m * (M[1] - W[1]) + y * (Y[1] - W[1]);
+        const b = W[2] + c * (C[2] - W[2]) + m * (M[2] - W[2]) + y * (Y[2] - W[2]);
+        expected.push([
+          Math.max(0, Math.min(255, Math.round(r))),
+          Math.max(0, Math.min(255, Math.round(g))),
+          Math.max(0, Math.min(255, Math.round(b)))
+        ]);
+      }
 
-        if (Math.abs(det) < 1e-10) {
-          result[outCh][outCh] = 1;
-          continue;
-        }
+      return expected;
+    }
 
-        // Compute inverse of XtX
-        const inv = [[0,0,0], [0,0,0], [0,0,0]];
-        inv[0][0] = (XtX[1][1]*XtX[2][2] - XtX[1][2]*XtX[2][1]) / det;
-        inv[0][1] = (XtX[0][2]*XtX[2][1] - XtX[0][1]*XtX[2][2]) / det;
-        inv[0][2] = (XtX[0][1]*XtX[1][2] - XtX[0][2]*XtX[1][1]) / det;
-        inv[1][0] = (XtX[1][2]*XtX[2][0] - XtX[1][0]*XtX[2][2]) / det;
-        inv[1][1] = (XtX[0][0]*XtX[2][2] - XtX[0][2]*XtX[2][0]) / det;
-        inv[1][2] = (XtX[0][2]*XtX[1][0] - XtX[0][0]*XtX[1][2]) / det;
-        inv[2][0] = (XtX[1][0]*XtX[2][1] - XtX[1][1]*XtX[2][0]) / det;
-        inv[2][1] = (XtX[0][1]*XtX[2][0] - XtX[0][0]*XtX[2][1]) / det;
-        inv[2][2] = (XtX[0][0]*XtX[1][1] - XtX[0][1]*XtX[1][0]) / det;
+    // Classify color using nearest neighbor to expected colors
+    function classifyColor(r, g, b, expectedColors) {
+      let minDist = Infinity;
+      let bestIdx = 0;
 
-        for (let i = 0; i < 3; i++) {
-          result[outCh][i] = inv[i][0]*Xty[0] + inv[i][1]*Xty[1] + inv[i][2]*Xty[2];
+      for (let i = 0; i < 8; i++) {
+        const e = expectedColors[i];
+        const dist = (r - e[0]) ** 2 + (g - e[1]) ** 2 + (b - e[2]) ** 2;
+        if (dist < minDist) {
+          minDist = dist;
+          bestIdx = i;
         }
       }
 
-      return result;
+      return CMY_COLORS[bestIdx];
     }
 
-    function calibrateFromPatches() {
-      if (capturedPatches.some(p => p === null)) {
-        alert('Not all patches detected yet');
-        return;
+    // Convert image to grayscale for QR detection
+    function toGrayscale(imageData) {
+      const gray = new Uint8ClampedArray(imageData.width * imageData.height * 4);
+      const pixels = imageData.data;
+
+      for (let i = 0; i < pixels.length; i += 4) {
+        const g = Math.round(pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114);
+        gray[i] = g;
+        gray[i + 1] = g;
+        gray[i + 2] = g;
+        gray[i + 3] = 255;
       }
 
-      // Build matrices
-      const captured = capturedPatches.map(p => [p[0]/255, p[1]/255, p[2]/255]);
-      const ideal = CALIBRATION_COLORS.map(c => [c.rgb[0]/255, c.rgb[1]/255, c.rgb[2]/255]);
-
-      correctionMatrix = solveLeastSquares(captured, ideal);
-
-      // Display matrix using textContent (safe)
-      const matrixDisplay = document.getElementById('matrixDisplay');
-      const matrixText = 'Correction Matrix:\n' +
-        correctionMatrix.map(row =>
-          row.map(v => v.toFixed(3)).join('  ')
-        ).join('\n');
-      matrixDisplay.textContent = matrixText;
-
-      console.log('Calibration complete. Matrix:', correctionMatrix);
+      return gray;
     }
 
-    // Apply correction matrix to RGB
-    function applyCorrection(r, g, b) {
-      const input = [r/255, g/255, b/255];
-      const output = [0, 0, 0];
+    // Update corner patch display
+    function updateCornerDisplay(id, rgb) {
+      const el = document.getElementById(id);
+      const box = el.querySelector('.color-box');
+      const values = el.querySelector('.values');
 
-      for (let i = 0; i < 3; i++) {
-        for (let j = 0; j < 3; j++) {
-          output[i] += correctionMatrix[i][j] * input[j];
-        }
-        output[i] = Math.max(0, Math.min(1, output[i]));
+      if (rgb) {
+        box.style.background = 'rgb(' + rgb.join(',') + ')';
+        box.style.color = (rgb[0] + rgb[1] + rgb[2]) > 380 ? '#000' : '#fff';
+        values.textContent = rgb.join(', ');
       }
-
-      return output.map(v => Math.round(v * 255));
-    }
-
-    // Convert corrected RGB to CMY
-    function rgbToCmy(r, g, b) {
-      return [
-        1 - r/255,
-        1 - g/255,
-        1 - b/255
-      ];
     }
 
     function scanFrame() {
       if (!scanning) return;
 
       if (video.readyState === video.HAVE_ENOUGH_DATA) {
-        const size = Math.min(video.videoWidth, video.videoHeight);
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const size = Math.min(vw, vh);
+
         captureCanvas.width = size;
         captureCanvas.height = size;
 
-        const offsetX = (video.videoWidth - size) / 2;
-        const offsetY = (video.videoHeight - size) / 2;
+        const offsetX = (vw - size) / 2;
+        const offsetY = (vh - size) / 2;
         captureCtx.drawImage(video, offsetX, offsetY, size, size, 0, 0, size, size);
 
         const imageData = captureCtx.getImageData(0, 0, size, size);
+        const pixels = imageData.data;
 
-        // Estimate patch positions based on expected layout
-        const scale = size / 480;
-        const patchSize = 40 * scale;
-        const qrAreaSize = 400 * scale;
+        // Step 1: Convert to grayscale and try to find QR code
+        const grayData = toGrayscale(imageData);
+        const qrDetect = jsQR(grayData, size, size);
 
-        // Patch positions (matching sender layout)
-        const patchPositions = [
-          { x: 0, y: 0 },
-          { x: patchSize + qrAreaSize/3, y: 0 },
-          { x: patchSize + 2*qrAreaSize/3, y: 0 },
-          { x: size - patchSize, y: 0 },
-          { x: 0, y: size - patchSize },
-          { x: patchSize + qrAreaSize/3, y: size - patchSize },
-          { x: patchSize + 2*qrAreaSize/3, y: size - patchSize },
-          { x: size - patchSize, y: size - patchSize }
+        const debugInfo = document.getElementById('debugInfo');
+        const calibStatus = document.getElementById('calibStatus');
+
+        if (!qrDetect) {
+          debugInfo.textContent = 'QR: not found';
+          calibStatus.textContent = 'Looking for QR code...';
+          calibStatus.className = 'status-text detecting';
+          requestAnimationFrame(scanFrame);
+          return;
+        }
+
+        // Step 2: QR found! Calculate the bounding box
+        const loc = qrDetect.location;
+        const topLeft = loc.topLeftCorner;
+        const topRight = loc.topRightCorner;
+        const bottomLeft = loc.bottomLeftCorner;
+        const bottomRight = loc.bottomRightCorner;
+
+        // Calculate QR code bounds
+        const qrLeft = Math.min(topLeft.x, bottomLeft.x);
+        const qrRight = Math.max(topRight.x, bottomRight.x);
+        const qrTop = Math.min(topLeft.y, topRight.y);
+        const qrBottom = Math.max(bottomLeft.y, bottomRight.y);
+        const qrWidth = qrRight - qrLeft;
+        const qrHeight = qrBottom - qrTop;
+
+        debugInfo.textContent = 'QR: ' + Math.round(qrLeft) + ',' + Math.round(qrTop) +
+          ' size: ' + Math.round(qrWidth) + 'x' + Math.round(qrHeight);
+
+        // Step 3: Calculate corner patch positions
+        // Sender layout: 440x440 total, 20px corners, 400px QR in center
+        // Corner ratio: 20/440 = ~4.5% of total, or 20/400 = 5% of QR size
+        const patchRatio = 0.05; // Corner patch is ~5% of QR size
+        const patchSize = qrWidth * patchRatio;
+
+        // Corner positions (outside QR bounds)
+        const cornerPositions = [
+          { x: qrLeft - patchSize, y: qrTop - patchSize, id: 'cornerTL' },     // White
+          { x: qrRight, y: qrTop - patchSize, id: 'cornerTR' },                 // Cyan
+          { x: qrLeft - patchSize, y: qrBottom, id: 'cornerBL' },               // Magenta
+          { x: qrRight, y: qrBottom, id: 'cornerBR' }                           // Yellow
         ];
 
-        // Sample each patch
-        patchPositions.forEach((pos, i) => {
-          const rgb = sampleRegion(imageData, pos.x, pos.y, patchSize);
-          capturedPatches[i] = rgb;
+        // Step 4: Sample corner patches
+        let allCornersValid = true;
+        for (let i = 0; i < 4; i++) {
+          const pos = cornerPositions[i];
+          // Check if patch is within image bounds
+          if (pos.x < 0 || pos.y < 0 || pos.x + patchSize > size || pos.y + patchSize > size) {
+            allCornersValid = false;
+            corners[i] = null;
+          } else {
+            corners[i] = sampleRegion(imageData, pos.x, pos.y, patchSize, patchSize);
+            if (!corners[i]) allCornersValid = false;
+          }
+          updateCornerDisplay(pos.id, corners[i]);
+        }
 
-          // Update display
-          const patchEl = document.getElementById('patch' + i);
-          const colorBox = patchEl.querySelector('.color-box');
-          const values = patchEl.querySelector('.values');
+        if (!allCornersValid) {
+          calibStatus.textContent = 'QR found but corners not visible - zoom out';
+          calibStatus.className = 'status-text bad';
+          requestAnimationFrame(scanFrame);
+          return;
+        }
 
-          colorBox.style.background = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
-          values.textContent = rgb.join(',');
-        });
+        // Step 5: Validate calibration (basic sanity checks)
+        const wLum = corners[0][0] + corners[0][1] + corners[0][2];
+        const cLum = corners[1][0] + corners[1][1] + corners[1][2];
+        const mLum = corners[2][0] + corners[2][1] + corners[2][2];
+        const yLum = corners[3][0] + corners[3][1] + corners[3][2];
 
-        // Process entire image
-        const pixels = imageData.data;
-        const total = size * size;
+        // White should be brightest
+        if (wLum < Math.max(cLum, mLum, yLum)) {
+          calibStatus.textContent = 'Calibration issue: white not brightest';
+          calibStatus.className = 'status-text bad';
+        } else {
+          calibStatus.textContent = 'Calibration OK - processing...';
+          calibStatus.className = 'status-text good';
+        }
 
-        // Create binary images for each CMY channel
-        const cyanData = new Uint8ClampedArray(total * 4);
-        const magentaData = new Uint8ClampedArray(total * 4);
-        const yellowData = new Uint8ClampedArray(total * 4);
+        // Step 6: Build expected colors from calibration
+        const expectedColors = buildExpectedColors();
+        if (!expectedColors) {
+          requestAnimationFrame(scanFrame);
+          return;
+        }
 
-        for (let y = 0; y < size; y++) {
-          for (let x = 0; x < size; x++) {
-            const idx = (y * size + x) * 4;
+        // Step 7: Process pixels using calibrated nearest-neighbor
+        const cyanData = new Uint8ClampedArray(size * size * 4);
+        const magentaData = new Uint8ClampedArray(size * size * 4);
+        const yellowData = new Uint8ClampedArray(size * size * 4);
+
+        for (let py = 0; py < size; py++) {
+          for (let px = 0; px < size; px++) {
+            const idx = (py * size + px) * 4;
             const r = pixels[idx];
             const g = pixels[idx + 1];
             const b = pixels[idx + 2];
 
-            // Apply color correction
-            const corrected = applyCorrection(r, g, b);
+            // Only process pixels inside the QR area
+            let cmy;
+            if (px >= qrLeft && px < qrRight && py >= qrTop && py < qrBottom) {
+              cmy = classifyColor(r, g, b, expectedColors);
+            } else {
+              // Outside QR - treat as white (no ink)
+              cmy = [0, 0, 0];
+            }
 
-            // Convert to CMY
-            const cmy = rgbToCmy(corrected[0], corrected[1], corrected[2]);
-
-            // Threshold at 0.5 to get binary values
-            const cBit = cmy[0] > 0.5 ? 1 : 0;
-            const mBit = cmy[1] > 0.5 ? 1 : 0;
-            const yBit = cmy[2] > 0.5 ? 1 : 0;
-
-            // Create grayscale images (dark = 1, light = 0 for QR)
-            const cGray = cBit ? 0 : 255;
-            const mGray = mBit ? 0 : 255;
-            const yGray = yBit ? 0 : 255;
+            // Create binary channel images
+            const cGray = cmy[0] ? 0 : 255;
+            const mGray = cmy[1] ? 0 : 255;
+            const yGray = cmy[2] ? 0 : 255;
 
             cyanData[idx] = cGray;
             cyanData[idx + 1] = cGray;
@@ -523,12 +547,12 @@
           }
         }
 
-        // Draw previews
+        // Step 8: Draw channel previews
         drawPreview(cyanData, size, cyanCtx, 110);
         drawPreview(magentaData, size, magentaCtx, 110);
         drawPreview(yellowData, size, yellowCtx, 110);
 
-        // Try to decode
+        // Step 9: Try to decode each channel
         const cyanCode = jsQR(cyanData, size, size);
         const magentaCode = jsQR(magentaData, size, size);
         const yellowCode = jsQR(yellowData, size, size);
@@ -570,7 +594,8 @@
       }
     }
 
-    console.log('PCCC Receiver ready');
+    console.log('PCCC Receiver v3 ready');
+    console.log('Workflow: Grayscale QR detect → Corner calibration → Matrix correction → Channel decode');
   </script>
 </body>
 </html>
