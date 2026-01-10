@@ -615,65 +615,50 @@ function scanFrame() {
         elements.qrOverlay.style.display = 'none'
       }
     } else {
-      // Color mode: more robust detection strategy
-      // Try grayscale first (works for metadata frames with identical channels)
-      // If no grayscale result, use whole image bounds as estimate
+      // Color mode: require grayscale QR detection like experiments
+      // Finder patterns are preserved as B/W, so jsQR can locate even color frames
+      // If detection fails, skip this frame and wait for next
 
-      let loc = null
-      let qrBounds = null
-
-      if (grayResult) {
-        loc = grayResult.location
-        showQROverlay(loc, video, offsetX, offsetY, size)
-
-        const qrLeft = Math.min(loc.topLeftCorner.x, loc.bottomLeftCorner.x)
-        const qrRight = Math.max(loc.topRightCorner.x, loc.bottomRightCorner.x)
-        const qrTop = Math.min(loc.topLeftCorner.y, loc.topRightCorner.y)
-        const qrBottom = Math.max(loc.bottomLeftCorner.y, loc.bottomRightCorner.y)
-        qrBounds = {
-          qrLeft,
-          qrTop,
-          qrWidth: qrRight - qrLeft,
-          qrHeight: qrBottom - qrTop
-        }
-      } else {
-        // No grayscale detection - use center region estimate for color QRs
-        // This allows trying to decode color channels even without exact location
-        const margin = size * 0.1
-        qrBounds = {
-          qrLeft: margin,
-          qrTop: margin,
-          qrWidth: size - margin * 2,
-          qrHeight: size - margin * 2
-        }
-        // Create fake location for calibration
-        loc = {
-          topLeftCorner: { x: margin, y: margin },
-          topRightCorner: { x: size - margin, y: margin },
-          bottomLeftCorner: { x: margin, y: size - margin },
-          bottomRightCorner: { x: size - margin, y: size - margin }
-        }
+      if (!grayResult) {
+        // No QR detected - skip frame
         elements.qrOverlay.style.display = 'none'
+        state.animationId = requestAnimationFrame(scanFrame)
+        return
+      }
+
+      // Grayscale detection succeeded - use detected position
+      const loc = grayResult.location
+      showQROverlay(loc, video, offsetX, offsetY, size)
+
+      const qrLeft = Math.min(loc.topLeftCorner.x, loc.bottomLeftCorner.x)
+      const qrRight = Math.max(loc.topRightCorner.x, loc.bottomRightCorner.x)
+      const qrTop = Math.min(loc.topLeftCorner.y, loc.topRightCorner.y)
+      const qrBottom = Math.max(loc.bottomLeftCorner.y, loc.bottomRightCorner.y)
+      const qrBounds = {
+        qrLeft,
+        qrTop,
+        qrWidth: qrRight - qrLeft,
+        qrHeight: qrBottom - qrTop
+      }
+
+      // Get calibration from detected position
+      let calibration = calibrateFromFinders(loc, imageData)
+      let sampledPalette = null
+
+      if (effectiveMode === QR_MODE.PALETTE) {
+        sampledPalette = samplePatchCalibration(imageData.data, size, qrBounds)
+        if (sampledPalette) {
+          calibration = { white: sampledPalette[0], black: sampledPalette[7] }
+        }
+      }
+
+      // Fallback calibration if needed
+      if (!calibration) {
+        calibration = { white: [255, 255, 255], black: [0, 0, 0] }
       }
 
       try {
-        // Get calibration
-        let calibration = calibrateFromFinders(loc, imageData)
-        let sampledPalette = null
-
-        if (effectiveMode === QR_MODE.PALETTE) {
-          sampledPalette = samplePatchCalibration(imageData.data, size, qrBounds)
-          if (sampledPalette) {
-            calibration = { white: sampledPalette[0], black: sampledPalette[7] }
-          }
-        }
-
-        // Use fallback calibration if needed
-        if (!calibration) {
-          calibration = { white: [255, 255, 255], black: [0, 0, 0] }
-        }
-
-        // Extract color channels
+        // Extract color channels using bounds and calibration
         const channels = extractColorChannels(imageData, qrBounds, effectiveMode, calibration, sampledPalette)
 
         // Decode each channel
@@ -683,16 +668,18 @@ function scanFrame() {
           jsQR(channels.ch2, channels.size, channels.size)
         ]
 
+        // Debug: log success/failure pattern
+        const decoded = channelResults.map(r => r ? 1 : 0)
+        console.log('Color decode:', decoded.join(''),
+          'cal:', calibration.white.join(','), '/',  calibration.black.join(','),
+          'pal:', sampledPalette ? 'yes' : 'no')
+
         let anySuccess = false
 
         // Process any successful channel decodes
         for (let i = 0; i < channelResults.length; i++) {
           const chResult = channelResults[i]
           if (chResult) {
-            // Show overlay from successful channel if we didn't have grayscale
-            if (!grayResult && !anySuccess) {
-              showQROverlay(chResult.location, video, offsetX, offsetY, size)
-            }
             anySuccess = true
 
             try {
@@ -724,8 +711,6 @@ function scanFrame() {
             onReceiveComplete()
             return
           }
-        } else if (!grayResult) {
-          elements.qrOverlay.style.display = 'none'
         }
       } catch (err) {
         console.log('Color decode error:', err.message)
