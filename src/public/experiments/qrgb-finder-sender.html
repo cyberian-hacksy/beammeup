@@ -270,16 +270,28 @@
         }
       }
 
-      // INVERT THE ENTIRE CANVAS for jsQR detection compatibility
+      // INVERT ONLY THE QR CODE AREA for jsQR detection compatibility
       // This makes finder patterns appear as normal black-on-white for detection
       // Receiver will invert back to get true RGB values for color decoding
+      // IMPORTANT: Don't invert the quiet zone (margin) - jsQR needs white quiet zone
       const imgData = ctx.getImageData(0, 0, canvasSize, canvasSize);
       const pixels = imgData.data;
-      for (let i = 0; i < pixels.length; i += 4) {
-        pixels[i] = 255 - pixels[i];       // Invert R
-        pixels[i + 1] = 255 - pixels[i + 1]; // Invert G
-        pixels[i + 2] = 255 - pixels[i + 2]; // Invert B
-        // Alpha stays the same
+      for (let py = 0; py < canvasSize; py++) {
+        for (let px = 0; px < canvasSize; px++) {
+          const i = (py * canvasSize + px) * 4;
+          // Only invert pixels inside the QR code area (not the margin)
+          if (px >= MARGIN && px < canvasSize - MARGIN &&
+              py >= MARGIN && py < canvasSize - MARGIN) {
+            pixels[i] = 255 - pixels[i];       // Invert R
+            pixels[i + 1] = 255 - pixels[i + 1]; // Invert G
+            pixels[i + 2] = 255 - pixels[i + 2]; // Invert B
+          } else {
+            // Keep margin white for quiet zone
+            pixels[i] = 255;
+            pixels[i + 1] = 255;
+            pixels[i + 2] = 255;
+          }
+        }
       }
       ctx.putImageData(imgData, 0, 0);
 

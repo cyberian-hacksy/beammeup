@@ -608,8 +608,10 @@
                 else lowCount++;
               }
             } else {
-              // Outside QR - treat as white (all channels ON in additive RGB)
-              rgb = [1, 1, 1];
+              // Outside QR - treat as white quiet zone
+              // Use [0,0,0] so channel extraction produces white (255) background
+              // (bit 0 → grayscale 255 due to QR encoding inversion)
+              rgb = [0, 0, 0];
             }
 
             // Create binary channel images
