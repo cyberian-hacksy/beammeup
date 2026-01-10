@@ -24,7 +24,10 @@ const state = {
   manualMode: null,        // User override (null = auto)
   effectiveMode: QR_MODE.BW, // What we're actually using
   channelBuffers: null,    // Reusable pixel buffers for color decode
-  lastBufferSize: 0
+  lastBufferSize: 0,
+  // Debug counters
+  frameCount: 0,
+  detectCount: 0
 }
 
 // Audio feedback helper
@@ -619,12 +622,20 @@ function scanFrame() {
       // Finder patterns are preserved as B/W, so jsQR can locate even color frames
       // If detection fails, skip this frame and wait for next
 
+      state.frameCount++
+
       if (!grayResult) {
-        // No QR detected - skip frame
+        // No QR detected - skip frame, show detection rate
         elements.qrOverlay.style.display = 'none'
+        if (elements.debugLine) {
+          const rate = state.frameCount > 0 ? Math.round(100 * state.detectCount / state.frameCount) : 0
+          elements.debugLine.textContent = 'no QR | rate:' + rate + '% (' + state.detectCount + '/' + state.frameCount + ')'
+        }
         state.animationId = requestAnimationFrame(scanFrame)
         return
       }
+
+      state.detectCount++
 
       // Grayscale detection succeeded - use detected position
       const loc = grayResult.location
@@ -668,11 +679,11 @@ function scanFrame() {
           jsQR(channels.ch2, channels.size, channels.size)
         ]
 
-        // Debug: log success/failure pattern
+        // Debug: show on-screen (visible on mobile)
         const decoded = channelResults.map(r => r ? 1 : 0)
-        console.log('Color decode:', decoded.join(''),
-          'cal:', calibration.white.join(','), '/',  calibration.black.join(','),
-          'pal:', sampledPalette ? 'yes' : 'no')
+        if (elements.debugLine) {
+          elements.debugLine.textContent = 'ch:' + decoded.join('') + ' pal:' + (sampledPalette ? 'Y' : 'N')
+        }
 
         let anySuccess = false
 
@@ -868,6 +879,9 @@ export function resetReceiver() {
   state.detectedMode = null
   state.manualMode = null
   state.effectiveMode = QR_MODE.BW
+  // Reset debug counters
+  state.frameCount = 0
+  state.detectCount = 0
 
   if (elements) {
     showStatus('scanning')
@@ -916,7 +930,8 @@ export function initReceiver(errorHandler) {
     completeRate: document.getElementById('complete-rate'),
     // Mode override elements
     modeStatus: document.getElementById('mode-status'),
-    receiverModeButtons: document.querySelectorAll('#receiver-mode-selector .mode-btn')
+    receiverModeButtons: document.querySelectorAll('#receiver-mode-selector .mode-btn'),
+    debugLine: document.getElementById('debug-line')
   }
 
   // Bind event handlers
