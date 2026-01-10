@@ -1,13 +1,13 @@
 // LT Fountain Encoder with Raptor-Lite Pre-coding
 // Encodes file data into a stream of fountain-coded symbols
 
-import { FOUNTAIN_DEGREE, DEGREE_ONE_PROBABILITY } from './constants.js'
+import { FOUNTAIN_DEGREE, DEGREE_ONE_PROBABILITY, QR_MODE } from './constants.js'
 import { createPRNG } from './prng.js'
 import { createPacket } from './packet.js'
 import { createMetadataPayload } from './metadata.js'
 import { calculateParityParams, generateParityMap, generateParityBlocks } from './precode.js'
 
-export function createEncoder(fileData, filename, mimeType, hash, blockSize = 200) {
+export function createEncoder(fileData, filename, mimeType, hash, blockSize = 200, mode = QR_MODE.BW) {
   // Pad file to multiple of blockSize
   const paddedSize = Math.ceil(fileData.byteLength / blockSize) * blockSize
   const paddedData = new Uint8Array(paddedSize)
@@ -35,8 +35,8 @@ export function createEncoder(fileData, filename, mimeType, hash, blockSize = 20
   const intermediateBlocks = [...sourceBlocks, ...parityBlocks]
 
   // Create metadata payload and pad to blockSize for consistent QR density
-  // Include K so receiver can derive parity parameters
-  const rawMetadata = createMetadataPayload(filename, mimeType, originalSize, hash, K)
+  // Include K so receiver can derive parity parameters, and mode for redundancy
+  const rawMetadata = createMetadataPayload(filename, mimeType, originalSize, hash, K, mode)
   const metadataPayload = new Uint8Array(blockSize)
   metadataPayload.set(rawMetadata)
 
@@ -47,12 +47,13 @@ export function createEncoder(fileData, filename, mimeType, hash, blockSize = 20
     K_prime,        // Total intermediate block count (K + parity)
     M,              // Parity block count
     originalSize,
+    mode,           // QR mode (BW, PCCC, or Palette)
 
     // Generate symbol by ID
     generateSymbol(symbolId) {
       if (symbolId === 0) {
         // Metadata frame (padded to BLOCK_SIZE)
-        return createPacket(fileId, K_prime, 0, metadataPayload, true, blockSize)
+        return createPacket(fileId, K_prime, 0, metadataPayload, true, blockSize, mode)
       }
 
       // Seed PRNG with fileId XOR symbolId
@@ -89,7 +90,7 @@ export function createEncoder(fileData, filename, mimeType, hash, blockSize = 20
         }
       }
 
-      return createPacket(fileId, K_prime, symbolId, payload, false, blockSize)
+      return createPacket(fileId, K_prime, symbolId, payload, false, blockSize, mode)
     }
   }
 }

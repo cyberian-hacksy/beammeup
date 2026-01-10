@@ -1,6 +1,6 @@
 // Sender module - handles file encoding and QR display
 import qrcode from 'qrcode-generator'
-import { MAX_FILE_SIZE, METADATA_INTERVAL, DATA_PRESETS, SIZE_PRESETS, SPEED_PRESETS } from './constants.js'
+import { MAX_FILE_SIZE, METADATA_INTERVAL, DATA_PRESETS, SIZE_PRESETS, SPEED_PRESETS, QR_MODE, MODE_MARGINS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
 import { createEncoder } from './encoder.js'
 
 // Sender state
@@ -14,7 +14,8 @@ const state = {
   symbolId: 1,
   isPaused: false,
   isSending: false,
-  frameCount: 0
+  frameCount: 0,
+  mode: QR_MODE.BW
 }
 
 // DOM elements (initialized on setup)
@@ -25,6 +26,124 @@ function formatBytes(bytes) {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+// ============ Color Mode Helpers ============
+
+// CMY to RGB conversion for PCCC mode
+function cmyToRgb(c, m, y) {
+  return [
+    Math.round(255 * (1 - c)),
+    Math.round(255 * (1 - m)),
+    Math.round(255 * (1 - y))
+  ]
+}
+
+// Fixed 8-color RGB palette for Palette mode
+// Index encodes: bit2=R, bit1=G, bit0=B (inverted for QR: high index = dark)
+const PALETTE_RGB = [
+  [255, 255, 255], // 0: White (000)
+  [255, 255, 0],   // 1: Yellow (001)
+  [255, 0, 255],   // 2: Magenta (010)
+  [255, 0, 0],     // 3: Red (011)
+  [0, 255, 255],   // 4: Cyan (100)
+  [0, 255, 0],     // 5: Green (101)
+  [0, 0, 255],     // 6: Blue (110)
+  [0, 0, 0]        // 7: Black (111)
+]
+
+// Palette patch configuration for HCC2D calibration
+// Each corner has 2 patches arranged to show all 8 palette colors
+const PALETTE_PATCH_CONFIG = [
+  { corner: 'TL', offset: 0, paletteIndex: 0 },  // White
+  { corner: 'TL', offset: 1, paletteIndex: 3 },  // Red
+  { corner: 'TR', offset: 0, paletteIndex: 5 },  // Green
+  { corner: 'TR', offset: 1, paletteIndex: 4 },  // Cyan
+  { corner: 'BL', offset: 0, paletteIndex: 6 },  // Blue
+  { corner: 'BL', offset: 1, paletteIndex: 2 },  // Magenta
+  { corner: 'BR', offset: 0, paletteIndex: 1 },  // Yellow
+  { corner: 'BR', offset: 1, paletteIndex: 7 },  // Black
+]
+
+// Check if position is finder or timing pattern (must stay B/W for detection)
+function isFinderOrTiming(row, col, size) {
+  // Top-left finder (includes separator)
+  if (row < 8 && col < 8) return true
+  // Top-right finder
+  if (row < 8 && col >= size - 8) return true
+  // Bottom-left finder
+  if (row >= size - 8 && col < 8) return true
+  // Timing patterns
+  if (row === 6 || col === 6) return true
+  // Alignment pattern for larger QR codes
+  if (size > 25) {
+    const alignPos = size - 7
+    if (row >= alignPos - 2 && row <= alignPos + 2 &&
+        col >= alignPos - 2 && col <= alignPos + 2) return true
+  }
+  return false
+}
+
+// Get QR modules from base64 data
+function getQRModules(base64Data, eccLevel) {
+  const qr = qrcode(0, eccLevel)
+  qr.addData(base64Data)
+  qr.make()
+  const count = qr.getModuleCount()
+  const modules = []
+  for (let r = 0; r < count; r++) {
+    modules[r] = []
+    for (let c = 0; c < count; c++) {
+      modules[r][c] = qr.isDark(r, c) ? 1 : 0
+    }
+  }
+  return { modules, count }
+}
+
+// Get patch position for Palette mode calibration
+function getPatchPosition(corner, offset, canvasSize, margin) {
+  const patchSize = margin * PATCH_SIZE_RATIO
+  const gap = margin * PATCH_GAP_RATIO
+
+  switch (corner) {
+    case 'TL':
+      return {
+        x: gap + offset * (patchSize + gap),
+        y: gap
+      }
+    case 'TR':
+      return {
+        x: canvasSize - gap - patchSize - offset * (patchSize + gap),
+        y: gap
+      }
+    case 'BL':
+      return {
+        x: gap + offset * (patchSize + gap),
+        y: canvasSize - gap - patchSize
+      }
+    case 'BR':
+      return {
+        x: canvasSize - gap - patchSize - offset * (patchSize + gap),
+        y: canvasSize - gap - patchSize
+      }
+  }
+}
+
+// Draw calibration patches for Palette mode
+function drawCalibrationPatches(ctx, canvasSize, margin) {
+  const patchSize = margin * PATCH_SIZE_RATIO
+
+  for (const patch of PALETTE_PATCH_CONFIG) {
+    const pos = getPatchPosition(patch.corner, patch.offset, canvasSize, margin)
+    const color = PALETTE_RGB[patch.paletteIndex]
+    ctx.fillStyle = 'rgb(' + color.join(',') + ')'
+    ctx.fillRect(pos.x, pos.y, patchSize, patchSize)
+
+    // Add thin border for visibility
+    ctx.strokeStyle = '#333'
+    ctx.lineWidth = 1
+    ctx.strokeRect(pos.x, pos.y, patchSize, patchSize)
+  }
 }
 
 // Update drop zone appearance based on state
@@ -59,8 +178,8 @@ function updateActionButton() {
   elements.btnStop.disabled = !state.encoder
 }
 
-// Render a symbol as QR code on canvas
-function renderSymbol(symbolId) {
+// Render a symbol as QR code on canvas (BW mode)
+function renderSymbolBW(symbolId) {
   const dataPreset = DATA_PRESETS[parseInt(elements.dataSlider.value)]
   const sizePreset = SIZE_PRESETS[parseInt(elements.sizeSlider.value)]
 
@@ -97,11 +216,94 @@ function renderSymbol(symbolId) {
   }
 }
 
+// Render 3 symbols as color QR (PCCC or Palette mode)
+function renderSymbolsColor(symbolIds) {
+  const dataPreset = DATA_PRESETS[parseInt(elements.dataSlider.value)]
+  const sizePreset = SIZE_PRESETS[parseInt(elements.sizeSlider.value)]
+  const canvasSize = sizePreset.size
+  const margin = canvasSize * MODE_MARGINS[state.mode]
+
+  // Generate packets for all 3 channels
+  const packets = symbolIds.map(id => state.encoder.generateSymbol(id))
+  const base64s = packets.map(p => btoa(String.fromCharCode.apply(null, p)))
+
+  // Get QR modules for each channel
+  const qrModules = base64s.map(b64 => getQRModules(b64, dataPreset.ecc))
+  const moduleCount = qrModules[0].count
+
+  // Calculate QR size within margins
+  const qrSize = canvasSize - margin * 2
+  const cellSize = qrSize / moduleCount
+
+  const canvas = elements.qrCanvas
+  canvas.width = canvasSize
+  canvas.height = canvasSize
+  canvas.style.display = 'block'
+  elements.qrPlaceholder.style.display = 'none'
+
+  const ctx = canvas.getContext('2d')
+
+  // White background
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, canvasSize, canvasSize)
+
+  // Draw QR code with color encoding
+  for (let row = 0; row < moduleCount; row++) {
+    for (let col = 0; col < moduleCount; col++) {
+      const ch0 = qrModules[0].modules[row][col]
+      const ch1 = qrModules[1].modules[row][col]
+      const ch2 = qrModules[2].modules[row][col]
+
+      let rgb
+      if (isFinderOrTiming(row, col, moduleCount)) {
+        // Keep finder patterns black/white for detection
+        rgb = ch0 ? [0, 0, 0] : [255, 255, 255]
+      } else if (state.mode === QR_MODE.PCCC) {
+        // PCCC: CMY encoding (ch0=C, ch1=M, ch2=Y)
+        rgb = cmyToRgb(ch0, ch1, ch2)
+      } else {
+        // Palette: RGB encoding (ch0=R bit, ch1=G bit, ch2=B bit)
+        const paletteIndex = ch0 * 4 + ch1 * 2 + ch2
+        rgb = PALETTE_RGB[paletteIndex]
+      }
+
+      const x = margin + col * cellSize
+      const y = margin + row * cellSize
+
+      ctx.fillStyle = 'rgb(' + rgb.join(',') + ')'
+      ctx.fillRect(x, y, cellSize + 0.5, cellSize + 0.5)
+    }
+  }
+
+  // Draw calibration patches for Palette mode
+  if (state.mode === QR_MODE.PALETTE) {
+    drawCalibrationPatches(ctx, canvasSize, margin)
+  }
+}
+
+// Render symbol(s) based on current mode
+function renderSymbol(symbolId) {
+  if (state.mode === QR_MODE.BW) {
+    renderSymbolBW(symbolId)
+  } else {
+    // Color modes: symbolId is actually the first of 3 symbol IDs
+    // or for metadata, all 3 channels carry the same symbolId (0)
+    if (symbolId === 0) {
+      renderSymbolsColor([0, 0, 0])
+    } else {
+      renderSymbolsColor([symbolId, symbolId + 1, symbolId + 2])
+    }
+  }
+}
+
 // Single tick of the sender loop
 function senderTick() {
   if (state.isPaused) return
 
   state.frameCount++
+
+  // Symbols per frame: 1 for BW, 3 for color modes
+  const symbolsPerFrame = state.mode === QR_MODE.BW ? 1 : 3
 
   // Every METADATA_INTERVAL frames, send metadata
   if (state.frameCount % METADATA_INTERVAL === 0) {
@@ -109,8 +311,12 @@ function senderTick() {
     elements.statSymbol.textContent = '#META'
   } else {
     renderSymbol(state.symbolId)
-    elements.statSymbol.textContent = '#' + state.symbolId
-    state.symbolId++
+    if (state.mode === QR_MODE.BW) {
+      elements.statSymbol.textContent = '#' + state.symbolId
+    } else {
+      elements.statSymbol.textContent = '#' + state.symbolId + '-' + (state.symbolId + 2)
+    }
+    state.symbolId += symbolsPerFrame
     // Loop back after K_prime symbols (includes parity blocks)
     if (state.encoder && state.symbolId > state.encoder.K_prime) {
       state.symbolId = 1
@@ -126,9 +332,10 @@ function startSending() {
   state.isSending = true
   updateActionButton()
 
-  // Disable data and size sliders during transmission
+  // Disable data, size sliders, and mode selector during transmission
   elements.dataSlider.disabled = true
   elements.sizeSlider.disabled = true
+  elements.modeButtons.forEach(btn => btn.disabled = true)
 
   // Initial tick
   senderTick()
@@ -172,9 +379,10 @@ function stopSending() {
   state.symbolId = 1
   state.frameCount = 0
 
-  // Re-enable sliders
+  // Re-enable sliders and mode selector
   elements.dataSlider.disabled = false
   elements.sizeSlider.disabled = false
+  elements.modeButtons.forEach(btn => btn.disabled = false)
 
   elements.qrCanvas.style.display = 'none'
   elements.qrPlaceholder.style.display = 'flex'
@@ -220,14 +428,15 @@ async function processFile(file) {
 
     const dataIndex = parseInt(elements.dataSlider.value)
     const blockSize = DATA_PRESETS[dataIndex].blockSize
-    state.encoder = createEncoder(buffer, file.name, state.mimeType, hash, blockSize)
+    state.encoder = createEncoder(buffer, file.name, state.mimeType, hash, blockSize, state.mode)
     state.symbolId = 1
     state.frameCount = 0
     state.isPaused = false
     state.isSending = false
 
     const K = state.encoder.K
-    elements.fileInfo.textContent = file.name + ' (' + formatBytes(file.size) + ', ' + K + ' blocks)'
+    const modeLabel = state.mode === QR_MODE.BW ? '' : (state.mode === QR_MODE.PCCC ? ' CMY' : ' RGB')
+    elements.fileInfo.textContent = file.name + ' (' + formatBytes(file.size) + ', ' + K + ' blocks' + modeLabel + ')'
 
     updateDropZoneState()
     updateActionButton()
@@ -297,11 +506,44 @@ function handleDataPresetChange() {
       state.fileName,
       state.mimeType,
       state.fileHash,
-      preset.blockSize
+      preset.blockSize,
+      state.mode
     )
     state.symbolId = 1
     state.frameCount = 0
-    elements.fileInfo.textContent = state.fileName + ' (' + formatBytes(state.fileBuffer.byteLength) + ', ' + state.encoder.K + ' blocks)'
+    const modeLabel = state.mode === QR_MODE.BW ? '' : (state.mode === QR_MODE.PCCC ? ' CMY' : ' RGB')
+    elements.fileInfo.textContent = state.fileName + ' (' + formatBytes(state.fileBuffer.byteLength) + ', ' + state.encoder.K + ' blocks' + modeLabel + ')'
+    renderSymbol(0)
+  }
+}
+
+// Handle mode change
+function handleModeChange(newMode) {
+  if (state.isSending) return // Don't change mode while sending
+
+  state.mode = newMode
+
+  // Update button states
+  elements.modeButtons.forEach(btn => {
+    btn.classList.toggle('active', parseInt(btn.dataset.mode) === newMode)
+  })
+
+  // Re-encode if file is loaded
+  if (state.fileBuffer) {
+    const dataIndex = parseInt(elements.dataSlider.value)
+    const blockSize = DATA_PRESETS[dataIndex].blockSize
+    state.encoder = createEncoder(
+      state.fileBuffer,
+      state.fileName,
+      state.mimeType,
+      state.fileHash,
+      blockSize,
+      state.mode
+    )
+    state.symbolId = 1
+    state.frameCount = 0
+    const modeLabel = state.mode === QR_MODE.BW ? '' : (state.mode === QR_MODE.PCCC ? ' CMY' : ' RGB')
+    elements.fileInfo.textContent = state.fileName + ' (' + formatBytes(state.fileBuffer.byteLength) + ', ' + state.encoder.K + ' blocks' + modeLabel + ')'
     renderSymbol(0)
   }
 }
@@ -357,7 +599,9 @@ export function initSender(errorHandler) {
     speedDisplay: document.getElementById('speed-display'),
     btnAction: document.getElementById('btn-action-send'),
     btnStop: document.getElementById('btn-stop-send'),
-    statSymbol: document.getElementById('stat-symbol')
+    statSymbol: document.getElementById('stat-symbol'),
+    modeSelector: document.getElementById('qr-mode-selector'),
+    modeButtons: document.querySelectorAll('#qr-mode-selector .mode-btn')
   }
 
   // Set initial state
@@ -371,6 +615,11 @@ export function initSender(errorHandler) {
   elements.speedSlider.oninput = handleSpeedPresetChange
   elements.btnAction.onclick = handleActionClick
   elements.btnStop.onclick = stopSending
+
+  // Mode selector handlers
+  elements.modeButtons.forEach(btn => {
+    btn.onclick = () => handleModeChange(parseInt(btn.dataset.mode))
+  })
 
   // Drop zone handlers
   elements.qrContainer.onclick = handleDropZoneClick

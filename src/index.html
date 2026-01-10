@@ -34,6 +34,11 @@
       </div>
 
       <div class="sender-controls" id="sender-controls">
+        <div class="mode-selector" id="qr-mode-selector">
+          <button class="mode-btn active" data-mode="0">Standard (BW)</button>
+          <button class="mode-btn" data-mode="1">Color CMY</button>
+          <button class="mode-btn" data-mode="2">Color RGB</button>
+        </div>
         <div class="slider-group">
           <label for="data-slider">Data</label>
           <input type="range" id="data-slider" min="0" max="3" value="1" step="1">
@@ -76,6 +81,15 @@
         <div id="camera-picker" class="camera-picker hidden">
           <label for="camera-dropdown" class="visually-hidden">Select camera</label>
           <select id="camera-dropdown"></select>
+        </div>
+      </div>
+
+      <div class="mode-override" id="mode-override">
+        <span class="mode-status" id="mode-status">Auto-detecting...</span>
+        <div class="mode-selector secondary" id="receiver-mode-selector">
+          <button class="mode-btn" data-mode="0">BW</button>
+          <button class="mode-btn" data-mode="1">CMY</button>
+          <button class="mode-btn" data-mode="2">RGB</button>
         </div>
       </div>
 

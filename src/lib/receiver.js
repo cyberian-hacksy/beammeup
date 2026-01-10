@@ -1,6 +1,8 @@
 // Receiver module - handles camera scanning and QR decoding
 import jsQR from 'jsqr'
 import { createDecoder } from './decoder.js'
+import { QR_MODE, MODE_MARGINS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
+import { calibrateFromFinders, normalizeRgb } from './calibration.js'
 
 // Receiver state
 const state = {
@@ -16,7 +18,13 @@ const state = {
   cameras: [],
   currentCameraId: null,
   isMobile: false,
-  hasNotifiedFirstScan: false
+  hasNotifiedFirstScan: false,
+  // Color mode state
+  detectedMode: null,      // Auto-detected from first packet
+  manualMode: null,        // User override (null = auto)
+  effectiveMode: QR_MODE.BW, // What we're actually using
+  channelBuffers: null,    // Reusable pixel buffers for color decode
+  lastBufferSize: 0
 }
 
 // Audio feedback helper
@@ -61,6 +69,259 @@ function formatTime(ms) {
   const hours = Math.floor(minutes / 60)
   const mins = minutes % 60
   return hours + 'h ' + mins + 'm ' + seconds + 's'
+}
+
+// ============ Color Mode Helpers ============
+
+// Fixed 8-color RGB palette for Palette mode (matches sender)
+const PALETTE_RGB = [
+  [255, 255, 255], // 0: White
+  [255, 255, 0],   // 1: Yellow
+  [255, 0, 255],   // 2: Magenta
+  [255, 0, 0],     // 3: Red
+  [0, 255, 255],   // 4: Cyan
+  [0, 255, 0],     // 5: Green
+  [0, 0, 255],     // 6: Blue
+  [0, 0, 0]        // 7: Black
+]
+
+// Patch configuration for sampling HCC2D calibration patches
+const PALETTE_PATCH_CONFIG = [
+  { corner: 'TL', offset: 0, paletteIndex: 0 },
+  { corner: 'TL', offset: 1, paletteIndex: 3 },
+  { corner: 'TR', offset: 0, paletteIndex: 5 },
+  { corner: 'TR', offset: 1, paletteIndex: 4 },
+  { corner: 'BL', offset: 0, paletteIndex: 6 },
+  { corner: 'BL', offset: 1, paletteIndex: 2 },
+  { corner: 'BR', offset: 0, paletteIndex: 1 },
+  { corner: 'BR', offset: 1, paletteIndex: 7 },
+]
+
+// Threshold for PCCC channel classification
+const CMY_THRESHOLD = 0.5
+
+// Check if position is finder or timing pattern
+function isFinderOrTiming(row, col, size) {
+  if (row < 8 && col < 8) return true
+  if (row < 8 && col >= size - 8) return true
+  if (row >= size - 8 && col < 8) return true
+  if (row === 6 || col === 6) return true
+  if (size > 25) {
+    const alignPos = size - 7
+    if (row >= alignPos - 2 && row <= alignPos + 2 &&
+        col >= alignPos - 2 && col <= alignPos + 2) return true
+  }
+  return false
+}
+
+// Convert image to grayscale for QR detection
+function toGrayscale(imageData) {
+  const gray = new Uint8ClampedArray(imageData.width * imageData.height * 4)
+  const pixels = imageData.data
+
+  for (let i = 0; i < pixels.length; i += 4) {
+    const g = Math.round(pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114)
+    gray[i] = g
+    gray[i + 1] = g
+    gray[i + 2] = g
+    gray[i + 3] = 255
+  }
+
+  return gray
+}
+
+// Sample color from center of a region (5x5 average)
+function sampleColor(pixels, width, centerX, centerY) {
+  let rSum = 0, gSum = 0, bSum = 0, count = 0
+  const sampleRadius = 2
+
+  for (let dy = -sampleRadius; dy <= sampleRadius; dy++) {
+    for (let dx = -sampleRadius; dx <= sampleRadius; dx++) {
+      const x = Math.round(centerX + dx)
+      const y = Math.round(centerY + dy)
+      if (x >= 0 && x < width && y >= 0) {
+        const idx = (y * width + x) * 4
+        rSum += pixels[idx]
+        gSum += pixels[idx + 1]
+        bSum += pixels[idx + 2]
+        count++
+      }
+    }
+  }
+
+  if (count === 0) return null
+  return [Math.round(rSum / count), Math.round(gSum / count), Math.round(bSum / count)]
+}
+
+// Get patch position in image based on QR bounds (scaled)
+function getPatchPositionInImage(corner, offset, qrBounds, marginRatio) {
+  const { qrLeft, qrTop, qrWidth, qrHeight } = qrBounds
+  const margin = qrWidth * (marginRatio / (1 - 2 * marginRatio))
+  const patchSize = margin * PATCH_SIZE_RATIO
+  const gap = margin * PATCH_GAP_RATIO
+
+  let x, y
+  switch (corner) {
+    case 'TL':
+      x = qrLeft - margin + gap + offset * (patchSize + gap) + patchSize / 2
+      y = qrTop - margin + gap + patchSize / 2
+      break
+    case 'TR':
+      x = qrLeft + qrWidth + margin - gap - patchSize / 2 - offset * (patchSize + gap)
+      y = qrTop - margin + gap + patchSize / 2
+      break
+    case 'BL':
+      x = qrLeft - margin + gap + offset * (patchSize + gap) + patchSize / 2
+      y = qrTop + qrHeight + margin - gap - patchSize / 2
+      break
+    case 'BR':
+      x = qrLeft + qrWidth + margin - gap - patchSize / 2 - offset * (patchSize + gap)
+      y = qrTop + qrHeight + margin - gap - patchSize / 2
+      break
+  }
+
+  return { x, y }
+}
+
+// Sample calibration patches for Palette mode
+function samplePatchCalibration(pixels, imageSize, qrBounds) {
+  const palette = new Array(8).fill(null)
+  let successCount = 0
+
+  for (const patch of PALETTE_PATCH_CONFIG) {
+    const pos = getPatchPositionInImage(patch.corner, patch.offset, qrBounds, MODE_MARGINS[QR_MODE.PALETTE])
+
+    if (pos.x >= 0 && pos.x < imageSize && pos.y >= 0 && pos.y < imageSize) {
+      const color = sampleColor(pixels, imageSize, pos.x, pos.y)
+      if (color) {
+        palette[patch.paletteIndex] = color
+        successCount++
+      }
+    }
+  }
+
+  // Require at least 6 patches for patch-based calibration
+  if (successCount >= 6) {
+    for (let i = 0; i < 8; i++) {
+      if (!palette[i]) {
+        palette[i] = PALETTE_RGB[i]
+      }
+    }
+    return palette
+  }
+
+  return null
+}
+
+// Classify CMY color for PCCC mode
+function classifyCMY(r, g, b, white, black) {
+  const [normR, normG, normB] = normalizeRgb(r, g, b, white, black, true)
+  return [
+    normR < CMY_THRESHOLD ? 1 : 0,
+    normG < CMY_THRESHOLD ? 1 : 0,
+    normB < CMY_THRESHOLD ? 1 : 0
+  ]
+}
+
+// Classify RGB palette color for Palette mode
+function classifyPalette(r, g, b, sampledPalette) {
+  let minDist = Infinity
+  let minIndex = 0
+
+  for (let i = 0; i < sampledPalette.length; i++) {
+    const [pr, pg, pb] = sampledPalette[i]
+    const dist = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
+    if (dist < minDist) {
+      minDist = dist
+      minIndex = i
+    }
+  }
+
+  // Extract RGB bits from palette index
+  return [
+    (minIndex >> 2) & 1,
+    (minIndex >> 1) & 1,
+    minIndex & 1
+  ]
+}
+
+// Extract color channels from image and decode
+function extractColorChannels(imageData, qrBounds, mode, calibration, sampledPalette) {
+  const { qrLeft, qrTop, qrWidth, qrHeight } = qrBounds
+  const size = imageData.width
+  const pixels = imageData.data
+
+  // Allocate or reuse channel buffers
+  const bufferSize = size * size * 4
+  if (bufferSize !== state.lastBufferSize) {
+    state.channelBuffers = {
+      ch0: new Uint8ClampedArray(bufferSize),
+      ch1: new Uint8ClampedArray(bufferSize),
+      ch2: new Uint8ClampedArray(bufferSize)
+    }
+    state.lastBufferSize = bufferSize
+  }
+
+  const { ch0, ch1, ch2 } = state.channelBuffers
+
+  for (let py = 0; py < size; py++) {
+    for (let px = 0; px < size; px++) {
+      const idx = (py * size + px) * 4
+      const r = pixels[idx]
+      const g = pixels[idx + 1]
+      const b = pixels[idx + 2]
+
+      let bits
+      if (px >= qrLeft && px < qrLeft + qrWidth && py >= qrTop && py < qrTop + qrHeight) {
+        if (mode === QR_MODE.PCCC) {
+          bits = classifyCMY(r, g, b, calibration.white, calibration.black)
+        } else {
+          bits = classifyPalette(r, g, b, sampledPalette || PALETTE_RGB)
+        }
+      } else {
+        bits = [0, 0, 0] // Outside QR = white
+      }
+
+      // Create grayscale channel images (bit 1 = dark, bit 0 = light)
+      const g0 = bits[0] ? 0 : 255
+      const g1 = bits[1] ? 0 : 255
+      const g2 = bits[2] ? 0 : 255
+
+      ch0[idx] = ch0[idx + 1] = ch0[idx + 2] = g0; ch0[idx + 3] = 255
+      ch1[idx] = ch1[idx + 1] = ch1[idx + 2] = g1; ch1[idx + 3] = 255
+      ch2[idx] = ch2[idx + 1] = ch2[idx + 2] = g2; ch2[idx + 3] = 255
+    }
+  }
+
+  return { ch0, ch1, ch2, size }
+}
+
+// Update mode status display
+function updateModeStatus() {
+  if (!elements.modeStatus) return
+
+  const effective = state.manualMode !== null ? state.manualMode : (state.detectedMode !== null ? state.detectedMode : QR_MODE.BW)
+  state.effectiveMode = effective
+
+  const modeNames = ['BW', 'CMY', 'RGB']
+
+  if (state.manualMode !== null) {
+    elements.modeStatus.textContent = 'Manual: ' + modeNames[effective]
+    elements.modeStatus.className = 'mode-status manual'
+  } else if (state.detectedMode !== null) {
+    elements.modeStatus.textContent = 'Detected: ' + modeNames[effective]
+    elements.modeStatus.className = 'mode-status detected'
+  } else {
+    elements.modeStatus.textContent = 'Auto-detecting...'
+    elements.modeStatus.className = 'mode-status'
+  }
+
+  // Update button states
+  if (elements.receiverModeButtons) {
+    elements.receiverModeButtons.forEach(btn => {
+      btn.classList.toggle('active', parseInt(btn.dataset.mode) === effective)
+    })
+  }
 }
 
 // Show the appropriate status section
@@ -243,6 +504,39 @@ async function toggleMobileCamera(e) {
   await switchCamera(nextCamera.deviceId)
 }
 
+// Process a decoded packet
+function processPacket(bytes) {
+  let accepted = state.decoder.receive(bytes)
+
+  // Handle new session (sender changed settings)
+  if (accepted === 'new_session') {
+    console.log('New session detected, resetting receiver')
+    state.decoder.reset()
+    state.symbolTimes = []
+    state.startTime = Date.now()
+    state.hasNotifiedFirstScan = false
+    state.detectedMode = null
+    updateModeStatus()
+    showStatus('scanning')
+    elements.progressFill.style.width = '0%'
+    elements.statSymbols.textContent = '0 codes'
+    accepted = state.decoder.receive(bytes)
+  }
+
+  if (accepted) {
+    if (!state.hasNotifiedFirstScan) {
+      state.hasNotifiedFirstScan = true
+      playBeep()
+    }
+
+    const now = Date.now()
+    state.symbolTimes.push(now)
+    state.symbolTimes = state.symbolTimes.filter(t => now - t < 5000)
+  }
+
+  return accepted
+}
+
 // Scan a single frame
 function scanFrame() {
   if (!state.isScanning) return
@@ -257,58 +551,125 @@ function scanFrame() {
     ctx.drawImage(video, 0, 0)
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-    const result = jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' })
+
+    // Convert to grayscale for QR detection
+    const grayData = toGrayscale(imageData)
+    const result = jsQR(grayData, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' })
 
     if (result) {
-      // Show QR detection overlay
       showQROverlay(result.location, video)
 
-      // Decode Base64 and feed to decoder
-      try {
-        const binary = atob(result.data)
-        const bytes = new Uint8Array(binary.length)
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i)
-        }
+      // Calculate QR bounds for color processing
+      const loc = result.location
+      const qrLeft = Math.min(loc.topLeftCorner.x, loc.bottomLeftCorner.x)
+      const qrRight = Math.max(loc.topRightCorner.x, loc.bottomRightCorner.x)
+      const qrTop = Math.min(loc.topLeftCorner.y, loc.topRightCorner.y)
+      const qrBottom = Math.max(loc.bottomLeftCorner.y, loc.bottomRightCorner.y)
+      const qrBounds = {
+        qrLeft,
+        qrTop,
+        qrWidth: qrRight - qrLeft,
+        qrHeight: qrBottom - qrTop
+      }
 
-        let accepted = state.decoder.receive(bytes)
+      // Determine effective mode
+      const effectiveMode = state.manualMode !== null ? state.manualMode : (state.detectedMode !== null ? state.detectedMode : QR_MODE.BW)
 
-        // Handle new session (sender changed settings)
-        if (accepted === 'new_session') {
-          console.log('New session detected, resetting receiver')
-          state.decoder.reset()
-          state.symbolTimes = []
-          state.startTime = Date.now()
-          state.hasNotifiedFirstScan = false
-          // Reset UI to scanning state
-          showStatus('scanning')
-          elements.progressFill.style.width = '0%'
-          elements.statSymbols.textContent = '0 codes'
-          // Re-receive the packet with fresh decoder
-          accepted = state.decoder.receive(bytes)
-        }
-
-        if (accepted) {
-          // Notify on first successful scan
-          if (!state.hasNotifiedFirstScan) {
-            state.hasNotifiedFirstScan = true
-            playBeep()
+      if (effectiveMode === QR_MODE.BW) {
+        // BW mode: use grayscale QR decode directly
+        try {
+          const binary = atob(result.data)
+          const bytes = new Uint8Array(binary.length)
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i)
           }
 
-          const now = Date.now()
-          state.symbolTimes.push(now)
-          // Keep only last 5 seconds of times
-          state.symbolTimes = state.symbolTimes.filter(t => now - t < 5000)
-        }
+          // Check mode from packet header for auto-detection
+          if (state.detectedMode === null && bytes.length >= 16) {
+            const flags = bytes[15]
+            const packetMode = (flags >> 1) & 0x03
+            if (packetMode !== QR_MODE.BW) {
+              state.detectedMode = packetMode
+              updateModeStatus()
+              // Don't process this frame - wait for next with correct mode
+              state.animationId = requestAnimationFrame(scanFrame)
+              return
+            }
+          }
 
-        updateReceiverStats()
+          processPacket(bytes)
+          updateReceiverStats()
 
-        if (state.decoder.isComplete()) {
-          onReceiveComplete()
-          return
+          if (state.decoder.isComplete()) {
+            onReceiveComplete()
+            return
+          }
+        } catch (err) {
+          console.log('QR decode error:', err.message)
         }
-      } catch (err) {
-        console.log('QR decode error:', err.message)
+      } else {
+        // Color mode: extract channels and decode each separately
+        try {
+          // Get calibration
+          let calibration = calibrateFromFinders(loc, imageData)
+          let sampledPalette = null
+
+          if (effectiveMode === QR_MODE.PALETTE) {
+            sampledPalette = samplePatchCalibration(imageData.data, canvas.width, qrBounds)
+            if (sampledPalette) {
+              calibration = { white: sampledPalette[0], black: sampledPalette[7] }
+            }
+          }
+
+          if (!calibration) {
+            state.animationId = requestAnimationFrame(scanFrame)
+            return
+          }
+
+          // Extract color channels
+          const channels = extractColorChannels(imageData, qrBounds, effectiveMode, calibration, sampledPalette)
+
+          // Decode each channel
+          const channelResults = [
+            jsQR(channels.ch0, channels.size, channels.size),
+            jsQR(channels.ch1, channels.size, channels.size),
+            jsQR(channels.ch2, channels.size, channels.size)
+          ]
+
+          // Process any successful channel decodes
+          for (const chResult of channelResults) {
+            if (chResult) {
+              try {
+                const binary = atob(chResult.data)
+                const bytes = new Uint8Array(binary.length)
+                for (let i = 0; i < binary.length; i++) {
+                  bytes[i] = binary.charCodeAt(i)
+                }
+
+                // Auto-detect mode from first packet
+                if (state.detectedMode === null && bytes.length >= 16) {
+                  const flags = bytes[15]
+                  const packetMode = (flags >> 1) & 0x03
+                  state.detectedMode = packetMode
+                  updateModeStatus()
+                }
+
+                processPacket(bytes)
+              } catch (err) {
+                // Individual channel decode error, continue with others
+              }
+            }
+          }
+
+          updateReceiverStats()
+
+          if (state.decoder.isComplete()) {
+            onReceiveComplete()
+            return
+          }
+        } catch (err) {
+          console.log('Color decode error:', err.message)
+        }
       }
     } else {
       elements.qrOverlay.style.display = 'none'
@@ -448,6 +809,10 @@ export function resetReceiver() {
   state.reconstructedBlob = null
   state.startTime = null
   state.hasNotifiedFirstScan = false
+  // Reset mode state
+  state.detectedMode = null
+  state.manualMode = null
+  state.effectiveMode = QR_MODE.BW
 
   if (elements) {
     showStatus('scanning')
@@ -457,6 +822,7 @@ export function resetReceiver() {
     elements.statSymbols.textContent = '0 codes'
     elements.statRate.textContent = '-'
     elements.statEta.textContent = ''
+    updateModeStatus()
   }
 }
 
@@ -492,7 +858,10 @@ export function initReceiver(errorHandler) {
     btnDownload: document.getElementById('btn-download'),
     btnReceiveAnother: document.getElementById('btn-receive-another'),
     btnResetReceiver: document.getElementById('btn-reset-receiver'),
-    completeRate: document.getElementById('complete-rate')
+    completeRate: document.getElementById('complete-rate'),
+    // Mode override elements
+    modeStatus: document.getElementById('mode-status'),
+    receiverModeButtons: document.querySelectorAll('#receiver-mode-selector .mode-btn')
   }
 
   // Bind event handlers
@@ -501,6 +870,20 @@ export function initReceiver(errorHandler) {
   elements.btnDownload.onclick = downloadFile
   elements.btnReceiveAnother.onclick = restartReceiver
   elements.btnResetReceiver.onclick = restartReceiver
+
+  // Mode override handlers
+  elements.receiverModeButtons.forEach(btn => {
+    btn.onclick = () => {
+      const mode = parseInt(btn.dataset.mode)
+      // Toggle: clicking active mode clears override (back to auto)
+      if (state.manualMode === mode) {
+        state.manualMode = null
+      } else {
+        state.manualMode = mode
+      }
+      updateModeStatus()
+    }
+  })
 }
 
 // Restart receiver for another file

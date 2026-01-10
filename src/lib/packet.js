@@ -5,11 +5,14 @@
 // Offset 5-8:  K total blocks (4 bytes)
 // Offset 9-12: Symbol ID (4 bytes)
 // Offset 13-14: Block size (2 bytes)
-// Offset 15:   Flags (1 byte) - bit0 = hasMetadata
+// Offset 15:   Flags (1 byte)
+//              - bit 0: hasMetadata
+//              - bits 1-2: mode (00=BW, 01=PCCC, 10=Palette, 11=reserved)
+//              - bits 3-7: reserved
 
-import { PROTOCOL_VERSION } from './constants.js'
+import { PROTOCOL_VERSION, QR_MODE } from './constants.js'
 
-export function createPacket(fileId, k, symbolId, payload, isMetadata = false, blockSize = 200) {
+export function createPacket(fileId, k, symbolId, payload, isMetadata = false, blockSize = 200, mode = QR_MODE.BW) {
   const header = new ArrayBuffer(16)
   const view = new DataView(header)
 
@@ -18,7 +21,10 @@ export function createPacket(fileId, k, symbolId, payload, isMetadata = false, b
   view.setUint32(5, k, false)
   view.setUint32(9, symbolId, false)
   view.setUint16(13, blockSize, false)
-  view.setUint8(15, isMetadata ? 1 : 0)
+
+  // Flags: bit 0 = isMetadata, bits 1-2 = mode
+  const flags = (isMetadata ? 1 : 0) | ((mode & 0x03) << 1)
+  view.setUint8(15, flags)
 
   // Combine header and payload
   const packet = new Uint8Array(16 + payload.length)
@@ -39,12 +45,15 @@ export function parsePacket(data) {
     return null
   }
 
+  const flags = view.getUint8(15)
+
   return {
     fileId: view.getUint32(1, false),
     k: view.getUint32(5, false),
     symbolId: view.getUint32(9, false),
     blockSize: view.getUint16(13, false),
-    isMetadata: (view.getUint8(15) & 1) === 1,
+    isMetadata: (flags & 1) === 1,
+    mode: (flags >> 1) & 0x03,
     payload: data.slice(16)
   }
 }
@@ -52,16 +61,36 @@ export function parsePacket(data) {
 // Test packet serialization roundtrip
 export function testPacketRoundtrip() {
   const payload = new Uint8Array([1, 2, 3, 4, 5])
-  const packet = createPacket(0xDEADBEEF, 100, 42, payload, false)
-  const parsed = parsePacket(packet)
 
-  const pass = parsed !== null &&
-    parsed.fileId === 0xDEADBEEF &&
-    parsed.k === 100 &&
-    parsed.symbolId === 42 &&
-    parsed.isMetadata === false &&
-    parsed.payload.length === 5
+  // Test BW mode (default)
+  const packet1 = createPacket(0xDEADBEEF, 100, 42, payload, false)
+  const parsed1 = parsePacket(packet1)
+  const pass1 = parsed1 !== null &&
+    parsed1.fileId === 0xDEADBEEF &&
+    parsed1.k === 100 &&
+    parsed1.symbolId === 42 &&
+    parsed1.isMetadata === false &&
+    parsed1.mode === QR_MODE.BW &&
+    parsed1.payload.length === 5
 
-  console.log('Packet roundtrip test:', pass ? 'PASS' : 'FAIL', parsed)
+  // Test PCCC mode with metadata
+  const packet2 = createPacket(0x12345678, 200, 1, payload, true, 200, QR_MODE.PCCC)
+  const parsed2 = parsePacket(packet2)
+  const pass2 = parsed2 !== null &&
+    parsed2.isMetadata === true &&
+    parsed2.mode === QR_MODE.PCCC
+
+  // Test Palette mode
+  const packet3 = createPacket(0xCAFEBABE, 150, 99, payload, false, 300, QR_MODE.PALETTE)
+  const parsed3 = parsePacket(packet3)
+  const pass3 = parsed3 !== null &&
+    parsed3.mode === QR_MODE.PALETTE &&
+    parsed3.blockSize === 300
+
+  const pass = pass1 && pass2 && pass3
+  console.log('Packet roundtrip test:', pass ? 'PASS' : 'FAIL')
+  console.log('  BW mode:', pass1 ? 'PASS' : 'FAIL')
+  console.log('  PCCC mode:', pass2 ? 'PASS' : 'FAIL')
+  console.log('  Palette mode:', pass3 ? 'PASS' : 'FAIL')
   return pass
 }

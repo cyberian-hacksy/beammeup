@@ -1,5 +1,23 @@
 // Protocol and configuration constants
 export const PROTOCOL_VERSION = 0x01
+
+// QR Mode constants
+export const QR_MODE = {
+  BW: 0,       // Standard black/white QR
+  PCCC: 1,     // Color CMY with finder calibration
+  PALETTE: 2   // Color RGB with HCC2D patch calibration
+}
+
+// Mode-specific margins (as ratio of canvas size)
+export const MODE_MARGINS = {
+  [QR_MODE.BW]: 0.02,      // ~2% quiet zone
+  [QR_MODE.PCCC]: 0.025,   // ~2.5% margin
+  [QR_MODE.PALETTE]: 0.15  // ~15% for scaled patches
+}
+
+// Palette mode patch configuration (as ratio of margin)
+export const PATCH_SIZE_RATIO = 0.4  // Patch is 40% of margin width
+export const PATCH_GAP_RATIO = 0.08  // Gap is 8% of margin width
 export const BLOCK_SIZE = 200
 export const MAX_FILE_SIZE = 20 * 1024 * 1024 // 20MB
 export const METADATA_INTERVAL = 10
