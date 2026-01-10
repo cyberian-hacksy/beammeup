@@ -199,24 +199,26 @@ export function calibrateFromFinders(qrLocation, imageData) {
   const blCenterY = bottomLeftCorner.y + offsetToCenter * toRightDir.y - offsetToCenter * toBottomDir.y;
   blackSamples.push(samplePixelMedian(imageData, blCenterX, blCenterY));
 
-  // White samples: sample the white border around finder patterns
-  // The white ring is at about 1.5 modules from center, or 5 modules from corner
+  // White samples: sample the white ring inside finder patterns
+  // Finder pattern structure (7x7): outer black ring, white ring, inner 3x3 black center
+  // The white ring is at row/col 1 and 5 (inner positions)
+  // We sample along the edges of the white ring, not diagonally (which would hit the black center)
   const whiteSamples = [];
-  const offsetToWhite = moduleSize * 5.5; // White quiet zone just outside finder
 
-  // Sample white just outside top-left finder (in the quiet zone)
-  const tlWhiteX = topLeftCorner.x - moduleSize * 1.5 * toRightDir.x - moduleSize * 1.5 * toBottomDir.x;
-  const tlWhiteY = topLeftCorner.y - moduleSize * 1.5 * toRightDir.y - moduleSize * 1.5 * toBottomDir.y;
-  // Check bounds
-  if (tlWhiteX >= 0 && tlWhiteY >= 0 && tlWhiteX < imageData.width && tlWhiteY < imageData.height) {
-    whiteSamples.push(samplePixelMedian(imageData, tlWhiteX, tlWhiteY));
-  }
+  // Sample white ring at multiple points along the edges (not corners)
+  // Position at row 1, col 3-4 (top edge of white ring, middle)
+  const whiteOffset = moduleSize * 1.5; // 1.5 modules into the finder = middle of white ring edge
+  const whiteMidOffset = moduleSize * 3.5; // 3.5 modules = center of the finder width
 
-  // Also sample the white border inside the finder pattern (at 1.5 modules from outer edge)
-  const insideWhiteOffset = moduleSize * 1.5;
-  const tlInsideWhiteX = topLeftCorner.x + insideWhiteOffset * toRightDir.x + insideWhiteOffset * toBottomDir.x;
-  const tlInsideWhiteY = topLeftCorner.y + insideWhiteOffset * toRightDir.y + insideWhiteOffset * toBottomDir.y;
-  whiteSamples.push(samplePixelMedian(imageData, tlInsideWhiteX, tlInsideWhiteY));
+  // Top edge of white ring (row ~1, col ~3.5)
+  const tlWhiteTopX = topLeftCorner.x + whiteMidOffset * toRightDir.x + whiteOffset * toBottomDir.x;
+  const tlWhiteTopY = topLeftCorner.y + whiteMidOffset * toRightDir.y + whiteOffset * toBottomDir.y;
+  whiteSamples.push(samplePixelMedian(imageData, tlWhiteTopX, tlWhiteTopY));
+
+  // Left edge of white ring (row ~3.5, col ~1)
+  const tlWhiteLeftX = topLeftCorner.x + whiteOffset * toRightDir.x + whiteMidOffset * toBottomDir.x;
+  const tlWhiteLeftY = topLeftCorner.y + whiteOffset * toRightDir.y + whiteMidOffset * toBottomDir.y;
+  whiteSamples.push(samplePixelMedian(imageData, tlWhiteLeftX, tlWhiteLeftY));
 
   if (blackSamples.length === 0 || whiteSamples.length === 0) return null;
 

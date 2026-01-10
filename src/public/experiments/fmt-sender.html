@@ -276,8 +276,8 @@
       canvas.width = canvasSize;
       canvas.height = canvasSize;
 
-      // Fill with black background
-      ctx.fillStyle = '#000000';
+      // Fill with white background (required for QR quiet zone)
+      ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, canvasSize, canvasSize);
 
       // Draw QR code centered with margin
