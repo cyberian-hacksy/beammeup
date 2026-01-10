@@ -422,24 +422,25 @@
     const previewTempCtx = previewTempCanvas.getContext('2d');
 
     // 16-color CGA palette (sRGB values)
-    // Index encodes 4 bits: bit3, bit2, bit1, bit0
+    // Inverted for QR compatibility: high index = dark, low index = bright
+    // index 15 = black (all bits on), index 0 = white (all bits off)
     const PALETTE_16_SRGB = [
-      [0, 0, 0],         // 0000: Black
-      [0, 0, 128],       // 0001: Dark Blue
-      [0, 128, 0],       // 0010: Dark Green
-      [0, 128, 128],     // 0011: Dark Cyan
-      [128, 0, 0],       // 0100: Dark Red
-      [128, 0, 128],     // 0101: Dark Magenta
-      [128, 128, 0],     // 0110: Dark Yellow (Brown)
-      [128, 128, 128],   // 0111: Gray
-      [192, 192, 192],   // 1000: Silver (Light Gray)
-      [0, 0, 255],       // 1001: Blue
-      [0, 255, 0],       // 1010: Green
-      [0, 255, 255],     // 1011: Cyan
-      [255, 0, 0],       // 1100: Red
-      [255, 0, 255],     // 1101: Magenta
-      [255, 255, 0],     // 1110: Yellow
-      [255, 255, 255]    // 1111: White
+      [255, 255, 255],   // 0000: White - all bits off
+      [255, 255, 0],     // 0001: Yellow
+      [255, 0, 255],     // 0010: Magenta
+      [255, 0, 0],       // 0011: Red
+      [0, 255, 255],     // 0100: Cyan
+      [0, 255, 0],       // 0101: Green
+      [0, 0, 255],       // 0110: Blue
+      [192, 192, 192],   // 0111: Silver (Light Gray)
+      [128, 128, 128],   // 1000: Gray
+      [128, 128, 0],     // 1001: Olive (Dark Yellow)
+      [128, 0, 128],     // 1010: Purple (Dark Magenta)
+      [128, 0, 0],       // 1011: Maroon (Dark Red)
+      [0, 128, 128],     // 1100: Teal (Dark Cyan)
+      [0, 128, 0],       // 1101: Dark Green
+      [0, 0, 128],       // 1110: Navy (Dark Blue)
+      [0, 0, 0]          // 1111: Black - all bits on
     ];
 
     // Convert sRGB (0-255) to linear RGB (0-1)

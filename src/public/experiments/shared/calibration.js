@@ -153,30 +153,90 @@ export function buildPaletteFromCorners(white, cyan, magenta, yellow) {
  * @returns {{white: [number,number,number], black: [number,number,number]} | null}
  */
 export function calibrateFromFinders(qrLocation, imageData) {
-  const { topLeftCorner, topRightCorner, bottomLeftCorner } = qrLocation;
+  const { topLeftCorner, topRightCorner, bottomLeftCorner, bottomRightCorner } = qrLocation;
 
+  // Calculate QR module size from finder pattern distance
+  const qrWidth = Math.sqrt(
+    Math.pow(topRightCorner.x - topLeftCorner.x, 2) +
+    Math.pow(topRightCorner.y - topLeftCorner.y, 2)
+  );
+  // Finder pattern is 7 modules, and the corner-to-corner span is about the full QR width
+  // For a version-1 QR (21 modules), module size is roughly qrWidth/21
+  // But we can estimate from finder pattern: the 3 finders span the outer edges
+  // moduleSize is approximately qrWidth / (21 to 25 modules depending on version)
+  const moduleSize = qrWidth / 25; // Conservative estimate
+
+  // Black samples: sample the CENTER of each finder pattern (3 modules in from corner)
+  // The finder pattern structure is: 1 black + 1 white + 3 black center
+  // So the center black square is at offset of about 3.5 modules
   const blackSamples = [];
-  const finders = [topLeftCorner, topRightCorner, bottomLeftCorner];
 
-  for (const finder of finders) {
-    const rgb = samplePixelMedian(imageData, finder.x, finder.y);
-    blackSamples.push(rgb);
+  // For top-left finder, the center is down and right from the corner
+  const offsetToCenter = moduleSize * 3.5;
+
+  // Direction vectors for top-left finder (pointing into QR)
+  const toRightDir = {
+    x: (topRightCorner.x - topLeftCorner.x) / qrWidth,
+    y: (topRightCorner.y - topLeftCorner.y) / qrWidth
+  };
+  const toBottomDir = {
+    x: (bottomLeftCorner.x - topLeftCorner.x) / qrWidth,
+    y: (bottomLeftCorner.y - topLeftCorner.y) / qrWidth
+  };
+
+  // Sample center of top-left finder
+  const tlCenterX = topLeftCorner.x + offsetToCenter * toRightDir.x + offsetToCenter * toBottomDir.x;
+  const tlCenterY = topLeftCorner.y + offsetToCenter * toRightDir.y + offsetToCenter * toBottomDir.y;
+  blackSamples.push(samplePixelMedian(imageData, tlCenterX, tlCenterY));
+
+  // Sample center of top-right finder (offset is left and down)
+  const trCenterX = topRightCorner.x - offsetToCenter * toRightDir.x + offsetToCenter * toBottomDir.x;
+  const trCenterY = topRightCorner.y - offsetToCenter * toRightDir.y + offsetToCenter * toBottomDir.y;
+  blackSamples.push(samplePixelMedian(imageData, trCenterX, trCenterY));
+
+  // Sample center of bottom-left finder (offset is right and up)
+  const blCenterX = bottomLeftCorner.x + offsetToCenter * toRightDir.x - offsetToCenter * toBottomDir.x;
+  const blCenterY = bottomLeftCorner.y + offsetToCenter * toRightDir.y - offsetToCenter * toBottomDir.y;
+  blackSamples.push(samplePixelMedian(imageData, blCenterX, blCenterY));
+
+  // White samples: sample the white border around finder patterns
+  // The white ring is at about 1.5 modules from center, or 5 modules from corner
+  const whiteSamples = [];
+  const offsetToWhite = moduleSize * 5.5; // White quiet zone just outside finder
+
+  // Sample white just outside top-left finder (in the quiet zone)
+  const tlWhiteX = topLeftCorner.x - moduleSize * 1.5 * toRightDir.x - moduleSize * 1.5 * toBottomDir.x;
+  const tlWhiteY = topLeftCorner.y - moduleSize * 1.5 * toRightDir.y - moduleSize * 1.5 * toBottomDir.y;
+  // Check bounds
+  if (tlWhiteX >= 0 && tlWhiteY >= 0 && tlWhiteX < imageData.width && tlWhiteY < imageData.height) {
+    whiteSamples.push(samplePixelMedian(imageData, tlWhiteX, tlWhiteY));
   }
 
-  // White reference: sample between finders (timing pattern area)
-  const midTop = {
-    x: (topLeftCorner.x + topRightCorner.x) / 2,
-    y: (topLeftCorner.y + topRightCorner.y) / 2
-  };
-  const whiteSample = samplePixelMedian(imageData, midTop.x, midTop.y);
+  // Also sample the white border inside the finder pattern (at 1.5 modules from outer edge)
+  const insideWhiteOffset = moduleSize * 1.5;
+  const tlInsideWhiteX = topLeftCorner.x + insideWhiteOffset * toRightDir.x + insideWhiteOffset * toBottomDir.x;
+  const tlInsideWhiteY = topLeftCorner.y + insideWhiteOffset * toRightDir.y + insideWhiteOffset * toBottomDir.y;
+  whiteSamples.push(samplePixelMedian(imageData, tlInsideWhiteX, tlInsideWhiteY));
 
-  if (!whiteSample || blackSamples.length === 0) return null;
+  if (blackSamples.length === 0 || whiteSamples.length === 0) return null;
+
+  // Filter out null samples
+  const validBlack = blackSamples.filter(s => s !== null);
+  const validWhite = whiteSamples.filter(s => s !== null);
+
+  if (validBlack.length === 0 || validWhite.length === 0) return null;
 
   const black = [
-    Math.round(blackSamples.reduce((s, c) => s + c[0], 0) / blackSamples.length),
-    Math.round(blackSamples.reduce((s, c) => s + c[1], 0) / blackSamples.length),
-    Math.round(blackSamples.reduce((s, c) => s + c[2], 0) / blackSamples.length)
+    Math.round(validBlack.reduce((s, c) => s + c[0], 0) / validBlack.length),
+    Math.round(validBlack.reduce((s, c) => s + c[1], 0) / validBlack.length),
+    Math.round(validBlack.reduce((s, c) => s + c[2], 0) / validBlack.length)
   ];
 
-  return { white: whiteSample, black };
+  const white = [
+    Math.round(validWhite.reduce((s, c) => s + c[0], 0) / validWhite.length),
+    Math.round(validWhite.reduce((s, c) => s + c[1], 0) / validWhite.length),
+    Math.round(validWhite.reduce((s, c) => s + c[2], 0) / validWhite.length)
+  ];
+
+  return { white, black };
 }

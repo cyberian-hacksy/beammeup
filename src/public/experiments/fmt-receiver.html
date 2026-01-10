@@ -298,11 +298,13 @@
 
     // FMT decode function - mathematical inverse mapping
     // Returns a 3-bit value (0-7) encoding RGB bits
+    // Inverted for QR compatibility: low value = bit ON (dark), high value = bit OFF (bright)
     function fmtDecode(normR, normG, normB) {
       // After gamma decode and normalization, threshold each channel
-      const r_bit = (normR > THRESHOLD) ? 1 : 0;
-      const g_bit = (normG > THRESHOLD) ? 1 : 0;
-      const b_bit = (normB > THRESHOLD) ? 1 : 0;
+      // Inverted: low normalized value = dark pixel = bit ON
+      const r_bit = (normR < THRESHOLD) ? 1 : 0;
+      const g_bit = (normG < THRESHOLD) ? 1 : 0;
+      const b_bit = (normB < THRESHOLD) ? 1 : 0;
       // Encode as 3-bit value: R is MSB, B is LSB
       return r_bit * 4 + g_bit * 2 + b_bit;
     }

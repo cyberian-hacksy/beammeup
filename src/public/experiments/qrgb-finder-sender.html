@@ -91,9 +91,8 @@
 <body>
   <h1>QRGB-Finder Sender</h1>
   <p class="description">
-    <strong>Finder-pattern-only calibration:</strong> No corner calibration patches.<br>
-    QR code fills canvas with small margin. Finder patterns remain black/white for detection.<br>
-    Uses RGB additive color model. Tests whether finder patterns alone are sufficient for calibration.
+    <strong>RGB Additive with Full Inversion:</strong> True RGB encoding (bit ON = channel bright).<br>
+    Entire image inverted for jsQR compatibility. Finder patterns provide B/W calibration.
   </p>
 
   <div id="controls" class="controls"></div>
@@ -113,7 +112,7 @@
 
   <div class="note" id="noteDisplay">
     <strong>Layout:</strong> <span id="noteSize">440x440</span> square with <span id="noteMargin">10</span>px margin.<br>
-    No corner patches. Finder patterns (B/W) serve as calibration reference.
+    Entire image INVERTED for jsQR. True RGB additive. Finder patterns for B/W calibration.
   </div>
 
   <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
@@ -134,8 +133,9 @@
     document.getElementById('dataGreen').textContent = DATA_GREEN;
     document.getElementById('dataBlue').textContent = DATA_BLUE;
 
-    // RGB additive color: dark module = channel ON (bit 1)
-    // r, g, b are 0 or 1
+    // RGB ADDITIVE encoding: dark module = channel bit set = channel ON = BRIGHT
+    // r, g, b are 0 or 1 - TRUE RGB additive model
+    // Note: After drawing, we invert the entire canvas for jsQR detection compatibility
     function rgbToColor(r, g, b) {
       return [
         r * 255,
@@ -144,17 +144,17 @@
       ];
     }
 
-    // All 8 RGB combinations for legend
-    // In additive RGB: 1 means channel is ON (255)
+    // All 8 RGB combinations for legend (TRUE RGB additive, shown BEFORE inversion)
+    // After inversion: Black↔White, Red↔Cyan, Green↔Magenta, Blue↔Yellow
     const ALL_COLORS = [
-      { rgb: [0, 0, 0], label: 'K (000)' },   // Black - all channels off
+      { rgb: [0, 0, 0], label: 'K (000)' },   // Black - all channels OFF
       { rgb: [1, 0, 0], label: 'R (100)' },   // Red
       { rgb: [0, 1, 0], label: 'G (010)' },   // Green
       { rgb: [0, 0, 1], label: 'B (001)' },   // Blue
       { rgb: [1, 1, 0], label: 'Y (110)' },   // Yellow (R+G)
       { rgb: [1, 0, 1], label: 'M (101)' },   // Magenta (R+B)
       { rgb: [0, 1, 1], label: 'C (011)' },   // Cyan (G+B)
-      { rgb: [1, 1, 1], label: 'W (111)' }    // White - all channels on
+      { rgb: [1, 1, 1], label: 'W (111)' }    // White - all channels ON
     ];
 
     ALL_COLORS.forEach(c => { c.color = rgbToColor(...c.rgb); });
@@ -269,6 +269,19 @@
           ctx.fillRect(x, yPos, cellSize + 0.5, cellSize + 0.5);
         }
       }
+
+      // INVERT THE ENTIRE CANVAS for jsQR detection compatibility
+      // This makes finder patterns appear as normal black-on-white for detection
+      // Receiver will invert back to get true RGB values for color decoding
+      const imgData = ctx.getImageData(0, 0, canvasSize, canvasSize);
+      const pixels = imgData.data;
+      for (let i = 0; i < pixels.length; i += 4) {
+        pixels[i] = 255 - pixels[i];       // Invert R
+        pixels[i + 1] = 255 - pixels[i + 1]; // Invert G
+        pixels[i + 2] = 255 - pixels[i + 2]; // Invert B
+        // Alpha stays the same
+      }
+      ctx.putImageData(imgData, 0, 0);
 
       // Update note display using textContent (safe DOM method)
       noteSizeEl.textContent = canvasSize + 'x' + canvasSize;

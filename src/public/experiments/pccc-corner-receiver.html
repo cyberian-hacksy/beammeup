@@ -284,6 +284,26 @@
     // corners[0] = White (TL), corners[1] = Cyan (TR), corners[2] = Magenta (BL), corners[3] = Yellow (BR)
     let corners = [null, null, null, null];
 
+    // Smoothed corner values for temporal stability (reduces flickering)
+    let smoothedCorners = [null, null, null, null];
+    const SMOOTHING_FACTOR = 0.3; // Higher = faster adaptation, lower = more stable
+
+    // Apply exponential smoothing to corner RGB values
+    function smoothCorner(index, newValue) {
+      if (!newValue) return smoothedCorners[index];
+      if (!smoothedCorners[index]) {
+        smoothedCorners[index] = [...newValue];
+        return smoothedCorners[index];
+      }
+      // Exponential moving average
+      smoothedCorners[index] = [
+        Math.round(smoothedCorners[index][0] * (1 - SMOOTHING_FACTOR) + newValue[0] * SMOOTHING_FACTOR),
+        Math.round(smoothedCorners[index][1] * (1 - SMOOTHING_FACTOR) + newValue[1] * SMOOTHING_FACTOR),
+        Math.round(smoothedCorners[index][2] * (1 - SMOOTHING_FACTOR) + newValue[2] * SMOOTHING_FACTOR)
+      ];
+      return smoothedCorners[index];
+    }
+
     // Reusable buffers to avoid per-frame allocations
     let channelBuffers = { cyan: null, magenta: null, yellow: null };
     let lastBufferSize = 0;
@@ -473,7 +493,7 @@
           { x: qrRight, y: qrBottom, id: 'cornerBR' }                           // Yellow
         ];
 
-        // Step 4: Sample corner patches
+        // Step 4: Sample corner patches with temporal smoothing
         let allCornersValid = true;
         for (let i = 0; i < 4; i++) {
           const pos = cornerPositions[i];
@@ -482,7 +502,8 @@
             allCornersValid = false;
             corners[i] = null;
           } else {
-            corners[i] = sampleRegion(imageData, pos.x, pos.y, patchSize, patchSize);
+            const rawSample = sampleRegion(imageData, pos.x, pos.y, patchSize, patchSize);
+            corners[i] = smoothCorner(i, rawSample); // Apply temporal smoothing
             if (!corners[i]) allCornersValid = false;
           }
           updateCornerDisplay(pos.id, corners[i]);
@@ -496,7 +517,7 @@
           return;
         }
 
-        // Step 5: Validate calibration (basic sanity checks)
+        // Step 5: Validate calibration using smoothed values (basic sanity checks)
         const wLum = corners[0][0] + corners[0][1] + corners[0][2];
         const cLum = corners[1][0] + corners[1][1] + corners[1][2];
         const mLum = corners[2][0] + corners[2][1] + corners[2][2];

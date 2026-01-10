@@ -91,8 +91,8 @@
 <body>
   <h1>QRGB-Corner Sender</h1>
   <p class="description">
-    <strong>Square layout with corner calibration:</strong> 4 corner patches for camera calibration.<br>
-    QR finder patterns kept black/white. RGB encoded data area (additive color model).
+    <strong>RGB Additive with Full Inversion:</strong> True RGB encoding (bit ON = channel bright).<br>
+    Entire image inverted for jsQR compatibility. Receiver inverts back for RGB decoding.
   </p>
 
   <div id="controls" class="controls"></div>
@@ -111,8 +111,8 @@
   </div>
 
   <div class="note" id="noteDisplay">
-    <strong>Layout:</strong> <span id="noteSize">440x440</span> square. <span id="noteCorner">22</span>px corner patches (White, Red, Green, Blue).<br>
-    QR code centered. Finder patterns are black/white for detection.
+    <strong>Layout:</strong> <span id="noteSize">440x440</span> square. <span id="noteCorner">22</span>px corner patches (W/R/G/B semantic, W/C/M/Y visual).<br>
+    QR code centered. Entire image INVERTED for jsQR detection. True RGB additive model.
   </div>
 
   <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
@@ -133,8 +133,9 @@
     document.getElementById('dataGreen').textContent = DATA_GREEN;
     document.getElementById('dataBlue').textContent = DATA_BLUE;
 
-    // RGB additive color: dark module = channel ON (bit 1)
-    // r, g, b are 0 or 1
+    // RGB ADDITIVE encoding: dark module = channel bit set = channel ON = BRIGHT
+    // r, g, b are 0 or 1 - TRUE RGB additive model
+    // Note: After drawing, we invert the entire canvas for jsQR detection compatibility
     function rgbToColor(r, g, b) {
       return [
         r * 255,
@@ -143,17 +144,17 @@
       ];
     }
 
-    // All 8 RGB combinations for legend
-    // In additive RGB: 1 means channel is ON (255)
+    // All 8 RGB combinations for legend (TRUE RGB additive, shown BEFORE inversion)
+    // After inversion: Black↔White, Red↔Cyan, Green↔Magenta, Blue↔Yellow
     const ALL_COLORS = [
-      { rgb: [0, 0, 0], label: 'K (000)' },   // Black - all channels off
+      { rgb: [0, 0, 0], label: 'K (000)' },   // Black - all channels OFF
       { rgb: [1, 0, 0], label: 'R (100)' },   // Red
       { rgb: [0, 1, 0], label: 'G (010)' },   // Green
       { rgb: [0, 0, 1], label: 'B (001)' },   // Blue
       { rgb: [1, 1, 0], label: 'Y (110)' },   // Yellow (R+G)
       { rgb: [1, 0, 1], label: 'M (101)' },   // Magenta (R+B)
       { rgb: [0, 1, 1], label: 'C (011)' },   // Cyan (G+B)
-      { rgb: [1, 1, 1], label: 'W (111)' }    // White - all channels on
+      { rgb: [1, 1, 1], label: 'W (111)' }    // White - all channels ON
     ];
 
     ALL_COLORS.forEach(c => { c.color = rgbToColor(...c.rgb); });
@@ -236,20 +237,22 @@
       ctx.fillStyle = '#808080';
       ctx.fillRect(0, 0, canvasSize, canvasSize);
 
-      // Draw corner calibration patches (W, R, G, B)
-      // Top-left: White
+      // Draw corner calibration patches (W, R, G, B) - TRUE RGB additive
+      // These will be inverted along with the QR code at the end
+      // After inversion: W stays W, R→C, G→M, B→Y
+      // Top-left: White (all channels ON)
       ctx.fillStyle = 'rgb(255, 255, 255)';
       ctx.fillRect(0, 0, cornerSize, cornerSize);
 
-      // Top-right: Red
+      // Top-right: Red (R channel ON)
       ctx.fillStyle = 'rgb(255, 0, 0)';
       ctx.fillRect(canvasSize - cornerSize, 0, cornerSize, cornerSize);
 
-      // Bottom-left: Green
+      // Bottom-left: Green (G channel ON)
       ctx.fillStyle = 'rgb(0, 255, 0)';
       ctx.fillRect(0, canvasSize - cornerSize, cornerSize, cornerSize);
 
-      // Bottom-right: Blue
+      // Bottom-right: Blue (B channel ON)
       ctx.fillStyle = 'rgb(0, 0, 255)';
       ctx.fillRect(canvasSize - cornerSize, canvasSize - cornerSize, cornerSize, cornerSize);
 
@@ -284,16 +287,31 @@
         }
       }
 
+      // INVERT THE ENTIRE CANVAS for jsQR detection compatibility
+      // This makes finder patterns appear as normal black-on-white for detection
+      // Receiver will invert back to get true RGB values for color decoding
+      const imgData = ctx.getImageData(0, 0, canvasSize, canvasSize);
+      const pixels = imgData.data;
+      for (let i = 0; i < pixels.length; i += 4) {
+        pixels[i] = 255 - pixels[i];       // Invert R
+        pixels[i + 1] = 255 - pixels[i + 1]; // Invert G
+        pixels[i + 2] = 255 - pixels[i + 2]; // Invert B
+        // Alpha stays the same
+      }
+      ctx.putImageData(imgData, 0, 0);
+
       // Add small labels to corners (scale font with corner size)
+      // Labels show SEMANTIC meaning (W/R/G/B) even though visually inverted to W/C/M/Y
       const fontSize = Math.max(8, Math.round(cornerSize * 0.5));
       ctx.font = 'bold ' + fontSize + 'px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
 
-      // Labels with contrasting colors
+      // Labels with contrasting colors (semantic RGB labels)
+      // Visually: TL=white, TR=cyan, BL=magenta, BR=yellow (inverted)
+      // Semantically: TL=White, TR=Red, BL=Green, BR=Blue (true RGB additive)
       ctx.fillStyle = '#000';
       ctx.fillText('W', cornerSize/2, cornerSize/2);
-      ctx.fillStyle = '#fff';
       ctx.fillText('R', canvasSize - cornerSize/2, cornerSize/2);
       ctx.fillText('G', cornerSize/2, canvasSize - cornerSize/2);
       ctx.fillText('B', canvasSize - cornerSize/2, canvasSize - cornerSize/2);

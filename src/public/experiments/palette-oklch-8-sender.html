@@ -205,15 +205,17 @@
     document.getElementById('dataBlue').textContent = DATA_BLUE;
 
     // Fixed 8-color palette indexed by 3-bit value
+    // Inverted for QR compatibility: dark modules (high index) produce dark colors
+    // index = R*4 + G*2 + B, but inverted: index 7 = black (all bits on), index 0 = white (all bits off)
     const PALETTE = [
-      { index: 0, name: 'Black',   rgb: [0, 0, 0] },
-      { index: 1, name: 'Blue',    rgb: [0, 0, 255] },
-      { index: 2, name: 'Green',   rgb: [0, 255, 0] },
-      { index: 3, name: 'Cyan',    rgb: [0, 255, 255] },
-      { index: 4, name: 'Red',     rgb: [255, 0, 0] },
-      { index: 5, name: 'Magenta', rgb: [255, 0, 255] },
-      { index: 6, name: 'Yellow',  rgb: [255, 255, 0] },
-      { index: 7, name: 'White',   rgb: [255, 255, 255] }
+      { index: 0, name: 'White',   rgb: [255, 255, 255] },
+      { index: 1, name: 'Yellow',  rgb: [255, 255, 0] },
+      { index: 2, name: 'Magenta', rgb: [255, 0, 255] },
+      { index: 3, name: 'Red',     rgb: [255, 0, 0] },
+      { index: 4, name: 'Cyan',    rgb: [0, 255, 255] },
+      { index: 5, name: 'Green',   rgb: [0, 255, 0] },
+      { index: 6, name: 'Blue',    rgb: [0, 0, 255] },
+      { index: 7, name: 'Black',   rgb: [0, 0, 0] }
     ];
 
     // Palette lookup function

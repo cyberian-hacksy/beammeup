@@ -173,7 +173,7 @@
 </head>
 <body>
   <h1>QRGB-Corner Receiver</h1>
-  <p class="description">Corner calibration with RGB additive model and confidence metrics</p>
+  <p class="description">RGB additive model with full inversion. Inverts captured image back to true RGB for decoding.</p>
 
   <div class="controls">
     <button id="startBtn">Start Camera</button>
@@ -280,8 +280,9 @@
     let scanCount = 0;
     let successCounts = { red: 0, green: 0, blue: 0 };
 
-    // Calibration data from corner patches
+    // Calibration data from corner patches (after inverting captured image)
     // corners[0] = White (TL), corners[1] = Red (TR), corners[2] = Green (BL), corners[3] = Blue (BR)
+    // True RGB additive model: bit ON = channel bright
     let corners = [null, null, null, null];
 
     // Reusable buffers to avoid per-frame allocations
@@ -292,17 +293,17 @@
     const previewTempCanvas = document.createElement('canvas');
     const previewTempCtx = previewTempCanvas.getContext('2d');
 
-    // All 8 RGB color combinations (additive model)
-    // RGB: channel ON = bit 1 (adds light to black)
+    // All 8 RGB color combinations (TRUE RGB additive model)
+    // bit 1 = channel ON = bright
     const RGB_COLORS = [
-      [0, 0, 0], // Black (no channels)
+      [0, 0, 0], // Black (all OFF)
       [1, 0, 0], // Red
       [0, 1, 0], // Green
       [0, 0, 1], // Blue
       [1, 1, 0], // Yellow (R+G)
       [1, 0, 1], // Magenta (R+B)
       [0, 1, 1], // Cyan (G+B)
-      [1, 1, 1]  // White (R+G+B)
+      [1, 1, 1]  // White (all ON)
     ];
 
     startBtn.addEventListener('click', async () => {
@@ -320,42 +321,37 @@
       }
     });
 
-    // Build expected RGB for each color combination using linear interpolation with gamma decoding
-    // RGB additive model: color = Black + r*(R-Black) + g*(G-Black) + b*(B-Black)
-    // Where Black is derived as the opposite of White in the calibration
+    // Build expected RGB for each RGB combination using linear interpolation with gamma decoding
+    // RGB additive model: Black + r*(R-Black) + g*(G-Black) + b*(B-Black)
+    // But we can simplify using W as max brightness reference:
+    // For channel c: value = Black + bit * (Primary[c] - Black)
     function buildExpectedColors() {
       if (!corners[0] || !corners[1] || !corners[2] || !corners[3]) return null;
 
+      // corners: [0]=White, [1]=Red, [2]=Green, [3]=Blue
       // Apply gamma decoding to convert from sRGB to linear space
       const W_linear = gammaDecode(corners[0][0], corners[0][1], corners[0][2]);
       const R_linear = gammaDecode(corners[1][0], corners[1][1], corners[1][2]);
       const G_linear = gammaDecode(corners[2][0], corners[2][1], corners[2][2]);
       const B_linear = gammaDecode(corners[3][0], corners[3][1], corners[3][2]);
 
-      // For RGB additive model, we need to derive Black
-      // Black = W - R - G - B + 2*common_base (since R,G,B each contain partial white)
-      // Simpler approach: Black_component = max(0, R + G + B - 2*W) or infer from pattern
-      // Best approach: Black = R + G + B - 2*W (in linear space, clamped to 0)
-      // Actually for display-based RGB: Black is close to [0,0,0] but camera sees ambient
-      // Let's derive Black as: if all channels OFF, we get background/black
-      // Estimate Black from: W = Black + (R-Black) + (G-Black) + (B-Black) = R + G + B - 2*Black
-      // So Black = (R + G + B - W) / 2
-      const Black_linear = [
-        Math.max(0, (R_linear[0] + G_linear[0] + B_linear[0] - W_linear[0]) / 2),
-        Math.max(0, (R_linear[1] + G_linear[1] + B_linear[1] - W_linear[1]) / 2),
-        Math.max(0, (R_linear[2] + G_linear[2] + B_linear[2] - W_linear[2]) / 2)
-      ];
+      // Derive Black as the complement (all channels OFF)
+      // In true RGB additive, Black is when no channel is on
+      // We can estimate it from the primaries: Black ≈ 0 (ambient light)
+      // But for camera calibration, derive from: White = R + G + B - 2*Black (approximate)
+      // Simpler: treat Black as 0,0,0 in linear space (true black point)
+      const Black_linear = [0, 0, 0];
 
-      // Linear interpolation in linear color space for RGB additive:
+      // Linear interpolation in linear color space
       // RGB(r,g,b) = Black + r*(R-Black) + g*(G-Black) + b*(B-Black)
       const expected = [];
       for (const rgb of RGB_COLORS) {
         const r_bit = rgb[0], g_bit = rgb[1], b_bit = rgb[2];
-        const out_r = Black_linear[0] + r_bit * (R_linear[0] - Black_linear[0]) + g_bit * (G_linear[0] - Black_linear[0]) + b_bit * (B_linear[0] - Black_linear[0]);
-        const out_g = Black_linear[1] + r_bit * (R_linear[1] - Black_linear[1]) + g_bit * (G_linear[1] - Black_linear[1]) + b_bit * (B_linear[1] - Black_linear[1]);
-        const out_b = Black_linear[2] + r_bit * (R_linear[2] - Black_linear[2]) + g_bit * (G_linear[2] - Black_linear[2]) + b_bit * (B_linear[2] - Black_linear[2]);
+        const r_linear = Black_linear[0] + r_bit * (R_linear[0] - Black_linear[0]) + g_bit * (G_linear[0] - Black_linear[0]) + b_bit * (B_linear[0] - Black_linear[0]);
+        const g_linear = Black_linear[1] + r_bit * (R_linear[1] - Black_linear[1]) + g_bit * (G_linear[1] - Black_linear[1]) + b_bit * (B_linear[1] - Black_linear[1]);
+        const b_linear = Black_linear[2] + r_bit * (R_linear[2] - Black_linear[2]) + g_bit * (G_linear[2] - Black_linear[2]) + b_bit * (B_linear[2] - Black_linear[2]);
         // Store as linear values for distance calculations
-        expected.push([out_r, out_g, out_b]);
+        expected.push([r_linear, g_linear, b_linear]);
       }
 
       return expected;
@@ -386,6 +382,11 @@
 
       const confidence = paletteConfidence(distances);
       return { rgb: RGB_COLORS[bestIdx], confidence };
+    }
+
+    // Invert pixel value for undoing sender's inversion
+    function invertPixel(val) {
+      return 255 - val;
     }
 
     // Convert image to grayscale for QR detection
@@ -491,7 +492,8 @@
           { x: qrRight, y: qrBottom, id: 'cornerBR' }                           // Blue
         ];
 
-        // Step 4: Sample corner patches
+        // Step 4: Sample corner patches (from INVERTED captured image, so invert back)
+        // The sender inverted the image, so we need to invert the sampled values back to true RGB
         let allCornersValid = true;
         for (let i = 0; i < 4; i++) {
           const pos = cornerPositions[i];
@@ -500,7 +502,17 @@
             allCornersValid = false;
             corners[i] = null;
           } else {
-            corners[i] = sampleRegion(imageData, pos.x, pos.y, patchSize, patchSize);
+            const rawSample = sampleRegion(imageData, pos.x, pos.y, patchSize, patchSize);
+            // Invert the sampled values to get true RGB
+            if (rawSample) {
+              corners[i] = [
+                invertPixel(rawSample[0]),
+                invertPixel(rawSample[1]),
+                invertPixel(rawSample[2])
+              ];
+            } else {
+              corners[i] = null;
+            }
             if (!corners[i]) allCornersValid = false;
           }
           updateCornerDisplay(pos.id, corners[i]);
@@ -558,9 +570,10 @@
         for (let py = 0; py < size; py++) {
           for (let px = 0; px < size; px++) {
             const idx = (py * size + px) * 4;
-            const r = pixels[idx];
-            const g = pixels[idx + 1];
-            const b = pixels[idx + 2];
+            // Invert captured pixels back to original RGB space
+            const r = invertPixel(pixels[idx]);
+            const g = invertPixel(pixels[idx + 1]);
+            const b = invertPixel(pixels[idx + 2]);
 
             // Only process pixels inside the QR area
             let rgb;
@@ -577,13 +590,12 @@
                 else lowCount++;
               }
             } else {
-              // Outside QR - treat as white (all channels ON for RGB additive)
-              rgb = [1, 1, 1];
+              // Outside QR - treat as black (all channels OFF in RGB additive)
+              rgb = [0, 0, 0];
             }
 
             // Create binary channel images
-            // RGB additive: channel ON (bit=1) = bright pixel (white in QR = light module)
-            // For QR decoding, dark modules = data, so we invert:
+            // RGB additive: channel ON (bit=1) = dark QR module = dark pixel
             // bit=1 (channel ON) -> dark (0), bit=0 (channel OFF) -> light (255)
             const rGray = rgb[0] ? 0 : 255;
             const gGray = rgb[1] ? 0 : 255;
@@ -664,7 +676,7 @@
     }
 
     console.log('QRGB-Corner Receiver ready');
-    console.log('Workflow: Grayscale QR detect -> Corner calibration (W/R/G/B) -> RGB additive model -> Channel decode');
+    console.log('Workflow: jsQR detect (on inverted image) -> Invert pixels back -> Corner calibration (W/R/G/B) -> RGB additive classification -> Channel decode');
   </script>
 </body>
 </html>

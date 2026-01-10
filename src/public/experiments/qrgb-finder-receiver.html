@@ -174,7 +174,7 @@
 </head>
 <body>
   <h1>QRGB-Finder Receiver</h1>
-  <p class="description">Finder pattern calibration with additive RGB threshold classification</p>
+  <p class="description">RGB additive with full inversion. Inverts captured image, uses finder patterns for B/W calibration.</p>
 
   <div class="controls">
     <button id="startBtn">Start Camera</button>
@@ -266,7 +266,7 @@
     let scanCount = 0;
     let successCounts = { red: 0, green: 0, blue: 0 };
 
-    // Calibration data from finder patterns
+    // Calibration data from finder patterns (after inverting captured image back to true RGB)
     let calibration = null; // {white: [r,g,b], black: [r,g,b]}
 
     // Reusable buffers to avoid per-frame allocations
@@ -280,6 +280,11 @@
     // Threshold for RGB channel classification
     const THRESHOLD = 0.5;
     const CONFIDENCE_RANGE = 0.3;
+
+    // Invert pixel value for undoing sender's inversion
+    function invertPixel(val) {
+      return 255 - val;
+    }
 
     startBtn.addEventListener('click', async () => {
       try {
@@ -297,27 +302,26 @@
     });
 
     // Classify RGB channels using threshold on normalized RGB
-    // In RGB additive color model:
-    // - High R value (close to white) means red channel is ON
-    // - High G value means green channel is ON
-    // - High B value means blue channel is ON
-    // This is INVERTED from CMY where low values mean ink present
+    // TRUE RGB additive model (after inverting captured image):
+    // - High R value (close to white) means red channel bit is ON (bright in original)
+    // - High G value means green channel bit is ON
+    // - High B value means blue channel bit is ON
     function classifyColor(r, g, b, white, black) {
       // Normalize RGB against white/black references with gamma decoding
       const [normR, normG, normB] = normalizeRgb(r, g, b, white, black, true);
 
       // Threshold each channel independently
-      // HIGH normalized value = light present = channel ON (opposite of CMY!)
-      const red = normR > THRESHOLD ? 1 : 0;
-      const green = normG > THRESHOLD ? 1 : 0;
-      const blue = normB > THRESHOLD ? 1 : 0;
+      // HIGH normalized value = bright pixel = channel ON (true RGB additive)
+      const red = normR >= THRESHOLD ? 1 : 0;
+      const green = normG >= THRESHOLD ? 1 : 0;
+      const blue = normB >= THRESHOLD ? 1 : 0;
 
       // Calculate confidence using layered confidence metric
-      // For RGB, high values mean channel ON, so we pass values directly
+      // For true RGB additive, high values mean channel ON
       const confidence = layeredConfidence(
-        normR, // High when red present
-        normG, // High when green present
-        normB, // High when blue present
+        normR, // High when red channel bit is ON (bright)
+        normG, // High when green channel bit is ON (bright)
+        normB, // High when blue channel bit is ON (bright)
         THRESHOLD,
         CONFIDENCE_RANGE
       );
@@ -421,9 +425,10 @@
           ' size: ' + Math.round(qrWidth) + 'x' + Math.round(qrHeight);
 
         // Step 3: Calibrate from finder patterns
-        calibration = calibrateFromFinders(loc, imageData);
+        // The captured image is INVERTED, so we invert the calibration values back to true RGB
+        const rawCalibration = calibrateFromFinders(loc, imageData);
 
-        if (!calibration) {
+        if (!rawCalibration) {
           calibStatus.textContent = 'Could not extract finder calibration';
           calibStatus.className = 'status-text bad';
           resetConfidenceDisplay();
@@ -431,7 +436,28 @@
           return;
         }
 
-        // Update calibration display
+        // Invert calibration values to get true RGB space
+        // Note: what appears as "white" in captured (inverted) image was "black" in original
+        calibration = {
+          white: [
+            invertPixel(rawCalibration.white[0]),
+            invertPixel(rawCalibration.white[1]),
+            invertPixel(rawCalibration.white[2])
+          ],
+          black: [
+            invertPixel(rawCalibration.black[0]),
+            invertPixel(rawCalibration.black[1]),
+            invertPixel(rawCalibration.black[2])
+          ]
+        };
+
+        // After inversion, what was white/black in captured image swaps meaning
+        // But calibrateFromFinders samples based on finder structure, so we need to swap
+        const temp = calibration.white;
+        calibration.white = calibration.black;
+        calibration.black = temp;
+
+        // Update calibration display (showing true RGB values after inversion)
         updateRefDisplay('whiteRef', calibration.white);
         updateRefDisplay('blackRef', calibration.black);
 
@@ -469,9 +495,10 @@
         for (let py = 0; py < size; py++) {
           for (let px = 0; px < size; px++) {
             const idx = (py * size + px) * 4;
-            const r = pixels[idx];
-            const g = pixels[idx + 1];
-            const b = pixels[idx + 2];
+            // Invert captured pixels back to original RGB space
+            const r = invertPixel(pixels[idx]);
+            const g = invertPixel(pixels[idx + 1]);
+            const b = invertPixel(pixels[idx + 2]);
 
             // Only process pixels inside the QR area
             let rgb;
@@ -488,12 +515,12 @@
                 else lowCount++;
               }
             } else {
-              // Outside QR - treat as white (all channels ON in additive RGB)
-              rgb = [1, 1, 1];
+              // Outside QR - treat as black (all channels OFF in RGB additive)
+              rgb = [0, 0, 0];
             }
 
             // Create binary channel images
-            // For QR decoding: channel ON (bit 1) = dark module, channel OFF (bit 0) = light module
+            // RGB additive: channel ON (bit 1) = dark QR module = dark pixel in channel image
             const rGray = rgb[0] ? 0 : 255;
             const gGray = rgb[1] ? 0 : 255;
             const bGray = rgb[2] ? 0 : 255;
@@ -573,7 +600,7 @@
     }
 
     console.log('QRGB-Finder Receiver ready');
-    console.log('Workflow: Grayscale QR detect -> Finder pattern calibration (W/B) -> RGB threshold classification -> Channel decode');
+    console.log('Workflow: jsQR detect (on inverted image) -> Invert pixels back -> Finder calibration (W/B) -> RGB additive classification -> Channel decode');
   </script>
 </body>
 </html>

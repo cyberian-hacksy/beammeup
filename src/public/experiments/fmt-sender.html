@@ -174,24 +174,27 @@
     document.getElementById('dataBlue').textContent = DATA_BLUE;
 
     // FMT Mathematical Transform: 3-bit value (0-7) to RGB color
+    // Inverted for QR compatibility: dark modules produce dark pixels
     // value = 0bRGB where R=bit2, G=bit1, B=bit0
+    // Output is inverted: bit 1 → 0 (dark), bit 0 → 255 (bright)
     function encode(value) {
       const r = Math.floor(value / 4) % 2;  // bit 2
       const g = Math.floor(value / 2) % 2;  // bit 1
       const b = value % 2;                   // bit 0
-      return [r * 255, g * 255, b * 255];
+      return [(1 - r) * 255, (1 - g) * 255, (1 - b) * 255];
     }
 
     // All 8 RGB combinations for legend (ordered by 3-bit value)
+    // Inverted: value 0 (all bits off) → White, value 7 (all bits on) → Black
     const ALL_COLORS = [
-      { value: 0, binary: '000', label: 'Black (0)' },
-      { value: 1, binary: '001', label: 'Blue (1)' },
-      { value: 2, binary: '010', label: 'Green (2)' },
-      { value: 3, binary: '011', label: 'Cyan (3)' },
-      { value: 4, binary: '100', label: 'Red (4)' },
-      { value: 5, binary: '101', label: 'Magenta (5)' },
-      { value: 6, binary: '110', label: 'Yellow (6)' },
-      { value: 7, binary: '111', label: 'White (7)' }
+      { value: 0, binary: '000', label: 'White (0)' },
+      { value: 1, binary: '001', label: 'Yellow (1)' },
+      { value: 2, binary: '010', label: 'Magenta (2)' },
+      { value: 3, binary: '011', label: 'Red (3)' },
+      { value: 4, binary: '100', label: 'Cyan (4)' },
+      { value: 5, binary: '101', label: 'Green (5)' },
+      { value: 6, binary: '110', label: 'Blue (6)' },
+      { value: 7, binary: '111', label: 'Black (7)' }
     ];
 
     // Pre-compute colors using FMT encode function

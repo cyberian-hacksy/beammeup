@@ -215,24 +215,25 @@
     document.getElementById('dataBit0').textContent = DATA_BIT0;
 
     // Fixed 16-color palette indexed by 4-bit value
-    // Classic web-safe colors with good perceptual separation
+    // Inverted for QR compatibility: dark modules (high index) produce dark colors
+    // index 15 = black (all bits on), index 0 = white (all bits off)
     const PALETTE = [
-      { index: 0,  name: 'Black',      rgb: [0, 0, 0] },
-      { index: 1,  name: 'Navy',       rgb: [0, 0, 128] },
-      { index: 2,  name: 'Dark Green', rgb: [0, 128, 0] },
-      { index: 3,  name: 'Teal',       rgb: [0, 128, 128] },
-      { index: 4,  name: 'Maroon',     rgb: [128, 0, 0] },
-      { index: 5,  name: 'Purple',     rgb: [128, 0, 128] },
-      { index: 6,  name: 'Olive',      rgb: [128, 128, 0] },
-      { index: 7,  name: 'Gray',       rgb: [128, 128, 128] },
-      { index: 8,  name: 'Silver',     rgb: [192, 192, 192] },
-      { index: 9,  name: 'Blue',       rgb: [0, 0, 255] },
-      { index: 10, name: 'Lime',       rgb: [0, 255, 0] },
-      { index: 11, name: 'Cyan',       rgb: [0, 255, 255] },
-      { index: 12, name: 'Red',        rgb: [255, 0, 0] },
-      { index: 13, name: 'Magenta',    rgb: [255, 0, 255] },
-      { index: 14, name: 'Yellow',     rgb: [255, 255, 0] },
-      { index: 15, name: 'White',      rgb: [255, 255, 255] }
+      { index: 0,  name: 'White',      rgb: [255, 255, 255] },
+      { index: 1,  name: 'Yellow',     rgb: [255, 255, 0] },
+      { index: 2,  name: 'Magenta',    rgb: [255, 0, 255] },
+      { index: 3,  name: 'Red',        rgb: [255, 0, 0] },
+      { index: 4,  name: 'Cyan',       rgb: [0, 255, 255] },
+      { index: 5,  name: 'Lime',       rgb: [0, 255, 0] },
+      { index: 6,  name: 'Blue',       rgb: [0, 0, 255] },
+      { index: 7,  name: 'Silver',     rgb: [192, 192, 192] },
+      { index: 8,  name: 'Gray',       rgb: [128, 128, 128] },
+      { index: 9,  name: 'Olive',      rgb: [128, 128, 0] },
+      { index: 10, name: 'Purple',     rgb: [128, 0, 128] },
+      { index: 11, name: 'Maroon',     rgb: [128, 0, 0] },
+      { index: 12, name: 'Teal',       rgb: [0, 128, 128] },
+      { index: 13, name: 'Dark Green', rgb: [0, 128, 0] },
+      { index: 14, name: 'Navy',       rgb: [0, 0, 128] },
+      { index: 15, name: 'Black',      rgb: [0, 0, 0] }
     ];
 
     // Palette lookup function
