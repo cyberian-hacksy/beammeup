@@ -46,6 +46,10 @@ export function linearRgbToOklch(r, g, b) {
 /**
  * Calculate Euclidean distance in OKLCH space
  * Weights can be adjusted to prioritize L, C, or H
+ *
+ * IMPORTANT: Hue is weighted by chroma to handle low-chroma colors properly.
+ * For achromatic colors (black, white, grays), hue is undefined/unreliable,
+ * so we reduce its contribution when either color has low chroma.
  */
 export function oklchDistance(lch1, lch2, weights = [1, 1, 1]) {
   const [L1, C1, H1] = lch1;
@@ -58,9 +62,18 @@ export function oklchDistance(lch1, lch2, weights = [1, 1, 1]) {
   // Normalize hue difference to roughly same scale as L and C
   const dHNorm = dH / 180; // [0, 1]
 
+  // Weight hue by minimum chroma of the two colors
+  // This makes hue irrelevant for achromatic colors (C ≈ 0)
+  // and gradually more important as both colors become saturated
+  // Using min ensures that comparing any color to black/white ignores hue
+  const chromaWeight = Math.min(C1, C2);
+  // Scale chromaWeight: typical saturated OKLCH chroma is ~0.15-0.4
+  // Normalize so that chromaWeight ≈ 1 for saturated colors
+  const normalizedChromaWeight = Math.min(1, chromaWeight / 0.15);
+
   return Math.sqrt(
     weights[0] * (L1 - L2) ** 2 +
     weights[1] * (C1 - C2) ** 2 +
-    weights[2] * dHNorm ** 2
+    weights[2] * (dHNorm * normalizedChromaWeight) ** 2
   );
 }
