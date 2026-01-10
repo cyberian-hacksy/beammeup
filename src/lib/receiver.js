@@ -689,8 +689,14 @@ function scanFrame() {
 
         // Debug: show on-screen (visible on mobile)
         const decoded = channelResults.map(r => r ? 1 : 0)
+        const rate = state.frameCount > 0 ? Math.round(100 * state.detectCount / state.frameCount) : 0
         if (elements.debugLine) {
-          elements.debugLine.textContent = 'ch:' + decoded.join('') + ' pal:' + (sampledPalette ? 'Y' : 'N')
+          const wSum = calibration.white[0] + calibration.white[1] + calibration.white[2]
+          const bSum = calibration.black[0] + calibration.black[1] + calibration.black[2]
+          elements.debugLine.textContent = 'ch:' + decoded.join('') +
+            ' W:' + wSum + ' B:' + bSum +
+            ' pal:' + (sampledPalette ? 'Y' : 'N') +
+            ' ' + rate + '%'
         }
 
         let anySuccess = false
