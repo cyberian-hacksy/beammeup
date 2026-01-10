@@ -174,7 +174,7 @@
 </head>
 <body>
   <h1>QRGB-Finder Receiver</h1>
-  <p class="description">RGB additive with full inversion. Inverts captured image, uses finder patterns for B/W calibration.</p>
+  <p class="description">RGB channel threshold classification. Uses finder patterns for B/W calibration (same as FMT).</p>
 
   <div class="controls">
     <button id="startBtn">Start Camera</button>
@@ -281,11 +281,6 @@
     const THRESHOLD = 0.5;
     const CONFIDENCE_RANGE = 0.3;
 
-    // Invert pixel value for undoing sender's inversion
-    function invertPixel(val) {
-      return 255 - val;
-    }
-
     startBtn.addEventListener('click', async () => {
       try {
         video.srcObject = await navigator.mediaDevices.getUserMedia({
@@ -301,36 +296,31 @@
       }
     });
 
-    // Classify RGB channels using threshold on normalized RGB
-    // TRUE RGB additive model (after inverting captured image):
-    // - High R value (close to white) means red channel bit is ON (bright in original)
-    // - High G value means green channel bit is ON
-    // - High B value means blue channel bit is ON
+    // Classify RGB channels using threshold on normalized RGB (same as FMT)
+    // Low normalized value = dark pixel = bit ON
     function classifyColor(r, g, b, white, black) {
       // Normalize RGB against white/black references with gamma decoding
       const [normR, normG, normB] = normalizeRgb(r, g, b, white, black, true);
 
       // Threshold each channel independently
-      // HIGH normalized value = bright pixel = channel ON (true RGB additive)
-      const red = normR >= THRESHOLD ? 1 : 0;
-      const green = normG >= THRESHOLD ? 1 : 0;
-      const blue = normB >= THRESHOLD ? 1 : 0;
+      // LOW normalized value = dark pixel = bit ON
+      const r_bit = normR < THRESHOLD ? 1 : 0;
+      const g_bit = normG < THRESHOLD ? 1 : 0;
+      const b_bit = normB < THRESHOLD ? 1 : 0;
 
-      // Calculate confidence using layered confidence metric
-      // For true RGB additive, high values mean channel ON
+      // Calculate confidence using layered confidence metric (same as FMT)
       const confidence = layeredConfidence(
-        normR, // High when red channel bit is ON (bright)
-        normG, // High when green channel bit is ON (bright)
-        normB, // High when blue channel bit is ON (bright)
+        normR,
+        normG,
+        normB,
         THRESHOLD,
         CONFIDENCE_RANGE
       );
 
-      return { rgb: [red, green, blue], confidence };
+      return { rgb: [r_bit, g_bit, b_bit], confidence };
     }
 
     // Convert image to grayscale for QR detection
-    // For QRGB (inverted sender), we need to invert the grayscale for jsQR to find finder patterns
     function toGrayscale(imageData, invert = false) {
       const gray = new Uint8ClampedArray(imageData.width * imageData.height * 4);
       const pixels = imageData.data;
@@ -390,9 +380,8 @@
         const pixels = imageData.data;
 
         // Step 1: Convert to grayscale and try to find QR code
-        // QRGB sender inverts the QR area, so finder patterns are white-on-black in the displayed image
-        // We must invert grayscale to restore standard black-on-white for jsQR detection
-        const grayData = toGrayscale(imageData, true);
+        // The displayed QR has standard black-on-white finder patterns
+        const grayData = toGrayscale(imageData, false);
         const qrDetect = jsQR(grayData, size, size);
 
         const debugInfo = document.getElementById('debugInfo');
@@ -429,10 +418,10 @@
           ' size: ' + Math.round(qrWidth) + 'x' + Math.round(qrHeight);
 
         // Step 3: Calibrate from finder patterns
-        // The captured image is INVERTED, so we invert the calibration values back to true RGB
-        const rawCalibration = calibrateFromFinders(loc, imageData);
+        // With subtractive encoding, captured image has standard polarity (no inversion needed)
+        calibration = calibrateFromFinders(loc, imageData);
 
-        if (!rawCalibration) {
+        if (!calibration) {
           calibStatus.textContent = 'Could not extract finder calibration';
           calibStatus.className = 'status-text bad';
           resetConfidenceDisplay();
@@ -440,28 +429,7 @@
           return;
         }
 
-        // Invert calibration values to get true RGB space
-        // Note: what appears as "white" in captured (inverted) image was "black" in original
-        calibration = {
-          white: [
-            invertPixel(rawCalibration.white[0]),
-            invertPixel(rawCalibration.white[1]),
-            invertPixel(rawCalibration.white[2])
-          ],
-          black: [
-            invertPixel(rawCalibration.black[0]),
-            invertPixel(rawCalibration.black[1]),
-            invertPixel(rawCalibration.black[2])
-          ]
-        };
-
-        // After inversion, what was white/black in captured image swaps meaning
-        // But calibrateFromFinders samples based on finder structure, so we need to swap
-        const temp = calibration.white;
-        calibration.white = calibration.black;
-        calibration.black = temp;
-
-        // Update calibration display (showing true RGB values after inversion)
+        // Update calibration display
         updateRefDisplay('whiteRef', calibration.white);
         updateRefDisplay('blackRef', calibration.black);
 
@@ -499,10 +467,10 @@
         for (let py = 0; py < size; py++) {
           for (let px = 0; px < size; px++) {
             const idx = (py * size + px) * 4;
-            // Invert captured pixels back to original RGB space
-            const r = invertPixel(pixels[idx]);
-            const g = invertPixel(pixels[idx + 1]);
-            const b = invertPixel(pixels[idx + 2]);
+            // Use captured pixels directly (no inversion needed for subtractive encoding)
+            const r = pixels[idx];
+            const g = pixels[idx + 1];
+            const b = pixels[idx + 2];
 
             // Only process pixels inside the QR area
             let rgb;
@@ -519,12 +487,12 @@
                 else lowCount++;
               }
             } else {
-              // Outside QR - treat as black (all channels OFF in RGB additive)
+              // Outside QR - treat as white (all channels OFF in subtractive = no subtraction = white)
               rgb = [0, 0, 0];
             }
 
             // Create binary channel images
-            // RGB additive: channel ON (bit 1) = dark QR module = dark pixel in channel image
+            // RGB subtractive: channel ON (bit 1) = dark QR module = dark pixel in channel image
             const rGray = rgb[0] ? 0 : 255;
             const gGray = rgb[1] ? 0 : 255;
             const bGray = rgb[2] ? 0 : 255;
@@ -604,7 +572,7 @@
     }
 
     console.log('QRGB-Finder Receiver ready');
-    console.log('Workflow: jsQR detect (on inverted image) -> Invert pixels back -> Finder calibration (W/B) -> RGB additive classification -> Channel decode');
+    console.log('Workflow: Grayscale QR detect -> Finder calibration (W/B) -> RGB threshold classification -> Channel decode');
   </script>
 </body>
 </html>

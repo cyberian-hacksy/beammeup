@@ -91,8 +91,8 @@
 <body>
   <h1>QRGB-Corner Sender</h1>
   <p class="description">
-    <strong>RGB Additive with Full Inversion:</strong> True RGB encoding (bit ON = channel bright).<br>
-    Entire image inverted for jsQR compatibility. Receiver inverts back for RGB decoding.
+    <strong>RGB Encoding:</strong> Same as FMT - dark module = bit ON = dark pixel.<br>
+    Standard QR format. Corner patches (W/C/M/Y) provide color calibration.
   </p>
 
   <div id="controls" class="controls"></div>
@@ -111,8 +111,8 @@
   </div>
 
   <div class="note" id="noteDisplay">
-    <strong>Layout:</strong> <span id="noteSize">440x440</span> square. <span id="noteCorner">22</span>px corner patches (W/R/G/B semantic, W/C/M/Y visual).<br>
-    QR code centered. Entire image INVERTED for jsQR detection. True RGB additive model.
+    <strong>Layout:</strong> <span id="noteSize">440x440</span> square. <span id="noteCorner">22</span>px corner patches (W/C/M/Y).<br>
+    QR code centered. Same encoding as FMT. Standard QR format.
   </div>
 
   <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
@@ -133,28 +133,28 @@
     document.getElementById('dataGreen').textContent = DATA_GREEN;
     document.getElementById('dataBlue').textContent = DATA_BLUE;
 
-    // RGB ADDITIVE encoding: dark module = channel bit set = channel ON = BRIGHT
-    // r, g, b are 0 or 1 - TRUE RGB additive model
-    // Note: After drawing, we invert the entire canvas for jsQR detection compatibility
+    // RGB encoding: same as FMT
+    // bit ON (1) = dark pixel, bit OFF (0) = bright pixel
+    // Output: [(1-r)*255, (1-g)*255, (1-b)*255]
     function rgbToColor(r, g, b) {
       return [
-        r * 255,
-        g * 255,
-        b * 255
+        Math.round(255 * (1 - r)),
+        Math.round(255 * (1 - g)),
+        Math.round(255 * (1 - b))
       ];
     }
 
-    // All 8 RGB combinations for legend (TRUE RGB additive, shown BEFORE inversion)
-    // After inversion: Black↔White, Red↔Cyan, Green↔Magenta, Blue↔Yellow
+    // All 8 RGB combinations for legend (same as FMT)
+    // bit ON = dark pixel, bit OFF = bright pixel
     const ALL_COLORS = [
-      { rgb: [0, 0, 0], label: 'K (000)' },   // Black - all channels OFF
-      { rgb: [1, 0, 0], label: 'R (100)' },   // Red
-      { rgb: [0, 1, 0], label: 'G (010)' },   // Green
-      { rgb: [0, 0, 1], label: 'B (001)' },   // Blue
-      { rgb: [1, 1, 0], label: 'Y (110)' },   // Yellow (R+G)
-      { rgb: [1, 0, 1], label: 'M (101)' },   // Magenta (R+B)
-      { rgb: [0, 1, 1], label: 'C (011)' },   // Cyan (G+B)
-      { rgb: [1, 1, 1], label: 'W (111)' }    // White - all channels ON
+      { rgb: [0, 0, 0], label: 'White (000)' },
+      { rgb: [0, 0, 1], label: 'Yellow (001)' },
+      { rgb: [0, 1, 0], label: 'Magenta (010)' },
+      { rgb: [0, 1, 1], label: 'Red (011)' },
+      { rgb: [1, 0, 0], label: 'Cyan (100)' },
+      { rgb: [1, 0, 1], label: 'Green (101)' },
+      { rgb: [1, 1, 0], label: 'Blue (110)' },
+      { rgb: [1, 1, 1], label: 'Black (111)' }
     ];
 
     ALL_COLORS.forEach(c => { c.color = rgbToColor(...c.rgb); });
@@ -237,23 +237,21 @@
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, canvasSize, canvasSize);
 
-      // Draw corner calibration patches (W, R, G, B) - TRUE RGB additive
-      // These will be inverted along with the QR code at the end
-      // After inversion: W stays W, R→C, G→M, B→Y
-      // Top-left: White (all channels ON)
+      // Draw corner calibration patches (W, C, M, Y) - for color calibration
+      // Top-left: White = rgbToColor(0,0,0) = [255,255,255]
       ctx.fillStyle = 'rgb(255, 255, 255)';
       ctx.fillRect(0, 0, cornerSize, cornerSize);
 
-      // Top-right: Red (R channel ON)
-      ctx.fillStyle = 'rgb(255, 0, 0)';
+      // Top-right: Cyan = rgbToColor(1,0,0) = [0,255,255]
+      ctx.fillStyle = 'rgb(0, 255, 255)';
       ctx.fillRect(canvasSize - cornerSize, 0, cornerSize, cornerSize);
 
-      // Bottom-left: Green (G channel ON)
-      ctx.fillStyle = 'rgb(0, 255, 0)';
+      // Bottom-left: Magenta = rgbToColor(0,1,0) = [255,0,255]
+      ctx.fillStyle = 'rgb(255, 0, 255)';
       ctx.fillRect(0, canvasSize - cornerSize, cornerSize, cornerSize);
 
-      // Bottom-right: Blue (B channel ON)
-      ctx.fillStyle = 'rgb(0, 0, 255)';
+      // Bottom-right: Yellow = rgbToColor(0,0,1) = [255,255,0]
+      ctx.fillStyle = 'rgb(255, 255, 0)';
       ctx.fillRect(canvasSize - cornerSize, canvasSize - cornerSize, cornerSize, cornerSize);
 
       // Draw QR code in center (offset by cornerSize)
@@ -273,9 +271,8 @@
             // Keep finder patterns black/white (use first QR's pattern)
             color = r ? [0, 0, 0] : [255, 255, 255];
           } else {
-            // Data area: encode RGB additively
-            // Dark module (1) = channel ON = 255
-            // Light module (0) = channel OFF = 0
+            // Data area: encode same as FMT
+            // Dark module (1) = dark pixel, Light module (0) = bright pixel
             color = rgbToColor(r, g, b);
           }
 
@@ -287,53 +284,20 @@
         }
       }
 
-      // INVERT QR AREA AND CORNERS for jsQR detection compatibility
-      // This makes finder patterns appear as normal black-on-white for detection
-      // Receiver will invert back to get true RGB values for color decoding
-      // IMPORTANT: Keep quiet zone (area between corners and QR) white for jsQR
-      const imgData = ctx.getImageData(0, 0, canvasSize, canvasSize);
-      const pixels = imgData.data;
-      for (let py = 0; py < canvasSize; py++) {
-        for (let px = 0; px < canvasSize; px++) {
-          const i = (py * canvasSize + px) * 4;
-
-          // Check if pixel is in QR area
-          const inQR = px >= cornerSize && px < canvasSize - cornerSize &&
-                       py >= cornerSize && py < canvasSize - cornerSize;
-
-          // Check if pixel is in a corner patch
-          const inCornerTL = px < cornerSize && py < cornerSize;
-          const inCornerTR = px >= canvasSize - cornerSize && py < cornerSize;
-          const inCornerBL = px < cornerSize && py >= canvasSize - cornerSize;
-          const inCornerBR = px >= canvasSize - cornerSize && py >= canvasSize - cornerSize;
-          const inCorner = inCornerTL || inCornerTR || inCornerBL || inCornerBR;
-
-          if (inQR || inCorner) {
-            // Invert QR area and corner patches
-            pixels[i] = 255 - pixels[i];       // Invert R
-            pixels[i + 1] = 255 - pixels[i + 1]; // Invert G
-            pixels[i + 2] = 255 - pixels[i + 2]; // Invert B
-          }
-          // Quiet zone (edges between corners and QR) stays white
-        }
-      }
-      ctx.putImageData(imgData, 0, 0);
-
       // Add small labels to corners (scale font with corner size)
-      // Labels show SEMANTIC meaning (W/R/G/B) even though visually inverted to W/C/M/Y
+      // Labels show corner colors: W=White, C=Cyan, M=Magenta, Y=Yellow
       const fontSize = Math.max(8, Math.round(cornerSize * 0.5));
       ctx.font = 'bold ' + fontSize + 'px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
 
-      // Labels with contrasting colors (semantic RGB labels)
-      // Visually: TL=white, TR=cyan, BL=magenta, BR=yellow (inverted)
-      // Semantically: TL=White, TR=Red, BL=Green, BR=Blue (true RGB additive)
+      // Labels with contrasting colors
+      // TL=White (black text), TR=Cyan (black text), BL=Magenta (black text), BR=Yellow (black text)
       ctx.fillStyle = '#000';
       ctx.fillText('W', cornerSize/2, cornerSize/2);
-      ctx.fillText('R', canvasSize - cornerSize/2, cornerSize/2);
-      ctx.fillText('G', cornerSize/2, canvasSize - cornerSize/2);
-      ctx.fillText('B', canvasSize - cornerSize/2, canvasSize - cornerSize/2);
+      ctx.fillText('C', canvasSize - cornerSize/2, cornerSize/2);
+      ctx.fillText('M', cornerSize/2, canvasSize - cornerSize/2);
+      ctx.fillText('Y', canvasSize - cornerSize/2, canvasSize - cornerSize/2);
 
       // Update note display using textContent (safe DOM method)
       noteSizeEl.textContent = canvasSize + 'x' + canvasSize;

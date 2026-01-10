@@ -91,8 +91,8 @@
 <body>
   <h1>QRGB-Finder Sender</h1>
   <p class="description">
-    <strong>RGB Additive with Full Inversion:</strong> True RGB encoding (bit ON = channel bright).<br>
-    Entire image inverted for jsQR compatibility. Finder patterns provide B/W calibration.
+    <strong>RGB Encoding:</strong> Same as FMT - dark module = bit ON = dark pixel.<br>
+    Standard QR format. Finder patterns provide B/W calibration.
   </p>
 
   <div id="controls" class="controls"></div>
@@ -112,7 +112,7 @@
 
   <div class="note" id="noteDisplay">
     <strong>Layout:</strong> <span id="noteSize">440x440</span> square with <span id="noteMargin">10</span>px margin.<br>
-    Entire image INVERTED for jsQR. True RGB additive. Finder patterns for B/W calibration.
+    Same encoding as FMT. Standard QR format. Finder patterns for B/W calibration.
   </div>
 
   <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
@@ -133,28 +133,28 @@
     document.getElementById('dataGreen').textContent = DATA_GREEN;
     document.getElementById('dataBlue').textContent = DATA_BLUE;
 
-    // RGB ADDITIVE encoding: dark module = channel bit set = channel ON = BRIGHT
-    // r, g, b are 0 or 1 - TRUE RGB additive model
-    // Note: After drawing, we invert the entire canvas for jsQR detection compatibility
+    // RGB encoding: same as FMT
+    // bit ON (1) = dark pixel, bit OFF (0) = bright pixel
+    // Output: [(1-r)*255, (1-g)*255, (1-b)*255]
     function rgbToColor(r, g, b) {
       return [
-        r * 255,
-        g * 255,
-        b * 255
+        Math.round(255 * (1 - r)),
+        Math.round(255 * (1 - g)),
+        Math.round(255 * (1 - b))
       ];
     }
 
-    // All 8 RGB combinations for legend (TRUE RGB additive, shown BEFORE inversion)
-    // After inversion: Black↔White, Red↔Cyan, Green↔Magenta, Blue↔Yellow
+    // All 8 RGB combinations for legend (same as FMT)
+    // bit ON = dark pixel, bit OFF = bright pixel
     const ALL_COLORS = [
-      { rgb: [0, 0, 0], label: 'K (000)' },   // Black - all channels OFF
-      { rgb: [1, 0, 0], label: 'R (100)' },   // Red
-      { rgb: [0, 1, 0], label: 'G (010)' },   // Green
-      { rgb: [0, 0, 1], label: 'B (001)' },   // Blue
-      { rgb: [1, 1, 0], label: 'Y (110)' },   // Yellow (R+G)
-      { rgb: [1, 0, 1], label: 'M (101)' },   // Magenta (R+B)
-      { rgb: [0, 1, 1], label: 'C (011)' },   // Cyan (G+B)
-      { rgb: [1, 1, 1], label: 'W (111)' }    // White - all channels ON
+      { rgb: [0, 0, 0], label: 'White (000)' },
+      { rgb: [0, 0, 1], label: 'Yellow (001)' },
+      { rgb: [0, 1, 0], label: 'Magenta (010)' },
+      { rgb: [0, 1, 1], label: 'Red (011)' },
+      { rgb: [1, 0, 0], label: 'Cyan (100)' },
+      { rgb: [1, 0, 1], label: 'Green (101)' },
+      { rgb: [1, 1, 0], label: 'Blue (110)' },
+      { rgb: [1, 1, 1], label: 'Black (111)' }
     ];
 
     ALL_COLORS.forEach(c => { c.color = rgbToColor(...c.rgb); });
@@ -235,8 +235,8 @@
       canvas.width = canvasSize;
       canvas.height = canvasSize;
 
-      // Fill with black background (provides contrast for finder patterns)
-      ctx.fillStyle = '#000000';
+      // Fill with white background (quiet zone)
+      ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, canvasSize, canvasSize);
 
       // Draw QR code centered with margin
@@ -270,30 +270,7 @@
         }
       }
 
-      // INVERT ONLY THE QR CODE AREA for jsQR detection compatibility
-      // This makes finder patterns appear as normal black-on-white for detection
-      // Receiver will invert back to get true RGB values for color decoding
-      // IMPORTANT: Don't invert the quiet zone (margin) - jsQR needs white quiet zone
-      const imgData = ctx.getImageData(0, 0, canvasSize, canvasSize);
-      const pixels = imgData.data;
-      for (let py = 0; py < canvasSize; py++) {
-        for (let px = 0; px < canvasSize; px++) {
-          const i = (py * canvasSize + px) * 4;
-          // Only invert pixels inside the QR code area (not the margin)
-          if (px >= MARGIN && px < canvasSize - MARGIN &&
-              py >= MARGIN && py < canvasSize - MARGIN) {
-            pixels[i] = 255 - pixels[i];       // Invert R
-            pixels[i + 1] = 255 - pixels[i + 1]; // Invert G
-            pixels[i + 2] = 255 - pixels[i + 2]; // Invert B
-          } else {
-            // Keep margin white for quiet zone
-            pixels[i] = 255;
-            pixels[i + 1] = 255;
-            pixels[i + 2] = 255;
-          }
-        }
-      }
-      ctx.putImageData(imgData, 0, 0);
+      // No inversion needed - subtractive encoding produces standard QR format directly
 
       // Update note display using textContent (safe DOM method)
       noteSizeEl.textContent = canvasSize + 'x' + canvasSize;
