@@ -567,34 +567,20 @@ function scanFrame() {
 
     const imageData = ctx.getImageData(0, 0, size, size)
 
-    // Convert to grayscale for QR detection
+    // Determine effective mode
+    const effectiveMode = state.manualMode !== null ? state.manualMode : (state.detectedMode !== null ? state.detectedMode : QR_MODE.BW)
+
+    // Convert to grayscale for QR detection (try both inversions for better detection)
     const grayData = toGrayscale(imageData)
-    const result = jsQR(grayData, size, size, { inversionAttempts: 'dontInvert' })
+    const grayResult = jsQR(grayData, size, size)
 
-    if (result) {
-      // Account for square crop offset when showing overlay
-      showQROverlay(result.location, video, offsetX, offsetY, size)
+    if (effectiveMode === QR_MODE.BW) {
+      // BW mode: use grayscale QR decode directly
+      if (grayResult) {
+        showQROverlay(grayResult.location, video, offsetX, offsetY, size)
 
-      // Calculate QR bounds for color processing
-      const loc = result.location
-      const qrLeft = Math.min(loc.topLeftCorner.x, loc.bottomLeftCorner.x)
-      const qrRight = Math.max(loc.topRightCorner.x, loc.bottomRightCorner.x)
-      const qrTop = Math.min(loc.topLeftCorner.y, loc.topRightCorner.y)
-      const qrBottom = Math.max(loc.bottomLeftCorner.y, loc.bottomRightCorner.y)
-      const qrBounds = {
-        qrLeft,
-        qrTop,
-        qrWidth: qrRight - qrLeft,
-        qrHeight: qrBottom - qrTop
-      }
-
-      // Determine effective mode
-      const effectiveMode = state.manualMode !== null ? state.manualMode : (state.detectedMode !== null ? state.detectedMode : QR_MODE.BW)
-
-      if (effectiveMode === QR_MODE.BW) {
-        // BW mode: use grayscale QR decode directly
         try {
-          const binary = atob(result.data)
+          const binary = atob(grayResult.data)
           const bytes = new Uint8Array(binary.length)
           for (let i = 0; i < binary.length; i++) {
             bytes[i] = binary.charCodeAt(i)
@@ -607,7 +593,9 @@ function scanFrame() {
             if (packetMode !== QR_MODE.BW) {
               state.detectedMode = packetMode
               updateModeStatus()
-              // Don't process this frame - wait for next with correct mode
+              // Process this packet (likely metadata) before switching modes
+              processPacket(bytes)
+              updateReceiverStats()
               state.animationId = requestAnimationFrame(scanFrame)
               return
             }
@@ -621,74 +609,127 @@ function scanFrame() {
             return
           }
         } catch (err) {
-          console.log('QR decode error:', err.message)
+          console.log('BW decode error:', err.message)
         }
       } else {
-        // Color mode: extract channels and decode each separately
-        try {
-          // Get calibration
-          let calibration = calibrateFromFinders(loc, imageData)
-          let sampledPalette = null
+        elements.qrOverlay.style.display = 'none'
+      }
+    } else {
+      // Color mode: more robust detection strategy
+      // Try grayscale first (works for metadata frames with identical channels)
+      // If no grayscale result, use whole image bounds as estimate
 
-          if (effectiveMode === QR_MODE.PALETTE) {
-            sampledPalette = samplePatchCalibration(imageData.data, size, qrBounds)
-            if (sampledPalette) {
-              calibration = { white: sampledPalette[0], black: sampledPalette[7] }
+      let loc = null
+      let qrBounds = null
+
+      if (grayResult) {
+        loc = grayResult.location
+        showQROverlay(loc, video, offsetX, offsetY, size)
+
+        const qrLeft = Math.min(loc.topLeftCorner.x, loc.bottomLeftCorner.x)
+        const qrRight = Math.max(loc.topRightCorner.x, loc.bottomRightCorner.x)
+        const qrTop = Math.min(loc.topLeftCorner.y, loc.topRightCorner.y)
+        const qrBottom = Math.max(loc.bottomLeftCorner.y, loc.bottomRightCorner.y)
+        qrBounds = {
+          qrLeft,
+          qrTop,
+          qrWidth: qrRight - qrLeft,
+          qrHeight: qrBottom - qrTop
+        }
+      } else {
+        // No grayscale detection - use center region estimate for color QRs
+        // This allows trying to decode color channels even without exact location
+        const margin = size * 0.1
+        qrBounds = {
+          qrLeft: margin,
+          qrTop: margin,
+          qrWidth: size - margin * 2,
+          qrHeight: size - margin * 2
+        }
+        // Create fake location for calibration
+        loc = {
+          topLeftCorner: { x: margin, y: margin },
+          topRightCorner: { x: size - margin, y: margin },
+          bottomLeftCorner: { x: margin, y: size - margin },
+          bottomRightCorner: { x: size - margin, y: size - margin }
+        }
+        elements.qrOverlay.style.display = 'none'
+      }
+
+      try {
+        // Get calibration
+        let calibration = calibrateFromFinders(loc, imageData)
+        let sampledPalette = null
+
+        if (effectiveMode === QR_MODE.PALETTE) {
+          sampledPalette = samplePatchCalibration(imageData.data, size, qrBounds)
+          if (sampledPalette) {
+            calibration = { white: sampledPalette[0], black: sampledPalette[7] }
+          }
+        }
+
+        // Use fallback calibration if needed
+        if (!calibration) {
+          calibration = { white: [255, 255, 255], black: [0, 0, 0] }
+        }
+
+        // Extract color channels
+        const channels = extractColorChannels(imageData, qrBounds, effectiveMode, calibration, sampledPalette)
+
+        // Decode each channel
+        const channelResults = [
+          jsQR(channels.ch0, channels.size, channels.size),
+          jsQR(channels.ch1, channels.size, channels.size),
+          jsQR(channels.ch2, channels.size, channels.size)
+        ]
+
+        let anySuccess = false
+
+        // Process any successful channel decodes
+        for (let i = 0; i < channelResults.length; i++) {
+          const chResult = channelResults[i]
+          if (chResult) {
+            // Show overlay from successful channel if we didn't have grayscale
+            if (!grayResult && !anySuccess) {
+              showQROverlay(chResult.location, video, offsetX, offsetY, size)
             }
-          }
+            anySuccess = true
 
-          if (!calibration) {
-            state.animationId = requestAnimationFrame(scanFrame)
-            return
-          }
-
-          // Extract color channels
-          const channels = extractColorChannels(imageData, qrBounds, effectiveMode, calibration, sampledPalette)
-
-          // Decode each channel
-          const channelResults = [
-            jsQR(channels.ch0, channels.size, channels.size),
-            jsQR(channels.ch1, channels.size, channels.size),
-            jsQR(channels.ch2, channels.size, channels.size)
-          ]
-
-          // Process any successful channel decodes
-          for (const chResult of channelResults) {
-            if (chResult) {
-              try {
-                const binary = atob(chResult.data)
-                const bytes = new Uint8Array(binary.length)
-                for (let i = 0; i < binary.length; i++) {
-                  bytes[i] = binary.charCodeAt(i)
-                }
-
-                // Auto-detect mode from first packet
-                if (state.detectedMode === null && bytes.length >= 16) {
-                  const flags = bytes[15]
-                  const packetMode = (flags >> 1) & 0x03
-                  state.detectedMode = packetMode
-                  updateModeStatus()
-                }
-
-                processPacket(bytes)
-              } catch (err) {
-                // Individual channel decode error, continue with others
+            try {
+              const binary = atob(chResult.data)
+              const bytes = new Uint8Array(binary.length)
+              for (let j = 0; j < binary.length; j++) {
+                bytes[j] = binary.charCodeAt(j)
               }
+
+              // Auto-detect mode from first packet
+              if (state.detectedMode === null && bytes.length >= 16) {
+                const flags = bytes[15]
+                const packetMode = (flags >> 1) & 0x03
+                state.detectedMode = packetMode
+                updateModeStatus()
+              }
+
+              processPacket(bytes)
+            } catch (err) {
+              // Individual channel decode error, continue with others
             }
           }
+        }
 
+        if (anySuccess) {
           updateReceiverStats()
 
           if (state.decoder.isComplete()) {
             onReceiveComplete()
             return
           }
-        } catch (err) {
-          console.log('Color decode error:', err.message)
+        } else if (!grayResult) {
+          elements.qrOverlay.style.display = 'none'
         }
+      } catch (err) {
+        console.log('Color decode error:', err.message)
       }
-    } else {
-      elements.qrOverlay.style.display = 'none'
     }
   }
 

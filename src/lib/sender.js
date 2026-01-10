@@ -215,7 +215,6 @@ function renderSymbolBW(symbolId) {
 function renderSymbolsColor(symbolIds) {
   const dataPreset = DATA_PRESETS[parseInt(elements.dataSlider.value)]
   const sizePreset = SIZE_PRESETS[parseInt(elements.sizeSlider.value)]
-  const canvasSize = sizePreset.size
   const margin = MODE_MARGINS[state.mode]  // Fixed pixel margin
 
   // Generate packets for all 3 channels
@@ -226,8 +225,9 @@ function renderSymbolsColor(symbolIds) {
   const qrModules = base64s.map(b64 => getQRModules(b64, dataPreset.ecc))
   const moduleCount = qrModules[0].count
 
-  // Calculate QR size within margins
-  const qrSize = canvasSize - margin * 2
+  // Size preset is QR size, canvas adds margins on top
+  const qrSize = sizePreset.size
+  const canvasSize = qrSize + margin * 2
   const cellSize = qrSize / moduleCount
 
   const canvas = elements.qrCanvas
