@@ -233,16 +233,43 @@ function classifyCMY(r, g, b, white, black) {
 }
 
 // Classify RGB palette color for Palette mode
-function classifyPalette(r, g, b, sampledPalette) {
+// sampledPalette = actual sampled colors [0-255] from camera
+// If null, use calibration to normalize then compare to ideal palette
+function classifyPalette(r, g, b, sampledPalette, calibration) {
   let minDist = Infinity
   let minIndex = 0
 
-  for (let i = 0; i < sampledPalette.length; i++) {
-    const [pr, pg, pb] = sampledPalette[i]
-    const dist = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
-    if (dist < minDist) {
-      minDist = dist
-      minIndex = i
+  if (sampledPalette) {
+    // HCC2D mode: compare directly against sampled palette colors
+    for (let i = 0; i < sampledPalette.length; i++) {
+      const [pr, pg, pb] = sampledPalette[i]
+      const dist = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
+      if (dist < minDist) {
+        minDist = dist
+        minIndex = i
+      }
+    }
+  } else {
+    // Fallback: normalize against white/black, compare to ideal palette
+    const [normR, normG, normB] = normalizeRgb(r, g, b, calibration.white, calibration.black, true)
+    // Ideal palette in [0-1] space
+    const idealPalette = [
+      [1, 1, 1],   // 0: White
+      [1, 1, 0],   // 1: Yellow
+      [1, 0, 1],   // 2: Magenta
+      [1, 0, 0],   // 3: Red
+      [0, 1, 1],   // 4: Cyan
+      [0, 1, 0],   // 5: Green
+      [0, 0, 1],   // 6: Blue
+      [0, 0, 0]    // 7: Black
+    ]
+    for (let i = 0; i < idealPalette.length; i++) {
+      const [pr, pg, pb] = idealPalette[i]
+      const dist = (normR - pr) ** 2 + (normG - pg) ** 2 + (normB - pb) ** 2
+      if (dist < minDist) {
+        minDist = dist
+        minIndex = i
+      }
     }
   }
 
@@ -285,7 +312,8 @@ function extractColorChannels(imageData, qrBounds, mode, calibration, sampledPal
         if (mode === QR_MODE.PCCC) {
           bits = classifyCMY(r, g, b, calibration.white, calibration.black)
         } else {
-          bits = classifyPalette(r, g, b, sampledPalette || PALETTE_RGB)
+          // For PALETTE mode: use sampled palette if available, else use calibration for normalization
+          bits = classifyPalette(r, g, b, sampledPalette, calibration)
         }
       } else {
         bits = [0, 0, 0] // Outside QR = white
@@ -581,9 +609,8 @@ function scanFrame() {
       // BW mode: use grayscale QR decode directly
       if (grayResult) {
         showQROverlay(grayResult.location, video, offsetX, offsetY, size)
-        if (elements.debugLine) {
-          elements.debugLine.textContent = 'BW: QR found'
-        }
+        const dbg = document.getElementById('debug-line')
+        if (dbg) dbg.textContent = 'BW ok'
 
         try {
           const binary = atob(grayResult.data)
@@ -615,15 +642,13 @@ function scanFrame() {
             return
           }
         } catch (err) {
-          if (elements.debugLine) {
-            elements.debugLine.textContent = 'BW: decode error'
-          }
+          const dbg2 = document.getElementById('debug-line')
+          if (dbg2) dbg2.textContent = 'BW err'
         }
       } else {
         elements.qrOverlay.style.display = 'none'
-        if (elements.debugLine) {
-          elements.debugLine.textContent = 'BW: no QR'
-        }
+        const dbg2 = document.getElementById('debug-line')
+        if (dbg2) dbg2.textContent = 'BW no'
       }
     } else {
       // Color mode: require grayscale QR detection like experiments
@@ -635,19 +660,25 @@ function scanFrame() {
       if (!grayResult) {
         // No QR detected - skip frame, show detection rate
         elements.qrOverlay.style.display = 'none'
-        if (elements.debugLine) {
+        const dbg = document.getElementById('debug-line')
+        if (dbg) {
           const rate = state.frameCount > 0 ? Math.round(100 * state.detectCount / state.frameCount) : 0
-          elements.debugLine.textContent = 'no QR | rate:' + rate + '% (' + state.detectCount + '/' + state.frameCount + ')'
+          dbg.textContent = 'no QR ' + rate + '%'
         }
         state.animationId = requestAnimationFrame(scanFrame)
         return
       }
 
       state.detectCount++
+      const rate = Math.round(100 * state.detectCount / state.frameCount)
 
       // Grayscale detection succeeded - use detected position
       const loc = grayResult.location
       showQROverlay(loc, video, offsetX, offsetY, size)
+
+      // Early debug - show we detected QR
+      const dbg = document.getElementById('debug-line')
+      if (dbg) dbg.textContent = 'detecting ' + rate + '%'
 
       const qrLeft = Math.min(loc.topLeftCorner.x, loc.bottomLeftCorner.x)
       const qrRight = Math.max(loc.topRightCorner.x, loc.bottomRightCorner.x)
@@ -676,6 +707,13 @@ function scanFrame() {
         calibration = { white: [255, 255, 255], black: [0, 0, 0] }
       }
 
+      // Show calibration info
+      const wSum = calibration.white[0] + calibration.white[1] + calibration.white[2]
+      const bSum = calibration.black[0] + calibration.black[1] + calibration.black[2]
+      const modeName = effectiveMode === QR_MODE.PCCC ? 'CMY' : 'RGB'
+      const calibType = sampledPalette ? 'P' : 'F'  // P=patch, F=finder
+      if (dbg) dbg.textContent = modeName + ' ' + calibType + ' W' + wSum + ' B' + bSum + ' ' + rate + '%'
+
       try {
         // Extract color channels using bounds and calibration
         const channels = extractColorChannels(imageData, qrBounds, effectiveMode, calibration, sampledPalette)
@@ -688,16 +726,9 @@ function scanFrame() {
         ]
 
         // Debug: show on-screen (visible on mobile)
+        // Format: MODE CALIB_TYPE ch0ch1ch2 WHITE BLACK RATE
         const decoded = channelResults.map(r => r ? 1 : 0)
-        const rate = state.frameCount > 0 ? Math.round(100 * state.detectCount / state.frameCount) : 0
-        if (elements.debugLine) {
-          const wSum = calibration.white[0] + calibration.white[1] + calibration.white[2]
-          const bSum = calibration.black[0] + calibration.black[1] + calibration.black[2]
-          elements.debugLine.textContent = 'ch:' + decoded.join('') +
-            ' W:' + wSum + ' B:' + bSum +
-            ' pal:' + (sampledPalette ? 'Y' : 'N') +
-            ' ' + rate + '%'
-        }
+        if (dbg) dbg.textContent = modeName + ' ' + calibType + ' ' + decoded.join('') + ' W' + wSum + ' B' + bSum + ' ' + rate + '%'
 
         let anySuccess = false
 
