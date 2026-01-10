@@ -447,9 +447,9 @@
         const pixels = imageData.data;
 
         // Step 1: Convert to grayscale and try to find QR code
-        // QRGB sender inverts the entire image, so finder patterns are already black-on-white
-        // Do NOT invert here - the camera captures correct polarity for jsQR detection
-        const grayData = toGrayscale(imageData, false);
+        // QRGB sender inverts the QR area, so finder patterns are white-on-black in the displayed image
+        // We must invert grayscale to restore standard black-on-white for jsQR detection
+        const grayData = toGrayscale(imageData, true);
         const qrDetect = jsQR(grayData, size, size);
 
         const debugInfo = document.getElementById('debugInfo');
