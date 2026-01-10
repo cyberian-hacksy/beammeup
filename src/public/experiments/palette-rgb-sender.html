@@ -147,9 +147,9 @@
 <body>
   <h1>Palette-RGB Sender</h1>
   <p class="description">
-    <strong>8-Color Palette Encoding:</strong> Each QR module is assigned a color from a fixed 8-color palette.<br>
-    Three data channels (R, G, B) combine into a 3-bit index (0-7) that selects the palette color.<br>
-    Receiver uses nearest-neighbor classification to map scanned colors back to palette indices.
+    <strong>8-Color Palette with Embedded Calibration (HCC2D):</strong> 8 color patches in corners enable self-calibration.<br>
+    Receiver samples actual patch colors under current lighting, then uses nearest-neighbor against sampled palette.<br>
+    This tests the HCC2D hypothesis: embedded palette improves robustness vs finder-only calibration.
   </p>
 
   <div id="controls" class="controls"></div>
@@ -171,19 +171,19 @@
   </div>
 
   <div class="approach-comparison">
-    <h3>Palette Classification Approach</h3>
+    <h3>HCC2D Self-Calibration Approach</h3>
     <ul>
-      <li><strong>Encoding:</strong> 3-bit index (0-7) selects color from fixed palette</li>
-      <li><strong>Decoding:</strong> Nearest-neighbor finds closest palette color</li>
-      <li>Holistic classification - treats each module as single color</li>
-      <li>Robust to color drift if palette colors remain distinguishable</li>
-      <li>Alternative: Channel separation decodes R, G, B bits independently</li>
+      <li><strong>Calibration:</strong> 8 corner patches show actual palette colors</li>
+      <li><strong>Sampling:</strong> Receiver reads patch colors under current lighting</li>
+      <li><strong>Classification:</strong> Nearest-neighbor against sampled (not theoretical) palette</li>
+      <li>Adapts to color temperature, screen brightness, camera white balance</li>
+      <li>Fallback: Use finder patterns if patches not detected</li>
     </ul>
   </div>
 
   <div class="note" id="noteDisplay">
-    <strong>Layout:</strong> <span id="noteSize">440x440</span> square with <span id="noteMargin">10</span>px margin.<br>
-    Finder patterns remain black/white for detection compatibility.
+    <strong>Layout:</strong> <span id="noteSize">440x440</span> square with <span id="noteMargin">60</span>px margin.<br>
+    8 calibration patches (25x25px) in corners. Finder patterns remain black/white.
   </div>
 
   <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
@@ -298,8 +298,69 @@
     const noteSizeEl = document.getElementById('noteSize');
     const noteMarginEl = document.getElementById('noteMargin');
 
-    // Fixed margin around QR code
-    const MARGIN = 10;
+    // Margin around QR code - increased to accommodate calibration patches
+    const MARGIN = 60;
+    const PATCH_SIZE = 25;
+
+    // Calibration patch positions: 2 patches per corner
+    // Layout: [W][R]  QR CODE  [G][C]
+    //         [B][M]  QR CODE  [Y][K]
+    const PATCH_CONFIG = [
+      // Top-left: White (0), Red (3)
+      { corner: 'TL', offset: 0, paletteIndex: 0 },  // White
+      { corner: 'TL', offset: 1, paletteIndex: 3 },  // Red
+      // Top-right: Green (5), Cyan (4)
+      { corner: 'TR', offset: 0, paletteIndex: 5 },  // Green
+      { corner: 'TR', offset: 1, paletteIndex: 4 },  // Cyan
+      // Bottom-left: Blue (6), Magenta (2)
+      { corner: 'BL', offset: 0, paletteIndex: 6 },  // Blue
+      { corner: 'BL', offset: 1, paletteIndex: 2 },  // Magenta
+      // Bottom-right: Yellow (1), Black (7)
+      { corner: 'BR', offset: 0, paletteIndex: 1 },  // Yellow
+      { corner: 'BR', offset: 1, paletteIndex: 7 },  // Black
+    ];
+
+    // Get patch position based on corner and offset
+    function getPatchPosition(corner, offset, canvasSize, qrOffset) {
+      const gap = 5; // Gap between patches
+      switch (corner) {
+        case 'TL':
+          return {
+            x: gap + offset * (PATCH_SIZE + gap),
+            y: gap
+          };
+        case 'TR':
+          return {
+            x: canvasSize - gap - PATCH_SIZE - offset * (PATCH_SIZE + gap),
+            y: gap
+          };
+        case 'BL':
+          return {
+            x: gap + offset * (PATCH_SIZE + gap),
+            y: canvasSize - gap - PATCH_SIZE
+          };
+        case 'BR':
+          return {
+            x: canvasSize - gap - PATCH_SIZE - offset * (PATCH_SIZE + gap),
+            y: canvasSize - gap - PATCH_SIZE
+          };
+      }
+    }
+
+    // Draw calibration patches
+    function drawCalibrationPatches(canvasSize, qrOffset) {
+      for (const patch of PATCH_CONFIG) {
+        const pos = getPatchPosition(patch.corner, patch.offset, canvasSize, qrOffset);
+        const color = getPaletteColor(patch.paletteIndex);
+        ctx.fillStyle = 'rgb(' + color.join(',') + ')';
+        ctx.fillRect(pos.x, pos.y, PATCH_SIZE, PATCH_SIZE);
+
+        // Add thin border for visibility
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(pos.x, pos.y, PATCH_SIZE, PATCH_SIZE);
+      }
+    }
 
     // Render QR code at specified canvas size using palette lookup
     function renderQR(canvasSize) {
@@ -345,6 +406,9 @@
         }
       }
 
+      // Draw calibration patches in corners
+      drawCalibrationPatches(canvasSize, MARGIN);
+
       // Update note display
       noteSizeEl.textContent = canvasSize + 'x' + canvasSize;
       noteMarginEl.textContent = MARGIN;
@@ -352,7 +416,8 @@
       console.log('Palette-RGB Sender rendered at', canvasSize + 'x' + canvasSize);
       console.log('Module count:', moduleCount);
       console.log('Margin:', MARGIN, 'px');
-      console.log('Approach: 8-color palette lookup');
+      console.log('Calibration patches: 8 (25x25px each in corners)');
+      console.log('Approach: HCC2D self-calibration');
     }
 
     // Create size selector
@@ -365,9 +430,10 @@
     // Initial render
     renderQR(440);
 
-    console.log('Palette-RGB Sender ready');
+    console.log('Palette-RGB Sender ready (HCC2D mode)');
     console.log('Palette colors:', PALETTE.map(p => p.name).join(', '));
-    console.log('Decoding approach: Nearest-neighbor classification to palette');
+    console.log('Calibration: 8 corner patches for self-calibration');
+    console.log('Decoding approach: Nearest-neighbor against sampled palette');
   </script>
 </body>
 </html>

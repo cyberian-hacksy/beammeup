@@ -170,11 +170,83 @@
       color: #666;
       font-family: monospace;
     }
+    .shade-selector {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 10px 0;
+      padding: 10px 15px;
+      background: #252540;
+      border-radius: 8px;
+      width: 100%;
+      max-width: 400px;
+      justify-content: center;
+    }
+    .shade-selector label {
+      font-size: 12px;
+      color: #aaa;
+    }
+    .shade-selector .shade-options {
+      display: flex;
+      gap: 5px;
+    }
+    .shade-selector button {
+      padding: 6px 12px;
+      border: 1px solid #444;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .shade-selector button.active {
+      background: #00d4ff;
+      color: #1a1a2e;
+      border-color: #00d4ff;
+      font-weight: bold;
+    }
+    .shade-selector button:hover:not(.active) {
+      background: #333;
+    }
+    .raw-output {
+      width: 100%;
+      max-width: 400px;
+      padding: 10px;
+      background: #1a2a3a;
+      border: 1px solid #00d4ff33;
+      border-radius: 8px;
+      margin: 10px 0;
+      font-size: 10px;
+      font-family: monospace;
+      display: none;
+    }
+    .raw-output.active {
+      display: block;
+    }
+    .raw-output h4 {
+      color: #00d4ff;
+      margin-bottom: 8px;
+      font-size: 11px;
+    }
+    .raw-output .values {
+      word-break: break-all;
+      color: #aaa;
+      max-height: 100px;
+      overflow-y: auto;
+    }
   </style>
 </head>
 <body>
   <h1>FMT Receiver</h1>
-  <p class="description">Finder pattern calibration with mathematical 3-bit decode function</p>
+  <p class="description">Scalable FMT decode: 2 shades (8 colors) or 4 shades (64 colors)</p>
+
+  <div class="shade-selector" id="shadeSelector">
+    <label>Shades per channel:</label>
+    <div class="shade-options">
+      <button class="active" data-shades="2">2 (8 colors)</button>
+      <button data-shades="4">4 (64 colors)</button>
+    </div>
+  </div>
 
   <div class="controls">
     <button id="startBtn">Start Camera</button>
@@ -226,7 +298,12 @@
     </div>
   </div>
 
-  <div class="results">
+  <div class="raw-output" id="rawOutput">
+    <h4>4-Shade Raw Values (0-63 per module)</h4>
+    <div class="values" id="rawValues">Waiting for scan...</div>
+  </div>
+
+  <div class="results" id="channelResults">
     <div class="result red">
       <div class="label">Red Channel:</div>
       <div id="redResult" class="data">-</div>
@@ -266,20 +343,40 @@
     let scanCount = 0;
     let successCounts = { red: 0, green: 0, blue: 0 };
 
-    // Calibration data from finder patterns
-    let calibration = null; // {white: [r,g,b], black: [r,g,b]}
+    // Current shade setting
+    let currentShades = 2;
 
-    // Reusable buffers to avoid per-frame allocations
+    // Calibration data from finder patterns
+    let calibration = null;
+
+    // Reusable buffers
     let channelBuffers = { red: null, green: null, blue: null };
     let lastBufferSize = 0;
 
-    // Cached canvas for drawPreview
     const previewTempCanvas = document.createElement('canvas');
     const previewTempCtx = previewTempCanvas.getContext('2d');
 
-    // Threshold for FMT decode function
-    const THRESHOLD = 0.5;
-    const CONFIDENCE_RANGE = 0.3;
+    // Setup shade selector
+    const shadeSelector = document.getElementById('shadeSelector');
+    const rawOutput = document.getElementById('rawOutput');
+    const channelResults = document.getElementById('channelResults');
+
+    shadeSelector.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        shadeSelector.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentShades = parseInt(btn.dataset.shades, 10);
+
+        // Toggle UI based on mode
+        if (currentShades === 4) {
+          rawOutput.classList.add('active');
+          channelResults.style.display = 'none';
+        } else {
+          rawOutput.classList.remove('active');
+          channelResults.style.display = 'block';
+        }
+      });
+    });
 
     startBtn.addEventListener('click', async () => {
       try {
@@ -296,47 +393,72 @@
       }
     });
 
-    // FMT decode function - mathematical inverse mapping
-    // Returns a 3-bit value (0-7) encoding RGB bits
-    // Inverted for QR compatibility: low value = bit ON (dark), high value = bit OFF (bright)
-    function fmtDecode(normR, normG, normB) {
-      // After gamma decode and normalization, threshold each channel
-      // Inverted: low normalized value = dark pixel = bit ON
-      const r_bit = (normR < THRESHOLD) ? 1 : 0;
-      const g_bit = (normG < THRESHOLD) ? 1 : 0;
-      const b_bit = (normB < THRESHOLD) ? 1 : 0;
-      // Encode as 3-bit value: R is MSB, B is LSB
-      return r_bit * 4 + g_bit * 2 + b_bit;
+    // Decode normalized channel value to shade index (0 to shadesPerChannel-1)
+    function decodeShade(normalizedValue, shadesPerChannel) {
+      // Invert: low normalized = dark = high shade index
+      const inverted = 1 - normalizedValue;
+      const maxShade = shadesPerChannel - 1;
+      const shade = Math.round(inverted * maxShade);
+      return Math.max(0, Math.min(maxShade, shade));
     }
 
-    // Extract individual bits from 3-bit value
-    function extractBits(value) {
-      const r_bit = (value >> 2) & 1;
-      const g_bit = (value >> 1) & 1;
-      const b_bit = value & 1;
-      return [r_bit, g_bit, b_bit];
+    // FMT decode - scalable to any number of shades
+    function fmtDecode(normR, normG, normB, shadesPerChannel = 2) {
+      const r_shade = decodeShade(normR, shadesPerChannel);
+      const g_shade = decodeShade(normG, shadesPerChannel);
+      const b_shade = decodeShade(normB, shadesPerChannel);
+
+      // Combine into value: R * shades^2 + G * shades + B
+      return r_shade * (shadesPerChannel ** 2) + g_shade * shadesPerChannel + b_shade;
     }
 
-    // Classify color using FMT decode function
-    function classifyColor(r, g, b, white, black) {
-      // Normalize RGB against white/black references with gamma decoding
+    // Extract binary bits from value (for 2-shade mode compatibility)
+    function extractBits(value, shadesPerChannel = 2) {
+      const r = Math.floor(value / (shadesPerChannel ** 2)) % shadesPerChannel;
+      const g = Math.floor(value / shadesPerChannel) % shadesPerChannel;
+      const b = value % shadesPerChannel;
+
+      if (shadesPerChannel === 2) {
+        return [r, g, b];
+      }
+      // For 4 shades, threshold at midpoint for binary extraction
+      const mid = (shadesPerChannel - 1) / 2;
+      return [r > mid ? 1 : 0, g > mid ? 1 : 0, b > mid ? 1 : 0];
+    }
+
+    // Calculate confidence based on distance from decision boundaries
+    function calculateConfidence(normR, normG, normB, shadesPerChannel) {
+      if (shadesPerChannel === 2) {
+        // Binary threshold confidence
+        const threshold = 0.5;
+        const range = 0.3;
+        return layeredConfidence(normR, normG, normB, threshold, range);
+      }
+
+      // Multi-shade: confidence based on proximity to shade boundaries
+      const shadeStep = 1 / (shadesPerChannel - 1);
+      const boundaries = [];
+      for (let i = 1; i < shadesPerChannel; i++) {
+        boundaries.push(i * shadeStep - shadeStep / 2);
+      }
+
+      function channelConfidence(val) {
+        let minDist = 1;
+        for (const b of boundaries) {
+          minDist = Math.min(minDist, Math.abs(val - b));
+        }
+        return Math.min(1, minDist / (shadeStep / 2));
+      }
+
+      return Math.min(channelConfidence(normR), channelConfidence(normG), channelConfidence(normB));
+    }
+
+    // Classify color using FMT decode
+    function classifyColor(r, g, b, white, black, shadesPerChannel = 2) {
       const [normR, normG, normB] = normalizeRgb(r, g, b, white, black, true);
-
-      // Use FMT decode to get 3-bit value
-      const value = fmtDecode(normR, normG, normB);
-
-      // Extract RGB bits from the value
-      const rgb = extractBits(value);
-
-      // Calculate confidence using layered confidence metric
-      // For RGB, high values mean channel ON
-      const confidence = layeredConfidence(
-        normR,
-        normG,
-        normB,
-        THRESHOLD,
-        CONFIDENCE_RANGE
-      );
+      const value = fmtDecode(normR, normG, normB, shadesPerChannel);
+      const rgb = extractBits(value, shadesPerChannel);
+      const confidence = calculateConfidence(normR, normG, normB, shadesPerChannel);
 
       return { rgb, confidence, value };
     }
@@ -463,8 +585,7 @@
           calibStatus.className = 'status-text good';
         }
 
-        // Step 5: Process pixels using FMT decode function with confidence tracking
-        // Reuse buffers if size unchanged, otherwise allocate new ones
+        // Step 5: Process pixels using FMT decode with current shade setting
         const bufferSize = size * size * 4;
         if (bufferSize !== lastBufferSize) {
           channelBuffers.red = new Uint8ClampedArray(bufferSize);
@@ -476,11 +597,13 @@
         const greenData = channelBuffers.green;
         const blueData = channelBuffers.blue;
 
-        // Sample confidence from every Nth pixel to avoid unbounded array growth
         const CONFIDENCE_SAMPLE_STEP = 10;
         let confidenceSum = 0;
         let confidenceCount = 0;
         let highCount = 0, mediumCount = 0, lowCount = 0;
+
+        // For 4-shade mode, collect raw values
+        const rawValues = [];
 
         for (let py = 0; py < size; py++) {
           for (let px = 0; px < size; px++) {
@@ -489,12 +612,13 @@
             const g = pixels[idx + 1];
             const b = pixels[idx + 2];
 
-            // Only process pixels inside the QR area
             let rgb;
+            let rawValue = 0;
             if (px >= qrLeft && px < qrRight && py >= qrTop && py < qrBottom) {
-              const result = classifyColor(r, g, b, calibration.white, calibration.black);
+              const result = classifyColor(r, g, b, calibration.white, calibration.black, currentShades);
               rgb = result.rgb;
-              // Sample confidence at regular intervals
+              rawValue = result.value;
+
               if ((px + py) % CONFIDENCE_SAMPLE_STEP === 0) {
                 confidenceSum += result.confidence;
                 confidenceCount++;
@@ -502,16 +626,16 @@
                 if (level === 'high') highCount++;
                 else if (level === 'medium') mediumCount++;
                 else lowCount++;
+
+                // Sample raw values for display
+                if (currentShades === 4) {
+                  rawValues.push(rawValue);
+                }
               }
             } else {
-              // Outside QR - treat as white quiet zone
-              // Use [0,0,0] so channel extraction produces white (255) background
-              // (bit 0 → grayscale 255 due to QR encoding inversion)
               rgb = [0, 0, 0];
             }
 
-            // Create binary channel images
-            // For QR decoding: channel ON (bit 1) = dark module, channel OFF (bit 0) = light module
             const rGray = rgb[0] ? 0 : 255;
             const gGray = rgb[1] ? 0 : 255;
             const bGray = rgb[2] ? 0 : 255;
@@ -533,7 +657,7 @@
           }
         }
 
-        // Update confidence display using sampled values
+        // Update confidence display
         if (confidenceCount > 0) {
           const avgConfidence = confidenceSum / confidenceCount;
           document.getElementById('avgConfidence').textContent = (avgConfidence * 100).toFixed(1) + '%';
@@ -547,19 +671,33 @@
         drawPreview(greenData, size, greenCtx, 110);
         drawPreview(blueData, size, blueCtx, 110);
 
-        // Step 7: Try to decode each channel
-        const redCode = jsQR(redData, size, size);
-        const greenCode = jsQR(greenData, size, size);
-        const blueCode = jsQR(blueData, size, size);
-
+        // Step 7: Decode based on mode
         scanCount++;
-        updateResult('redResult', redCode, 'red');
-        updateResult('greenResult', greenCode, 'green');
-        updateResult('blueResult', blueCode, 'blue');
+
+        if (currentShades === 2) {
+          // 2-shade: Use jsQR for each channel
+          const redCode = jsQR(redData, size, size);
+          const greenCode = jsQR(greenData, size, size);
+          const blueCode = jsQR(blueData, size, size);
+
+          updateResult('redResult', redCode, 'red');
+          updateResult('greenResult', greenCode, 'green');
+          updateResult('blueResult', blueCode, 'blue');
+
+          document.getElementById('successRate').textContent =
+            successCounts.red + '/' + successCounts.green + '/' + successCounts.blue;
+        } else {
+          // 4-shade: Display raw values (jsQR won't work)
+          const valuesEl = document.getElementById('rawValues');
+          if (rawValues.length > 0) {
+            const sample = rawValues.slice(0, 50);
+            valuesEl.textContent = sample.join(', ') + (rawValues.length > 50 ? '...' : '');
+          } else {
+            valuesEl.textContent = 'No values decoded';
+          }
+        }
 
         document.getElementById('scanCount').textContent = scanCount;
-        document.getElementById('successRate').textContent =
-          successCounts.red + '/' + successCounts.green + '/' + successCounts.blue;
       }
 
       requestAnimationFrame(scanFrame);
@@ -590,8 +728,8 @@
       }
     }
 
-    console.log('FMT Receiver ready');
-    console.log('Workflow: Grayscale QR detect -> Finder pattern calibration (W/B) -> FMT 3-bit decode -> Channel extraction -> Decode');
+    console.log('FMT Receiver ready - scalable shades support');
+    console.log('2 shades: jsQR channel decode | 4 shades: raw value output');
   </script>
 </body>
 </html>
