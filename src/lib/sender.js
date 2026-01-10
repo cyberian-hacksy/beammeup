@@ -1,6 +1,6 @@
 // Sender module - handles file encoding and QR display
 import qrcode from 'qrcode-generator'
-import { MAX_FILE_SIZE, METADATA_INTERVAL, DATA_PRESETS, SIZE_PRESETS, SPEED_PRESETS, QR_MODE, MODE_MARGINS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
+import { MAX_FILE_SIZE, METADATA_INTERVAL, DATA_PRESETS, SIZE_PRESETS, SPEED_PRESETS, QR_MODE, MODE_MARGINS, PATCH_SIZE, PATCH_GAP } from './constants.js'
 import { createEncoder } from './encoder.js'
 
 // Sender state
@@ -100,49 +100,44 @@ function getQRModules(base64Data, eccLevel) {
   return { modules, count }
 }
 
-// Get patch position for Palette mode calibration
-function getPatchPosition(corner, offset, canvasSize, margin) {
-  const patchSize = margin * PATCH_SIZE_RATIO
-  const gap = margin * PATCH_GAP_RATIO
-
+// Get patch position for Palette mode calibration (fixed pixel values like experiment)
+function getPatchPosition(corner, offset, canvasSize) {
   switch (corner) {
     case 'TL':
       return {
-        x: gap + offset * (patchSize + gap),
-        y: gap
+        x: PATCH_GAP + offset * (PATCH_SIZE + PATCH_GAP),
+        y: PATCH_GAP
       }
     case 'TR':
       return {
-        x: canvasSize - gap - patchSize - offset * (patchSize + gap),
-        y: gap
+        x: canvasSize - PATCH_GAP - PATCH_SIZE - offset * (PATCH_SIZE + PATCH_GAP),
+        y: PATCH_GAP
       }
     case 'BL':
       return {
-        x: gap + offset * (patchSize + gap),
-        y: canvasSize - gap - patchSize
+        x: PATCH_GAP + offset * (PATCH_SIZE + PATCH_GAP),
+        y: canvasSize - PATCH_GAP - PATCH_SIZE
       }
     case 'BR':
       return {
-        x: canvasSize - gap - patchSize - offset * (patchSize + gap),
-        y: canvasSize - gap - patchSize
+        x: canvasSize - PATCH_GAP - PATCH_SIZE - offset * (PATCH_SIZE + PATCH_GAP),
+        y: canvasSize - PATCH_GAP - PATCH_SIZE
       }
   }
 }
 
 // Draw calibration patches for Palette mode
-function drawCalibrationPatches(ctx, canvasSize, margin) {
-  const patchSize = margin * PATCH_SIZE_RATIO
-
+function drawCalibrationPatches(ctx, canvasSize) {
   for (const patch of PALETTE_PATCH_CONFIG) {
-    const pos = getPatchPosition(patch.corner, patch.offset, canvasSize, margin)
+    const pos = getPatchPosition(patch.corner, patch.offset, canvasSize)
     const color = PALETTE_RGB[patch.paletteIndex]
     ctx.fillStyle = 'rgb(' + color.join(',') + ')'
-    ctx.fillRect(pos.x, pos.y, patchSize, patchSize)
+    ctx.fillRect(pos.x, pos.y, PATCH_SIZE, PATCH_SIZE)
 
     // Add thin border for visibility
     ctx.strokeStyle = '#333'
     ctx.lineWidth = 1
-    ctx.strokeRect(pos.x, pos.y, patchSize, patchSize)
+    ctx.strokeRect(pos.x, pos.y, PATCH_SIZE, PATCH_SIZE)
   }
 }
 
@@ -221,7 +216,7 @@ function renderSymbolsColor(symbolIds) {
   const dataPreset = DATA_PRESETS[parseInt(elements.dataSlider.value)]
   const sizePreset = SIZE_PRESETS[parseInt(elements.sizeSlider.value)]
   const canvasSize = sizePreset.size
-  const margin = canvasSize * MODE_MARGINS[state.mode]
+  const margin = MODE_MARGINS[state.mode]  // Fixed pixel margin
 
   // Generate packets for all 3 channels
   const packets = symbolIds.map(id => state.encoder.generateSymbol(id))
@@ -277,7 +272,7 @@ function renderSymbolsColor(symbolIds) {
 
   // Draw calibration patches for Palette mode
   if (state.mode === QR_MODE.PALETTE) {
-    drawCalibrationPatches(ctx, canvasSize, margin)
+    drawCalibrationPatches(ctx, canvasSize)
   }
 }
 

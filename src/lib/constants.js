@@ -8,16 +8,16 @@ export const QR_MODE = {
   PALETTE: 2   // Color RGB with HCC2D patch calibration
 }
 
-// Mode-specific margins (as ratio of canvas size)
+// Mode-specific margins (fixed pixel values like experiments)
 export const MODE_MARGINS = {
-  [QR_MODE.BW]: 0.02,      // ~2% quiet zone
-  [QR_MODE.PCCC]: 0.025,   // ~2.5% margin
-  [QR_MODE.PALETTE]: 0.15  // ~15% for scaled patches
+  [QR_MODE.BW]: 4,       // Small quiet zone for BW
+  [QR_MODE.PCCC]: 10,    // 10px margin (matches pccc-finder experiment)
+  [QR_MODE.PALETTE]: 60  // 60px margin for calibration patches (matches palette-rgb experiment)
 }
 
-// Palette mode patch configuration (as ratio of margin)
-export const PATCH_SIZE_RATIO = 0.4  // Patch is 40% of margin width
-export const PATCH_GAP_RATIO = 0.08  // Gap is 8% of margin width
+// Palette mode patch configuration (fixed pixel values)
+export const PATCH_SIZE = 25  // 25px patches (matches experiment)
+export const PATCH_GAP = 5    // 5px gap between patches (matches experiment)
 export const BLOCK_SIZE = 200
 export const MAX_FILE_SIZE = 20 * 1024 * 1024 // 20MB
 export const METADATA_INTERVAL = 10

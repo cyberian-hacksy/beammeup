@@ -1,7 +1,7 @@
 // Receiver module - handles camera scanning and QR decoding
 import jsQR from 'jsqr'
 import { createDecoder } from './decoder.js'
-import { QR_MODE, MODE_MARGINS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
+import { QR_MODE, MODE_MARGINS, PATCH_SIZE, PATCH_GAP } from './constants.js'
 import { calibrateFromFinders, normalizeRgb } from './calibration.js'
 
 // Receiver state
@@ -153,30 +153,36 @@ function sampleColor(pixels, width, centerX, centerY) {
   return [Math.round(rSum / count), Math.round(gSum / count), Math.round(bSum / count)]
 }
 
-// Get patch position in image based on QR bounds (scaled)
-function getPatchPositionInImage(corner, offset, qrBounds, marginRatio) {
+// Get patch position in image based on QR bounds (matches experiment approach)
+// Uses fixed pixel values from sender, scaled relative to observed QR size
+function getPatchPositionInImage(corner, offset, qrBounds) {
   const { qrLeft, qrTop, qrWidth, qrHeight } = qrBounds
-  const margin = qrWidth * (marginRatio / (1 - 2 * marginRatio))
-  const patchSize = margin * PATCH_SIZE_RATIO
-  const gap = margin * PATCH_GAP_RATIO
+
+  // Reference QR size for scaling (sender typically renders QR at ~320px when canvasSize=440)
+  const REFERENCE_QR_SIZE = 320
+
+  // Scale sender's fixed pixel values to image coordinates
+  const estimatedMargin = qrWidth * (MODE_MARGINS[QR_MODE.PALETTE] / REFERENCE_QR_SIZE)
+  const patchSizeImg = qrWidth * (PATCH_SIZE / REFERENCE_QR_SIZE)
+  const gapImg = qrWidth * (PATCH_GAP / REFERENCE_QR_SIZE)
 
   let x, y
   switch (corner) {
     case 'TL':
-      x = qrLeft - margin + gap + offset * (patchSize + gap) + patchSize / 2
-      y = qrTop - margin + gap + patchSize / 2
+      x = qrLeft - estimatedMargin + gapImg + offset * (patchSizeImg + gapImg) + patchSizeImg / 2
+      y = qrTop - estimatedMargin + gapImg + patchSizeImg / 2
       break
     case 'TR':
-      x = qrLeft + qrWidth + margin - gap - patchSize / 2 - offset * (patchSize + gap)
-      y = qrTop - margin + gap + patchSize / 2
+      x = qrLeft + qrWidth + estimatedMargin - gapImg - patchSizeImg / 2 - offset * (patchSizeImg + gapImg)
+      y = qrTop - estimatedMargin + gapImg + patchSizeImg / 2
       break
     case 'BL':
-      x = qrLeft - margin + gap + offset * (patchSize + gap) + patchSize / 2
-      y = qrTop + qrHeight + margin - gap - patchSize / 2
+      x = qrLeft - estimatedMargin + gapImg + offset * (patchSizeImg + gapImg) + patchSizeImg / 2
+      y = qrTop + qrHeight + estimatedMargin - gapImg - patchSizeImg / 2
       break
     case 'BR':
-      x = qrLeft + qrWidth + margin - gap - patchSize / 2 - offset * (patchSize + gap)
-      y = qrTop + qrHeight + margin - gap - patchSize / 2
+      x = qrLeft + qrWidth + estimatedMargin - gapImg - patchSizeImg / 2 - offset * (patchSizeImg + gapImg)
+      y = qrTop + qrHeight + estimatedMargin - gapImg - patchSizeImg / 2
       break
   }
 
@@ -189,7 +195,7 @@ function samplePatchCalibration(pixels, imageSize, qrBounds) {
   let successCount = 0
 
   for (const patch of PALETTE_PATCH_CONFIG) {
-    const pos = getPatchPositionInImage(patch.corner, patch.offset, qrBounds, MODE_MARGINS[QR_MODE.PALETTE])
+    const pos = getPatchPositionInImage(patch.corner, patch.offset, qrBounds)
 
     if (pos.x >= 0 && pos.x < imageSize && pos.y >= 0 && pos.y < imageSize) {
       const color = sampleColor(pixels, imageSize, pos.x, pos.y)
@@ -546,18 +552,28 @@ function scanFrame() {
   const ctx = state.ctx
 
   if (video.readyState === video.HAVE_ENOUGH_DATA) {
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    ctx.drawImage(video, 0, 0)
+    // Crop to square (like experiments) - critical for color mode processing
+    const vw = video.videoWidth
+    const vh = video.videoHeight
+    const size = Math.min(vw, vh)
 
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    canvas.width = size
+    canvas.height = size
+
+    // Center crop
+    const offsetX = (vw - size) / 2
+    const offsetY = (vh - size) / 2
+    ctx.drawImage(video, offsetX, offsetY, size, size, 0, 0, size, size)
+
+    const imageData = ctx.getImageData(0, 0, size, size)
 
     // Convert to grayscale for QR detection
     const grayData = toGrayscale(imageData)
-    const result = jsQR(grayData, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' })
+    const result = jsQR(grayData, size, size, { inversionAttempts: 'dontInvert' })
 
     if (result) {
-      showQROverlay(result.location, video)
+      // Account for square crop offset when showing overlay
+      showQROverlay(result.location, video, offsetX, offsetY, size)
 
       // Calculate QR bounds for color processing
       const loc = result.location
@@ -615,7 +631,7 @@ function scanFrame() {
           let sampledPalette = null
 
           if (effectiveMode === QR_MODE.PALETTE) {
-            sampledPalette = samplePatchCalibration(imageData.data, canvas.width, qrBounds)
+            sampledPalette = samplePatchCalibration(imageData.data, size, qrBounds)
             if (sampledPalette) {
               calibration = { white: sampledPalette[0], black: sampledPalette[7] }
             }
@@ -680,19 +696,32 @@ function scanFrame() {
 }
 
 // Show overlay around detected QR code
-function showQROverlay(location, video) {
+function showQROverlay(location, video, cropOffsetX, cropOffsetY, cropSize) {
   const svg = elements.qrOverlay
   const polygon = elements.qrPolygon
 
   // Account for video position within container
   const videoRect = video.getBoundingClientRect()
   const containerRect = video.parentElement.getBoundingClientRect()
-  const offsetX = videoRect.left - containerRect.left
-  const offsetY = videoRect.top - containerRect.top
+  const containerOffsetX = videoRect.left - containerRect.left
+  const containerOffsetY = videoRect.top - containerRect.top
 
-  // Calculate scale
-  const scaleX = video.offsetWidth / video.videoWidth
-  const scaleY = video.offsetHeight / video.videoHeight
+  // Calculate scale from cropped canvas to video display
+  // Video display scale
+  const videoDisplayWidth = video.offsetWidth
+  const videoDisplayHeight = video.offsetHeight
+
+  // The cropped area in the video
+  const cropDisplayWidth = videoDisplayWidth * (cropSize / video.videoWidth)
+  const cropDisplayHeight = videoDisplayHeight * (cropSize / video.videoHeight)
+
+  // Scale from cropped canvas coordinates to display coordinates
+  const scaleX = cropDisplayWidth / cropSize
+  const scaleY = cropDisplayHeight / cropSize
+
+  // Offset for crop area in display coordinates
+  const cropDisplayOffsetX = videoDisplayWidth * (cropOffsetX / video.videoWidth)
+  const cropDisplayOffsetY = videoDisplayHeight * (cropOffsetY / video.videoHeight)
 
   // Build polygon points from all 4 corners
   const points = [
@@ -701,7 +730,7 @@ function showQROverlay(location, video) {
     location.bottomRightCorner,
     location.bottomLeftCorner
   ].map(p =>
-    `${p.x * scaleX + offsetX},${p.y * scaleY + offsetY}`
+    `${p.x * scaleX + cropDisplayOffsetX + containerOffsetX},${p.y * scaleY + cropDisplayOffsetY + containerOffsetY}`
   ).join(' ')
 
   polygon.setAttribute('points', points)
