@@ -581,6 +581,9 @@ function scanFrame() {
       // BW mode: use grayscale QR decode directly
       if (grayResult) {
         showQROverlay(grayResult.location, video, offsetX, offsetY, size)
+        if (elements.debugLine) {
+          elements.debugLine.textContent = 'BW: QR found'
+        }
 
         try {
           const binary = atob(grayResult.data)
@@ -612,10 +615,15 @@ function scanFrame() {
             return
           }
         } catch (err) {
-          console.log('BW decode error:', err.message)
+          if (elements.debugLine) {
+            elements.debugLine.textContent = 'BW: decode error'
+          }
         }
       } else {
         elements.qrOverlay.style.display = 'none'
+        if (elements.debugLine) {
+          elements.debugLine.textContent = 'BW: no QR'
+        }
       }
     } else {
       // Color mode: require grayscale QR detection like experiments
