@@ -27,7 +27,10 @@ const state = {
   lastBufferSize: 0,
   // Debug counters
   frameCount: 0,
-  detectCount: 0
+  detectCount: 0,
+  // Calibration smoothing
+  smoothWhite: null,       // Smoothed white reference [r,g,b]
+  smoothBlack: null        // Smoothed black reference [r,g,b]
 }
 
 // Audio feedback helper
@@ -499,12 +502,16 @@ async function startScanning(deviceId) {
     state.canvas = document.createElement('canvas')
     state.ctx = state.canvas.getContext('2d', { willReadFrequently: true })
 
-    // Reset decoder
+    // Reset decoder and calibration
     state.decoder = createDecoder()
     state.symbolTimes = []
     state.reconstructedBlob = null
     state.startTime = Date.now()
     state.isScanning = true
+    state.frameCount = 0
+    state.detectCount = 0
+    state.smoothWhite = null
+    state.smoothBlack = null
 
     showStatus('scanning')
     elements.statSymbols.textContent = '0 codes'
@@ -581,6 +588,10 @@ function processPacket(bytes) {
     state.startTime = Date.now()
     state.hasNotifiedFirstScan = false
     state.detectedMode = null
+    state.frameCount = 0
+    state.detectCount = 0
+    state.smoothWhite = null
+    state.smoothBlack = null
     updateModeStatus()
     showStatus('scanning')
     elements.progressFill.style.width = '0%'
@@ -740,6 +751,26 @@ function scanFrame() {
         bSum = tempSum
         swapped = true
       }
+
+      // Apply temporal smoothing to calibration (exponential moving average)
+      // This stabilizes the calibration across frames
+      const alpha = 0.3  // Smoothing factor: 0.3 = 30% new, 70% old
+      if (state.smoothWhite === null) {
+        // First frame - initialize
+        state.smoothWhite = [...calibration.white]
+        state.smoothBlack = [...calibration.black]
+      } else {
+        // Blend with previous values
+        for (let i = 0; i < 3; i++) {
+          state.smoothWhite[i] = Math.round(alpha * calibration.white[i] + (1 - alpha) * state.smoothWhite[i])
+          state.smoothBlack[i] = Math.round(alpha * calibration.black[i] + (1 - alpha) * state.smoothBlack[i])
+        }
+      }
+      // Use smoothed calibration
+      calibration.white = state.smoothWhite
+      calibration.black = state.smoothBlack
+      wSum = calibration.white[0] + calibration.white[1] + calibration.white[2]
+      bSum = calibration.black[0] + calibration.black[1] + calibration.black[2]
 
       // Show calibration info
       const modeName = effectiveMode === QR_MODE.PCCC ? 'CMY' : 'RGB'
