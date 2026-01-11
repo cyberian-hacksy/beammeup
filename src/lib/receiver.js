@@ -793,6 +793,7 @@ function scanFrame() {
         let acceptedCount = 0
 
         // Process any successful channel decodes
+        const symIds = []  // Track symbol IDs from each channel
         for (let i = 0; i < channelResults.length; i++) {
           const chResult = channelResults[i]
           if (chResult) {
@@ -801,6 +802,12 @@ function scanFrame() {
               const bytes = new Uint8Array(binary.length)
               for (let j = 0; j < binary.length; j++) {
                 bytes[j] = binary.charCodeAt(j)
+              }
+
+              // Extract symbol ID from header (bytes 9-12)
+              if (bytes.length >= 13) {
+                const symId = bytes[9] | (bytes[10] << 8) | (bytes[11] << 16) | (bytes[12] << 24)
+                symIds.push(symId)
               }
 
               // Auto-detect mode from first packet
@@ -819,9 +826,10 @@ function scanFrame() {
           }
         }
 
-        // Show status with accepted count
+        // Show status with symbol IDs decoded
         const symCount = state.decoder.uniqueSymbols || 0
-        const statusText = modeName + ' ' + calibType + ' ' + decoded.join('') + ' +' + acceptedCount + ' #' + symCount + ' ' + rate + '%'
+        const symIdStr = symIds.length > 0 ? symIds.join('/') : '-'
+        const statusText = modeName + ' ' + calibType + ' ' + decoded.join('') + ' [' + symIdStr + '] +' + acceptedCount + ' #' + symCount + ' ' + rate + '%'
         debugStatus(statusText)
         debugLog(statusText)
 
