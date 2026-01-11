@@ -59,6 +59,7 @@ let showError = (msg) => console.error(msg)
 // Debug helpers
 let lastLoggedState = ''
 let logEntryCount = 0
+let lastLoggedThresholds = { r: 0, g: 0, b: 0 }
 
 function debugStatus(text) {
   const el = document.getElementById('debug-current')
@@ -75,10 +76,10 @@ function debugLog(text) {
     logEntryCount++
     const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
     el.textContent += timestamp + ' ' + text + '\n'
-    // Keep only last 50 lines
+    // Keep only last 200 lines
     const lines = el.textContent.split('\n')
-    if (lines.length > 50) {
-      el.textContent = lines.slice(-50).join('\n')
+    if (lines.length > 200) {
+      el.textContent = lines.slice(-200).join('\n')
     }
     el.scrollTop = el.scrollHeight
   }
@@ -169,6 +170,21 @@ const adaptiveThresholds = {
     this.b = Math.max(0.4, Math.min(0.75, this.b))
 
     this.frameCount++
+
+    // Log threshold changes (when any changes by 2+ points)
+    const tR = Math.round(this.r * 100)
+    const tG = Math.round(this.g * 100)
+    const tB = Math.round(this.b * 100)
+    if (Math.abs(tR - lastLoggedThresholds.r) >= 2 ||
+        Math.abs(tG - lastLoggedThresholds.g) >= 2 ||
+        Math.abs(tB - lastLoggedThresholds.b) >= 2) {
+      lastLoggedThresholds = { r: tR, g: tG, b: tB }
+      // Log range info too for context
+      const rngR = Math.round(this.rRunningMin * 100) + '-' + Math.round(this.rRunningMax * 100)
+      const rngG = Math.round(this.gRunningMin * 100) + '-' + Math.round(this.gRunningMax * 100)
+      const rngB = Math.round(this.bRunningMin * 100) + '-' + Math.round(this.bRunningMax * 100)
+      debugLog('>>> THRESH tR' + tR + ' tG' + tG + ' tB' + tB + ' | R:' + rngR + ' G:' + rngG + ' B:' + rngB)
+    }
   },
 
   reset() {
@@ -179,6 +195,7 @@ const adaptiveThresholds = {
     this.gRunningMin = 0.3; this.gRunningMax = 0.7
     this.bRunningMin = 0.3; this.bRunningMax = 0.7
     this.frameCount = 0
+    lastLoggedThresholds = { r: 0, g: 0, b: 0 }
   }
 }
 
