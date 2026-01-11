@@ -131,16 +131,58 @@ const PALETTE_PATCH_CONFIG = [
   { corner: 'BR', offset: 1, paletteIndex: 7 },
 ]
 
-// Thresholds for PCCC channel classification (per-channel)
-// Red often needs different threshold due to camera/display characteristics
-// Data shows Red averages 60-74% while G/B average ~50-55%
-const CMY_THRESHOLDS = {
-  r: 0.75,  // Cyan threshold (low R) - raised significantly due to red bias
-  g: 0.55,  // Magenta threshold (low G) - slightly raised
-  b: 0.58   // Yellow threshold (low B) - raised due to blue bias in data
+// Adaptive thresholds for PCCC channel classification
+// These auto-adjust based on observed normalized values
+const adaptiveThresholds = {
+  r: 0.65,  // Initial Cyan threshold
+  g: 0.50,  // Initial Magenta threshold
+  b: 0.55,  // Initial Yellow threshold
+
+  // Running stats for adaptation (exponential moving average)
+  rRunningMin: 0.3, rRunningMax: 0.8,
+  gRunningMin: 0.3, gRunningMax: 0.7,
+  bRunningMin: 0.3, bRunningMax: 0.7,
+  frameCount: 0,
+
+  // Update thresholds based on observed min/max
+  update(rMin, rMax, gMin, gMax, bMin, bMax) {
+    const alpha = 0.1  // Smoothing factor
+
+    // Update running min/max with smoothing
+    this.rRunningMin = alpha * rMin + (1 - alpha) * this.rRunningMin
+    this.rRunningMax = alpha * rMax + (1 - alpha) * this.rRunningMax
+    this.gRunningMin = alpha * gMin + (1 - alpha) * this.gRunningMin
+    this.gRunningMax = alpha * gMax + (1 - alpha) * this.gRunningMax
+    this.bRunningMin = alpha * bMin + (1 - alpha) * this.bRunningMin
+    this.bRunningMax = alpha * bMax + (1 - alpha) * this.bRunningMax
+
+    // Calculate new thresholds as midpoint between min and max
+    // with a slight bias toward higher values (since we see high bias)
+    const bias = 0.55  // 0.5 = exact middle, higher = bias toward max
+    this.r = this.rRunningMin + (this.rRunningMax - this.rRunningMin) * bias
+    this.g = this.gRunningMin + (this.gRunningMax - this.gRunningMin) * bias
+    this.b = this.bRunningMin + (this.bRunningMax - this.bRunningMin) * bias
+
+    // Clamp to reasonable range
+    this.r = Math.max(0.4, Math.min(0.85, this.r))
+    this.g = Math.max(0.4, Math.min(0.75, this.g))
+    this.b = Math.max(0.4, Math.min(0.75, this.b))
+
+    this.frameCount++
+  },
+
+  reset() {
+    this.r = 0.65
+    this.g = 0.50
+    this.b = 0.55
+    this.rRunningMin = 0.3; this.rRunningMax = 0.8
+    this.gRunningMin = 0.3; this.gRunningMax = 0.7
+    this.bRunningMin = 0.3; this.bRunningMax = 0.7
+    this.frameCount = 0
+  }
 }
 
-// Debug: track normalized value distribution
+// Debug: track normalized value distribution per frame
 const normStats = {
   rSum: 0, gSum: 0, bSum: 0,
   rMin: 1, gMin: 1, bMin: 1,
@@ -167,6 +209,16 @@ const normStats = {
       rRange: [this.rMin, this.rMax],
       gRange: [this.gMin, this.gMax],
       bRange: [this.bMin, this.bMax]
+    }
+  },
+  // Update adaptive thresholds after each frame
+  updateAdaptive() {
+    if (this.count > 0) {
+      adaptiveThresholds.update(
+        this.rMin, this.rMax,
+        this.gMin, this.gMax,
+        this.bMin, this.bMax
+      )
     }
   }
 }
@@ -299,10 +351,11 @@ function classifyCMY(r, g, b, white, black, collectStats = false) {
     normStats.add(normR, normG, normB)
   }
 
+  // Use adaptive thresholds that auto-adjust based on observed values
   return [
-    normR < CMY_THRESHOLDS.r ? 1 : 0,
-    normG < CMY_THRESHOLDS.g ? 1 : 0,
-    normB < CMY_THRESHOLDS.b ? 1 : 0
+    normR < adaptiveThresholds.r ? 1 : 0,
+    normG < adaptiveThresholds.g ? 1 : 0,
+    normB < adaptiveThresholds.b ? 1 : 0
   ]
 }
 
@@ -563,6 +616,7 @@ async function startScanning(deviceId) {
     state.detectCount = 0
     state.smoothWhite = null
     state.smoothBlack = null
+    adaptiveThresholds.reset()
 
     showStatus('scanning')
     elements.statSymbols.textContent = '0 codes'
@@ -643,6 +697,7 @@ function processPacket(bytes) {
     state.detectCount = 0
     state.smoothWhite = null
     state.smoothBlack = null
+    adaptiveThresholds.reset()
     updateModeStatus()
     showStatus('scanning')
     elements.progressFill.style.width = '0%'
@@ -831,6 +886,11 @@ function scanFrame() {
         // Extract color channels using bounds and calibration
         const channels = extractColorChannels(imageData, qrBounds, effectiveMode, calibration, sampledPalette)
 
+        // Update adaptive thresholds based on observed normalized values
+        if (effectiveMode === QR_MODE.PCCC) {
+          normStats.updateAdaptive()
+        }
+
         // Decode each channel
         const channelResults = [
           jsQR(channels.ch0, channels.size, channels.size),
@@ -881,7 +941,7 @@ function scanFrame() {
         const symCount = state.decoder.uniqueSymbols || 0
         const symIdStr = symIds.length > 0 ? symIds.join('/') : '-'
 
-        // Add normalized RGB stats for CMY mode debugging
+        // Add normalized RGB stats and adaptive thresholds for CMY mode debugging
         let statsStr = ''
         if (effectiveMode === QR_MODE.PCCC) {
           const stats = normStats.getStats()
@@ -890,7 +950,11 @@ function scanFrame() {
             const rAvg = Math.round(stats.rAvg * 100)
             const gAvg = Math.round(stats.gAvg * 100)
             const bAvg = Math.round(stats.bAvg * 100)
-            statsStr = ' R' + rAvg + ' G' + gAvg + ' B' + bAvg
+            // Show current adaptive thresholds
+            const tR = Math.round(adaptiveThresholds.r * 100)
+            const tG = Math.round(adaptiveThresholds.g * 100)
+            const tB = Math.round(adaptiveThresholds.b * 100)
+            statsStr = ' R' + rAvg + '/' + tR + ' G' + gAvg + '/' + tG + ' B' + bAvg + '/' + tB
           }
         }
 
@@ -1065,6 +1129,8 @@ export function resetReceiver() {
   // Reset debug counters
   state.frameCount = 0
   state.detectCount = 0
+  // Reset adaptive thresholds
+  adaptiveThresholds.reset()
 
   if (elements) {
     showStatus('scanning')
