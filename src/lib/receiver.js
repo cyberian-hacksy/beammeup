@@ -790,19 +790,12 @@ function scanFrame() {
         // Debug: show on-screen (visible on mobile)
         // Format: MODE CALIB_TYPE ch0ch1ch2 WHITE BLACK RATE
         const decoded = channelResults.map(r => r ? 1 : 0)
-        const statusText = modeName + ' ' + calibType + ' ' + decoded.join('') + ' W' + wSum + ' B' + bSum + ' ' + rate + '%'
-        debugStatus(statusText)
-        // Log significant state changes (not every frame)
-        debugLog(statusText)
-
-        let anySuccess = false
+        let acceptedCount = 0
 
         // Process any successful channel decodes
         for (let i = 0; i < channelResults.length; i++) {
           const chResult = channelResults[i]
           if (chResult) {
-            anySuccess = true
-
             try {
               const binary = atob(chResult.data)
               const bytes = new Uint8Array(binary.length)
@@ -818,14 +811,21 @@ function scanFrame() {
                 updateModeStatus()
               }
 
-              processPacket(bytes)
+              const accepted = processPacket(bytes)
+              if (accepted) acceptedCount++
             } catch (err) {
               // Individual channel decode error, continue with others
             }
           }
         }
 
-        if (anySuccess) {
+        // Show status with accepted count
+        const symCount = state.decoder.uniqueSymbols || 0
+        const statusText = modeName + ' ' + calibType + ' ' + decoded.join('') + ' +' + acceptedCount + ' #' + symCount + ' ' + rate + '%'
+        debugStatus(statusText)
+        debugLog(statusText)
+
+        if (acceptedCount > 0) {
           updateReceiverStats()
 
           if (state.decoder.isComplete()) {
