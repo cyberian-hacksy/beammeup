@@ -199,13 +199,16 @@ const adaptiveThresholds = {
 
     this.frameCount++
 
-    // Log threshold changes (when any changes by 1+ points)
+    // Log threshold changes: only when significant (3+ points) or every 50 frames
     const tR = Math.round(this.r * 100)
     const tG = Math.round(this.g * 100)
     const tB = Math.round(this.b * 100)
-    if (Math.abs(tR - lastLoggedThresholds.r) >= 1 ||
-        Math.abs(tG - lastLoggedThresholds.g) >= 1 ||
-        Math.abs(tB - lastLoggedThresholds.b) >= 1) {
+    const significantChange = Math.abs(tR - lastLoggedThresholds.r) >= 3 ||
+                              Math.abs(tG - lastLoggedThresholds.g) >= 3 ||
+                              Math.abs(tB - lastLoggedThresholds.b) >= 3
+    const periodicLog = this.frameCount % 50 === 0
+
+    if (significantChange || periodicLog) {
       lastLoggedThresholds = { r: tR, g: tG, b: tB }
       // Log range info too for context
       const rngR = Math.round(this.rRunningMin * 100) + '-' + Math.round(this.rRunningMax * 100)
