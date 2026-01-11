@@ -131,8 +131,44 @@ const PALETTE_PATCH_CONFIG = [
   { corner: 'BR', offset: 1, paletteIndex: 7 },
 ]
 
-// Threshold for PCCC channel classification
-const CMY_THRESHOLD = 0.5
+// Thresholds for PCCC channel classification (per-channel)
+// Red often needs different threshold due to camera/display characteristics
+const CMY_THRESHOLDS = {
+  r: 0.5,  // Cyan threshold (low R)
+  g: 0.5,  // Magenta threshold (low G)
+  b: 0.5   // Yellow threshold (low B)
+}
+
+// Debug: track normalized value distribution
+const normStats = {
+  rSum: 0, gSum: 0, bSum: 0,
+  rMin: 1, gMin: 1, bMin: 1,
+  rMax: 0, gMax: 0, bMax: 0,
+  count: 0,
+  reset() {
+    this.rSum = this.gSum = this.bSum = 0
+    this.rMin = this.gMin = this.bMin = 1
+    this.rMax = this.gMax = this.bMax = 0
+    this.count = 0
+  },
+  add(r, g, b) {
+    this.rSum += r; this.gSum += g; this.bSum += b
+    this.rMin = Math.min(this.rMin, r); this.gMin = Math.min(this.gMin, g); this.bMin = Math.min(this.bMin, b)
+    this.rMax = Math.max(this.rMax, r); this.gMax = Math.max(this.gMax, g); this.bMax = Math.max(this.bMax, b)
+    this.count++
+  },
+  getStats() {
+    if (this.count === 0) return null
+    return {
+      rAvg: this.rSum / this.count,
+      gAvg: this.gSum / this.count,
+      bAvg: this.bSum / this.count,
+      rRange: [this.rMin, this.rMax],
+      gRange: [this.gMin, this.gMax],
+      bRange: [this.bMin, this.bMax]
+    }
+  }
+}
 
 // Check if position is finder or timing pattern
 function isFinderOrTiming(row, col, size) {
@@ -254,12 +290,18 @@ function samplePatchCalibration(pixels, imageSize, qrBounds) {
 }
 
 // Classify CMY color for PCCC mode
-function classifyCMY(r, g, b, white, black) {
+function classifyCMY(r, g, b, white, black, collectStats = false) {
   const [normR, normG, normB] = normalizeRgb(r, g, b, white, black, true)
+
+  // Collect stats for debugging (only sample every Nth pixel)
+  if (collectStats) {
+    normStats.add(normR, normG, normB)
+  }
+
   return [
-    normR < CMY_THRESHOLD ? 1 : 0,
-    normG < CMY_THRESHOLD ? 1 : 0,
-    normB < CMY_THRESHOLD ? 1 : 0
+    normR < CMY_THRESHOLDS.r ? 1 : 0,
+    normG < CMY_THRESHOLDS.g ? 1 : 0,
+    normB < CMY_THRESHOLDS.b ? 1 : 0
   ]
 }
 
@@ -318,6 +360,11 @@ function extractColorChannels(imageData, qrBounds, mode, calibration, sampledPal
   const size = imageData.width
   const pixels = imageData.data
 
+  // Reset stats for this frame
+  if (mode === QR_MODE.PCCC) {
+    normStats.reset()
+  }
+
   // Allocate or reuse channel buffers
   const bufferSize = size * size * 4
   if (bufferSize !== state.lastBufferSize) {
@@ -330,6 +377,7 @@ function extractColorChannels(imageData, qrBounds, mode, calibration, sampledPal
   }
 
   const { ch0, ch1, ch2 } = state.channelBuffers
+  let sampleCounter = 0
 
   for (let py = 0; py < size; py++) {
     for (let px = 0; px < size; px++) {
@@ -341,7 +389,9 @@ function extractColorChannels(imageData, qrBounds, mode, calibration, sampledPal
       let bits
       if (px >= qrLeft && px < qrLeft + qrWidth && py >= qrTop && py < qrTop + qrHeight) {
         if (mode === QR_MODE.PCCC) {
-          bits = classifyCMY(r, g, b, calibration.white, calibration.black)
+          // Collect stats every 50th pixel to avoid performance hit
+          const collectStats = (++sampleCounter % 50 === 0)
+          bits = classifyCMY(r, g, b, calibration.white, calibration.black, collectStats)
         } else {
           // For PALETTE mode: use sampled palette if available, else use calibration for normalization
           bits = classifyPalette(r, g, b, sampledPalette, calibration)
@@ -829,7 +879,21 @@ function scanFrame() {
         // Show status with symbol IDs decoded
         const symCount = state.decoder.uniqueSymbols || 0
         const symIdStr = symIds.length > 0 ? symIds.join('/') : '-'
-        const statusText = modeName + ' ' + calibType + ' ' + decoded.join('') + ' [' + symIdStr + '] +' + acceptedCount + ' #' + symCount + ' ' + rate + '%'
+
+        // Add normalized RGB stats for CMY mode debugging
+        let statsStr = ''
+        if (effectiveMode === QR_MODE.PCCC) {
+          const stats = normStats.getStats()
+          if (stats) {
+            // Show average normalized values (0-100 scale for readability)
+            const rAvg = Math.round(stats.rAvg * 100)
+            const gAvg = Math.round(stats.gAvg * 100)
+            const bAvg = Math.round(stats.bAvg * 100)
+            statsStr = ' R' + rAvg + ' G' + gAvg + ' B' + bAvg
+          }
+        }
+
+        const statusText = modeName + ' ' + calibType + ' ' + decoded.join('') + statsStr + ' [' + symIdStr + '] +' + acceptedCount + ' #' + symCount + ' ' + rate + '%'
         debugStatus(statusText)
         debugLog(statusText)
 
