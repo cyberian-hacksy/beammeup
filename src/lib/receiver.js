@@ -804,10 +804,10 @@ function scanFrame() {
                 bytes[j] = binary.charCodeAt(j)
               }
 
-              // Extract symbol ID from header (bytes 9-12)
+              // Extract symbol ID from header (bytes 9-12, big-endian)
               if (bytes.length >= 13) {
-                const symId = bytes[9] | (bytes[10] << 8) | (bytes[11] << 16) | (bytes[12] << 24)
-                symIds.push(symId)
+                const symId = (bytes[9] << 24) | (bytes[10] << 16) | (bytes[11] << 8) | bytes[12]
+                symIds.push(symId >>> 0)  // Convert to unsigned
               }
 
               // Auto-detect mode from first packet
