@@ -725,11 +725,25 @@ function scanFrame() {
         calibration = { white: [255, 255, 255], black: [0, 0, 0] }
       }
 
+      // Sanity check: white must be brighter than black
+      // If inverted (common with finder pattern sampling issues), swap them
+      let wSum = calibration.white[0] + calibration.white[1] + calibration.white[2]
+      let bSum = calibration.black[0] + calibration.black[1] + calibration.black[2]
+      let swapped = false
+      if (wSum < bSum) {
+        // Swap white and black
+        const temp = calibration.white
+        calibration.white = calibration.black
+        calibration.black = temp
+        const tempSum = wSum
+        wSum = bSum
+        bSum = tempSum
+        swapped = true
+      }
+
       // Show calibration info
-      const wSum = calibration.white[0] + calibration.white[1] + calibration.white[2]
-      const bSum = calibration.black[0] + calibration.black[1] + calibration.black[2]
       const modeName = effectiveMode === QR_MODE.PCCC ? 'CMY' : 'RGB'
-      const calibType = sampledPalette ? 'P' : 'F'  // P=patch, F=finder
+      const calibType = (sampledPalette ? 'P' : 'F') + (swapped ? '!' : '')  // ! = was swapped
 
       try {
         // Extract color channels using bounds and calibration
