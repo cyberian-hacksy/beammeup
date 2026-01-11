@@ -58,6 +58,9 @@ let showError = (msg) => console.error(msg)
 
 // Debug helpers
 let lastLoggedState = ''
+let lastLoggedSymIds = ''
+let lastLoggedDecodePattern = ''
+let lastLoggedSymCount = 0
 let logEntryCount = 0
 let lastLoggedThresholds = { r: 0, g: 0, b: 0 }
 
@@ -66,10 +69,33 @@ function debugStatus(text) {
   if (el) el.textContent = text
 }
 
-function debugLog(text) {
-  // Only log if state changed significantly
-  if (text === lastLoggedState) return
-  lastLoggedState = text
+function debugLog(text, forceLog = false) {
+  // Always log threshold changes and forced entries
+  if (!forceLog && !text.startsWith('>>>')) {
+    // Extract key info for smart deduplication
+    // Format: "CMY F! 010 R64/55 G62/55 B37/55 [260] +0 #83 89%"
+    const symIdMatch = text.match(/\[([^\]]+)\]/)
+    const patternMatch = text.match(/[01]{3}/)
+    const symCountMatch = text.match(/#(\d+)/)
+    const acceptedMatch = text.match(/\+(\d+)/)
+
+    const symIds = symIdMatch ? symIdMatch[1] : ''
+    const pattern = patternMatch ? patternMatch[0] : ''
+    const symCount = symCountMatch ? parseInt(symCountMatch[1]) : 0
+    const accepted = acceptedMatch ? parseInt(acceptedMatch[1]) : 0
+
+    // Skip if same symbol IDs, same pattern, same count, and nothing accepted
+    if (symIds === lastLoggedSymIds &&
+        pattern === lastLoggedDecodePattern &&
+        symCount === lastLoggedSymCount &&
+        accepted === 0) {
+      return
+    }
+
+    lastLoggedSymIds = symIds
+    lastLoggedDecodePattern = pattern
+    lastLoggedSymCount = symCount
+  }
 
   const el = document.getElementById('debug-log')
   if (el) {
@@ -204,22 +230,41 @@ const adaptiveThresholds = {
 }
 
 // Debug: track normalized value distribution per frame
+// Filter out clipped/extreme values to get reliable stats
 const normStats = {
   rSum: 0, gSum: 0, bSum: 0,
   rMin: 1, gMin: 1, bMin: 1,
   rMax: 0, gMax: 0, bMax: 0,
   count: 0,
+  // Track "valid" min/max (excluding outliers near 0 or 1)
+  rValidMin: 1, gValidMin: 1, bValidMin: 1,
+  rValidMax: 0, gValidMax: 0, bValidMax: 0,
+  validCount: 0,
   reset() {
     this.rSum = this.gSum = this.bSum = 0
     this.rMin = this.gMin = this.bMin = 1
     this.rMax = this.gMax = this.bMax = 0
     this.count = 0
+    this.rValidMin = this.gValidMin = this.bValidMin = 1
+    this.rValidMax = this.gValidMax = this.bValidMax = 0
+    this.validCount = 0
   },
   add(r, g, b) {
     this.rSum += r; this.gSum += g; this.bSum += b
     this.rMin = Math.min(this.rMin, r); this.gMin = Math.min(this.gMin, g); this.bMin = Math.min(this.bMin, b)
     this.rMax = Math.max(this.rMax, r); this.gMax = Math.max(this.gMax, g); this.bMax = Math.max(this.bMax, b)
     this.count++
+    // Only track "valid" range for values not clipped (between 0.1 and 0.9)
+    // This filters out pixels that hit calibration limits
+    if (r > 0.1 && r < 0.9 && g > 0.1 && g < 0.9 && b > 0.1 && b < 0.9) {
+      this.rValidMin = Math.min(this.rValidMin, r)
+      this.gValidMin = Math.min(this.gValidMin, g)
+      this.bValidMin = Math.min(this.bValidMin, b)
+      this.rValidMax = Math.max(this.rValidMax, r)
+      this.gValidMax = Math.max(this.gValidMax, g)
+      this.bValidMax = Math.max(this.bValidMax, b)
+      this.validCount++
+    }
   },
   getStats() {
     if (this.count === 0) return null
@@ -232,13 +277,14 @@ const normStats = {
       bRange: [this.bMin, this.bMax]
     }
   },
-  // Update adaptive thresholds after each frame
+  // Update adaptive thresholds after each frame using valid (non-clipped) stats
   updateAdaptive() {
-    if (this.count > 0) {
+    if (this.validCount > 10) {
+      // Use valid min/max (filtered) for threshold adaptation
       adaptiveThresholds.update(
-        this.rMin, this.rMax,
-        this.gMin, this.gMax,
-        this.bMin, this.bMax
+        this.rValidMin, this.rValidMax,
+        this.gValidMin, this.gValidMax,
+        this.bValidMin, this.bValidMax
       )
     }
   }
