@@ -92,8 +92,10 @@
           <button class="mode-btn" data-mode="2">RGB</button>
         </div>
       </div>
-      <div id="debug-current" style="font-size:12px;color:#00d4ff;padding:4px 8px;background:#16213e;border-radius:4px 4px 0 0;font-family:monospace;text-align:center;margin-top:8px;">waiting...</div>
-      <div id="debug-log" style="font-size:10px;color:#888;padding:8px;background:#0d1117;border-radius:0 0 4px 4px;font-family:monospace;height:80px;overflow-y:auto;white-space:pre-wrap;"></div>
+      <div id="debug-panel" style="margin-top:8px;border:2px solid #00d4ff;border-radius:4px;">
+        <div id="debug-current" style="font-size:14px;color:#00d4ff;padding:6px 8px;background:#16213e;font-family:monospace;text-align:center;">waiting...</div>
+        <div id="debug-log" style="font-size:11px;color:#0f0;padding:8px;background:#000;font-family:monospace;height:100px;overflow-y:auto;white-space:pre-wrap;border-top:1px solid #333;"></div>
+      </div>
 
       <div class="receiver-status" id="receiver-status-bar">
         <div class="status-scanning" id="status-scanning">
