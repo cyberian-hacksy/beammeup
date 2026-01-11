@@ -135,9 +135,9 @@ const PALETTE_PATCH_CONFIG = [
 // Red often needs different threshold due to camera/display characteristics
 // Data shows Red averages 60-74% while G/B average ~50-55%
 const CMY_THRESHOLDS = {
-  r: 0.68,  // Cyan threshold (low R) - raised due to red bias
-  g: 0.50,  // Magenta threshold (low G)
-  b: 0.50   // Yellow threshold (low B)
+  r: 0.75,  // Cyan threshold (low R) - raised significantly due to red bias
+  g: 0.55,  // Magenta threshold (low G) - slightly raised
+  b: 0.58   // Yellow threshold (low B) - raised due to blue bias in data
 }
 
 // Debug: track normalized value distribution
