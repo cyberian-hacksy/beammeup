@@ -429,10 +429,39 @@ function classifyCMY(r, g, b, white, black, collectStats = false) {
   ]
 }
 
+// Debug: track palette classification stats
+const paletteStats = {
+  counts: new Array(8).fill(0),
+  lastPalette: null,
+  frameCount: 0,
+  reset() {
+    this.counts = new Array(8).fill(0)
+    this.lastPalette = null
+    this.frameCount = 0
+  },
+  add(index) {
+    this.counts[index]++
+  },
+  logPalette(palette) {
+    if (this.frameCount % 100 === 0 && palette) {
+      // Log sampled palette colors periodically
+      const colors = palette.map((c, i) => i + ':' + c.join(',')).join(' | ')
+      debugLog('>>> PALETTE ' + colors)
+    }
+    this.lastPalette = palette
+    this.frameCount++
+  },
+  getDistribution() {
+    const total = this.counts.reduce((a, b) => a + b, 0)
+    if (total === 0) return null
+    return this.counts.map(c => Math.round(100 * c / total))
+  }
+}
+
 // Classify RGB palette color for Palette mode
 // sampledPalette = actual sampled colors [0-255] from camera
 // If null, use calibration to normalize then compare to ideal palette
-function classifyPalette(r, g, b, sampledPalette, calibration) {
+function classifyPalette(r, g, b, sampledPalette, calibration, collectStats = false) {
   let minDist = Infinity
   let minIndex = 0
 
@@ -470,6 +499,11 @@ function classifyPalette(r, g, b, sampledPalette, calibration) {
     }
   }
 
+  // Track stats for debugging
+  if (collectStats) {
+    paletteStats.add(minIndex)
+  }
+
   // Extract RGB bits from palette index
   return [
     (minIndex >> 2) & 1,
@@ -487,6 +521,9 @@ function extractColorChannels(imageData, qrBounds, mode, calibration, sampledPal
   // Reset stats for this frame
   if (mode === QR_MODE.PCCC) {
     normStats.reset()
+  } else if (mode === QR_MODE.PALETTE) {
+    // Log palette periodically for debugging
+    paletteStats.logPalette(sampledPalette)
   }
 
   // Allocate or reuse channel buffers
@@ -518,7 +555,8 @@ function extractColorChannels(imageData, qrBounds, mode, calibration, sampledPal
           bits = classifyCMY(r, g, b, calibration.white, calibration.black, collectStats)
         } else {
           // For PALETTE mode: use sampled palette if available, else use calibration for normalization
-          bits = classifyPalette(r, g, b, sampledPalette, calibration)
+          const collectStats = (++sampleCounter % 50 === 0)
+          bits = classifyPalette(r, g, b, sampledPalette, calibration, collectStats)
         }
       } else {
         bits = [0, 0, 0] // Outside QR = white
@@ -687,6 +725,7 @@ async function startScanning(deviceId) {
     state.smoothWhite = null
     state.smoothBlack = null
     adaptiveThresholds.reset()
+    paletteStats.reset()
 
     showStatus('scanning')
     elements.statSymbols.textContent = '0 codes'
@@ -768,6 +807,7 @@ function processPacket(bytes) {
     state.smoothWhite = null
     state.smoothBlack = null
     adaptiveThresholds.reset()
+    paletteStats.reset()
     updateModeStatus()
     showStatus('scanning')
     elements.progressFill.style.width = '0%'
@@ -1026,6 +1066,15 @@ function scanFrame() {
             const tB = Math.round(adaptiveThresholds.b * 100)
             statsStr = ' R' + rAvg + '/' + tR + ' G' + gAvg + '/' + tG + ' B' + bAvg + '/' + tB
           }
+        } else if (effectiveMode === QR_MODE.PALETTE) {
+          // Show palette classification distribution (which indices are being used)
+          const dist = paletteStats.getDistribution()
+          if (dist) {
+            // Find top 3 most used indices
+            const sorted = dist.map((v, i) => ({ i, v })).sort((a, b) => b.v - a.v)
+            const top = sorted.slice(0, 3).filter(x => x.v > 0)
+            statsStr = ' [' + top.map(x => x.i + ':' + x.v + '%').join(' ') + ']'
+          }
         }
 
         const statusText = modeName + ' ' + calibType + ' ' + decoded.join('') + statsStr + ' [' + symIdStr + '] +' + acceptedCount + ' #' + symCount + ' ' + rate + '%'
@@ -1199,8 +1248,9 @@ export function resetReceiver() {
   // Reset debug counters
   state.frameCount = 0
   state.detectCount = 0
-  // Reset adaptive thresholds
+  // Reset adaptive thresholds and palette stats
   adaptiveThresholds.reset()
+  paletteStats.reset()
 
   if (elements) {
     showStatus('scanning')
