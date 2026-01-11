@@ -53,6 +53,34 @@ let elements = null
 // Error display (will be connected to global error banner)
 let showError = (msg) => console.error(msg)
 
+// Debug helpers
+let lastLoggedState = ''
+let logEntryCount = 0
+
+function debugStatus(text) {
+  const el = document.getElementById('debug-current')
+  if (el) el.textContent = text
+}
+
+function debugLog(text) {
+  // Only log if state changed significantly
+  if (text === lastLoggedState) return
+  lastLoggedState = text
+
+  const el = document.getElementById('debug-log')
+  if (el) {
+    logEntryCount++
+    const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    el.textContent += timestamp + ' ' + text + '\n'
+    // Keep only last 50 lines
+    const lines = el.textContent.split('\n')
+    if (lines.length > 50) {
+      el.textContent = lines.slice(-50).join('\n')
+    }
+    el.scrollTop = el.scrollHeight
+  }
+}
+
 // Utility: format bytes to human readable
 function formatBytes(bytes) {
   if (bytes < 1024) return bytes + ' B'
@@ -609,8 +637,7 @@ function scanFrame() {
       // BW mode: use grayscale QR decode directly
       if (grayResult) {
         showQROverlay(grayResult.location, video, offsetX, offsetY, size)
-        const dbg = document.getElementById('debug-line')
-        if (dbg) dbg.textContent = 'BW ok'
+        debugStatus('BW detected')
 
         try {
           const binary = atob(grayResult.data)
@@ -642,13 +669,11 @@ function scanFrame() {
             return
           }
         } catch (err) {
-          const dbg2 = document.getElementById('debug-line')
-          if (dbg2) dbg2.textContent = 'BW err'
+          debugStatus('BW decode error')
         }
       } else {
         elements.qrOverlay.style.display = 'none'
-        const dbg2 = document.getElementById('debug-line')
-        if (dbg2) dbg2.textContent = 'BW no'
+        debugStatus('BW no QR')
       }
     } else {
       // Color mode: require grayscale QR detection like experiments
@@ -660,11 +685,8 @@ function scanFrame() {
       if (!grayResult) {
         // No QR detected - skip frame, show detection rate
         elements.qrOverlay.style.display = 'none'
-        const dbg = document.getElementById('debug-line')
-        if (dbg) {
-          const rate = state.frameCount > 0 ? Math.round(100 * state.detectCount / state.frameCount) : 0
-          dbg.textContent = 'no QR ' + rate + '%'
-        }
+        const rate = state.frameCount > 0 ? Math.round(100 * state.detectCount / state.frameCount) : 0
+        debugStatus('no QR ' + rate + '%')
         state.animationId = requestAnimationFrame(scanFrame)
         return
       }
@@ -675,10 +697,6 @@ function scanFrame() {
       // Grayscale detection succeeded - use detected position
       const loc = grayResult.location
       showQROverlay(loc, video, offsetX, offsetY, size)
-
-      // Early debug - show we detected QR
-      const dbg = document.getElementById('debug-line')
-      if (dbg) dbg.textContent = 'detecting ' + rate + '%'
 
       const qrLeft = Math.min(loc.topLeftCorner.x, loc.bottomLeftCorner.x)
       const qrRight = Math.max(loc.topRightCorner.x, loc.bottomRightCorner.x)
@@ -712,7 +730,6 @@ function scanFrame() {
       const bSum = calibration.black[0] + calibration.black[1] + calibration.black[2]
       const modeName = effectiveMode === QR_MODE.PCCC ? 'CMY' : 'RGB'
       const calibType = sampledPalette ? 'P' : 'F'  // P=patch, F=finder
-      if (dbg) dbg.textContent = modeName + ' ' + calibType + ' W' + wSum + ' B' + bSum + ' ' + rate + '%'
 
       try {
         // Extract color channels using bounds and calibration
@@ -728,7 +745,10 @@ function scanFrame() {
         // Debug: show on-screen (visible on mobile)
         // Format: MODE CALIB_TYPE ch0ch1ch2 WHITE BLACK RATE
         const decoded = channelResults.map(r => r ? 1 : 0)
-        if (dbg) dbg.textContent = modeName + ' ' + calibType + ' ' + decoded.join('') + ' W' + wSum + ' B' + bSum + ' ' + rate + '%'
+        const statusText = modeName + ' ' + calibType + ' ' + decoded.join('') + ' W' + wSum + ' B' + bSum + ' ' + rate + '%'
+        debugStatus(statusText)
+        // Log significant state changes (not every frame)
+        debugLog(statusText)
 
         let anySuccess = false
 
