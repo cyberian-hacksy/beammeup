@@ -135,19 +135,21 @@ const PALETTE_PATCH_CONFIG = [
 // Adaptive thresholds for PCCC channel classification
 // These auto-adjust based on observed normalized values
 const adaptiveThresholds = {
-  r: 0.65,  // Initial Cyan threshold
-  g: 0.50,  // Initial Magenta threshold
-  b: 0.55,  // Initial Yellow threshold
+  r: 0.62,  // Initial Cyan threshold (higher due to red bias)
+  g: 0.52,  // Initial Magenta threshold
+  b: 0.52,  // Initial Yellow threshold
 
   // Running stats for adaptation (exponential moving average)
-  rRunningMin: 0.3, rRunningMax: 0.8,
-  gRunningMin: 0.3, gRunningMax: 0.7,
-  bRunningMin: 0.3, bRunningMax: 0.7,
+  // Initial values closer to observed reality for faster convergence
+  rRunningMin: 0.45, rRunningMax: 0.75,
+  gRunningMin: 0.40, gRunningMax: 0.65,
+  bRunningMin: 0.40, bRunningMax: 0.65,
   frameCount: 0,
 
   // Update thresholds based on observed min/max
   update(rMin, rMax, gMin, gMax, bMin, bMax) {
-    const alpha = 0.1  // Smoothing factor
+    // Use faster adaptation for first 20 frames, then slower for stability
+    const alpha = this.frameCount < 20 ? 0.4 : 0.15
 
     // Update running min/max with smoothing
     this.rRunningMin = alpha * rMin + (1 - alpha) * this.rRunningMin
@@ -171,29 +173,31 @@ const adaptiveThresholds = {
 
     this.frameCount++
 
-    // Log threshold changes (when any changes by 2+ points)
+    // Log threshold changes (when any changes by 1+ points)
     const tR = Math.round(this.r * 100)
     const tG = Math.round(this.g * 100)
     const tB = Math.round(this.b * 100)
-    if (Math.abs(tR - lastLoggedThresholds.r) >= 2 ||
-        Math.abs(tG - lastLoggedThresholds.g) >= 2 ||
-        Math.abs(tB - lastLoggedThresholds.b) >= 2) {
+    if (Math.abs(tR - lastLoggedThresholds.r) >= 1 ||
+        Math.abs(tG - lastLoggedThresholds.g) >= 1 ||
+        Math.abs(tB - lastLoggedThresholds.b) >= 1) {
       lastLoggedThresholds = { r: tR, g: tG, b: tB }
       // Log range info too for context
       const rngR = Math.round(this.rRunningMin * 100) + '-' + Math.round(this.rRunningMax * 100)
       const rngG = Math.round(this.gRunningMin * 100) + '-' + Math.round(this.gRunningMax * 100)
       const rngB = Math.round(this.bRunningMin * 100) + '-' + Math.round(this.bRunningMax * 100)
-      debugLog('>>> THRESH tR' + tR + ' tG' + tG + ' tB' + tB + ' | R:' + rngR + ' G:' + rngG + ' B:' + rngB)
+      debugLog('>>> THRESH #' + this.frameCount + ' tR' + tR + ' tG' + tG + ' tB' + tB + ' | R:' + rngR + ' G:' + rngG + ' B:' + rngB)
     }
   },
 
   reset() {
-    this.r = 0.65
-    this.g = 0.50
-    this.b = 0.55
-    this.rRunningMin = 0.3; this.rRunningMax = 0.8
-    this.gRunningMin = 0.3; this.gRunningMax = 0.7
-    this.bRunningMin = 0.3; this.bRunningMax = 0.7
+    // Initial thresholds based on typical camera bias
+    this.r = 0.62
+    this.g = 0.52
+    this.b = 0.52
+    // Initial running min/max closer to observed reality
+    this.rRunningMin = 0.45; this.rRunningMax = 0.75
+    this.gRunningMin = 0.40; this.gRunningMax = 0.65
+    this.bRunningMin = 0.40; this.bRunningMax = 0.65
     this.frameCount = 0
     lastLoggedThresholds = { r: 0, g: 0, b: 0 }
   }
