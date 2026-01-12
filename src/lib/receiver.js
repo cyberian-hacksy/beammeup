@@ -504,6 +504,12 @@ const paletteStats = {
       // Log White/Black used for normalization
       const w = palette[0], k = palette[7]
       debugLog('>>> CALIB W:' + w.join(',') + ' K:' + k.join(','))
+      // Log adaptive thresholds
+      const t = rgbAdaptiveThresholds
+      debugLog('>>> RGB-THRESH R:' + Math.round(t.r * 100) + ' G:' + Math.round(t.g * 100) + ' B:' + Math.round(t.b * 100) +
+               ' | R:' + Math.round(t.rMin * 100) + '-' + Math.round(t.rMax * 100) +
+               ' G:' + Math.round(t.gMin * 100) + '-' + Math.round(t.gMax * 100) +
+               ' B:' + Math.round(t.bMin * 100) + '-' + Math.round(t.bMax * 100))
     }
     this.lastPalette = palette
     this.frameCount++
@@ -515,9 +521,69 @@ const paletteStats = {
   }
 }
 
+// Adaptive thresholds for RGB/Palette mode (similar to CMY)
+const rgbAdaptiveThresholds = {
+  r: 0.50, g: 0.50, b: 0.50,
+  rMin: 0.3, rMax: 0.7,
+  gMin: 0.3, gMax: 0.7,
+  bMin: 0.3, bMax: 0.7,
+  frameCount: 0,
+
+  update(rMin, rMax, gMin, gMax, bMin, bMax) {
+    const alpha = this.frameCount < 20 ? 0.4 : 0.15
+    this.rMin = alpha * rMin + (1 - alpha) * this.rMin
+    this.rMax = alpha * rMax + (1 - alpha) * this.rMax
+    this.gMin = alpha * gMin + (1 - alpha) * this.gMin
+    this.gMax = alpha * gMax + (1 - alpha) * this.gMax
+    this.bMin = alpha * bMin + (1 - alpha) * this.bMin
+    this.bMax = alpha * bMax + (1 - alpha) * this.bMax
+
+    // Threshold at midpoint with slight bias
+    const bias = 0.50
+    this.r = this.rMin + (this.rMax - this.rMin) * bias
+    this.g = this.gMin + (this.gMax - this.gMin) * bias
+    this.b = this.bMin + (this.bMax - this.bMin) * bias
+
+    // Clamp to reasonable range
+    this.r = Math.max(0.3, Math.min(0.7, this.r))
+    this.g = Math.max(0.3, Math.min(0.7, this.g))
+    this.b = Math.max(0.3, Math.min(0.7, this.b))
+
+    this.frameCount++
+  },
+
+  reset() {
+    this.r = this.g = this.b = 0.50
+    this.rMin = this.gMin = this.bMin = 0.3
+    this.rMax = this.gMax = this.bMax = 0.7
+    this.frameCount = 0
+  }
+}
+
+// Track normalized RGB stats for adaptive thresholding
+const rgbNormStats = {
+  rMin: 1, rMax: 0, gMin: 1, gMax: 0, bMin: 1, bMax: 0, count: 0,
+  reset() {
+    this.rMin = this.gMin = this.bMin = 1
+    this.rMax = this.gMax = this.bMax = 0
+    this.count = 0
+  },
+  add(r, g, b) {
+    // Only track valid range (not clipped)
+    if (r > 0.1 && r < 0.9) { this.rMin = Math.min(this.rMin, r); this.rMax = Math.max(this.rMax, r) }
+    if (g > 0.1 && g < 0.9) { this.gMin = Math.min(this.gMin, g); this.gMax = Math.max(this.gMax, g) }
+    if (b > 0.1 && b < 0.9) { this.bMin = Math.min(this.bMin, b); this.bMax = Math.max(this.bMax, b) }
+    this.count++
+  },
+  updateAdaptive() {
+    if (this.count > 10) {
+      rgbAdaptiveThresholds.update(this.rMin, this.rMax, this.gMin, this.gMax, this.bMin, this.bMax)
+    }
+  }
+}
+
 // Classify RGB palette color for Palette mode
-// Uses White/Black from sampled palette (indices 0 and 7) for normalization
-// Then thresholds each channel independently at 0.5
+// Uses White/Black from sampled palette for normalization + adaptive thresholds
 function classifyPalette(r, g, b, sampledPalette, calibration, collectStats = false) {
   // Use White (index 0) and Black (index 7) from sampled palette for normalization
   const white = sampledPalette ? sampledPalette[0] : calibration.white
@@ -526,10 +592,15 @@ function classifyPalette(r, g, b, sampledPalette, calibration, collectStats = fa
   // Normalize each channel to 0-1 range (0 = black, 1 = white)
   const [normR, normG, normB] = normalizeRgb(r, g, b, white, black, true)
 
-  // Threshold at 0.5: below = dark (bit 1), above = light (bit 0)
-  const rBit = normR < 0.5 ? 1 : 0
-  const gBit = normG < 0.5 ? 1 : 0
-  const bBit = normB < 0.5 ? 1 : 0
+  // Collect stats for adaptive thresholding
+  if (collectStats) {
+    rgbNormStats.add(normR, normG, normB)
+  }
+
+  // Use adaptive thresholds: below = dark (bit 1), above = light (bit 0)
+  const rBit = normR < rgbAdaptiveThresholds.r ? 1 : 0
+  const gBit = normG < rgbAdaptiveThresholds.g ? 1 : 0
+  const bBit = normB < rgbAdaptiveThresholds.b ? 1 : 0
 
   // Track stats for debugging
   if (collectStats) {
@@ -550,6 +621,7 @@ function extractColorChannels(imageData, qrBounds, mode, calibration, sampledPal
   if (mode === QR_MODE.PCCC) {
     normStats.reset()
   } else if (mode === QR_MODE.PALETTE) {
+    rgbNormStats.reset()
     // Log palette periodically for debugging
     paletteStats.logPalette(sampledPalette)
   }
@@ -753,6 +825,7 @@ async function startScanning(deviceId) {
     state.smoothWhite = null
     state.smoothBlack = null
     adaptiveThresholds.reset()
+    rgbAdaptiveThresholds.reset()
     paletteStats.reset()
 
     showStatus('scanning')
@@ -835,6 +908,7 @@ function processPacket(bytes) {
     state.smoothWhite = null
     state.smoothBlack = null
     adaptiveThresholds.reset()
+    rgbAdaptiveThresholds.reset()
     paletteStats.reset()
     updateModeStatus()
     showStatus('scanning')
@@ -1027,6 +1101,8 @@ function scanFrame() {
         // Update adaptive thresholds based on observed normalized values
         if (effectiveMode === QR_MODE.PCCC) {
           normStats.updateAdaptive()
+        } else if (effectiveMode === QR_MODE.PALETTE) {
+          rgbNormStats.updateAdaptive()
         }
 
         // Decode each channel
@@ -1278,6 +1354,7 @@ export function resetReceiver() {
   state.detectCount = 0
   // Reset adaptive thresholds and palette stats
   adaptiveThresholds.reset()
+  rgbAdaptiveThresholds.reset()
   paletteStats.reset()
 
   if (elements) {
