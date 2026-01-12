@@ -324,66 +324,79 @@ function toGrayscale(imageData) {
 }
 
 // Scan for spatial mode (3 side-by-side B/W QR codes)
+// Uses multi-pass detection: find a QR, mask it, repeat
 // Returns array of up to 3 results, sorted by X position (left to right)
 function scanSpatialQRs(imageData) {
   const width = imageData.width
   const height = imageData.height
+  // Create a mutable copy of grayscale data for masking
   const grayData = toGrayscale(imageData)
   const results = []
 
-  // Split image into 3 overlapping regions for more reliable detection
-  // Each region is ~40% of width with 10% overlap to catch QRs at boundaries
-  const regionWidth = Math.floor(width * 0.4)
-  const positions = [0, Math.floor(width * 0.3), Math.floor(width * 0.6)]
+  // Multi-pass detection: find QRs one at a time, masking each found
+  for (let pass = 0; pass < SPATIAL_QR_COUNT; pass++) {
+    const qrResult = jsQR(grayData, width, height)
+    if (!qrResult) break
 
-  for (let i = 0; i < SPATIAL_QR_COUNT; i++) {
-    const regionX = positions[i]
-    const actualWidth = Math.min(regionWidth, width - regionX)
+    const loc = qrResult.location
+    const centerX = (loc.topLeftCorner.x + loc.topRightCorner.x) / 2
 
-    // Extract region from grayscale data
-    const regionData = new Uint8ClampedArray(actualWidth * height * 4)
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < actualWidth; x++) {
-        const srcIdx = (y * width + regionX + x) * 4
-        const dstIdx = (y * actualWidth + x) * 4
-        regionData[dstIdx] = grayData[srcIdx]
-        regionData[dstIdx + 1] = grayData[srcIdx + 1]
-        regionData[dstIdx + 2] = grayData[srcIdx + 2]
-        regionData[dstIdx + 3] = grayData[srcIdx + 3]
-      }
+    // Check if this is a duplicate (same position as previously found)
+    const isDupe = results.some(prev => Math.abs(prev.centerX - centerX) < width * 0.08)
+    if (isDupe) {
+      // Mask this area anyway to find others
+      maskQRRegion(grayData, width, height, loc)
+      continue
     }
 
-    const qrResult = jsQR(regionData, actualWidth, height)
-    if (qrResult) {
-      // Adjust location coordinates back to full image space
-      const adjustedLocation = {
-        topLeftCorner: { x: qrResult.location.topLeftCorner.x + regionX, y: qrResult.location.topLeftCorner.y },
-        topRightCorner: { x: qrResult.location.topRightCorner.x + regionX, y: qrResult.location.topRightCorner.y },
-        bottomLeftCorner: { x: qrResult.location.bottomLeftCorner.x + regionX, y: qrResult.location.bottomLeftCorner.y },
-        bottomRightCorner: { x: qrResult.location.bottomRightCorner.x + regionX, y: qrResult.location.bottomRightCorner.y }
-      }
-      results.push({
-        data: qrResult.data,
-        location: adjustedLocation,
-        regionIndex: i,
-        centerX: (adjustedLocation.topLeftCorner.x + adjustedLocation.topRightCorner.x) / 2
-      })
-    }
+    results.push({
+      data: qrResult.data,
+      location: loc,
+      centerX
+    })
+
+    // Mask the found QR region (paint white) so next pass finds a different one
+    maskQRRegion(grayData, width, height, loc)
   }
 
-  // Sort by X position (left to right) and deduplicate
+  // Sort by X position (left to right)
   results.sort((a, b) => a.centerX - b.centerX)
 
-  // Remove duplicates (same QR detected in overlapping regions)
-  const deduped = []
-  for (const result of results) {
-    const isDupe = deduped.some(prev => Math.abs(prev.centerX - result.centerX) < width * 0.1)
-    if (!isDupe) {
-      deduped.push(result)
+  return results
+}
+
+// Mask a QR code region by painting it white (255)
+// Uses the QR location corners with padding
+function maskQRRegion(grayData, width, height, location) {
+  const padding = 20 // Extra padding around QR
+
+  // Get bounding box from corners
+  const minX = Math.max(0, Math.floor(Math.min(
+    location.topLeftCorner.x,
+    location.bottomLeftCorner.x
+  )) - padding)
+  const maxX = Math.min(width - 1, Math.ceil(Math.max(
+    location.topRightCorner.x,
+    location.bottomRightCorner.x
+  )) + padding)
+  const minY = Math.max(0, Math.floor(Math.min(
+    location.topLeftCorner.y,
+    location.topRightCorner.y
+  )) - padding)
+  const maxY = Math.min(height - 1, Math.ceil(Math.max(
+    location.bottomLeftCorner.y,
+    location.bottomRightCorner.y
+  )) + padding)
+
+  // Paint the region white (255) in grayscale
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const idx = (y * width + x) * 4
+      grayData[idx] = 255
+      grayData[idx + 1] = 255
+      grayData[idx + 2] = 255
     }
   }
-
-  return deduped
 }
 
 // Sample color from center of a region (5x5 average)
