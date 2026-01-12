@@ -890,8 +890,9 @@ function scanFrame() {
     // Determine effective mode
     const effectiveMode = state.manualMode !== null ? state.manualMode : (state.detectedMode !== null ? state.detectedMode : QR_MODE.BW)
 
-    // Update positioning guide periodically (every 30 frames to avoid performance hit)
-    if (state.frameCount % 30 === 0 || state.frameCount === 0) {
+    // Update positioning guide for color modes
+    // Update frequently at first (every frame for first 10), then every 30 frames
+    if (state.frameCount < 10 || state.frameCount % 30 === 0) {
       updatePositionGuide(video, effectiveMode)
     }
 
@@ -1181,86 +1182,100 @@ function showQROverlay(location, video, cropOffsetX, cropOffsetY, cropSize) {
 
 // Update positioning guide overlay
 function updatePositionGuide(video, effectiveMode) {
-  if (!elements.positionGuide) return
+  if (!elements.positionGuide) {
+    console.log('Guide: no positionGuide element')
+    return
+  }
 
   // Only show guide for color modes (CMY/RGB) which need patch calibration
   const showGuide = effectiveMode === QR_MODE.PCCC || effectiveMode === QR_MODE.PALETTE
 
-  if (!showGuide || video.videoWidth === 0) {
+  if (!showGuide) {
     elements.positionGuide.style.display = 'none'
+    return
+  }
+
+  if (video.videoWidth === 0) {
+    console.log('Guide: video not ready, videoWidth=0')
     return
   }
 
   elements.positionGuide.style.display = 'block'
 
-  // Get video display dimensions
-  const videoRect = video.getBoundingClientRect()
-  const containerRect = video.parentElement.getBoundingClientRect()
-  const offsetX = videoRect.left - containerRect.left
-  const offsetY = videoRect.top - containerRect.top
-  const displayWidth = video.offsetWidth
-  const displayHeight = video.offsetHeight
+  // Get container dimensions directly
+  const container = video.parentElement
+  const containerWidth = container.offsetWidth
+  const containerHeight = container.offsetHeight
 
-  // Calculate cropped area (same as scanFrame logic)
-  const vw = video.videoWidth
-  const vh = video.videoHeight
-  const size = Math.min(vw, vh)
-  const cropOffsetX = (vw - size) / 2
-  const cropOffsetY = (vh - size) / 2
+  // Video is centered in container with object-fit behavior
+  // Calculate where the video actually appears
+  const videoAspect = video.videoWidth / video.videoHeight
+  const containerAspect = containerWidth / containerHeight
 
-  // Scale from video coordinates to display coordinates
-  const scaleX = displayWidth / vw
-  const scaleY = displayHeight / vh
+  let displayWidth, displayHeight, offsetX, offsetY
 
-  // The cropped square in display coordinates
-  const cropDisplayX = cropOffsetX * scaleX + offsetX
-  const cropDisplayY = cropOffsetY * scaleY + offsetY
-  const cropDisplaySize = size * Math.min(scaleX, scaleY)
+  if (videoAspect > containerAspect) {
+    // Video is wider - letterboxed top/bottom
+    displayWidth = containerWidth
+    displayHeight = containerWidth / videoAspect
+    offsetX = 0
+    offsetY = (containerHeight - displayHeight) / 2
+  } else {
+    // Video is taller - pillarboxed left/right
+    displayHeight = containerHeight
+    displayWidth = containerHeight * videoAspect
+    offsetX = (containerWidth - displayWidth) / 2
+    offsetY = 0
+  }
 
   // For RGB mode, we need ~15% margin on each side for patches
   // For CMY mode, less margin needed but still helpful
   const marginPercent = effectiveMode === QR_MODE.PALETTE ? 0.15 : 0.08
 
-  // Outer rectangle: full area including patches
-  const outerMargin = cropDisplaySize * 0.05  // 5% padding from edge
-  const outerX = cropDisplayX + outerMargin
-  const outerY = cropDisplayY + outerMargin
-  const outerSize = cropDisplaySize - 2 * outerMargin
+  // The guide should show where the QR + patches need to fit
+  // Outer rectangle: the entire visible area with some padding
+  const padding = Math.min(displayWidth, displayHeight) * 0.05
+  const outerX = offsetX + padding
+  const outerY = offsetY + padding
+  const outerWidth = displayWidth - 2 * padding
+  const outerHeight = displayHeight - 2 * padding
 
-  // Inner rectangle: where QR code should be (excluding patch margins)
-  const innerMargin = cropDisplaySize * marginPercent
-  const innerX = cropDisplayX + innerMargin + outerMargin
-  const innerY = cropDisplayY + innerMargin + outerMargin
-  const innerSize = cropDisplaySize - 2 * (marginPercent * cropDisplaySize) - 2 * outerMargin
+  // Inner rectangle: where QR code itself should be (leaving room for patches)
+  const innerPadding = Math.min(displayWidth, displayHeight) * marginPercent
+  const innerX = offsetX + padding + innerPadding
+  const innerY = offsetY + padding + innerPadding
+  const innerWidth = displayWidth - 2 * padding - 2 * innerPadding
+  const innerHeight = displayHeight - 2 * padding - 2 * innerPadding
 
-  // Update outer guide (where patches + QR should fit)
+  // Update outer guide (cyan dashed - where everything should fit)
   elements.guideOuter.setAttribute('x', outerX)
   elements.guideOuter.setAttribute('y', outerY)
-  elements.guideOuter.setAttribute('width', outerSize)
-  elements.guideOuter.setAttribute('height', outerSize)
+  elements.guideOuter.setAttribute('width', outerWidth)
+  elements.guideOuter.setAttribute('height', outerHeight)
 
-  // Update inner guide (where QR should be centered)
+  // Update inner guide (orange dashed - where QR should be)
   elements.guideInner.setAttribute('x', innerX)
   elements.guideInner.setAttribute('y', innerY)
-  elements.guideInner.setAttribute('width', innerSize)
-  elements.guideInner.setAttribute('height', innerSize)
+  elements.guideInner.setAttribute('width', innerWidth)
+  elements.guideInner.setAttribute('height', innerHeight)
 
-  // Update corner brackets (patch indicators)
-  const bracketSize = 20
+  // Update corner brackets (green - patch indicator corners)
   elements.bracketTL.setAttribute('transform', `translate(${outerX}, ${outerY})`)
-  elements.bracketTR.setAttribute('transform', `translate(${outerX + outerSize}, ${outerY})`)
-  elements.bracketBL.setAttribute('transform', `translate(${outerX}, ${outerY + outerSize})`)
-  elements.bracketBR.setAttribute('transform', `translate(${outerX + outerSize}, ${outerY + outerSize})`)
+  elements.bracketTR.setAttribute('transform', `translate(${outerX + outerWidth}, ${outerY})`)
+  elements.bracketBL.setAttribute('transform', `translate(${outerX}, ${outerY + outerHeight})`)
+  elements.bracketBR.setAttribute('transform', `translate(${outerX + outerWidth}, ${outerY + outerHeight})`)
 
   // Update label
-  elements.guideLabel.setAttribute('x', cropDisplayX + cropDisplaySize / 2)
-  elements.guideLabel.setAttribute('y', cropDisplayY + 20)
+  elements.guideLabel.setAttribute('x', offsetX + displayWidth / 2)
+  elements.guideLabel.setAttribute('y', offsetY + 25)
 
   // Update label text based on mode
   const labelText = effectiveMode === QR_MODE.PALETTE
     ? 'Keep patches visible in corners'
     : 'Center QR code in frame'
   elements.guideLabel.textContent = labelText
+
+  console.log('Guide updated:', { outerX, outerY, outerWidth, outerHeight, mode: effectiveMode })
 }
 
 // Update receiver statistics display
