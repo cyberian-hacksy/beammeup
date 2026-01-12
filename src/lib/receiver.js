@@ -501,6 +501,9 @@ const paletteStats = {
       // Log sampled palette colors periodically
       const colors = palette.map((c, i) => i + ':' + c.join(',')).join(' | ')
       debugLog('>>> PALETTE ' + colors)
+      // Log calculated thresholds
+      const thresh = calcPaletteThresholds(palette)
+      debugLog('>>> THRESH R:' + Math.round(thresh.rThresh) + ' G:' + Math.round(thresh.gThresh) + ' B:' + Math.round(thresh.bThresh))
     }
     this.lastPalette = palette
     this.frameCount++
@@ -512,58 +515,69 @@ const paletteStats = {
   }
 }
 
+// Calculate RGB thresholds from sampled palette for independent channel classification
+// Returns { rThresh, gThresh, bThresh } as midpoint between high/low values per channel
+function calcPaletteThresholds(palette) {
+  // Palette indices with high (0) vs low (1) bit for each channel:
+  // R bit: high (0) = indices 0,1,2,3; low (1) = indices 4,5,6,7
+  // G bit: high (0) = indices 0,1,4,5; low (1) = indices 2,3,6,7
+  // B bit: high (0) = indices 0,2,4,6; low (1) = indices 1,3,5,7
+
+  const rHigh = [0, 1, 2, 3].map(i => palette[i][0])
+  const rLow = [4, 5, 6, 7].map(i => palette[i][0])
+  const gHigh = [0, 1, 4, 5].map(i => palette[i][1])
+  const gLow = [2, 3, 6, 7].map(i => palette[i][1])
+  const bHigh = [0, 2, 4, 6].map(i => palette[i][2])
+  const bLow = [1, 3, 5, 7].map(i => palette[i][2])
+
+  const avg = arr => arr.reduce((a, b) => a + b, 0) / arr.length
+
+  return {
+    rThresh: (avg(rHigh) + avg(rLow)) / 2,
+    gThresh: (avg(gHigh) + avg(gLow)) / 2,
+    bThresh: (avg(bHigh) + avg(bLow)) / 2
+  }
+}
+
+// Cache for palette thresholds (recalculated when palette changes)
+let cachedPaletteThresholds = null
+let cachedPaletteKey = null
+
 // Classify RGB palette color for Palette mode
-// sampledPalette = actual sampled colors [0-255] from camera
-// If null, use calibration to normalize then compare to ideal palette
+// Uses independent channel thresholding instead of nearest-neighbor
+// This prevents colors from collapsing to White/Black extremes
 function classifyPalette(r, g, b, sampledPalette, calibration, collectStats = false) {
-  let minDist = Infinity
-  let minIndex = 0
+  let rBit, gBit, bBit
 
   if (sampledPalette) {
-    // HCC2D mode: compare directly against sampled palette colors
-    for (let i = 0; i < sampledPalette.length; i++) {
-      const [pr, pg, pb] = sampledPalette[i]
-      const dist = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
-      if (dist < minDist) {
-        minDist = dist
-        minIndex = i
-      }
+    // Calculate thresholds from sampled palette (cache for performance)
+    const paletteKey = sampledPalette.map(c => c.join(',')).join('|')
+    if (paletteKey !== cachedPaletteKey) {
+      cachedPaletteThresholds = calcPaletteThresholds(sampledPalette)
+      cachedPaletteKey = paletteKey
     }
+
+    const { rThresh, gThresh, bThresh } = cachedPaletteThresholds
+
+    // Independent channel thresholding: below threshold = dark (1), above = light (0)
+    rBit = r < rThresh ? 1 : 0
+    gBit = g < gThresh ? 1 : 0
+    bBit = b < bThresh ? 1 : 0
   } else {
-    // Fallback: normalize against white/black, compare to ideal palette
+    // Fallback: normalize against white/black and threshold at 0.5
     const [normR, normG, normB] = normalizeRgb(r, g, b, calibration.white, calibration.black, true)
-    // Ideal palette in [0-1] space
-    const idealPalette = [
-      [1, 1, 1],   // 0: White
-      [1, 1, 0],   // 1: Yellow
-      [1, 0, 1],   // 2: Magenta
-      [1, 0, 0],   // 3: Red
-      [0, 1, 1],   // 4: Cyan
-      [0, 1, 0],   // 5: Green
-      [0, 0, 1],   // 6: Blue
-      [0, 0, 0]    // 7: Black
-    ]
-    for (let i = 0; i < idealPalette.length; i++) {
-      const [pr, pg, pb] = idealPalette[i]
-      const dist = (normR - pr) ** 2 + (normG - pg) ** 2 + (normB - pb) ** 2
-      if (dist < minDist) {
-        minDist = dist
-        minIndex = i
-      }
-    }
+    rBit = normR < 0.5 ? 1 : 0
+    gBit = normG < 0.5 ? 1 : 0
+    bBit = normB < 0.5 ? 1 : 0
   }
 
   // Track stats for debugging
   if (collectStats) {
-    paletteStats.add(minIndex)
+    const index = rBit * 4 + gBit * 2 + bBit
+    paletteStats.add(index)
   }
 
-  // Extract RGB bits from palette index
-  return [
-    (minIndex >> 2) & 1,
-    (minIndex >> 1) & 1,
-    minIndex & 1
-  ]
+  return [rBit, gBit, bBit]
 }
 
 // Extract color channels from image and decode
