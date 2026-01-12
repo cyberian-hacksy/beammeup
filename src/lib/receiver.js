@@ -417,11 +417,19 @@ function samplePatchCalibration(pixels, imageSize, qrBounds) {
 
     // Validate palette: check that colors are sufficiently distinct
     // White (0) should be bright, Black (7) should be dark
-    const white = palette[0]
-    const black = palette[7]
+    let white = palette[0]
+    let black = palette[7]
     const red = palette[3]
-    const whiteBrightness = white[0] + white[1] + white[2]
-    const blackBrightness = black[0] + black[1] + black[2]
+    let whiteBrightness = white[0] + white[1] + white[2]
+    let blackBrightness = black[0] + black[1] + black[2]
+
+    // If black is brighter than white, swap them (lighting/exposure issue)
+    if (blackBrightness > whiteBrightness) {
+      const temp = white; white = black; black = temp
+      const tempB = whiteBrightness; whiteBrightness = blackBrightness; blackBrightness = tempB
+      palette[0] = white
+      palette[7] = black
+    }
 
     // Log sampled colors periodically for debugging
     if (paletteStats.frameCount % 50 === 0) {
@@ -430,19 +438,19 @@ function samplePatchCalibration(pixels, imageSize, qrBounds) {
                ' R:' + red.join(','), true)
     }
 
-    // White should be >400 (avg ~133), Black should be <350 (avg ~117)
-    // And white should be significantly brighter than black
-    if (whiteBrightness < 400 || blackBrightness > 350 || whiteBrightness - blackBrightness < 200) {
+    // Camera compresses dynamic range - white isn't 765, black isn't 0
+    // Relaxed thresholds: white > 350, black < 450, difference > 100
+    if (whiteBrightness < 350 || blackBrightness > 450 || whiteBrightness - blackBrightness < 100) {
       // Palette looks invalid - colors not distinct enough
       if (paletteStats.frameCount % 50 === 0) {
-        debugLog('>>> PATCH FAIL: brightness W' + whiteBrightness + ' K' + blackBrightness, true)
+        debugLog('>>> PATCH FAIL: brightness W' + whiteBrightness + ' K' + blackBrightness + ' diff' + (whiteBrightness - blackBrightness), true)
       }
       return null
     }
 
     // Check that at least some colors have distinct hues
-    // Red (3) should have high R, low G
-    if (red[0] < red[1] + 50) {
+    // Red (3) should have high R, low G - relaxed from +50 to +30
+    if (red[0] < red[1] + 30) {
       // Red doesn't look red
       if (paletteStats.frameCount % 50 === 0) {
         debugLog('>>> PATCH FAIL: red R' + red[0] + ' G' + red[1], true)
