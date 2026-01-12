@@ -274,6 +274,13 @@ function renderSymbolsColor(symbolIds) {
   if (state.mode === QR_MODE.PALETTE) {
     drawCalibrationPatches(ctx, canvasSize)
   }
+
+  // Draw visible border for positioning guide (color modes only)
+  // This helps the receiver know to keep the entire frame visible
+  const borderWidth = 3
+  ctx.strokeStyle = '#00d4ff'  // Cyan border
+  ctx.lineWidth = borderWidth
+  ctx.strokeRect(borderWidth / 2, borderWidth / 2, canvasSize - borderWidth, canvasSize - borderWidth)
 }
 
 // Render symbol(s) based on current mode

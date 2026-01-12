@@ -783,9 +783,6 @@ function stopScanning() {
 
   elements.video.srcObject = null
   elements.qrOverlay.style.display = 'none'
-  if (elements.positionGuide) {
-    elements.positionGuide.style.display = 'none'
-  }
 }
 
 // Switch camera
@@ -889,12 +886,6 @@ function scanFrame() {
 
     // Determine effective mode
     const effectiveMode = state.manualMode !== null ? state.manualMode : (state.detectedMode !== null ? state.detectedMode : QR_MODE.BW)
-
-    // Update positioning guide for color modes
-    // Update frequently at first (every frame for first 10), then every 30 frames
-    if (state.frameCount < 10 || state.frameCount % 30 === 0) {
-      updatePositionGuide(video, effectiveMode)
-    }
 
     // Convert to grayscale for QR detection (try both inversions for better detection)
     const grayData = toGrayscale(imageData)
@@ -1180,104 +1171,6 @@ function showQROverlay(location, video, cropOffsetX, cropOffsetY, cropSize) {
   svg.style.display = 'block'
 }
 
-// Update positioning guide overlay
-function updatePositionGuide(video, effectiveMode) {
-  if (!elements.positionGuide) {
-    console.log('Guide: no positionGuide element')
-    return
-  }
-
-  // Only show guide for color modes (CMY/RGB) which need patch calibration
-  const showGuide = effectiveMode === QR_MODE.PCCC || effectiveMode === QR_MODE.PALETTE
-
-  if (!showGuide) {
-    elements.positionGuide.style.display = 'none'
-    return
-  }
-
-  if (video.videoWidth === 0) {
-    console.log('Guide: video not ready, videoWidth=0')
-    return
-  }
-
-  elements.positionGuide.style.display = 'block'
-
-  // Get container dimensions directly
-  const container = video.parentElement
-  const containerWidth = container.offsetWidth
-  const containerHeight = container.offsetHeight
-
-  // Video is centered in container with object-fit behavior
-  // Calculate where the video actually appears
-  const videoAspect = video.videoWidth / video.videoHeight
-  const containerAspect = containerWidth / containerHeight
-
-  let displayWidth, displayHeight, offsetX, offsetY
-
-  if (videoAspect > containerAspect) {
-    // Video is wider - letterboxed top/bottom
-    displayWidth = containerWidth
-    displayHeight = containerWidth / videoAspect
-    offsetX = 0
-    offsetY = (containerHeight - displayHeight) / 2
-  } else {
-    // Video is taller - pillarboxed left/right
-    displayHeight = containerHeight
-    displayWidth = containerHeight * videoAspect
-    offsetX = (containerWidth - displayWidth) / 2
-    offsetY = 0
-  }
-
-  // For RGB mode, we need ~15% margin on each side for patches
-  // For CMY mode, less margin needed but still helpful
-  const marginPercent = effectiveMode === QR_MODE.PALETTE ? 0.15 : 0.08
-
-  // The guide should show where the QR + patches need to fit
-  // Outer rectangle: the entire visible area with some padding
-  const padding = Math.min(displayWidth, displayHeight) * 0.05
-  const outerX = offsetX + padding
-  const outerY = offsetY + padding
-  const outerWidth = displayWidth - 2 * padding
-  const outerHeight = displayHeight - 2 * padding
-
-  // Inner rectangle: where QR code itself should be (leaving room for patches)
-  const innerPadding = Math.min(displayWidth, displayHeight) * marginPercent
-  const innerX = offsetX + padding + innerPadding
-  const innerY = offsetY + padding + innerPadding
-  const innerWidth = displayWidth - 2 * padding - 2 * innerPadding
-  const innerHeight = displayHeight - 2 * padding - 2 * innerPadding
-
-  // Update outer guide (cyan dashed - where everything should fit)
-  elements.guideOuter.setAttribute('x', outerX)
-  elements.guideOuter.setAttribute('y', outerY)
-  elements.guideOuter.setAttribute('width', outerWidth)
-  elements.guideOuter.setAttribute('height', outerHeight)
-
-  // Update inner guide (orange dashed - where QR should be)
-  elements.guideInner.setAttribute('x', innerX)
-  elements.guideInner.setAttribute('y', innerY)
-  elements.guideInner.setAttribute('width', innerWidth)
-  elements.guideInner.setAttribute('height', innerHeight)
-
-  // Update corner brackets (green - patch indicator corners)
-  elements.bracketTL.setAttribute('transform', `translate(${outerX}, ${outerY})`)
-  elements.bracketTR.setAttribute('transform', `translate(${outerX + outerWidth}, ${outerY})`)
-  elements.bracketBL.setAttribute('transform', `translate(${outerX}, ${outerY + outerHeight})`)
-  elements.bracketBR.setAttribute('transform', `translate(${outerX + outerWidth}, ${outerY + outerHeight})`)
-
-  // Update label
-  elements.guideLabel.setAttribute('x', offsetX + displayWidth / 2)
-  elements.guideLabel.setAttribute('y', offsetY + 25)
-
-  // Update label text based on mode
-  const labelText = effectiveMode === QR_MODE.PALETTE
-    ? 'Keep patches visible in corners'
-    : 'Center QR code in frame'
-  elements.guideLabel.textContent = labelText
-
-  console.log('Guide updated:', { outerX, outerY, outerWidth, outerHeight, mode: effectiveMode })
-}
-
 // Update receiver statistics display
 function updateReceiverStats() {
   const decoder = state.decoder
@@ -1421,15 +1314,6 @@ export function initReceiver(errorHandler) {
     video: document.getElementById('camera-video'),
     qrOverlay: document.getElementById('qr-overlay'),
     qrPolygon: document.getElementById('qr-polygon'),
-    // Positioning guide elements
-    positionGuide: document.getElementById('position-guide'),
-    guideOuter: document.getElementById('guide-outer'),
-    guideInner: document.getElementById('guide-inner'),
-    bracketTL: document.getElementById('bracket-tl'),
-    bracketTR: document.getElementById('bracket-tr'),
-    bracketBL: document.getElementById('bracket-bl'),
-    bracketBR: document.getElementById('bracket-br'),
-    guideLabel: document.getElementById('guide-label'),
     statusScanning: document.getElementById('status-scanning'),
     statusReceiving: document.getElementById('status-receiving'),
     statusComplete: document.getElementById('status-complete'),
@@ -1468,11 +1352,6 @@ export function initReceiver(errorHandler) {
         state.manualMode = mode
       }
       updateModeStatus()
-      // Update positioning guide for new mode
-      if (elements.video && elements.video.videoWidth > 0) {
-        const effectiveMode = state.manualMode !== null ? state.manualMode : (state.detectedMode !== null ? state.detectedMode : QR_MODE.BW)
-        updatePositionGuide(elements.video, effectiveMode)
-      }
     }
   })
 }
