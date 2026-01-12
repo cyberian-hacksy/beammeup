@@ -1354,7 +1354,9 @@ export function initReceiver(errorHandler) {
     // Mode override elements
     modeStatus: document.getElementById('mode-status'),
     receiverModeButtons: document.querySelectorAll('#receiver-mode-selector .mode-btn'),
-    debugLine: document.getElementById('debug-line')
+    // Debug elements
+    btnCopyLog: document.getElementById('btn-copy-log'),
+    debugLog: document.getElementById('debug-log')
   }
 
   // Bind event handlers
@@ -1363,6 +1365,27 @@ export function initReceiver(errorHandler) {
   elements.btnDownload.onclick = downloadFile
   elements.btnReceiveAnother.onclick = restartReceiver
   elements.btnResetReceiver.onclick = restartReceiver
+  elements.btnCopyLog.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(elements.debugLog.textContent)
+      elements.btnCopyLog.textContent = 'Copied!'
+      setTimeout(() => { elements.btnCopyLog.textContent = 'Copy' }, 1500)
+    } catch (err) {
+      // Fallback for iOS
+      const text = elements.debugLog.textContent
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+      elements.btnCopyLog.textContent = 'Copied!'
+      setTimeout(() => { elements.btnCopyLog.textContent = 'Copy' }, 1500)
+    }
+  }
 
   // Mode override handlers
   elements.receiverModeButtons.forEach(btn => {
