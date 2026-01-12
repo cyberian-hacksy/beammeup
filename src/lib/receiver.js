@@ -419,27 +419,44 @@ function samplePatchCalibration(pixels, imageSize, qrBounds) {
     // White (0) should be bright, Black (7) should be dark
     const white = palette[0]
     const black = palette[7]
+    const red = palette[3]
     const whiteBrightness = white[0] + white[1] + white[2]
     const blackBrightness = black[0] + black[1] + black[2]
 
-    // White should be >500 (avg ~170), Black should be <300 (avg ~100)
+    // Log sampled colors periodically for debugging
+    if (paletteStats.frameCount % 50 === 0) {
+      debugLog('>>> SAMPLED W:' + white.join(',') + '=' + whiteBrightness +
+               ' K:' + black.join(',') + '=' + blackBrightness +
+               ' R:' + red.join(','), true)
+    }
+
+    // White should be >400 (avg ~133), Black should be <350 (avg ~117)
     // And white should be significantly brighter than black
     if (whiteBrightness < 400 || blackBrightness > 350 || whiteBrightness - blackBrightness < 200) {
       // Palette looks invalid - colors not distinct enough
+      if (paletteStats.frameCount % 50 === 0) {
+        debugLog('>>> PATCH FAIL: brightness W' + whiteBrightness + ' K' + blackBrightness, true)
+      }
       return null
     }
 
     // Check that at least some colors have distinct hues
     // Red (3) should have high R, low G
-    const red = palette[3]
     if (red[0] < red[1] + 50) {
       // Red doesn't look red
+      if (paletteStats.frameCount % 50 === 0) {
+        debugLog('>>> PATCH FAIL: red R' + red[0] + ' G' + red[1], true)
+      }
       return null
     }
 
     return palette
   }
 
+  // Not enough patches sampled
+  if (paletteStats.frameCount % 100 === 0) {
+    debugLog('>>> PATCH FAIL: only ' + successCount + '/8 patches', true)
+  }
   return null
 }
 
