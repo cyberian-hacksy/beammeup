@@ -386,6 +386,7 @@ function getPatchPositionInImage(corner, offset, qrBounds) {
 function samplePatchCalibration(pixels, imageSize, qrBounds) {
   const palette = new Array(8).fill(null)
   let successCount = 0
+  let debugPositions = []
 
   for (const patch of PALETTE_PATCH_CONFIG) {
     const pos = getPatchPositionInImage(patch.corner, patch.offset, qrBounds)
@@ -395,8 +396,15 @@ function samplePatchCalibration(pixels, imageSize, qrBounds) {
       if (color) {
         palette[patch.paletteIndex] = color
         successCount++
+        debugPositions.push(patch.corner + patch.offset + ':' + Math.round(pos.x) + ',' + Math.round(pos.y))
       }
     }
+  }
+
+  // Log patch positions periodically for debugging
+  if (paletteStats.frameCount % 100 === 0 && debugPositions.length > 0) {
+    const { qrLeft, qrTop, qrWidth, qrHeight } = qrBounds
+    debugLog('>>> PATCHPOS QR:' + Math.round(qrLeft) + ',' + Math.round(qrTop) + ' ' + Math.round(qrWidth) + 'x' + Math.round(qrHeight) + ' | ' + debugPositions.join(' '))
   }
 
   // Require at least 6 patches for patch-based calibration
@@ -406,6 +414,29 @@ function samplePatchCalibration(pixels, imageSize, qrBounds) {
         palette[i] = PALETTE_RGB[i]
       }
     }
+
+    // Validate palette: check that colors are sufficiently distinct
+    // White (0) should be bright, Black (7) should be dark
+    const white = palette[0]
+    const black = palette[7]
+    const whiteBrightness = white[0] + white[1] + white[2]
+    const blackBrightness = black[0] + black[1] + black[2]
+
+    // White should be >500 (avg ~170), Black should be <300 (avg ~100)
+    // And white should be significantly brighter than black
+    if (whiteBrightness < 400 || blackBrightness > 350 || whiteBrightness - blackBrightness < 200) {
+      // Palette looks invalid - colors not distinct enough
+      return null
+    }
+
+    // Check that at least some colors have distinct hues
+    // Red (3) should have high R, low G
+    const red = palette[3]
+    if (red[0] < red[1] + 50) {
+      // Red doesn't look red
+      return null
+    }
+
     return palette
   }
 
