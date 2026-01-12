@@ -783,6 +783,9 @@ function stopScanning() {
 
   elements.video.srcObject = null
   elements.qrOverlay.style.display = 'none'
+  if (elements.positionGuide) {
+    elements.positionGuide.style.display = 'none'
+  }
 }
 
 // Switch camera
@@ -886,6 +889,11 @@ function scanFrame() {
 
     // Determine effective mode
     const effectiveMode = state.manualMode !== null ? state.manualMode : (state.detectedMode !== null ? state.detectedMode : QR_MODE.BW)
+
+    // Update positioning guide periodically (every 30 frames to avoid performance hit)
+    if (state.frameCount % 30 === 0 || state.frameCount === 0) {
+      updatePositionGuide(video, effectiveMode)
+    }
 
     // Convert to grayscale for QR detection (try both inversions for better detection)
     const grayData = toGrayscale(imageData)
@@ -1171,6 +1179,90 @@ function showQROverlay(location, video, cropOffsetX, cropOffsetY, cropSize) {
   svg.style.display = 'block'
 }
 
+// Update positioning guide overlay
+function updatePositionGuide(video, effectiveMode) {
+  if (!elements.positionGuide) return
+
+  // Only show guide for color modes (CMY/RGB) which need patch calibration
+  const showGuide = effectiveMode === QR_MODE.PCCC || effectiveMode === QR_MODE.PALETTE
+
+  if (!showGuide || video.videoWidth === 0) {
+    elements.positionGuide.style.display = 'none'
+    return
+  }
+
+  elements.positionGuide.style.display = 'block'
+
+  // Get video display dimensions
+  const videoRect = video.getBoundingClientRect()
+  const containerRect = video.parentElement.getBoundingClientRect()
+  const offsetX = videoRect.left - containerRect.left
+  const offsetY = videoRect.top - containerRect.top
+  const displayWidth = video.offsetWidth
+  const displayHeight = video.offsetHeight
+
+  // Calculate cropped area (same as scanFrame logic)
+  const vw = video.videoWidth
+  const vh = video.videoHeight
+  const size = Math.min(vw, vh)
+  const cropOffsetX = (vw - size) / 2
+  const cropOffsetY = (vh - size) / 2
+
+  // Scale from video coordinates to display coordinates
+  const scaleX = displayWidth / vw
+  const scaleY = displayHeight / vh
+
+  // The cropped square in display coordinates
+  const cropDisplayX = cropOffsetX * scaleX + offsetX
+  const cropDisplayY = cropOffsetY * scaleY + offsetY
+  const cropDisplaySize = size * Math.min(scaleX, scaleY)
+
+  // For RGB mode, we need ~15% margin on each side for patches
+  // For CMY mode, less margin needed but still helpful
+  const marginPercent = effectiveMode === QR_MODE.PALETTE ? 0.15 : 0.08
+
+  // Outer rectangle: full area including patches
+  const outerMargin = cropDisplaySize * 0.05  // 5% padding from edge
+  const outerX = cropDisplayX + outerMargin
+  const outerY = cropDisplayY + outerMargin
+  const outerSize = cropDisplaySize - 2 * outerMargin
+
+  // Inner rectangle: where QR code should be (excluding patch margins)
+  const innerMargin = cropDisplaySize * marginPercent
+  const innerX = cropDisplayX + innerMargin + outerMargin
+  const innerY = cropDisplayY + innerMargin + outerMargin
+  const innerSize = cropDisplaySize - 2 * (marginPercent * cropDisplaySize) - 2 * outerMargin
+
+  // Update outer guide (where patches + QR should fit)
+  elements.guideOuter.setAttribute('x', outerX)
+  elements.guideOuter.setAttribute('y', outerY)
+  elements.guideOuter.setAttribute('width', outerSize)
+  elements.guideOuter.setAttribute('height', outerSize)
+
+  // Update inner guide (where QR should be centered)
+  elements.guideInner.setAttribute('x', innerX)
+  elements.guideInner.setAttribute('y', innerY)
+  elements.guideInner.setAttribute('width', innerSize)
+  elements.guideInner.setAttribute('height', innerSize)
+
+  // Update corner brackets (patch indicators)
+  const bracketSize = 20
+  elements.bracketTL.setAttribute('transform', `translate(${outerX}, ${outerY})`)
+  elements.bracketTR.setAttribute('transform', `translate(${outerX + outerSize}, ${outerY})`)
+  elements.bracketBL.setAttribute('transform', `translate(${outerX}, ${outerY + outerSize})`)
+  elements.bracketBR.setAttribute('transform', `translate(${outerX + outerSize}, ${outerY + outerSize})`)
+
+  // Update label
+  elements.guideLabel.setAttribute('x', cropDisplayX + cropDisplaySize / 2)
+  elements.guideLabel.setAttribute('y', cropDisplayY + 20)
+
+  // Update label text based on mode
+  const labelText = effectiveMode === QR_MODE.PALETTE
+    ? 'Keep patches visible in corners'
+    : 'Center QR code in frame'
+  elements.guideLabel.textContent = labelText
+}
+
 // Update receiver statistics display
 function updateReceiverStats() {
   const decoder = state.decoder
@@ -1314,6 +1406,15 @@ export function initReceiver(errorHandler) {
     video: document.getElementById('camera-video'),
     qrOverlay: document.getElementById('qr-overlay'),
     qrPolygon: document.getElementById('qr-polygon'),
+    // Positioning guide elements
+    positionGuide: document.getElementById('position-guide'),
+    guideOuter: document.getElementById('guide-outer'),
+    guideInner: document.getElementById('guide-inner'),
+    bracketTL: document.getElementById('bracket-tl'),
+    bracketTR: document.getElementById('bracket-tr'),
+    bracketBL: document.getElementById('bracket-bl'),
+    bracketBR: document.getElementById('bracket-br'),
+    guideLabel: document.getElementById('guide-label'),
     statusScanning: document.getElementById('status-scanning'),
     statusReceiving: document.getElementById('status-receiving'),
     statusComplete: document.getElementById('status-complete'),
@@ -1352,6 +1453,11 @@ export function initReceiver(errorHandler) {
         state.manualMode = mode
       }
       updateModeStatus()
+      // Update positioning guide for new mode
+      if (elements.video && elements.video.videoWidth > 0) {
+        const effectiveMode = state.manualMode !== null ? state.manualMode : (state.detectedMode !== null ? state.detectedMode : QR_MODE.BW)
+        updatePositionGuide(elements.video, effectiveMode)
+      }
     }
   })
 }
