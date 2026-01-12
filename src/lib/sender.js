@@ -1,6 +1,6 @@
 // Sender module - handles file encoding and QR display
 import qrcode from 'qrcode-generator'
-import { MAX_FILE_SIZE, METADATA_INTERVAL, DATA_PRESETS, SIZE_PRESETS, SPEED_PRESETS, QR_MODE, MODE_MARGINS, PATCH_SIZE, PATCH_GAP } from './constants.js'
+import { MAX_FILE_SIZE, METADATA_INTERVAL, DATA_PRESETS, SIZE_PRESETS, SPEED_PRESETS, QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
 import { createEncoder } from './encoder.js'
 
 // Sender state
@@ -100,44 +100,48 @@ function getQRModules(base64Data, eccLevel) {
   return { modules, count }
 }
 
-// Get patch position for Palette mode calibration (fixed pixel values like experiment)
-function getPatchPosition(corner, offset, canvasSize) {
+// Get patch position for Palette mode calibration (proportional to margin)
+function getPatchPosition(corner, offset, canvasSize, patchSize, patchGap) {
   switch (corner) {
     case 'TL':
       return {
-        x: PATCH_GAP + offset * (PATCH_SIZE + PATCH_GAP),
-        y: PATCH_GAP
+        x: patchGap + offset * (patchSize + patchGap),
+        y: patchGap
       }
     case 'TR':
       return {
-        x: canvasSize - PATCH_GAP - PATCH_SIZE - offset * (PATCH_SIZE + PATCH_GAP),
-        y: PATCH_GAP
+        x: canvasSize - patchGap - patchSize - offset * (patchSize + patchGap),
+        y: patchGap
       }
     case 'BL':
       return {
-        x: PATCH_GAP + offset * (PATCH_SIZE + PATCH_GAP),
-        y: canvasSize - PATCH_GAP - PATCH_SIZE
+        x: patchGap + offset * (patchSize + patchGap),
+        y: canvasSize - patchGap - patchSize
       }
     case 'BR':
       return {
-        x: canvasSize - PATCH_GAP - PATCH_SIZE - offset * (PATCH_SIZE + PATCH_GAP),
-        y: canvasSize - PATCH_GAP - PATCH_SIZE
+        x: canvasSize - patchGap - patchSize - offset * (patchSize + patchGap),
+        y: canvasSize - patchGap - patchSize
       }
   }
 }
 
 // Draw calibration patches for Palette mode
-function drawCalibrationPatches(ctx, canvasSize) {
+function drawCalibrationPatches(ctx, canvasSize, margin) {
+  // Calculate patch size and gap from margin (proportional sizing)
+  const patchSize = Math.round(margin * PATCH_SIZE_RATIO)
+  const patchGap = Math.round(margin * PATCH_GAP_RATIO)
+
   for (const patch of PALETTE_PATCH_CONFIG) {
-    const pos = getPatchPosition(patch.corner, patch.offset, canvasSize)
+    const pos = getPatchPosition(patch.corner, patch.offset, canvasSize, patchSize, patchGap)
     const color = PALETTE_RGB[patch.paletteIndex]
     ctx.fillStyle = 'rgb(' + color.join(',') + ')'
-    ctx.fillRect(pos.x, pos.y, PATCH_SIZE, PATCH_SIZE)
+    ctx.fillRect(pos.x, pos.y, patchSize, patchSize)
 
     // Add thin border for visibility
     ctx.strokeStyle = '#333'
     ctx.lineWidth = 1
-    ctx.strokeRect(pos.x, pos.y, PATCH_SIZE, PATCH_SIZE)
+    ctx.strokeRect(pos.x, pos.y, patchSize, patchSize)
   }
 }
 
@@ -215,7 +219,14 @@ function renderSymbolBW(symbolId) {
 function renderSymbolsColor(symbolIds) {
   const dataPreset = DATA_PRESETS[parseInt(elements.dataSlider.value)]
   const sizePreset = SIZE_PRESETS[parseInt(elements.sizeSlider.value)]
-  const margin = MODE_MARGINS[state.mode]  // Fixed pixel margin
+
+  // Size preset is canvas size, QR shrinks to fit margins
+  const canvasSize = sizePreset.size
+  const marginRatio = MODE_MARGIN_RATIOS[state.mode]
+  // Solve: canvasSize = qrSize + 2*margin, margin = qrSize * marginRatio
+  // canvasSize = qrSize * (1 + 2*marginRatio)
+  const qrSize = Math.round(canvasSize / (1 + 2 * marginRatio))
+  const margin = Math.round((canvasSize - qrSize) / 2)
 
   // Generate packets for all 3 channels
   const packets = symbolIds.map(id => state.encoder.generateSymbol(id))
@@ -224,10 +235,6 @@ function renderSymbolsColor(symbolIds) {
   // Get QR modules for each channel
   const qrModules = base64s.map(b64 => getQRModules(b64, dataPreset.ecc))
   const moduleCount = qrModules[0].count
-
-  // Size preset is QR size, canvas adds margins on top
-  const qrSize = sizePreset.size
-  const canvasSize = qrSize + margin * 2
   const cellSize = qrSize / moduleCount
 
   const canvas = elements.qrCanvas
@@ -272,7 +279,7 @@ function renderSymbolsColor(symbolIds) {
 
   // Draw calibration patches for Palette mode
   if (state.mode === QR_MODE.PALETTE) {
-    drawCalibrationPatches(ctx, canvasSize)
+    drawCalibrationPatches(ctx, canvasSize, margin)
   }
 
   // Draw visible border for positioning guide (color modes only)
@@ -519,6 +526,25 @@ function handleDataPresetChange() {
   }
 }
 
+// Apply mode-specific default settings
+function applyModeDefaults(mode) {
+  if (mode === QR_MODE.BW) {
+    // BW: max dense, largest, fastest
+    elements.dataSlider.value = 3
+    elements.sizeSlider.value = 2
+    elements.speedSlider.value = 2
+  } else {
+    // Color modes: least dense, largest, slowest
+    elements.dataSlider.value = 0
+    elements.sizeSlider.value = 2
+    elements.speedSlider.value = 0
+  }
+  // Update displays
+  handleDataPresetChange()
+  handleSizePresetChange()
+  handleSpeedPresetChange()
+}
+
 // Handle mode change
 function handleModeChange(newMode) {
   if (state.isSending) return // Don't change mode while sending
@@ -529,6 +555,9 @@ function handleModeChange(newMode) {
   elements.modeButtons.forEach(btn => {
     btn.classList.toggle('active', parseInt(btn.dataset.mode) === newMode)
   })
+
+  // Apply mode-specific defaults
+  applyModeDefaults(newMode)
 
   // Re-encode if file is loaded
   if (state.fileBuffer) {
@@ -609,6 +638,9 @@ export function initSender(errorHandler) {
   // Set initial state
   updateDropZoneState()
   updateActionButton()
+
+  // Apply mode-specific defaults for initial mode (BW)
+  applyModeDefaults(state.mode)
 
   // Bind event handlers
   elements.fileInput.onchange = handleFileSelect

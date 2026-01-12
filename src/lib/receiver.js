@@ -1,7 +1,7 @@
 // Receiver module - handles camera scanning and QR decoding
 import jsQR from 'jsqr'
 import { createDecoder } from './decoder.js'
-import { QR_MODE, MODE_MARGINS, PATCH_SIZE, PATCH_GAP } from './constants.js'
+import { QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
 import { calibrateFromFinders, normalizeRgb } from './calibration.js'
 
 // Receiver state
@@ -346,36 +346,34 @@ function sampleColor(pixels, width, centerX, centerY) {
   return [Math.round(rSum / count), Math.round(gSum / count), Math.round(bSum / count)]
 }
 
-// Get patch position in image based on QR bounds (matches experiment approach)
-// Uses fixed pixel values from sender, scaled relative to observed QR size
+// Get patch position in image based on QR bounds (matches sender's ratio-based approach)
+// Calculates margin, patch size, and gap from the detected QR size using the same ratios as sender
 function getPatchPositionInImage(corner, offset, qrBounds) {
   const { qrLeft, qrTop, qrWidth, qrHeight } = qrBounds
 
-  // Reference QR size for scaling (sender typically renders QR at ~320px when canvasSize=440)
-  const REFERENCE_QR_SIZE = 320
-
-  // Scale sender's fixed pixel values to image coordinates
-  const estimatedMargin = qrWidth * (MODE_MARGINS[QR_MODE.PALETTE] / REFERENCE_QR_SIZE)
-  const patchSizeImg = qrWidth * (PATCH_SIZE / REFERENCE_QR_SIZE)
-  const gapImg = qrWidth * (PATCH_GAP / REFERENCE_QR_SIZE)
+  // Use ratio-based sizing (matches sender)
+  // qrWidth corresponds to the QR code size, margin is calculated from that
+  const margin = qrWidth * MODE_MARGIN_RATIOS[QR_MODE.PALETTE]
+  const patchSize = margin * PATCH_SIZE_RATIO
+  const gap = margin * PATCH_GAP_RATIO
 
   let x, y
   switch (corner) {
     case 'TL':
-      x = qrLeft - estimatedMargin + gapImg + offset * (patchSizeImg + gapImg) + patchSizeImg / 2
-      y = qrTop - estimatedMargin + gapImg + patchSizeImg / 2
+      x = qrLeft - margin + gap + offset * (patchSize + gap) + patchSize / 2
+      y = qrTop - margin + gap + patchSize / 2
       break
     case 'TR':
-      x = qrLeft + qrWidth + estimatedMargin - gapImg - patchSizeImg / 2 - offset * (patchSizeImg + gapImg)
-      y = qrTop - estimatedMargin + gapImg + patchSizeImg / 2
+      x = qrLeft + qrWidth + margin - gap - patchSize / 2 - offset * (patchSize + gap)
+      y = qrTop - margin + gap + patchSize / 2
       break
     case 'BL':
-      x = qrLeft - estimatedMargin + gapImg + offset * (patchSizeImg + gapImg) + patchSizeImg / 2
-      y = qrTop + qrHeight + estimatedMargin - gapImg - patchSizeImg / 2
+      x = qrLeft - margin + gap + offset * (patchSize + gap) + patchSize / 2
+      y = qrTop + qrHeight + margin - gap - patchSize / 2
       break
     case 'BR':
-      x = qrLeft + qrWidth + estimatedMargin - gapImg - patchSizeImg / 2 - offset * (patchSizeImg + gapImg)
-      y = qrTop + qrHeight + estimatedMargin - gapImg - patchSizeImg / 2
+      x = qrLeft + qrWidth + margin - gap - patchSize / 2 - offset * (patchSize + gap)
+      y = qrTop + qrHeight + margin - gap - patchSize / 2
       break
   }
 

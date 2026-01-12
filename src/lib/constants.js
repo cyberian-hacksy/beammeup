@@ -8,16 +8,17 @@ export const QR_MODE = {
   PALETTE: 2   // Color RGB with HCC2D patch calibration
 }
 
-// Mode-specific margins (fixed pixel values like experiments)
-export const MODE_MARGINS = {
-  [QR_MODE.BW]: 4,       // Small quiet zone for BW
-  [QR_MODE.PCCC]: 10,    // 10px margin (matches pccc-finder experiment)
-  [QR_MODE.PALETTE]: 60  // 60px margin for calibration patches (matches palette-rgb experiment)
+// Mode-specific margins as ratio of QR size
+export const MODE_MARGIN_RATIOS = {
+  [QR_MODE.BW]: 0.0125,      // ~1.25% quiet zone for BW (4px for 320px QR)
+  [QR_MODE.PCCC]: 0.03,      // ~3% margin for CMY (10px for 320px QR)
+  [QR_MODE.PALETTE]: 0.1875  // ~19% margin for patches (60px for 320px QR)
 }
 
-// Palette mode patch configuration (fixed pixel values)
-export const PATCH_SIZE = 25  // 25px patches (matches experiment)
-export const PATCH_GAP = 5    // 5px gap between patches (matches experiment)
+// Palette mode patch configuration as ratios of margin
+// For 60px margin: patch=25px (42%), gap=5px (8%)
+export const PATCH_SIZE_RATIO = 0.42   // Patch size as ratio of margin
+export const PATCH_GAP_RATIO = 0.08    // Gap as ratio of margin
 export const BLOCK_SIZE = 200
 export const MAX_FILE_SIZE = 20 * 1024 * 1024 // 20MB
 export const METADATA_INTERVAL = 10
@@ -38,11 +39,11 @@ export const DEFAULT_DATA_PRESET = 1
 
 // Display size presets (QR container size in pixels)
 export const SIZE_PRESETS = [
-  { name: 'Small', size: 240 },
-  { name: 'Medium', size: 320 },
-  { name: 'Large', size: 400 }
+  { name: 'Small', size: 320 },
+  { name: 'Medium', size: 420 },
+  { name: 'Large', size: 520 }
 ]
-export const DEFAULT_SIZE_PRESET = 1
+export const DEFAULT_SIZE_PRESET = 2
 
 // Speed presets (frame interval in ms)
 export const SPEED_PRESETS = [
