@@ -7,12 +7,13 @@
 // Offset 13-14: Block size (2 bytes)
 // Offset 15:   Flags (1 byte)
 //              - bit 0: hasMetadata
-//              - bits 1-2: mode (00=BW, 01=PCCC, 10=Palette, 11=reserved)
-//              - bits 3-7: reserved
+//              - bits 1-2: mode (00=BW, 01=PCCC, 10=Palette, 11=Spatial)
+//              - bits 3-4: spatialPos (0-2 for spatial mode, 0 otherwise)
+//              - bits 5-7: reserved
 
 import { PROTOCOL_VERSION, QR_MODE } from './constants.js'
 
-export function createPacket(fileId, k, symbolId, payload, isMetadata = false, blockSize = 200, mode = QR_MODE.BW) {
+export function createPacket(fileId, k, symbolId, payload, isMetadata = false, blockSize = 200, mode = QR_MODE.BW, spatialPos = 0) {
   const header = new ArrayBuffer(16)
   const view = new DataView(header)
 
@@ -22,8 +23,8 @@ export function createPacket(fileId, k, symbolId, payload, isMetadata = false, b
   view.setUint32(9, symbolId, false)
   view.setUint16(13, blockSize, false)
 
-  // Flags: bit 0 = isMetadata, bits 1-2 = mode
-  const flags = (isMetadata ? 1 : 0) | ((mode & 0x03) << 1)
+  // Flags: bit 0 = isMetadata, bits 1-2 = mode, bits 3-4 = spatialPos
+  const flags = (isMetadata ? 1 : 0) | ((mode & 0x03) << 1) | ((spatialPos & 0x03) << 3)
   view.setUint8(15, flags)
 
   // Combine header and payload
@@ -54,6 +55,7 @@ export function parsePacket(data) {
     blockSize: view.getUint16(13, false),
     isMetadata: (flags & 1) === 1,
     mode: (flags >> 1) & 0x03,
+    spatialPos: (flags >> 3) & 0x03,
     payload: data.slice(16)
   }
 }
@@ -87,10 +89,18 @@ export function testPacketRoundtrip() {
     parsed3.mode === QR_MODE.PALETTE &&
     parsed3.blockSize === 300
 
-  const pass = pass1 && pass2 && pass3
+  // Test Spatial mode with position
+  const packet4 = createPacket(0xBEEFCAFE, 100, 50, payload, false, 200, QR_MODE.SPATIAL, 2)
+  const parsed4 = parsePacket(packet4)
+  const pass4 = parsed4 !== null &&
+    parsed4.mode === QR_MODE.SPATIAL &&
+    parsed4.spatialPos === 2
+
+  const pass = pass1 && pass2 && pass3 && pass4
   console.log('Packet roundtrip test:', pass ? 'PASS' : 'FAIL')
   console.log('  BW mode:', pass1 ? 'PASS' : 'FAIL')
   console.log('  PCCC mode:', pass2 ? 'PASS' : 'FAIL')
   console.log('  Palette mode:', pass3 ? 'PASS' : 'FAIL')
+  console.log('  Spatial mode:', pass4 ? 'PASS' : 'FAIL')
   return pass
 }

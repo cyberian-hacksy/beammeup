@@ -50,10 +50,11 @@ export function createEncoder(fileData, filename, mimeType, hash, blockSize = 20
     mode,           // QR mode (BW, PCCC, or Palette)
 
     // Generate symbol by ID
-    generateSymbol(symbolId) {
+    // spatialPos: 0, 1, or 2 for spatial mode (which QR in the trio)
+    generateSymbol(symbolId, spatialPos = 0) {
       if (symbolId === 0) {
         // Metadata frame (padded to BLOCK_SIZE)
-        return createPacket(fileId, K_prime, 0, metadataPayload, true, blockSize, mode)
+        return createPacket(fileId, K_prime, 0, metadataPayload, true, blockSize, mode, spatialPos)
       }
 
       // Seed PRNG with fileId XOR symbolId
@@ -90,7 +91,7 @@ export function createEncoder(fileData, filename, mimeType, hash, blockSize = 20
         }
       }
 
-      return createPacket(fileId, K_prime, symbolId, payload, false, blockSize, mode)
+      return createPacket(fileId, K_prime, symbolId, payload, false, blockSize, mode, spatialPos)
     }
   }
 }

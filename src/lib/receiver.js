@@ -1,7 +1,7 @@
 // Receiver module - handles camera scanning and QR decoding
 import jsQR from 'jsqr'
 import { createDecoder } from './decoder.js'
-import { QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
+import { QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO, SPATIAL_QR_COUNT } from './constants.js'
 import { calibrateFromFinders, normalizeRgb } from './calibration.js'
 
 // Receiver state
@@ -321,6 +321,69 @@ function toGrayscale(imageData) {
   }
 
   return gray
+}
+
+// Scan for spatial mode (3 side-by-side B/W QR codes)
+// Returns array of up to 3 results, sorted by X position (left to right)
+function scanSpatialQRs(imageData) {
+  const width = imageData.width
+  const height = imageData.height
+  const grayData = toGrayscale(imageData)
+  const results = []
+
+  // Split image into 3 overlapping regions for more reliable detection
+  // Each region is ~40% of width with 10% overlap to catch QRs at boundaries
+  const regionWidth = Math.floor(width * 0.4)
+  const positions = [0, Math.floor(width * 0.3), Math.floor(width * 0.6)]
+
+  for (let i = 0; i < SPATIAL_QR_COUNT; i++) {
+    const regionX = positions[i]
+    const actualWidth = Math.min(regionWidth, width - regionX)
+
+    // Extract region from grayscale data
+    const regionData = new Uint8ClampedArray(actualWidth * height * 4)
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < actualWidth; x++) {
+        const srcIdx = (y * width + regionX + x) * 4
+        const dstIdx = (y * actualWidth + x) * 4
+        regionData[dstIdx] = grayData[srcIdx]
+        regionData[dstIdx + 1] = grayData[srcIdx + 1]
+        regionData[dstIdx + 2] = grayData[srcIdx + 2]
+        regionData[dstIdx + 3] = grayData[srcIdx + 3]
+      }
+    }
+
+    const qrResult = jsQR(regionData, actualWidth, height)
+    if (qrResult) {
+      // Adjust location coordinates back to full image space
+      const adjustedLocation = {
+        topLeftCorner: { x: qrResult.location.topLeftCorner.x + regionX, y: qrResult.location.topLeftCorner.y },
+        topRightCorner: { x: qrResult.location.topRightCorner.x + regionX, y: qrResult.location.topRightCorner.y },
+        bottomLeftCorner: { x: qrResult.location.bottomLeftCorner.x + regionX, y: qrResult.location.bottomLeftCorner.y },
+        bottomRightCorner: { x: qrResult.location.bottomRightCorner.x + regionX, y: qrResult.location.bottomRightCorner.y }
+      }
+      results.push({
+        data: qrResult.data,
+        location: adjustedLocation,
+        regionIndex: i,
+        centerX: (adjustedLocation.topLeftCorner.x + adjustedLocation.topRightCorner.x) / 2
+      })
+    }
+  }
+
+  // Sort by X position (left to right) and deduplicate
+  results.sort((a, b) => a.centerX - b.centerX)
+
+  // Remove duplicates (same QR detected in overlapping regions)
+  const deduped = []
+  for (const result of results) {
+    const isDupe = deduped.some(prev => Math.abs(prev.centerX - result.centerX) < width * 0.1)
+    if (!isDupe) {
+      deduped.push(result)
+    }
+  }
+
+  return deduped
 }
 
 // Sample color from center of a region (5x5 average)
@@ -683,7 +746,7 @@ function updateModeStatus() {
   const effective = state.manualMode !== null ? state.manualMode : (state.detectedMode !== null ? state.detectedMode : QR_MODE.BW)
   state.effectiveMode = effective
 
-  const modeNames = ['BW', 'CMY', 'RGB']
+  const modeNames = ['BW', 'CMY', 'RGB', '3×BW']
 
   if (state.manualMode !== null) {
     elements.modeStatus.textContent = 'Manual: ' + modeNames[effective]
@@ -1003,6 +1066,75 @@ function scanFrame() {
       } else {
         elements.qrOverlay.style.display = 'none'
         debugStatus('BW no QR')
+      }
+    } else if (effectiveMode === QR_MODE.SPATIAL) {
+      // Spatial mode: detect 3 B/W QR codes side-by-side
+      state.frameCount++
+
+      const spatialResults = scanSpatialQRs(imageData)
+      const rate = state.frameCount > 0 ? Math.round(100 * state.detectCount / state.frameCount) : 0
+
+      if (spatialResults.length === 0) {
+        elements.qrOverlay.style.display = 'none'
+        debugStatus('3×BW no QR ' + rate + '%')
+        state.animationId = requestAnimationFrame(scanFrame)
+        return
+      }
+
+      state.detectCount++
+      let acceptedCount = 0
+      const symIds = []
+
+      // Show overlay for the first detected QR
+      if (spatialResults[0]) {
+        showQROverlay(spatialResults[0].location, video, offsetX, offsetY, size)
+      }
+
+      // Process each detected QR independently
+      for (const result of spatialResults) {
+        try {
+          const binary = atob(result.data)
+          const bytes = new Uint8Array(binary.length)
+          for (let j = 0; j < binary.length; j++) {
+            bytes[j] = binary.charCodeAt(j)
+          }
+
+          // Extract symbol ID from header for debugging
+          if (bytes.length >= 13) {
+            const symId = (bytes[9] << 24) | (bytes[10] << 16) | (bytes[11] << 8) | bytes[12]
+            symIds.push(symId >>> 0)
+          }
+
+          // Auto-detect mode from first packet (check for SPATIAL flag)
+          if (state.detectedMode === null && bytes.length >= 16) {
+            const flags = bytes[15]
+            const packetMode = (flags >> 1) & 0x03
+            if (packetMode === QR_MODE.SPATIAL) {
+              state.detectedMode = packetMode
+              updateModeStatus()
+            }
+          }
+
+          const accepted = processPacket(bytes)
+          if (accepted) acceptedCount++
+        } catch (err) {
+          // Individual QR decode error, continue with others
+        }
+      }
+
+      const symCount = state.decoder.uniqueSymbols || 0
+      const symIdStr = symIds.length > 0 ? symIds.join('/') : '-'
+      const statusText = '3×BW ' + spatialResults.length + '/3 [' + symIdStr + '] +' + acceptedCount + ' #' + symCount + ' ' + rate + '%'
+      debugStatus(statusText)
+      debugLog(statusText)
+
+      if (acceptedCount > 0) {
+        updateReceiverStats()
+
+        if (state.decoder.isComplete()) {
+          onReceiveComplete()
+          return
+        }
       }
     } else {
       // Color mode: require grayscale QR detection like experiments

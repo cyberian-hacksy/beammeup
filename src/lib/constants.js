@@ -5,15 +5,21 @@ export const PROTOCOL_VERSION = 0x01
 export const QR_MODE = {
   BW: 0,       // Standard black/white QR
   PCCC: 1,     // Color CMY with finder calibration
-  PALETTE: 2   // Color RGB with HCC2D patch calibration
+  PALETTE: 2,  // Color RGB with HCC2D patch calibration
+  SPATIAL: 3   // 3x B/W QR codes side-by-side
 }
 
 // Mode-specific margins as ratio of QR size
 export const MODE_MARGIN_RATIOS = {
   [QR_MODE.BW]: 0.0125,      // ~1.25% quiet zone for BW (4px for 320px QR)
   [QR_MODE.PCCC]: 0.03,      // ~3% margin for CMY (10px for 320px QR)
-  [QR_MODE.PALETTE]: 0.1875  // ~19% margin for patches (60px for 320px QR)
+  [QR_MODE.PALETTE]: 0.1875, // ~19% margin for patches (60px for 320px QR)
+  [QR_MODE.SPATIAL]: 0.02    // ~2% margin between QRs for spatial mode
 }
+
+// Spatial mode configuration
+export const SPATIAL_QR_COUNT = 3    // Number of QR codes side-by-side
+export const SPATIAL_GAP_RATIO = 0.02 // Gap between QRs as ratio of canvas width
 
 // Palette mode patch configuration as ratios of margin
 // For 60px margin: patch=25px (42%), gap=5px (8%)

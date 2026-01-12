@@ -1,6 +1,7 @@
 // Sender module - handles file encoding and QR display
 import qrcode from 'qrcode-generator'
-import { MAX_FILE_SIZE, METADATA_INTERVAL, DATA_PRESETS, SIZE_PRESETS, SPEED_PRESETS, QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
+import { MAX_FILE_SIZE, METADATA_INTERVAL, DATA_PRESETS, SIZE_PRESETS, SPEED_PRESETS, QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO, SPATIAL_QR_COUNT, SPATIAL_GAP_RATIO } from './constants.js'
+import { createPacket } from './packet.js'
 import { createEncoder } from './encoder.js'
 
 // Sender state
@@ -215,6 +216,63 @@ function renderSymbolBW(symbolId) {
   }
 }
 
+// Render 3 symbols as 3 B/W QR codes side-by-side (Spatial mode)
+function renderSymbolsSpatial(symbolIds) {
+  const dataPreset = DATA_PRESETS[parseInt(elements.dataSlider.value)]
+  const sizePreset = SIZE_PRESETS[parseInt(elements.sizeSlider.value)]
+
+  const canvasSize = sizePreset.size
+  const gap = Math.round(canvasSize * SPATIAL_GAP_RATIO)
+
+  // Calculate individual QR size: (canvasSize - 4*gap) / 3
+  // Layout: gap | QR | gap | QR | gap | QR | gap
+  const qrSize = Math.floor((canvasSize - gap * (SPATIAL_QR_COUNT + 1)) / SPATIAL_QR_COUNT)
+
+  const canvas = elements.qrCanvas
+  canvas.width = canvasSize
+  canvas.height = qrSize + gap * 2  // Height is single QR height + top/bottom gaps
+  canvas.style.display = 'block'
+  elements.qrPlaceholder.style.display = 'none'
+
+  const ctx = canvas.getContext('2d')
+
+  // White background
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, canvasSize, canvas.height)
+
+  // Generate and render each QR
+  for (let i = 0; i < SPATIAL_QR_COUNT; i++) {
+    const symbolId = symbolIds[i]
+    const packet = state.encoder.generateSymbol(symbolId, i)  // Pass spatialPos
+    const base64 = btoa(String.fromCharCode.apply(null, packet))
+
+    const qr = qrcode(0, dataPreset.ecc)
+    qr.addData(base64)
+    qr.make()
+
+    const moduleCount = qr.getModuleCount()
+    const cellSize = qrSize / moduleCount
+
+    const xOffset = gap + i * (qrSize + gap)
+    const yOffset = gap
+
+    ctx.fillStyle = '#000000'
+    for (let row = 0; row < moduleCount; row++) {
+      for (let col = 0; col < moduleCount; col++) {
+        if (qr.isDark(row, col)) {
+          ctx.fillRect(xOffset + col * cellSize, yOffset + row * cellSize, cellSize, cellSize)
+        }
+      }
+    }
+  }
+
+  // Draw visible border for positioning guide
+  const borderWidth = 3
+  ctx.strokeStyle = '#00d4ff'
+  ctx.lineWidth = borderWidth
+  ctx.strokeRect(borderWidth / 2, borderWidth / 2, canvasSize - borderWidth, canvas.height - borderWidth)
+}
+
 // Render 3 symbols as color QR (PCCC or Palette mode)
 function renderSymbolsColor(symbolIds) {
   const dataPreset = DATA_PRESETS[parseInt(elements.dataSlider.value)]
@@ -294,6 +352,13 @@ function renderSymbolsColor(symbolIds) {
 function renderSymbol(symbolId) {
   if (state.mode === QR_MODE.BW) {
     renderSymbolBW(symbolId)
+  } else if (state.mode === QR_MODE.SPATIAL) {
+    // Spatial mode: 3 B/W QRs side-by-side
+    if (symbolId === 0) {
+      renderSymbolsSpatial([0, 0, 0])
+    } else {
+      renderSymbolsSpatial([symbolId, symbolId + 1, symbolId + 2])
+    }
   } else {
     // Color modes: symbolId is actually the first of 3 symbol IDs
     // or for metadata, all 3 channels carry the same symbolId (0)
@@ -444,8 +509,7 @@ async function processFile(file) {
     state.isSending = false
 
     const K = state.encoder.K
-    const modeLabel = state.mode === QR_MODE.BW ? '' : (state.mode === QR_MODE.PCCC ? ' CMY' : ' RGB')
-    elements.fileInfo.textContent = file.name + ' (' + formatBytes(file.size) + ', ' + K + ' blocks' + modeLabel + ')'
+    elements.fileInfo.textContent = file.name + ' (' + formatBytes(file.size) + ', ' + K + ' blocks' + getModeLabel(state.mode) + ')'
 
     updateDropZoneState()
     updateActionButton()
@@ -520,19 +584,30 @@ function handleDataPresetChange() {
     )
     state.symbolId = 1
     state.frameCount = 0
-    const modeLabel = state.mode === QR_MODE.BW ? '' : (state.mode === QR_MODE.PCCC ? ' CMY' : ' RGB')
-    elements.fileInfo.textContent = state.fileName + ' (' + formatBytes(state.fileBuffer.byteLength) + ', ' + state.encoder.K + ' blocks' + modeLabel + ')'
+    elements.fileInfo.textContent = state.fileName + ' (' + formatBytes(state.fileBuffer.byteLength) + ', ' + state.encoder.K + ' blocks' + getModeLabel(state.mode) + ')'
     renderSymbol(0)
+  }
+}
+
+// Get mode label for display
+function getModeLabel(mode) {
+  switch (mode) {
+    case QR_MODE.BW: return ''
+    case QR_MODE.PCCC: return ' CMY'
+    case QR_MODE.PALETTE: return ' RGB'
+    case QR_MODE.SPATIAL: return ' 3×BW'
+    default: return ''
   }
 }
 
 // Apply mode-specific default settings
 function applyModeDefaults(mode) {
-  if (mode === QR_MODE.BW) {
-    // BW: max dense, largest, fastest
-    elements.dataSlider.value = 3
+  if (mode === QR_MODE.BW || mode === QR_MODE.SPATIAL) {
+    // BW and Spatial: use B/W QRs, can handle more data
+    // Spatial: slightly lower density since individual QRs are smaller
+    elements.dataSlider.value = mode === QR_MODE.SPATIAL ? 1 : 3
     elements.sizeSlider.value = 2
-    elements.speedSlider.value = 2
+    elements.speedSlider.value = mode === QR_MODE.SPATIAL ? 1 : 2
   } else {
     // Color modes: least dense, largest, slowest
     elements.dataSlider.value = 0
@@ -573,8 +648,7 @@ function handleModeChange(newMode) {
     )
     state.symbolId = 1
     state.frameCount = 0
-    const modeLabel = state.mode === QR_MODE.BW ? '' : (state.mode === QR_MODE.PCCC ? ' CMY' : ' RGB')
-    elements.fileInfo.textContent = state.fileName + ' (' + formatBytes(state.fileBuffer.byteLength) + ', ' + state.encoder.K + ' blocks' + modeLabel + ')'
+    elements.fileInfo.textContent = state.fileName + ' (' + formatBytes(state.fileBuffer.byteLength) + ', ' + state.encoder.K + ' blocks' + getModeLabel(state.mode) + ')'
     renderSymbol(0)
   }
 }
