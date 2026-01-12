@@ -501,9 +501,9 @@ const paletteStats = {
       // Log sampled palette colors periodically
       const colors = palette.map((c, i) => i + ':' + c.join(',')).join(' | ')
       debugLog('>>> PALETTE ' + colors)
-      // Log calculated thresholds
-      const thresh = calcPaletteThresholds(palette)
-      debugLog('>>> THRESH R:' + Math.round(thresh.rThresh) + ' G:' + Math.round(thresh.gThresh) + ' B:' + Math.round(thresh.bThresh))
+      // Log White/Black used for normalization
+      const w = palette[0], k = palette[7]
+      debugLog('>>> CALIB W:' + w.join(',') + ' K:' + k.join(','))
     }
     this.lastPalette = palette
     this.frameCount++
@@ -515,61 +515,21 @@ const paletteStats = {
   }
 }
 
-// Calculate RGB thresholds from sampled palette for independent channel classification
-// Returns { rThresh, gThresh, bThresh } as midpoint between high/low values per channel
-function calcPaletteThresholds(palette) {
-  // Palette indices with high (0) vs low (1) bit for each channel:
-  // R bit: high (0) = indices 0,1,2,3; low (1) = indices 4,5,6,7
-  // G bit: high (0) = indices 0,1,4,5; low (1) = indices 2,3,6,7
-  // B bit: high (0) = indices 0,2,4,6; low (1) = indices 1,3,5,7
-
-  const rHigh = [0, 1, 2, 3].map(i => palette[i][0])
-  const rLow = [4, 5, 6, 7].map(i => palette[i][0])
-  const gHigh = [0, 1, 4, 5].map(i => palette[i][1])
-  const gLow = [2, 3, 6, 7].map(i => palette[i][1])
-  const bHigh = [0, 2, 4, 6].map(i => palette[i][2])
-  const bLow = [1, 3, 5, 7].map(i => palette[i][2])
-
-  const avg = arr => arr.reduce((a, b) => a + b, 0) / arr.length
-
-  return {
-    rThresh: (avg(rHigh) + avg(rLow)) / 2,
-    gThresh: (avg(gHigh) + avg(gLow)) / 2,
-    bThresh: (avg(bHigh) + avg(bLow)) / 2
-  }
-}
-
-// Cache for palette thresholds (recalculated when palette changes)
-let cachedPaletteThresholds = null
-let cachedPaletteKey = null
-
 // Classify RGB palette color for Palette mode
-// Uses independent channel thresholding instead of nearest-neighbor
-// This prevents colors from collapsing to White/Black extremes
+// Uses White/Black from sampled palette (indices 0 and 7) for normalization
+// Then thresholds each channel independently at 0.5
 function classifyPalette(r, g, b, sampledPalette, calibration, collectStats = false) {
-  let rBit, gBit, bBit
+  // Use White (index 0) and Black (index 7) from sampled palette for normalization
+  const white = sampledPalette ? sampledPalette[0] : calibration.white
+  const black = sampledPalette ? sampledPalette[7] : calibration.black
 
-  if (sampledPalette) {
-    // Calculate thresholds from sampled palette (cache for performance)
-    const paletteKey = sampledPalette.map(c => c.join(',')).join('|')
-    if (paletteKey !== cachedPaletteKey) {
-      cachedPaletteThresholds = calcPaletteThresholds(sampledPalette)
-      cachedPaletteKey = paletteKey
-    }
+  // Normalize each channel to 0-1 range (0 = black, 1 = white)
+  const [normR, normG, normB] = normalizeRgb(r, g, b, white, black, true)
 
-    const { rThresh, gThresh, bThresh } = cachedPaletteThresholds
-
-    // Independent channel thresholding: below threshold = dark (1), above = light (0)
-    rBit = r < rThresh ? 1 : 0
-    gBit = g < gThresh ? 1 : 0
-    bBit = b < bThresh ? 1 : 0
-  } else {
-    // Fallback: normalize against white/black and threshold at 0.5
-    const [normR, normG, normB] = normalizeRgb(r, g, b, calibration.white, calibration.black, true)
-    rBit = normR < 0.5 ? 1 : 0
-    gBit = normG < 0.5 ? 1 : 0
-    bBit = normB < 0.5 ? 1 : 0
-  }
+  // Threshold at 0.5: below = dark (bit 1), above = light (bit 0)
+  const rBit = normR < 0.5 ? 1 : 0
+  const gBit = normG < 0.5 ? 1 : 0
+  const bBit = normB < 0.5 ? 1 : 0
 
   // Track stats for debugging
   if (collectStats) {
