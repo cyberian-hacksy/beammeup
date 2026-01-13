@@ -240,6 +240,8 @@ function stopSending() {
 
   elements.canvas.style.display = 'none'
   elements.placeholder.style.display = 'flex'
+  elements.placeholderIcon.textContent = '+'
+  elements.placeholderText.textContent = 'Drop file here or tap to select'
   elements.fileInfo.textContent = 'No file'
   elements.estimate.textContent = ''
   elements.fileInput.value = ''
@@ -287,6 +289,10 @@ async function processFile(file) {
 
     elements.fileInfo.textContent = file.name + ' (' + formatBytes(file.size) + ')'
     elements.estimate.textContent = estimateTime()
+
+    // Update placeholder to show file is ready
+    elements.placeholderIcon.textContent = '✓'
+    elements.placeholderText.textContent = 'File ready, click Start'
 
     updateDropZoneState()
     updateActionButton()
@@ -364,6 +370,8 @@ export function initCimbarSender(errorHandler) {
     fileInput: document.getElementById('cimbar-file-input'),
     container: document.getElementById('cimbar-container'),
     placeholder: document.getElementById('cimbar-placeholder'),
+    placeholderIcon: document.getElementById('cimbar-placeholder-icon'),
+    placeholderText: document.getElementById('cimbar-placeholder-text'),
     canvas: document.getElementById('cimbar-canvas'),
     loading: document.getElementById('cimbar-loading'),
     sizeSlider: document.getElementById('cimbar-size-slider'),
