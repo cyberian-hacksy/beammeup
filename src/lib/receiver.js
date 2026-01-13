@@ -3,6 +3,7 @@ import jsQR from 'jsqr'
 import { createDecoder } from './decoder.js'
 import { QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
 import { calibrateFromFinders, normalizeRgb } from './calibration.js'
+import { ColorQRDecoder } from './color-decoder.js'
 
 // Receiver state
 const state = {
@@ -30,7 +31,9 @@ const state = {
   detectCount: 0,
   // Calibration smoothing
   smoothWhite: null,       // Smoothed white reference [r,g,b]
-  smoothBlack: null        // Smoothed black reference [r,g,b]
+  smoothBlack: null,       // Smoothed black reference [r,g,b]
+  // New libcimbar-based color decoder
+  colorDecoder: null
 }
 
 // Audio feedback helper
@@ -1005,9 +1008,8 @@ function scanFrame() {
         debugStatus('BW no QR')
       }
     } else {
-      // Color mode: require grayscale QR detection like experiments
-      // Finder patterns are preserved as B/W, so jsQR can locate even color frames
-      // If detection fails, skip this frame and wait for next
+      // Color mode: use new libcimbar-based decoder
+      // Applies: relative colors, color correction, drift tracking, priority decoding
 
       state.frameCount++
 
@@ -1027,98 +1029,30 @@ function scanFrame() {
       const loc = grayResult.location
       showQROverlay(loc, video, offsetX, offsetY, size)
 
-      const qrLeft = Math.min(loc.topLeftCorner.x, loc.bottomLeftCorner.x)
-      const qrRight = Math.max(loc.topRightCorner.x, loc.bottomRightCorner.x)
-      const qrTop = Math.min(loc.topLeftCorner.y, loc.topRightCorner.y)
-      const qrBottom = Math.max(loc.bottomLeftCorner.y, loc.bottomRightCorner.y)
-      const qrBounds = {
-        qrLeft,
-        qrTop,
-        qrWidth: qrRight - qrLeft,
-        qrHeight: qrBottom - qrTop
-      }
-
-      // Get calibration from detected position
-      let calibration = calibrateFromFinders(loc, imageData)
-      let sampledPalette = null
-
-      if (effectiveMode === QR_MODE.PALETTE) {
-        sampledPalette = samplePatchCalibration(imageData.data, size, qrBounds)
-        if (sampledPalette) {
-          calibration = { white: sampledPalette[0], black: sampledPalette[7] }
-        }
-      }
-
-      // Fallback calibration if needed
-      if (!calibration) {
-        calibration = { white: [255, 255, 255], black: [0, 0, 0] }
-      }
-
-      // Sanity check: white must be brighter than black
-      // If inverted (common with finder pattern sampling issues), swap them
-      let wSum = calibration.white[0] + calibration.white[1] + calibration.white[2]
-      let bSum = calibration.black[0] + calibration.black[1] + calibration.black[2]
-      let swapped = false
-      if (wSum < bSum) {
-        // Swap white and black
-        const temp = calibration.white
-        calibration.white = calibration.black
-        calibration.black = temp
-        const tempSum = wSum
-        wSum = bSum
-        bSum = tempSum
-        swapped = true
-      }
-
-      // Apply temporal smoothing to calibration (exponential moving average)
-      // This stabilizes the calibration across frames
-      const alpha = 0.3  // Smoothing factor: 0.3 = 30% new, 70% old
-      if (state.smoothWhite === null) {
-        // First frame - initialize
-        state.smoothWhite = [...calibration.white]
-        state.smoothBlack = [...calibration.black]
-      } else {
-        // Blend with previous values
-        for (let i = 0; i < 3; i++) {
-          state.smoothWhite[i] = Math.round(alpha * calibration.white[i] + (1 - alpha) * state.smoothWhite[i])
-          state.smoothBlack[i] = Math.round(alpha * calibration.black[i] + (1 - alpha) * state.smoothBlack[i])
-        }
-      }
-      // Use smoothed calibration
-      calibration.white = state.smoothWhite
-      calibration.black = state.smoothBlack
-      wSum = calibration.white[0] + calibration.white[1] + calibration.white[2]
-      bSum = calibration.black[0] + calibration.black[1] + calibration.black[2]
-
-      // Show calibration info
       const modeName = effectiveMode === QR_MODE.PCCC ? 'CMY' : 'RGB'
-      const calibType = (sampledPalette ? 'P' : 'F') + (swapped ? '!' : '')  // ! = was swapped
 
       try {
-        // Extract color channels using bounds and calibration
-        const channels = extractColorChannels(imageData, qrBounds, effectiveMode, calibration, sampledPalette)
-
-        // Update adaptive thresholds based on observed normalized values
-        if (effectiveMode === QR_MODE.PCCC) {
-          normStats.updateAdaptive()
-        } else if (effectiveMode === QR_MODE.PALETTE) {
-          rgbNormStats.updateAdaptive()
+        // Initialize color decoder if needed
+        if (!state.colorDecoder) {
+          state.colorDecoder = new ColorQRDecoder()
         }
 
-        // Decode each channel
+        // Decode using new libcimbar-based pipeline
+        const decoded = state.colorDecoder.decode(imageData, loc)
+
+        // Decode each channel with jsQR
         const channelResults = [
-          jsQR(channels.ch0, channels.size, channels.size),
-          jsQR(channels.ch1, channels.size, channels.size),
-          jsQR(channels.ch2, channels.size, channels.size)
+          jsQR(decoded.channels.ch0, decoded.channels.size, decoded.channels.size),
+          jsQR(decoded.channels.ch1, decoded.channels.size, decoded.channels.size),
+          jsQR(decoded.channels.ch2, decoded.channels.size, decoded.channels.size)
         ]
 
-        // Debug: show on-screen (visible on mobile)
-        // Format: MODE CALIB_TYPE ch0ch1ch2 WHITE BLACK RATE
-        const decoded = channelResults.map(r => r ? 1 : 0)
+        // Track which channels decoded successfully
+        const channelBits = channelResults.map(r => r ? 1 : 0)
         let acceptedCount = 0
 
         // Process any successful channel decodes
-        const symIds = []  // Track symbol IDs from each channel
+        const symIds = []
         for (let i = 0; i < channelResults.length; i++) {
           const chResult = channelResults[i]
           if (chResult) {
@@ -1132,7 +1066,7 @@ function scanFrame() {
               // Extract symbol ID from header (bytes 9-12, big-endian)
               if (bytes.length >= 13) {
                 const symId = (bytes[9] << 24) | (bytes[10] << 16) | (bytes[11] << 8) | bytes[12]
-                symIds.push(symId >>> 0)  // Convert to unsigned
+                symIds.push(symId >>> 0)
               }
 
               // Auto-detect mode from first packet
@@ -1151,37 +1085,13 @@ function scanFrame() {
           }
         }
 
-        // Show status with symbol IDs decoded
+        // Show status with new decoder stats
         const symCount = state.decoder.uniqueSymbols || 0
         const symIdStr = symIds.length > 0 ? symIds.join('/') : '-'
+        const conf = Math.round(decoded.stats.avgConfidence * 100)
+        const drift = decoded.stats.avgDrift.toFixed(1)
 
-        // Add normalized RGB stats and adaptive thresholds for CMY mode debugging
-        let statsStr = ''
-        if (effectiveMode === QR_MODE.PCCC) {
-          const stats = normStats.getStats()
-          if (stats) {
-            // Show average normalized values (0-100 scale for readability)
-            const rAvg = Math.round(stats.rAvg * 100)
-            const gAvg = Math.round(stats.gAvg * 100)
-            const bAvg = Math.round(stats.bAvg * 100)
-            // Show current adaptive thresholds
-            const tR = Math.round(adaptiveThresholds.r * 100)
-            const tG = Math.round(adaptiveThresholds.g * 100)
-            const tB = Math.round(adaptiveThresholds.b * 100)
-            statsStr = ' R' + rAvg + '/' + tR + ' G' + gAvg + '/' + tG + ' B' + bAvg + '/' + tB
-          }
-        } else if (effectiveMode === QR_MODE.PALETTE) {
-          // Show palette classification distribution (which indices are being used)
-          const dist = paletteStats.getDistribution()
-          if (dist) {
-            // Find top 3 most used indices
-            const sorted = dist.map((v, i) => ({ i, v })).sort((a, b) => b.v - a.v)
-            const top = sorted.slice(0, 3).filter(x => x.v > 0)
-            statsStr = ' [' + top.map(x => x.i + ':' + x.v + '%').join(' ') + ']'
-          }
-        }
-
-        const statusText = modeName + ' ' + calibType + ' ' + decoded.join('') + statsStr + ' [' + symIdStr + '] +' + acceptedCount + ' #' + symCount + ' ' + rate + '%'
+        const statusText = `${modeName} ${channelBits.join('')} conf:${conf}% drift:${drift} [${symIdStr}] +${acceptedCount} #${symCount} ${rate}%`
         debugStatus(statusText)
         debugLog(statusText)
 
@@ -1195,6 +1105,7 @@ function scanFrame() {
         }
       } catch (err) {
         console.log('Color decode error:', err.message)
+        debugStatus(`${modeName} error: ${err.message}`)
       }
     }
   }
@@ -1356,6 +1267,10 @@ export function resetReceiver() {
   adaptiveThresholds.reset()
   rgbAdaptiveThresholds.reset()
   paletteStats.reset()
+  // Reset color decoder
+  if (state.colorDecoder) {
+    state.colorDecoder.reset()
+  }
 
   if (elements) {
     showStatus('scanning')
