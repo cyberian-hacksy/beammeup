@@ -1,7 +1,7 @@
 // Receiver module - handles camera scanning and QR decoding
 import jsQR from 'jsqr'
 import { createDecoder } from './decoder.js'
-import { QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO, SPATIAL_QR_COUNT } from './constants.js'
+import { QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
 import { calibrateFromFinders, normalizeRgb } from './calibration.js'
 
 // Receiver state
@@ -321,82 +321,6 @@ function toGrayscale(imageData) {
   }
 
   return gray
-}
-
-// Scan for spatial mode (3 side-by-side B/W QR codes)
-// Uses multi-pass detection: find a QR, mask it, repeat
-// Returns array of up to 3 results, sorted by X position (left to right)
-function scanSpatialQRs(imageData) {
-  const width = imageData.width
-  const height = imageData.height
-  // Create a mutable copy of grayscale data for masking
-  const grayData = toGrayscale(imageData)
-  const results = []
-
-  // Multi-pass detection: find QRs one at a time, masking each found
-  for (let pass = 0; pass < SPATIAL_QR_COUNT; pass++) {
-    const qrResult = jsQR(grayData, width, height)
-    if (!qrResult) break
-
-    const loc = qrResult.location
-    const centerX = (loc.topLeftCorner.x + loc.topRightCorner.x) / 2
-
-    // Check if this is a duplicate (same position as previously found)
-    const isDupe = results.some(prev => Math.abs(prev.centerX - centerX) < width * 0.08)
-    if (isDupe) {
-      // Mask this area anyway to find others
-      maskQRRegion(grayData, width, height, loc)
-      continue
-    }
-
-    results.push({
-      data: qrResult.data,
-      location: loc,
-      centerX
-    })
-
-    // Mask the found QR region (paint white) so next pass finds a different one
-    maskQRRegion(grayData, width, height, loc)
-  }
-
-  // Sort by X position (left to right)
-  results.sort((a, b) => a.centerX - b.centerX)
-
-  return results
-}
-
-// Mask a QR code region by painting it white (255)
-// Uses the QR location corners with padding
-function maskQRRegion(grayData, width, height, location) {
-  const padding = 20 // Extra padding around QR
-
-  // Get bounding box from corners
-  const minX = Math.max(0, Math.floor(Math.min(
-    location.topLeftCorner.x,
-    location.bottomLeftCorner.x
-  )) - padding)
-  const maxX = Math.min(width - 1, Math.ceil(Math.max(
-    location.topRightCorner.x,
-    location.bottomRightCorner.x
-  )) + padding)
-  const minY = Math.max(0, Math.floor(Math.min(
-    location.topLeftCorner.y,
-    location.topRightCorner.y
-  )) - padding)
-  const maxY = Math.min(height - 1, Math.ceil(Math.max(
-    location.bottomLeftCorner.y,
-    location.bottomRightCorner.y
-  )) + padding)
-
-  // Paint the region white (255) in grayscale
-  for (let y = minY; y <= maxY; y++) {
-    for (let x = minX; x <= maxX; x++) {
-      const idx = (y * width + x) * 4
-      grayData[idx] = 255
-      grayData[idx + 1] = 255
-      grayData[idx + 2] = 255
-    }
-  }
 }
 
 // Sample color from center of a region (5x5 average)
@@ -759,7 +683,7 @@ function updateModeStatus() {
   const effective = state.manualMode !== null ? state.manualMode : (state.detectedMode !== null ? state.detectedMode : QR_MODE.BW)
   state.effectiveMode = effective
 
-  const modeNames = ['BW', 'CMY', 'RGB', '3×BW']
+  const modeNames = ['BW', 'CMY', 'RGB']
 
   if (state.manualMode !== null) {
     elements.modeStatus.textContent = 'Manual: ' + modeNames[effective]
@@ -1079,75 +1003,6 @@ function scanFrame() {
       } else {
         elements.qrOverlay.style.display = 'none'
         debugStatus('BW no QR')
-      }
-    } else if (effectiveMode === QR_MODE.SPATIAL) {
-      // Spatial mode: detect 3 B/W QR codes side-by-side
-      state.frameCount++
-
-      const spatialResults = scanSpatialQRs(imageData)
-      const rate = state.frameCount > 0 ? Math.round(100 * state.detectCount / state.frameCount) : 0
-
-      if (spatialResults.length === 0) {
-        elements.qrOverlay.style.display = 'none'
-        debugStatus('3×BW no QR ' + rate + '%')
-        state.animationId = requestAnimationFrame(scanFrame)
-        return
-      }
-
-      state.detectCount++
-      let acceptedCount = 0
-      const symIds = []
-
-      // Show overlay for the first detected QR
-      if (spatialResults[0]) {
-        showQROverlay(spatialResults[0].location, video, offsetX, offsetY, size)
-      }
-
-      // Process each detected QR independently
-      for (const result of spatialResults) {
-        try {
-          const binary = atob(result.data)
-          const bytes = new Uint8Array(binary.length)
-          for (let j = 0; j < binary.length; j++) {
-            bytes[j] = binary.charCodeAt(j)
-          }
-
-          // Extract symbol ID from header for debugging
-          if (bytes.length >= 13) {
-            const symId = (bytes[9] << 24) | (bytes[10] << 16) | (bytes[11] << 8) | bytes[12]
-            symIds.push(symId >>> 0)
-          }
-
-          // Auto-detect mode from first packet (check for SPATIAL flag)
-          if (state.detectedMode === null && bytes.length >= 16) {
-            const flags = bytes[15]
-            const packetMode = (flags >> 1) & 0x03
-            if (packetMode === QR_MODE.SPATIAL) {
-              state.detectedMode = packetMode
-              updateModeStatus()
-            }
-          }
-
-          const accepted = processPacket(bytes)
-          if (accepted) acceptedCount++
-        } catch (err) {
-          // Individual QR decode error, continue with others
-        }
-      }
-
-      const symCount = state.decoder.uniqueSymbols || 0
-      const symIdStr = symIds.length > 0 ? symIds.join('/') : '-'
-      const statusText = '3×BW ' + spatialResults.length + '/3 [' + symIdStr + '] +' + acceptedCount + ' #' + symCount + ' ' + rate + '%'
-      debugStatus(statusText)
-      debugLog(statusText)
-
-      if (acceptedCount > 0) {
-        updateReceiverStats()
-
-        if (state.decoder.isComplete()) {
-          onReceiveComplete()
-          return
-        }
       }
     } else {
       // Color mode: require grayscale QR detection like experiments
