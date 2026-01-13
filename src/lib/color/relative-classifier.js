@@ -98,6 +98,30 @@ export class RelativeColorClassifier {
       }
     }
 
+    // Check for neutral colors (R≈G≈B) - classify by brightness, not chromaticity
+    const maxChannel = Math.max(r, g, b)
+    const minChannel = Math.min(r, g, b)
+    const channelSpread = maxChannel - minChannel
+
+    // If channel spread is small (<25), this is neutral - classify by brightness
+    if (channelSpread < 25) {
+      if (brightness < 128) {
+        return {
+          bits: [1, 1, 1],
+          confidence: 0.7,
+          colorIndex: 7,
+          colorName: 'black (neutral)'
+        }
+      } else {
+        return {
+          bits: [0, 0, 0],
+          confidence: 0.7,
+          colorIndex: 0,
+          colorName: 'white (neutral)'
+        }
+      }
+    }
+
     // For chromatic colors, compute relative tuple and find nearest match
     const rel = this.toRelative(r, g, b)
     const relNorm = this.normalizeRelative(rel)
