@@ -110,7 +110,8 @@ export class ColorCorrector {
     ]
 
     // Clamp scale to avoid over-amplification
-    this.scale = this.scale.map(s => Math.min(s, 3.0))
+    // Max 1.5 to preserve color relationships
+    this.scale = this.scale.map(s => Math.min(s, 1.5))
 
     this.mode = 'diagonal'
   }
