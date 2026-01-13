@@ -116,7 +116,7 @@ if (!compat.compatible) {
 
 // ============ TEST SUITE ============
 async function runAllTests() {
-  console.log('=== QRIOSITY TEST SUITE ===')
+  console.log('=== BEAM ME UP TEST SUITE ===')
 
   const results = {
     prng: testPRNG(),

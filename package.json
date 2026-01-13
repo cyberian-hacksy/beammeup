@@ -1,7 +1,7 @@
 {
-  "name": "qriosity",
+  "name": "beammeup",
   "version": "1.0.0",
-  "description": "Air-gapped QR code file transfer system",
+  "description": "Air-gapped file transfer - beam files between devices using light and sound",
   "type": "module",
   "scripts": {
     "dev": "vite",
