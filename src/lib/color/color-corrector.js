@@ -92,12 +92,25 @@ export class ColorCorrector {
     // Calculate scale and offset per channel
     // corrected = (observed - black) * scale
     // where scale = (whiteExp - blackExp) / (white - black)
-    this.offset = [...black]
-    this.scale = [
-      (whiteExp[0] - blackExp[0]) / Math.max(1, white[0] - black[0]),
-      (whiteExp[1] - blackExp[1]) / Math.max(1, white[1] - black[1]),
-      (whiteExp[2] - blackExp[2]) / Math.max(1, white[2] - black[2])
+
+    // Clamp black offset to avoid clipping mid-tone colors
+    // Black reference should be < 80 typically
+    this.offset = [
+      Math.min(black[0], 60),
+      Math.min(black[1], 60),
+      Math.min(black[2], 60)
     ]
+
+    // Calculate scale with clamped offset
+    const effectiveBlack = this.offset
+    this.scale = [
+      (whiteExp[0] - blackExp[0]) / Math.max(50, white[0] - effectiveBlack[0]),
+      (whiteExp[1] - blackExp[1]) / Math.max(50, white[1] - effectiveBlack[1]),
+      (whiteExp[2] - blackExp[2]) / Math.max(50, white[2] - effectiveBlack[2])
+    ]
+
+    // Clamp scale to avoid over-amplification
+    this.scale = this.scale.map(s => Math.min(s, 3.0))
 
     this.mode = 'diagonal'
   }
