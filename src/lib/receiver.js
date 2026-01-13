@@ -1040,17 +1040,24 @@ function scanFrame() {
         // Decode using new libcimbar-based pipeline
         const decoded = state.colorDecoder.decode(imageData, loc)
 
-        // Debug: log channel image info
-        if (state.frameCount % 30 === 1) {
-          console.log(`[Receiver] channel image size: ${decoded.channels.size}x${decoded.channels.size}, buffer length: ${decoded.channels.ch0.length}`)
-          // Sample a few pixels to verify channel content
-          const checkPixel = (ch, x, y) => {
-            const idx = (y * decoded.channels.size + x) * 4
-            return ch[idx]
+        // Debug: log color decoder stats to on-screen panel
+        if (state.frameCount % 10 === 1) {
+          const stats = decoded.stats
+          const dist = stats.colorDistribution || []
+          debugLog(`>>> COLOR v${state.colorDecoder.grid?.version || '?'} conf:${(stats.avgConfidence * 100).toFixed(0)}% drift:${stats.avgDrift.toFixed(1)} fail:${stats.failedCount}`)
+          debugLog(`>>> DIST W:${dist[0]||0} C:${dist[1]||0} M:${dist[2]||0} Y:${dist[3]||0} B:${dist[4]||0} G:${dist[5]||0} R:${dist[6]||0} K:${dist[7]||0}`)
+
+          // Check channel black pixel ratios
+          const countBlack = (ch) => {
+            let count = 0
+            for (let i = 0; i < ch.length; i += 4) if (ch[i] === 0) count++
+            return count
           }
-          // Check center and corner pixels
-          const mid = Math.floor(decoded.channels.size / 2)
-          console.log(`[Receiver] ch0 samples: center=${checkPixel(decoded.channels.ch0, mid, mid)}, corner=${checkPixel(decoded.channels.ch0, 10, 10)}`)
+          const total = decoded.channels.size * decoded.channels.size
+          const b0 = countBlack(decoded.channels.ch0)
+          const b1 = countBlack(decoded.channels.ch1)
+          const b2 = countBlack(decoded.channels.ch2)
+          debugLog(`>>> CH-BLK ch0:${(100*b0/total).toFixed(0)}% ch1:${(100*b1/total).toFixed(0)}% ch2:${(100*b2/total).toFixed(0)}%`)
         }
 
         // Decode each channel with jsQR

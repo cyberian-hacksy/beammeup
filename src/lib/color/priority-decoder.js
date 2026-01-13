@@ -49,10 +49,6 @@ export class PriorityDecoder {
 
     // Phase 1: Seed with modules adjacent to finder patterns
     this.seedFromFinderPatterns()
-    console.log(`[PriorityDecoder] seeded ${this.queue.length} modules from finder patterns`)
-
-    // Debug: log first few module samples
-    let debugSamples = []
 
     // Phase 2: Process queue in priority order
     while (this.queue.length > 0) {
@@ -78,17 +74,6 @@ export class PriorityDecoder {
       if (result) {
         this.results.set(key, result)
 
-        // Collect debug samples for first 10 modules
-        if (debugSamples.length < 10 && result.sampledRGB && result.correctedRGB) {
-          debugSamples.push({
-            pos: `${row},${col}`,
-            sampled: result.sampledRGB,
-            corrected: result.correctedRGB,
-            color: result.colorName,
-            conf: result.confidence
-          })
-        }
-
         // Propagate drift to neighbors if confident
         if (result.confidence > 0.6) {
           this.drift.propagateToNeighbors(row, col)
@@ -107,14 +92,6 @@ export class PriorityDecoder {
 
     // Phase 3: Handle any remaining unvisited modules
     this.processRemaining(imageData)
-
-    // Debug: log sample classifications
-    if (debugSamples.length > 0) {
-      console.log('[PriorityDecoder] sample classifications:')
-      for (const s of debugSamples) {
-        console.log(`  ${s.pos}: sampled=[${s.sampled.join(',')}] corrected=[${s.corrected.map(v => v.toFixed(0)).join(',')}] => ${s.color} (${(s.conf * 100).toFixed(0)}%)`)
-      }
-    }
 
     return this.results
   }
@@ -160,6 +137,8 @@ export class PriorityDecoder {
     for (const [row, col] of finderAdjacent) {
       this.addToQueue(row, col, 100)
     }
+
+    this.seededCount = this.queue.length
   }
 
   /**
@@ -300,16 +279,6 @@ export class PriorityDecoder {
         ch2[idx] = ch2[idx + 1] = ch2[idx + 2] = g2; ch2[idx + 3] = 255
       }
     }
-
-    // Debug: count black/white pixels in each channel
-    let ch0Black = 0, ch1Black = 0, ch2Black = 0
-    for (let i = 0; i < ch0.length; i += 4) {
-      if (ch0[i] === 0) ch0Black++
-      if (ch1[i] === 0) ch1Black++
-      if (ch2[i] === 0) ch2Black++
-    }
-    const totalPixels = width * height
-    console.log(`[PriorityDecoder] channel black pixels: ch0=${ch0Black}/${totalPixels} (${(100*ch0Black/totalPixels).toFixed(1)}%), ch1=${ch1Black}/${totalPixels} (${(100*ch1Black/totalPixels).toFixed(1)}%), ch2=${ch2Black}/${totalPixels} (${(100*ch2Black/totalPixels).toFixed(1)}%)`)
 
     return { ch0, ch1, ch2, size: width }
   }

@@ -67,16 +67,6 @@ export class ColorQRDecoder {
     )
 
     const results = this.decoder.decodeAll(imageData)
-    console.log(`[ColorQRDecoder] decoded ${results.size} modules`)
-
-    // Debug: count color distribution
-    const colorCounts = new Array(8).fill(0)
-    for (const [, result] of results) {
-      if (result.colorIndex !== undefined) {
-        colorCounts[result.colorIndex]++
-      }
-    }
-    console.log(`[ColorQRDecoder] color distribution: W=${colorCounts[0]} C=${colorCounts[1]} M=${colorCounts[2]} Y=${colorCounts[3]} B=${colorCounts[4]} G=${colorCounts[5]} R=${colorCounts[6]} K=${colorCounts[7]}`)
 
     // Step 5: Build binary channel images
     const channels = this.decoder.buildChannelImages(imageData.width, imageData.height)
