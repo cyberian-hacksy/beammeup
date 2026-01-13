@@ -3,11 +3,22 @@ import { viteSingleFile } from 'vite-plugin-singlefile'
 
 export default defineConfig({
   root: 'src',
-  plugins: [viteSingleFile()],
+  publicDir: 'public',
+  plugins: [
+    viteSingleFile({
+      removeViteModuleLoader: false,
+      useRecommendedBuildConfig: false,
+      inlinePattern: ['!**/*.wasm', '!**/cimbar/**']
+    })
+  ],
   build: {
     outDir: '../dist',
     emptyOutDir: true,
     target: 'es2020',
-    minify: 'terser'
+    minify: 'terser',
+    copyPublicDir: true
+  },
+  worker: {
+    format: 'es'
   }
 })

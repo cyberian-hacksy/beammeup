@@ -11,11 +11,25 @@
   <div id="mode-select" class="screen active">
     <h1>QRIOSITY</h1>
     <p>Air-Gap File Transfer</p>
-    <div class="mode-buttons">
-      <button id="btn-send">SEND</button>
-      <button id="btn-receive">RECEIVE</button>
+    <div class="transfer-sections">
+      <div class="transfer-section">
+        <h2>QR Transfer</h2>
+        <div class="mode-buttons vertical">
+          <button id="btn-send">SEND</button>
+          <button id="btn-receive">RECEIVE</button>
+        </div>
+        <p class="section-desc">Standard QR codes<br>~3-32 kbps<br>Any QR reader</p>
+      </div>
+      <div class="transfer-divider"></div>
+      <div class="transfer-section">
+        <h2>CIMBAR Transfer</h2>
+        <div class="mode-buttons vertical">
+          <button id="btn-cimbar-send">SEND</button>
+          <button id="btn-cimbar-receive">RECEIVE</button>
+        </div>
+        <p class="section-desc">High-speed color<br>~850 kbps<br>Requires this app</p>
+      </div>
     </div>
-    <p class="tagline">No network required. Transfer via QR.</p>
     <a href="experiments/index.html" class="experiments-link">Experiments</a>
   </div>
 
@@ -129,6 +143,93 @@
           <div class="complete-actions">
             <button id="btn-download">Download</button>
             <button id="btn-receive-another" class="secondary">Receive Another</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- CIMBAR Sender Screen -->
+  <div id="cimbar-sender" class="screen">
+    <header><button class="back-btn">&larr; Back</button><span>CIMBAR SEND</span></header>
+    <main>
+      <input type="file" id="cimbar-file-input" class="visually-hidden">
+
+      <div class="cimbar-container drop-zone empty" id="cimbar-container">
+        <div id="cimbar-placeholder" class="drop-zone-content">
+          <div class="drop-zone-icon">+</div>
+          <div>Drop file here or tap to select</div>
+          <div id="cimbar-loading" class="loading-text hidden">Loading CIMBAR...</div>
+        </div>
+        <canvas id="cimbar-canvas" style="display:none;"></canvas>
+      </div>
+
+      <div class="sender-controls" id="cimbar-sender-controls">
+        <div class="slider-group">
+          <label for="cimbar-size-slider">Size</label>
+          <input type="range" id="cimbar-size-slider" min="0" max="2" value="1" step="1">
+          <span id="cimbar-size-display">Large (1024px)</span>
+        </div>
+        <div class="slider-group">
+          <label for="cimbar-speed-slider">Speed</label>
+          <input type="range" id="cimbar-speed-slider" min="0" max="2" value="1" step="1">
+          <span id="cimbar-speed-display">Normal (15 FPS)</span>
+        </div>
+        <div class="file-status">
+          <span id="cimbar-file-info">No file</span>
+          <span id="cimbar-estimate" class="estimate"></span>
+        </div>
+        <div class="action-buttons">
+          <button id="btn-cimbar-action" disabled>Start</button>
+          <button id="btn-cimbar-stop" class="secondary" disabled>Stop</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- CIMBAR Receiver Screen -->
+  <div id="cimbar-receiver" class="screen">
+    <header><button class="back-btn">&larr; Back</button><span>CIMBAR RECEIVE</span></header>
+    <main>
+      <div class="video-container">
+        <video id="cimbar-video" autoplay playsinline muted></video>
+        <div class="cimbar-crosshairs" id="cimbar-crosshairs">
+          <div class="crosshair-corner tl"></div>
+          <div class="crosshair-corner tr"></div>
+          <div class="crosshair-corner bl"></div>
+          <div class="crosshair-corner br"></div>
+        </div>
+        <button id="btn-cimbar-camera-switch" class="floating-camera-btn" title="Switch camera">
+          <span class="camera-icon"></span>
+        </button>
+      </div>
+
+      <div class="receiver-status" id="cimbar-status-bar">
+        <div class="status-scanning" id="cimbar-status-scanning">
+          <span>Scanning...</span>
+          <span id="cimbar-stat-frames">0 frames</span>
+          <button id="btn-cimbar-reset" class="reset-btn">Reset</button>
+        </div>
+        <div class="status-receiving hidden" id="cimbar-status-receiving">
+          <div class="status-file-row">
+            <span id="cimbar-file-name">-</span>
+            <span class="stats-inline">
+              <span id="cimbar-stat-progress">0%</span>
+              <span id="cimbar-stat-rate">-</span>
+            </span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="cimbar-progress-fill" style="width:0"></div>
+          </div>
+        </div>
+        <div class="status-complete hidden" id="cimbar-status-complete">
+          <div class="status-file-row">
+            <span id="cimbar-complete-name">-</span>
+            <span id="cimbar-complete-rate" class="complete-rate"></span>
+          </div>
+          <div class="complete-actions">
+            <button id="btn-cimbar-download">Download</button>
+            <button id="btn-cimbar-another" class="secondary">Receive Another</button>
           </div>
         </div>
       </div>

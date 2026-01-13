@@ -13,6 +13,11 @@ import { testParityMap, testParityRecovery } from './lib/precode.js'
 import { initSender, resetSender } from './lib/sender.js'
 import { initReceiver, resetReceiver, autoStartReceiver } from './lib/receiver.js'
 
+// Import CIMBAR modules
+import { initCimbarSender, resetCimbarSender } from './lib/cimbar/cimbar-sender.js'
+import { initCimbarReceiver, resetCimbarReceiver, autoStartCimbarReceiver } from './lib/cimbar/cimbar-receiver.js'
+import { checkCompatibility } from './lib/cimbar/cimbar-loader.js'
+
 // Make libraries available globally
 window.jsQR = jsQR
 window['qrcode'] = qrcode
@@ -45,7 +50,9 @@ document.getElementById('error-dismiss').onclick = hideError
 const screens = {
   modeSelect: document.getElementById('mode-select'),
   sender: document.getElementById('sender'),
-  receiver: document.getElementById('receiver')
+  receiver: document.getElementById('receiver'),
+  cimbarSender: document.getElementById('cimbar-sender'),
+  cimbarReceiver: document.getElementById('cimbar-receiver')
 }
 
 function showScreen(screenId) {
@@ -60,14 +67,26 @@ document.getElementById('btn-receive').onclick = () => {
   autoStartReceiver()
 }
 
+// CIMBAR mode selection buttons
+document.getElementById('btn-cimbar-send').onclick = () => {
+  showScreen('cimbarSender')
+}
+
+document.getElementById('btn-cimbar-receive').onclick = () => {
+  showScreen('cimbarReceiver')
+  autoStartCimbarReceiver()
+}
+
 // Back buttons with cleanup
 document.querySelectorAll('.back-btn').forEach(btn => {
   btn.onclick = () => {
-    // Clean up sender state
+    // Clean up QR state
     resetSender()
-
-    // Clean up receiver state
     resetReceiver()
+
+    // Clean up CIMBAR state
+    resetCimbarSender()
+    resetCimbarReceiver()
 
     // Return to mode selection
     showScreen('modeSelect')
@@ -77,6 +96,23 @@ document.querySelectorAll('.back-btn').forEach(btn => {
 // ============ INITIALIZE MODULES ============
 initSender(showError)
 initReceiver(showError)
+
+// Initialize CIMBAR modules
+initCimbarSender(showError)
+initCimbarReceiver(showError)
+
+// Check CIMBAR compatibility and disable buttons if not supported
+const compat = checkCompatibility()
+if (!compat.compatible) {
+  const cimbarBtns = [
+    document.getElementById('btn-cimbar-send'),
+    document.getElementById('btn-cimbar-receive')
+  ]
+  cimbarBtns.forEach(btn => {
+    btn.disabled = true
+    btn.title = 'Not supported: ' + compat.issues.join(', ')
+  })
+}
 
 // ============ TEST SUITE ============
 async function runAllTests() {
