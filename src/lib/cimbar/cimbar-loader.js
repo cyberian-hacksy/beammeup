@@ -2,6 +2,21 @@
 let wasmModule = null
 let loadPromise = null
 
+// Determine base path for CIMBAR assets
+function getBasePath() {
+  // Get base from document location
+  const base = document.baseURI || window.location.href
+  const url = new URL(base)
+  // Remove filename if present (e.g., index.html)
+  let path = url.pathname
+  if (path.endsWith('.html')) {
+    path = path.substring(0, path.lastIndexOf('/') + 1)
+  } else if (!path.endsWith('/')) {
+    path += '/'
+  }
+  return path + 'cimbar/'
+}
+
 export function loadCimbarWasm() {
   if (wasmModule) {
     return Promise.resolve(wasmModule)
@@ -10,6 +25,9 @@ export function loadCimbarWasm() {
   if (loadPromise) {
     return loadPromise
   }
+
+  const basePath = getBasePath()
+  console.log('CIMBAR loading from:', basePath)
 
   loadPromise = new Promise((resolve, reject) => {
     // Create an offscreen canvas for WASM to use during init
@@ -22,11 +40,12 @@ export function loadCimbarWasm() {
       canvas: tempCanvas,
       locateFile: (path) => {
         if (path.endsWith('.wasm')) {
-          return '/cimbar/cimbar_js.wasm'
+          return basePath + 'cimbar_js.wasm'
         }
         return path
       },
       onRuntimeInitialized: () => {
+        console.log('CIMBAR WASM initialized')
         wasmModule = window.Module
         resolve(wasmModule)
       }
@@ -34,10 +53,11 @@ export function loadCimbarWasm() {
 
     // Load the WASM glue script
     const script = document.createElement('script')
-    script.src = '/cimbar/cimbar_js.js'
-    script.onerror = () => {
+    script.src = basePath + 'cimbar_js.js'
+    script.onerror = (e) => {
+      console.error('Failed to load CIMBAR script from:', script.src, e)
       loadPromise = null
-      reject(new Error('Failed to load CIMBAR WASM script'))
+      reject(new Error('Failed to load CIMBAR WASM script from ' + script.src))
     }
     document.head.appendChild(script)
   })
@@ -66,9 +86,7 @@ export function checkCompatibility() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     issues.push('Camera API not supported')
   }
-  if (typeof VideoFrame === 'undefined') {
-    issues.push('VideoFrame API not supported')
-  }
+  // VideoFrame is optional - we have canvas fallback for iOS
 
   return {
     compatible: issues.length === 0,

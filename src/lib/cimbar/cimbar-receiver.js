@@ -145,6 +145,16 @@ function switchCamera() {
   initCamera()
 }
 
+// Check if we can use VideoFrame API (not available on iOS Safari)
+function hasVideoFrameSupport() {
+  return typeof VideoFrame !== 'undefined' &&
+         typeof elements.video.requestVideoFrameCallback === 'function'
+}
+
+// Canvas-based fallback for iOS
+let fallbackCanvas = null
+let fallbackCtx = null
+
 function getReport(Module) {
   const reportLen = Module._cimbard_get_report(state.reportBuff.byteOffset, 1024)
   if (reportLen > 0) {
@@ -157,6 +167,105 @@ function getReport(Module) {
     }
   }
   return null
+}
+
+// Fallback frame processing using canvas (for iOS)
+function processFrameFallback() {
+  if (!state.isScanning || !state.wasmLoaded) return
+
+  const Module = getModule()
+  if (!Module) {
+    setTimeout(processFrameFallback, 100)
+    return
+  }
+
+  state.frameCount++
+  elements.statFrames.textContent = state.frameCount + ' frames'
+  updateCrosshairs()
+
+  try {
+    const video = elements.video
+    const width = video.videoWidth
+    const height = video.videoHeight
+
+    if (width === 0 || height === 0) {
+      setTimeout(processFrameFallback, 66)
+      return
+    }
+
+    // Create canvas if needed
+    if (!fallbackCanvas || fallbackCanvas.width !== width) {
+      fallbackCanvas = document.createElement('canvas')
+      fallbackCanvas.width = width
+      fallbackCanvas.height = height
+      fallbackCtx = fallbackCanvas.getContext('2d')
+    }
+
+    // Draw video frame to canvas
+    fallbackCtx.drawImage(video, 0, 0)
+    const imageData = fallbackCtx.getImageData(0, 0, width, height)
+    const pixels = imageData.data
+
+    // Allocate WASM buffers
+    allocateBuffers(Module, pixels.length)
+
+    // Copy pixels to WASM
+    state.imgBuff.set(pixels)
+
+    // Get mode for this frame (cycle if auto-detecting)
+    let mode = state.currentMode
+    if (mode === 0) {
+      mode = state.modeValues[state.frameCount % state.modeValues.length]
+    }
+    Module._cimbard_configure_decode(mode)
+
+    // Decode frame (type 4 = RGBA)
+    const len = Module._cimbard_scan_extract_decode(
+      state.imgBuff.byteOffset,
+      width,
+      height,
+      4,
+      state.fountainBuff.byteOffset,
+      state.fountainBuff.length
+    )
+
+    if (len > 0) {
+      state.recentDecode = state.frameCount
+
+      // Lock in the detected mode
+      if (state.currentMode === 0) {
+        state.currentMode = mode
+      }
+
+      // Pass to fountain decoder
+      const res = Module._cimbard_fountain_decode(state.fountainBuff.byteOffset, len)
+
+      if (res > 0) {
+        // File complete - handle BigInt
+        const fileId = Number(BigInt(res) & BigInt(0xFFFFFFFF))
+        handleFileComplete(fileId)
+        return // Don't schedule next frame
+      }
+
+      // Check progress
+      const report = getReport(Module)
+      if (Array.isArray(report)) {
+        if (!state.startTime) {
+          state.startTime = performance.now()
+          showStatus('receiving')
+        }
+        updateProgress(report)
+      }
+    } else if (len === 0) {
+      state.recentExtract = state.frameCount
+    }
+
+  } catch (e) {
+    console.error('Frame error:', e)
+  }
+
+  // Schedule next frame (~15 fps)
+  setTimeout(processFrameFallback, 66)
 }
 
 async function processFrame(now, metadata) {
@@ -331,8 +440,14 @@ function startScanning() {
   elements.progressFill.style.width = '0'
   showStatus('scanning')
 
-  // Use requestVideoFrameCallback for efficient frame capture
-  elements.video.requestVideoFrameCallback(processFrame)
+  // Use VideoFrame API if available, otherwise use canvas fallback (iOS)
+  if (hasVideoFrameSupport()) {
+    console.log('Using VideoFrame API for frame capture')
+    elements.video.requestVideoFrameCallback(processFrame)
+  } else {
+    console.log('Using canvas fallback for frame capture (iOS compatibility)')
+    setTimeout(processFrameFallback, 100)
+  }
 }
 
 function resetReceiver() {
