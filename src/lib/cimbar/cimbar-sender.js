@@ -4,9 +4,10 @@ import { loadCimbarWasm, getModule } from './cimbar-loader.js'
 const MAX_FILE_SIZE = 33 * 1024 * 1024 // 33MB (CIMBAR limit)
 
 const SIZE_PRESETS = [
-  { name: 'Medium', size: 720 },
-  { name: 'Large', size: 1024 },
-  { name: 'Full', size: 0 } // 0 = match screen
+  { name: 'Small', size: 480 },
+  { name: 'Medium', size: 600 },
+  { name: 'Large', size: 720 },
+  { name: 'Full', size: 1024 }
 ]
 
 const SPEED_PRESETS = [
@@ -44,11 +45,7 @@ function getTargetInterval() {
 
 function getTargetSize() {
   const index = parseInt(elements.sizeSlider.value)
-  const preset = SIZE_PRESETS[index]
-  if (preset.size === 0) {
-    return Math.min(window.innerWidth - 20, window.innerHeight - 250)
-  }
-  return preset.size
+  return SIZE_PRESETS[index].size
 }
 
 function estimateTime() {
@@ -90,18 +87,35 @@ function updateActionButton() {
   elements.btnStop.disabled = !state.fileData
 }
 
-// Scale canvas using CSS (WASM renders at fixed internal size)
+// Scale canvas using CSS (WASM renders at fixed internal size via WebGL)
+// Matches cimbar.org scaleCanvas logic
 function scaleCanvas() {
   const canvas = elements.canvas
   const size = getTargetSize()
 
-  // Calculate dimensions maintaining aspect ratio
+  // Target dimensions (square container)
   let width = size
-  let height = Math.floor(size / state.idealRatio)
+  let height = size
 
-  // Apply as CSS dimensions (not canvas dimensions)
-  canvas.style.width = width + 'px'
-  canvas.style.height = height + 'px'
+  // Calculate our target ratio
+  const ourRatio = width / height
+
+  // Adjust dimensions to maintain CIMBAR aspect ratio
+  let xdim = width
+  let ydim = height
+  if (ourRatio > state.idealRatio) {
+    // Target is wider than ideal - shrink width
+    xdim = Math.floor(xdim * state.idealRatio / ourRatio)
+  } else if (ourRatio < state.idealRatio) {
+    // Target is taller than ideal - shrink height
+    ydim = Math.floor(ydim * ourRatio / state.idealRatio)
+  }
+
+  console.log('CIMBAR canvas:', xdim + 'x' + ydim, 'ratio:', state.idealRatio)
+
+  // Apply as CSS dimensions only (WASM manages internal canvas size)
+  canvas.style.width = xdim + 'px'
+  canvas.style.height = ydim + 'px'
 }
 
 function renderFrame() {
@@ -139,18 +153,19 @@ async function startSending() {
   try {
     const canvas = elements.canvas
 
-    // Set canvas on Module for WASM rendering
+    // Set canvas on Module for WASM rendering (must be done before configure)
     Module.canvas = canvas
 
-    // Configure mode first (68 = mode B, -1 = use defaults)
+    // Configure mode (68 = mode B, -1 = use defaults)
     Module._cimbare_configure(68, -1)
     state.idealRatio = Module._cimbare_get_aspect_ratio()
+    console.log('CIMBAR mode B configured, aspect ratio:', state.idealRatio)
 
     // Show canvas
     canvas.style.display = 'block'
     elements.placeholder.style.display = 'none'
 
-    // Scale canvas via CSS
+    // Scale canvas via CSS (WASM manages internal dimensions via WebGL)
     scaleCanvas()
 
     // Initialize encoder with filename
@@ -323,8 +338,7 @@ async function handleDrop(e) {
 function handleSizeChange() {
   const index = parseInt(elements.sizeSlider.value)
   const preset = SIZE_PRESETS[index]
-  const displaySize = preset.size === 0 ? 'screen' : preset.size + 'px'
-  elements.sizeDisplay.textContent = preset.name + ' (' + displaySize + ')'
+  elements.sizeDisplay.textContent = preset.name + ' (' + preset.size + 'px)'
 
   // If sending, update canvas size
   if (state.isSending) {

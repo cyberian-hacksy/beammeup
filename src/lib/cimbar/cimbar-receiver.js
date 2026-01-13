@@ -456,6 +456,15 @@ function resetReceiver() {
   state.fileSize = 0
   state.startTime = 0
   state.currentMode = 0
+
+  // Force WASM decoder sink to reset by toggling mode
+  // The sink only resets when mode changes, so we cycle through two different modes
+  const Module = getModule()
+  if (Module) {
+    Module._cimbard_configure_decode(4)   // Switch to 4C mode
+    Module._cimbard_configure_decode(68)  // Switch back to B mode - this resets the sink
+  }
+
   startScanning()
 }
 
