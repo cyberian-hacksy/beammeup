@@ -106,6 +106,10 @@ pnpm build
 - Transfer speed depends on camera quality, distance, and settings
 - Large files (10MB+) may take significant time via QR mode
 
+## Acknowledgments
+
+CIMBAR transfer mode is powered by [libcimbar](https://github.com/sz3/libcimbar) by [sz3](https://github.com/sz3), an experimental high-density barcode format for air-gapped data transfer. The libcimbar WASM module is licensed under the [Mozilla Public License 2.0](https://www.mozilla.org/en-US/MPL/2.0/).
+
 ## License
 
 MIT
