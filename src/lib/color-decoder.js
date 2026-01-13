@@ -31,12 +31,18 @@ export class ColorQRDecoder {
    * Main entry point: decode a color QR frame
    * @param {ImageData} imageData - Frame pixel data
    * @param {Object} qrLocation - jsQR location object with corner points
-   * @param {number} qrVersion - QR code version (default 2 for 25x25)
+   * @param {number} qrVersion - QR code version (auto-detected if not provided)
    * @returns {{channels, results, stats}}
    */
-  decode(imageData, qrLocation, qrVersion = 2) {
-    // Step 1: Build module grid from detected QR position
+  decode(imageData, qrLocation, qrVersion = null) {
+    // Step 1: Detect QR version if not provided
+    if (qrVersion === null) {
+      qrVersion = this.detectVersion(qrLocation)
+    }
+
+    // Step 1b: Build module grid from detected QR position
     this.grid = new ModuleGrid(qrLocation, qrVersion)
+    console.log(`[ColorQRDecoder] version=${qrVersion}, gridSize=${this.grid.size}, moduleSize=${this.grid.getModuleSize().toFixed(1)}px`)
 
     // Step 2: Initialize or reset drift tracker
     // Keep drift across frames if grid size matches (same QR code)
@@ -61,9 +67,20 @@ export class ColorQRDecoder {
     )
 
     const results = this.decoder.decodeAll(imageData)
+    console.log(`[ColorQRDecoder] decoded ${results.size} modules`)
+
+    // Debug: count color distribution
+    const colorCounts = new Array(8).fill(0)
+    for (const [, result] of results) {
+      if (result.colorIndex !== undefined) {
+        colorCounts[result.colorIndex]++
+      }
+    }
+    console.log(`[ColorQRDecoder] color distribution: W=${colorCounts[0]} C=${colorCounts[1]} M=${colorCounts[2]} Y=${colorCounts[3]} B=${colorCounts[4]} G=${colorCounts[5]} R=${colorCounts[6]} K=${colorCounts[7]}`)
 
     // Step 5: Build binary channel images
     const channels = this.decoder.buildChannelImages(imageData.width, imageData.height)
+    console.log(`[ColorQRDecoder] built channel images ${channels.size}x${channels.size}`)
 
     // Step 6: Compute statistics
     const decoderStats = this.decoder.getStats()
@@ -108,6 +125,49 @@ export class ColorQRDecoder {
     }
 
     return { observed, expected }
+  }
+
+  /**
+   * Detect QR version from the location data
+   * Finder patterns are always 7 modules, so we can estimate version from QR size
+   */
+  detectVersion(qrLocation) {
+    const { topLeftCorner, topRightCorner, bottomLeftCorner } = qrLocation
+
+    // Calculate QR dimensions in pixels
+    const qrWidth = Math.sqrt(
+      Math.pow(topRightCorner.x - topLeftCorner.x, 2) +
+      Math.pow(topRightCorner.y - topLeftCorner.y, 2)
+    )
+    const qrHeight = Math.sqrt(
+      Math.pow(bottomLeftCorner.x - topLeftCorner.x, 2) +
+      Math.pow(bottomLeftCorner.y - topLeftCorner.y, 2)
+    )
+
+    // The finder pattern occupies 7 modules on each dimension
+    // Distance between finder centers is (size - 7) modules
+    // We can estimate: finderCenterDistance / (size - 7) = moduleSize
+    // And: qrWidth / moduleSize = size
+
+    // Simpler approach: try common versions and see which gives reasonable module sizes
+    // Common versions: 1 (21), 2 (25), 3 (29), 4 (33), 5 (37), 6 (41)
+    const avgSize = (qrWidth + qrHeight) / 2
+
+    // Version n has size = 17 + 4*n modules
+    // So module size = avgSize / (17 + 4*n)
+    // A reasonable module size is 5-20 pixels
+
+    for (let v = 1; v <= 10; v++) {
+      const moduleCount = 17 + 4 * v
+      const moduleSize = avgSize / moduleCount
+      if (moduleSize >= 4 && moduleSize <= 25) {
+        return v
+      }
+    }
+
+    // Default to version 2 if detection fails
+    console.warn('[ColorQRDecoder] Could not detect version, defaulting to 2')
+    return 2
   }
 
   /**

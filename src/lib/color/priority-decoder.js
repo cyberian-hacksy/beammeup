@@ -49,6 +49,10 @@ export class PriorityDecoder {
 
     // Phase 1: Seed with modules adjacent to finder patterns
     this.seedFromFinderPatterns()
+    console.log(`[PriorityDecoder] seeded ${this.queue.length} modules from finder patterns`)
+
+    // Debug: log first few module samples
+    let debugSamples = []
 
     // Phase 2: Process queue in priority order
     while (this.queue.length > 0) {
@@ -74,6 +78,17 @@ export class PriorityDecoder {
       if (result) {
         this.results.set(key, result)
 
+        // Collect debug samples for first 10 modules
+        if (debugSamples.length < 10 && result.sampledRGB && result.correctedRGB) {
+          debugSamples.push({
+            pos: `${row},${col}`,
+            sampled: result.sampledRGB,
+            corrected: result.correctedRGB,
+            color: result.colorName,
+            conf: result.confidence
+          })
+        }
+
         // Propagate drift to neighbors if confident
         if (result.confidence > 0.6) {
           this.drift.propagateToNeighbors(row, col)
@@ -92,6 +107,14 @@ export class PriorityDecoder {
 
     // Phase 3: Handle any remaining unvisited modules
     this.processRemaining(imageData)
+
+    // Debug: log sample classifications
+    if (debugSamples.length > 0) {
+      console.log('[PriorityDecoder] sample classifications:')
+      for (const s of debugSamples) {
+        console.log(`  ${s.pos}: sampled=[${s.sampled.join(',')}] corrected=[${s.corrected.map(v => v.toFixed(0)).join(',')}] => ${s.color} (${(s.conf * 100).toFixed(0)}%)`)
+      }
+    }
 
     return this.results
   }
@@ -213,6 +236,7 @@ export class PriorityDecoder {
   /**
    * Build binary channel images from classification results
    * These are passed to jsQR for final decoding
+   * Uses pixel-by-pixel approach for complete coverage (no gaps)
    * @param {number} width - Output image width
    * @param {number} height - Output image height
    * @returns {{ch0: Uint8ClampedArray, ch1: Uint8ClampedArray, ch2: Uint8ClampedArray, size: number}}
@@ -222,33 +246,141 @@ export class PriorityDecoder {
     const ch1 = new Uint8ClampedArray(width * height * 4)
     const ch2 = new Uint8ClampedArray(width * height * 4)
 
-    // Fill with white (default background)
+    // Get QR bounds in pixel coordinates
+    const tl = this.grid.topLeft
+    const tr = this.grid.topRight
+    const bl = this.grid.bottomLeft
+    const br = this.grid.bottomRight
+
+    // Compute bounding box
+    const minX = Math.floor(Math.min(tl.x, tr.x, bl.x, br.x))
+    const maxX = Math.ceil(Math.max(tl.x, tr.x, bl.x, br.x))
+    const minY = Math.floor(Math.min(tl.y, tr.y, bl.y, br.y))
+    const maxY = Math.ceil(Math.max(tl.y, tr.y, bl.y, br.y))
+
+    // Process every pixel in the image
+    for (let py = 0; py < height; py++) {
+      for (let px = 0; px < width; px++) {
+        const idx = (py * width + px) * 4
+
+        // Default: white (outside QR area)
+        let g0 = 255, g1 = 255, g2 = 255
+
+        // Check if pixel is within QR bounding box
+        if (px >= minX && px <= maxX && py >= minY && py <= maxY) {
+          // Map pixel to module coordinates using inverse bilinear
+          const moduleCoord = this.pixelToModule(px, py)
+
+          if (moduleCoord) {
+            const { row, col } = moduleCoord
+
+            // Check if this is a fixed pattern
+            if (this.grid.isFixedPattern(row, col)) {
+              const isBlack = this.grid.getFixedModuleColor(row, col)
+              const value = isBlack ? 0 : 255
+              g0 = g1 = g2 = value
+            } else {
+              // Look up classification result
+              const key = `${row},${col}`
+              const result = this.results.get(key)
+
+              if (result) {
+                const bits = result.bits || [0, 0, 0]
+                g0 = bits[0] ? 0 : 255
+                g1 = bits[1] ? 0 : 255
+                g2 = bits[2] ? 0 : 255
+              }
+            }
+          }
+        }
+
+        // Write to all three channels
+        ch0[idx] = ch0[idx + 1] = ch0[idx + 2] = g0; ch0[idx + 3] = 255
+        ch1[idx] = ch1[idx + 1] = ch1[idx + 2] = g1; ch1[idx + 3] = 255
+        ch2[idx] = ch2[idx + 1] = ch2[idx + 2] = g2; ch2[idx + 3] = 255
+      }
+    }
+
+    // Debug: count black/white pixels in each channel
+    let ch0Black = 0, ch1Black = 0, ch2Black = 0
     for (let i = 0; i < ch0.length; i += 4) {
-      ch0[i] = ch0[i + 1] = ch0[i + 2] = 255; ch0[i + 3] = 255
-      ch1[i] = ch1[i + 1] = ch1[i + 2] = 255; ch1[i + 3] = 255
-      ch2[i] = ch2[i + 1] = ch2[i + 2] = 255; ch2[i + 3] = 255
+      if (ch0[i] === 0) ch0Black++
+      if (ch1[i] === 0) ch1Black++
+      if (ch2[i] === 0) ch2Black++
     }
-
-    // Paint each classified module
-    for (const [key, result] of this.results) {
-      const [row, col] = key.split(',').map(Number)
-      const pos = this.grid.getModuleCenter(row, col)
-      const moduleSize = this.grid.getModuleSize()
-
-      const bits = result.bits || [0, 0, 0]
-      const g0 = bits[0] ? 0 : 255  // Cyan channel
-      const g1 = bits[1] ? 0 : 255  // Magenta channel
-      const g2 = bits[2] ? 0 : 255  // Yellow channel
-
-      this.paintModule(ch0, width, height, pos.x, pos.y, moduleSize, g0)
-      this.paintModule(ch1, width, height, pos.x, pos.y, moduleSize, g1)
-      this.paintModule(ch2, width, height, pos.x, pos.y, moduleSize, g2)
-    }
-
-    // Paint finder patterns (always black in all channels)
-    this.paintFixedPatterns(ch0, ch1, ch2, width, height)
+    const totalPixels = width * height
+    console.log(`[PriorityDecoder] channel black pixels: ch0=${ch0Black}/${totalPixels} (${(100*ch0Black/totalPixels).toFixed(1)}%), ch1=${ch1Black}/${totalPixels} (${(100*ch1Black/totalPixels).toFixed(1)}%), ch2=${ch2Black}/${totalPixels} (${(100*ch2Black/totalPixels).toFixed(1)}%)`)
 
     return { ch0, ch1, ch2, size: width }
+  }
+
+  /**
+   * Map a pixel coordinate back to module (row, col)
+   * Uses inverse bilinear interpolation with iterative refinement
+   * @param {number} px - Pixel X
+   * @param {number} py - Pixel Y
+   * @returns {{row: number, col: number}|null}
+   */
+  pixelToModule(px, py) {
+    const tl = this.grid.topLeft
+    const tr = this.grid.topRight
+    const bl = this.grid.bottomLeft
+    const br = this.grid.bottomRight
+
+    // Use iterative inverse bilinear interpolation
+    // Initial guess using simple linear approximation
+    const qrWidth = (tr.x - tl.x + br.x - bl.x) / 2
+    const qrHeight = (bl.y - tl.y + br.y - tr.y) / 2
+
+    let u = (px - tl.x) / qrWidth
+    let v = (py - tl.y) / qrHeight
+
+    // Quick bounds check
+    if (u < -0.1 || u > 1.1 || v < -0.1 || v > 1.1) return null
+
+    // Refine using Newton-Raphson iteration (2-3 iterations usually enough)
+    for (let iter = 0; iter < 3; iter++) {
+      // Forward bilinear: compute where (u, v) maps to
+      const fx = (1 - u) * (1 - v) * tl.x + u * (1 - v) * tr.x +
+                 (1 - u) * v * bl.x + u * v * br.x
+      const fy = (1 - u) * (1 - v) * tl.y + u * (1 - v) * tr.y +
+                 (1 - u) * v * bl.y + u * v * br.y
+
+      // Error
+      const ex = px - fx
+      const ey = py - fy
+
+      // Check convergence
+      if (Math.abs(ex) < 0.5 && Math.abs(ey) < 0.5) break
+
+      // Jacobian partial derivatives
+      const dxdu = (1 - v) * (tr.x - tl.x) + v * (br.x - bl.x)
+      const dxdv = (1 - u) * (bl.x - tl.x) + u * (br.x - tr.x)
+      const dydu = (1 - v) * (tr.y - tl.y) + v * (br.y - bl.y)
+      const dydv = (1 - u) * (bl.y - tl.y) + u * (br.y - tr.y)
+
+      // Solve 2x2 linear system using Cramer's rule
+      const det = dxdu * dydv - dxdv * dydu
+      if (Math.abs(det) < 0.0001) break  // Degenerate
+
+      const du = (ex * dydv - ey * dxdv) / det
+      const dv = (dxdu * ey - dydu * ex) / det
+
+      u += du
+      v += dv
+    }
+
+    // Final bounds check
+    if (u < 0 || u > 1 || v < 0 || v > 1) return null
+
+    // Convert u, v to module coordinates
+    const col = Math.floor(u * this.size)
+    const row = Math.floor(v * this.size)
+
+    // Validate bounds
+    if (row < 0 || row >= this.size || col < 0 || col >= this.size) return null
+
+    return { row, col }
   }
 
   /**

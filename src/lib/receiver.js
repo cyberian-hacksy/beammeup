@@ -1040,6 +1040,19 @@ function scanFrame() {
         // Decode using new libcimbar-based pipeline
         const decoded = state.colorDecoder.decode(imageData, loc)
 
+        // Debug: log channel image info
+        if (state.frameCount % 30 === 1) {
+          console.log(`[Receiver] channel image size: ${decoded.channels.size}x${decoded.channels.size}, buffer length: ${decoded.channels.ch0.length}`)
+          // Sample a few pixels to verify channel content
+          const checkPixel = (ch, x, y) => {
+            const idx = (y * decoded.channels.size + x) * 4
+            return ch[idx]
+          }
+          // Check center and corner pixels
+          const mid = Math.floor(decoded.channels.size / 2)
+          console.log(`[Receiver] ch0 samples: center=${checkPixel(decoded.channels.ch0, mid, mid)}, corner=${checkPixel(decoded.channels.ch0, 10, 10)}`)
+        }
+
         // Decode each channel with jsQR
         const channelResults = [
           jsQR(decoded.channels.ch0, decoded.channels.size, decoded.channels.size),
