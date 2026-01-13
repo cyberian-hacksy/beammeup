@@ -1071,17 +1071,13 @@ function scanFrame() {
             debugLog(`>>> RGB ${samples.join(' | ')}`)
           }
 
-          // Check channel black pixel ratios
-          const countBlack = (ch) => {
-            let count = 0
-            for (let i = 0; i < ch.length; i += 4) if (ch[i] === 0) count++
-            return count
+          // Check pixel mapping stats
+          const decoder = state.colorDecoder.decoder
+          if (decoder?.lastBuildStats) {
+            const s = decoder.lastBuildStats
+            const pct = (100 * s.mappedPixels / (decoded.channels.size * decoded.channels.size)).toFixed(0)
+            debugLog(`>>> MAP mapped:${s.mappedPixels} (${pct}%) fixed:${s.fixedPixels} data:${s.dataPixels}`)
           }
-          const total = decoded.channels.size * decoded.channels.size
-          const b0 = countBlack(decoded.channels.ch0)
-          const b1 = countBlack(decoded.channels.ch1)
-          const b2 = countBlack(decoded.channels.ch2)
-          debugLog(`>>> CH-BLK ch0:${(100*b0/total).toFixed(0)}% ch1:${(100*b1/total).toFixed(0)}% ch2:${(100*b2/total).toFixed(0)}%`)
         }
 
         // Decode each channel with jsQR

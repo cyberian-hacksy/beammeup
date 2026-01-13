@@ -237,6 +237,11 @@ export class PriorityDecoder {
     const minY = Math.floor(Math.min(tl.y, tr.y, bl.y, br.y))
     const maxY = Math.ceil(Math.max(tl.y, tr.y, bl.y, br.y))
 
+    // Debug counters
+    let mappedPixels = 0
+    let fixedPixels = 0
+    let dataPixels = 0
+
     // Process every pixel in the image
     for (let py = 0; py < height; py++) {
       for (let px = 0; px < width; px++) {
@@ -251,14 +256,17 @@ export class PriorityDecoder {
           const moduleCoord = this.pixelToModule(px, py)
 
           if (moduleCoord) {
+            mappedPixels++
             const { row, col } = moduleCoord
 
             // Check if this is a fixed pattern
             if (this.grid.isFixedPattern(row, col)) {
+              fixedPixels++
               const isBlack = this.grid.getFixedModuleColor(row, col)
               const value = isBlack ? 0 : 255
               g0 = g1 = g2 = value
             } else {
+              dataPixels++
               // Look up classification result
               const key = `${row},${col}`
               const result = this.results.get(key)
@@ -278,6 +286,14 @@ export class PriorityDecoder {
         ch1[idx] = ch1[idx + 1] = ch1[idx + 2] = g1; ch1[idx + 3] = 255
         ch2[idx] = ch2[idx + 1] = ch2[idx + 2] = g2; ch2[idx + 3] = 255
       }
+    }
+
+    // Store debug stats for caller
+    this.lastBuildStats = {
+      mappedPixels,
+      fixedPixels,
+      dataPixels,
+      unmappedPixels: width * height - mappedPixels
     }
 
     return { ch0, ch1, ch2, size: width }
