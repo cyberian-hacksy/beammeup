@@ -33,8 +33,9 @@ export class RelativeColorClassifier {
     }))
 
     // Brightness thresholds for black/white detection
-    this.blackThreshold = 80    // Below this is considered black
-    this.whiteThreshold = 200   // Above this is considered white
+    // Camera captures have compressed dynamic range, so use relaxed thresholds
+    this.blackThreshold = 60    // Below this is considered black
+    this.whiteThreshold = 210   // Above this is considered white
   }
 
   /**

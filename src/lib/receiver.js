@@ -1044,8 +1044,31 @@ function scanFrame() {
         if (state.frameCount % 10 === 1) {
           const stats = decoded.stats
           const dist = stats.colorDistribution || []
-          debugLog(`>>> COLOR v${state.colorDecoder.grid?.version || '?'} conf:${(stats.avgConfidence * 100).toFixed(0)}% drift:${stats.avgDrift.toFixed(1)} fail:${stats.failedCount}`)
+          const modSize = state.colorDecoder.detectedModuleSize?.toFixed(1) || '?'
+          debugLog(`>>> COLOR v${state.colorDecoder.grid?.version || '?'} mod:${modSize}px conf:${(stats.avgConfidence * 100).toFixed(0)}% drift:${stats.avgDrift.toFixed(1)}`)
           debugLog(`>>> DIST W:${dist[0]||0} C:${dist[1]||0} M:${dist[2]||0} Y:${dist[3]||0} B:${dist[4]||0} G:${dist[5]||0} R:${dist[6]||0} K:${dist[7]||0}`)
+
+          // Sample a few module results to see actual RGB values
+          const sampleResults = []
+          for (const [key, result] of decoded.results) {
+            if (sampleResults.length >= 3 && result.colorName !== 'white' && result.colorName !== 'black') {
+              // Collect up to 3 chromatic samples
+              if (result.sampledRGB && sampleResults.length < 6) {
+                sampleResults.push(result)
+              }
+            } else if (sampleResults.length < 3 && result.sampledRGB) {
+              sampleResults.push(result)
+            }
+            if (sampleResults.length >= 6) break
+          }
+          if (sampleResults.length > 0) {
+            const samples = sampleResults.slice(0, 3).map(r => {
+              const s = r.sampledRGB || [0,0,0]
+              const c = r.correctedRGB || [0,0,0]
+              return `${s[0]},${s[1]},${s[2]}->${c[0]?.toFixed(0)},${c[1]?.toFixed(0)},${c[2]?.toFixed(0)}=${r.colorName?.substring(0,1)||'?'}`
+            })
+            debugLog(`>>> RGB ${samples.join(' | ')}`)
+          }
 
           // Check channel black pixel ratios
           const countBlack = (ch) => {

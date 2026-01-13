@@ -134,30 +134,35 @@ export class ColorQRDecoder {
       Math.pow(bottomLeftCorner.y - topLeftCorner.y, 2)
     )
 
-    // The finder pattern occupies 7 modules on each dimension
-    // Distance between finder centers is (size - 7) modules
-    // We can estimate: finderCenterDistance / (size - 7) = moduleSize
-    // And: qrWidth / moduleSize = size
-
-    // Simpler approach: try common versions and see which gives reasonable module sizes
-    // Common versions: 1 (21), 2 (25), 3 (29), 4 (33), 5 (37), 6 (41)
     const avgSize = (qrWidth + qrHeight) / 2
 
+    // Find the version that gives module size closest to ideal (8-12 pixels)
     // Version n has size = 17 + 4*n modules
-    // So module size = avgSize / (17 + 4*n)
-    // A reasonable module size is 5-20 pixels
+    let bestVersion = 2
+    let bestScore = Infinity
 
     for (let v = 1; v <= 10; v++) {
       const moduleCount = 17 + 4 * v
       const moduleSize = avgSize / moduleCount
-      if (moduleSize >= 4 && moduleSize <= 25) {
-        return v
+
+      // Skip if module size is unreasonable
+      if (moduleSize < 3 || moduleSize > 30) continue
+
+      // Score: prefer module sizes around 8-12 pixels (optimal for cameras)
+      const idealSize = 10
+      const score = Math.abs(moduleSize - idealSize)
+
+      if (score < bestScore) {
+        bestScore = score
+        bestVersion = v
       }
     }
 
-    // Default to version 2 if detection fails
-    console.warn('[ColorQRDecoder] Could not detect version, defaulting to 2')
-    return 2
+    // Store detected info for debugging
+    this.detectedQrSize = avgSize
+    this.detectedModuleSize = avgSize / (17 + 4 * bestVersion)
+
+    return bestVersion
   }
 
   /**
