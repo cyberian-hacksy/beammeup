@@ -68,8 +68,8 @@ export class ColorQRDecoder {
 
     const results = this.decoder.decodeAll(imageData)
 
-    // Step 5: Build binary channel images
-    const channels = this.decoder.buildChannelImages(imageData.width, imageData.height)
+    // Step 5: Build binary channel images (per-pixel classification)
+    const channels = this.decoder.buildChannelImages(imageData.width, imageData.height, imageData)
     console.log(`[ColorQRDecoder] built channel images ${channels.size}x${channels.size}`)
 
     // Step 6: Compute statistics

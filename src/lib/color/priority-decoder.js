@@ -214,16 +214,18 @@ export class PriorityDecoder {
 
   /**
    * Build binary channel images from classification results
-   * These are passed to jsQR for final decoding
-   * Uses pixel-by-pixel approach for complete coverage (no gaps)
+   * Uses simple per-pixel approach - classify each pixel directly
    * @param {number} width - Output image width
    * @param {number} height - Output image height
+   * @param {ImageData} imageData - Original image for per-pixel classification
    * @returns {{ch0: Uint8ClampedArray, ch1: Uint8ClampedArray, ch2: Uint8ClampedArray, size: number}}
    */
-  buildChannelImages(width, height) {
+  buildChannelImages(width, height, imageData) {
     const ch0 = new Uint8ClampedArray(width * height * 4)
     const ch1 = new Uint8ClampedArray(width * height * 4)
     const ch2 = new Uint8ClampedArray(width * height * 4)
+
+    const pixels = imageData.data
 
     // Get QR bounds in pixel coordinates
     const tl = this.grid.topLeft
@@ -231,11 +233,11 @@ export class PriorityDecoder {
     const bl = this.grid.bottomLeft
     const br = this.grid.bottomRight
 
-    // Compute bounding box
-    const minX = Math.floor(Math.min(tl.x, tr.x, bl.x, br.x))
-    const maxX = Math.ceil(Math.max(tl.x, tr.x, bl.x, br.x))
-    const minY = Math.floor(Math.min(tl.y, tr.y, bl.y, br.y))
-    const maxY = Math.ceil(Math.max(tl.y, tr.y, bl.y, br.y))
+    // Compute bounding box with margin
+    const minX = Math.floor(Math.min(tl.x, tr.x, bl.x, br.x)) - 5
+    const maxX = Math.ceil(Math.max(tl.x, tr.x, bl.x, br.x)) + 5
+    const minY = Math.floor(Math.min(tl.y, tr.y, bl.y, br.y)) - 5
+    const maxY = Math.ceil(Math.max(tl.y, tr.y, bl.y, br.y)) + 5
 
     // Debug counters
     let mappedPixels = 0
@@ -252,33 +254,22 @@ export class PriorityDecoder {
 
         // Check if pixel is within QR bounding box
         if (px >= minX && px <= maxX && py >= minY && py <= maxY) {
-          // Map pixel to module coordinates using inverse bilinear
-          const moduleCoord = this.pixelToModule(px, py)
+          // Get pixel color from original image
+          const r = pixels[idx]
+          const g = pixels[idx + 1]
+          const b = pixels[idx + 2]
 
-          if (moduleCoord) {
-            mappedPixels++
-            const { row, col } = moduleCoord
+          // Apply color correction
+          const [cr, cg, cb] = this.corrector.correct(r, g, b)
 
-            // Check if this is a fixed pattern
-            if (this.grid.isFixedPattern(row, col)) {
-              fixedPixels++
-              const isBlack = this.grid.getFixedModuleColor(row, col)
-              const value = isBlack ? 0 : 255
-              g0 = g1 = g2 = value
-            } else {
-              dataPixels++
-              // Look up classification result
-              const key = `${row},${col}`
-              const result = this.results.get(key)
+          // Classify the corrected color
+          const result = this.classifier.classify(cr, cg, cb)
 
-              if (result) {
-                const bits = result.bits || [0, 0, 0]
-                g0 = bits[0] ? 0 : 255
-                g1 = bits[1] ? 0 : 255
-                g2 = bits[2] ? 0 : 255
-              }
-            }
-          }
+          mappedPixels++
+          const bits = result.bits || [0, 0, 0]
+          g0 = bits[0] ? 0 : 255
+          g1 = bits[1] ? 0 : 255
+          g2 = bits[2] ? 0 : 255
         }
 
         // Write to all three channels
@@ -291,8 +282,8 @@ export class PriorityDecoder {
     // Store debug stats for caller
     this.lastBuildStats = {
       mappedPixels,
-      fixedPixels,
-      dataPixels,
+      fixedPixels: 0,
+      dataPixels: mappedPixels,
       unmappedPixels: width * height - mappedPixels
     }
 
