@@ -94,25 +94,33 @@ export class ColorCorrector {
     // where scale = (whiteExp - blackExp) / (white - black)
 
     // Clamp black offset to avoid clipping mid-tone colors
-    // Black reference should be < 80 typically
+    // Allow up to 80 for challenging lighting conditions
     this.offset = [
-      Math.min(black[0], 60),
-      Math.min(black[1], 60),
-      Math.min(black[2], 60)
+      Math.min(black[0], 80),
+      Math.min(black[1], 80),
+      Math.min(black[2], 80)
     ]
 
     // Calculate scale with clamped offset
+    // Allow tighter ranges (min 30) for low-contrast captures
     const effectiveBlack = this.offset
     this.scale = [
-      (whiteExp[0] - blackExp[0]) / Math.max(50, white[0] - effectiveBlack[0]),
-      (whiteExp[1] - blackExp[1]) / Math.max(50, white[1] - effectiveBlack[1]),
-      (whiteExp[2] - blackExp[2]) / Math.max(50, white[2] - effectiveBlack[2])
+      (whiteExp[0] - blackExp[0]) / Math.max(30, white[0] - effectiveBlack[0]),
+      (whiteExp[1] - blackExp[1]) / Math.max(30, white[1] - effectiveBlack[1]),
+      (whiteExp[2] - blackExp[2]) / Math.max(30, white[2] - effectiveBlack[2])
     ]
 
     // Clamp scale to avoid over-amplification
-    // Max 1.5 to preserve color relationships
-    this.scale = this.scale.map(s => Math.min(s, 1.5))
+    // Allow up to 2.5 for washed-out colors, but warn if hitting limits
+    const maxScale = 2.5
+    const clampedScale = this.scale.map(s => Math.max(0.5, Math.min(s, maxScale)))
 
+    // If any channel hit the limit, log for debugging
+    if (this.scale.some((s, i) => s !== clampedScale[i])) {
+      console.warn(`ColorCorrector: scale clamped from [${this.scale.map(s => s.toFixed(2)).join(',')}]`)
+    }
+
+    this.scale = clampedScale
     this.mode = 'diagonal'
   }
 

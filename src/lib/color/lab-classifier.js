@@ -38,9 +38,10 @@ export class LABColorClassifier {
     }))
 
     // Thresholds for neutral color detection
-    this.neutralChromaThreshold = 25  // Below this chroma = neutral (black or white)
-    this.blackLThreshold = 40         // L below this = black
-    this.whiteLThreshold = 70         // L above this = white
+    // Lower chroma threshold = more aggressive at detecting chromatic colors
+    this.neutralChromaThreshold = 15  // Below this chroma = neutral (black or white)
+    this.blackLThreshold = 35         // L below this = black
+    this.whiteLThreshold = 75         // L above this = white
   }
 
   /**
