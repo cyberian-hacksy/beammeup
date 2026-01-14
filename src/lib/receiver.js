@@ -1064,10 +1064,18 @@ function scanFrame() {
             if (sampleResults.length >= 6) break
           }
           if (sampleResults.length > 0) {
+            // Color name abbreviations: W=white, C=cyan, M=magenta, Y=yellow, B=blue, G=green, R=red, K=black
+            const colorAbbrev = (name) => {
+              if (!name) return '?'
+              const n = name.toLowerCase()
+              if (n.startsWith('black')) return 'K'
+              if (n.startsWith('blue')) return 'B'
+              return name.substring(0, 1).toUpperCase()
+            }
             const samples = sampleResults.slice(0, 3).map(r => {
               const s = r.sampledRGB || [0,0,0]
               const c = r.correctedRGB || [0,0,0]
-              return `${s[0]},${s[1]},${s[2]}->${c[0]?.toFixed(0)},${c[1]?.toFixed(0)},${c[2]?.toFixed(0)}=${r.colorName?.substring(0,1)||'?'}`
+              return `${s[0]},${s[1]},${s[2]}->${c[0]?.toFixed(0)},${c[1]?.toFixed(0)},${c[2]?.toFixed(0)}=${colorAbbrev(r.colorName)}`
             })
             debugLog(`>>> RGB ${samples.join(' | ')}`)
           }
