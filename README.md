@@ -1,4 +1,4 @@
-![Beam Me Up](logo.png)
+<img src="logo.png" alt="Beam Me Up" width="200">
 
 # Beam Me Up
 
