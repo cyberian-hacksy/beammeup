@@ -5,6 +5,9 @@ import { QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from '
 import { calibrateFromFinders, normalizeRgb } from './calibration.js'
 import { ColorQRDecoder } from './color-decoder.js'
 
+// Debug mode - enabled via ?test URL parameter
+const DEBUG_MODE = typeof location !== 'undefined' && location.search.includes('test')
+
 // Receiver state
 const state = {
   decoder: null,
@@ -73,6 +76,11 @@ function debugStatus(text) {
 }
 
 function debugLog(text, forceLog = false) {
+  // Skip verbose debug output unless in debug mode (?test)
+  if (!DEBUG_MODE && text.startsWith('>>>')) {
+    return
+  }
+
   // Always log threshold changes and forced entries
   if (!forceLog && !text.startsWith('>>>')) {
     // Extract key info for smart deduplication

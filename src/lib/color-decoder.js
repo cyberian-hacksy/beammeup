@@ -1,6 +1,9 @@
 // ColorQRDecoder - Main orchestrator for color QR decoding
 // Applies libcimbar techniques: relative colors, color correction, drift tracking, priority decoding
 
+// Debug mode - enabled via ?test URL parameter
+const DEBUG_MODE = typeof location !== 'undefined' && location.search.includes('test')
+
 import { ModuleGrid } from './color/module-grid.js'
 import { ColorCorrector } from './color/color-corrector.js'
 import { RelativeColorClassifier } from './color/relative-classifier.js'
@@ -51,7 +54,7 @@ export class ColorQRDecoder {
     if (this.classifierType !== type) {
       this.classifierType = type
       this.classifier = this.createClassifier(type)
-      console.log(`[ColorQRDecoder] switched to ${type} classifier`)
+      if (DEBUG_MODE) console.log(`[ColorQRDecoder] switched to ${type} classifier`)
     }
   }
 
@@ -70,7 +73,7 @@ export class ColorQRDecoder {
 
     // Step 1b: Build module grid from detected QR position
     this.grid = new ModuleGrid(qrLocation, qrVersion)
-    console.log(`[ColorQRDecoder] version=${qrVersion}, gridSize=${this.grid.size}, moduleSize=${this.grid.getModuleSize().toFixed(1)}px`)
+    if (DEBUG_MODE) console.log(`[ColorQRDecoder] version=${qrVersion}, gridSize=${this.grid.size}, moduleSize=${this.grid.getModuleSize().toFixed(1)}px`)
 
     // Step 2: Initialize or reset drift tracker
     // Keep drift across frames if grid size matches (same QR code)
@@ -98,7 +101,7 @@ export class ColorQRDecoder {
 
     // Step 5: Build binary channel images (per-pixel classification)
     const channels = this.decoder.buildChannelImages(imageData.width, imageData.height, imageData)
-    console.log(`[ColorQRDecoder] built channel images ${channels.size}x${channels.size}`)
+    if (DEBUG_MODE) console.log(`[ColorQRDecoder] built channel images ${channels.size}x${channels.size}`)
 
     // Step 6: Compute statistics
     const decoderStats = this.decoder.getStats()
