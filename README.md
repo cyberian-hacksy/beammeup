@@ -1,3 +1,5 @@
+![Beam Me Up](logo.png)
+
 # Beam Me Up
 
 > *"Beam me up, Scotty!"*
