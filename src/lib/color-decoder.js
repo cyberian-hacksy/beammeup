@@ -4,6 +4,7 @@
 import { ModuleGrid } from './color/module-grid.js'
 import { ColorCorrector } from './color/color-corrector.js'
 import { RelativeColorClassifier } from './color/relative-classifier.js'
+import { LABColorClassifier } from './color/lab-classifier.js'
 import { DriftTracker } from './color/drift-tracker.js'
 import { PriorityDecoder } from './color/priority-decoder.js'
 
@@ -15,16 +16,43 @@ import { PriorityDecoder } from './color/priority-decoder.js'
  * 4. Generate binary channel images for jsQR
  */
 export class ColorQRDecoder {
-  constructor() {
+  constructor(classifierType = 'lab') {
     this.grid = null
     this.corrector = new ColorCorrector()
-    this.classifier = new RelativeColorClassifier()
+    this.classifierType = classifierType
+    this.classifier = this.createClassifier(classifierType)
     this.drift = null
     this.decoder = null
 
     // Persist drift tracker across frames for continuity
     this.persistentDrift = null
     this.lastGridSize = 0
+  }
+
+  /**
+   * Create a color classifier of the specified type
+   * @param {string} type - 'lab' or 'relative'
+   */
+  createClassifier(type) {
+    switch (type) {
+      case 'lab':
+        return new LABColorClassifier()
+      case 'relative':
+      default:
+        return new RelativeColorClassifier()
+    }
+  }
+
+  /**
+   * Switch to a different classifier type
+   * @param {string} type - 'lab' or 'relative'
+   */
+  setClassifierType(type) {
+    if (this.classifierType !== type) {
+      this.classifierType = type
+      this.classifier = this.createClassifier(type)
+      console.log(`[ColorQRDecoder] switched to ${type} classifier`)
+    }
   }
 
   /**
@@ -82,7 +110,8 @@ export class ColorQRDecoder {
       avgDrift: driftStats.avgDrift,
       maxDrift: driftStats.maxDrift,
       colorDistribution: colorDist,
-      correctorMode: this.corrector.getDebugInfo()
+      correctorMode: this.corrector.getDebugInfo(),
+      classifierType: this.classifierType
     }
 
     return { channels, results, stats }

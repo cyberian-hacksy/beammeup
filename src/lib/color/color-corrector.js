@@ -118,24 +118,18 @@ export class ColorCorrector {
 
   /**
    * Build full 3x3 correction matrix using least squares
-   * Uses Moore-Penrose pseudoinverse: CCM = expected^T * pinv(observed^T)
+   * Uses Moore-Penrose pseudoinverse via SVD for numerical stability
+   * Formula: CCM = E * pinv(O) where O is Nx3 observed, E is Nx3 expected
    */
   buildMatrix(observed, expected) {
-    // For numerical stability and simplicity, we'll use a simplified approach:
-    // Solve for the matrix M such that M * observed ≈ expected
-    // Using normal equations: M = expected * observed^T * (observed * observed^T)^-1
-
     const n = observed.length
 
-    // Build observed matrix (3 x n) and expected matrix (3 x n)
-    // Then solve M * O = E for M (3x3)
+    // Use SVD-based pseudoinverse for robustness
+    // For M * observed^T = expected^T, we solve M = expected^T * pinv(observed^T)
+    // observed^T is 3xN, so pinv(observed^T) is Nx3
 
-    // For small n, we can use direct computation
-    // O^T * O gives us a 3x3 matrix (Gram matrix)
-    // M = E * O^T * inv(O * O^T)
-
-    // Compute O * O^T (3x3)
-    const OOT = [
+    // Compute O^T * O (3x3 Gram matrix) for SVD
+    const OTO = [
       [0, 0, 0],
       [0, 0, 0],
       [0, 0, 0]
@@ -144,10 +138,32 @@ export class ColorCorrector {
     for (let i = 0; i < n; i++) {
       for (let r = 0; r < 3; r++) {
         for (let c = 0; c < 3; c++) {
-          OOT[r][c] += observed[i][r] * observed[i][c]
+          OTO[r][c] += observed[i][r] * observed[i][c]
         }
       }
     }
+
+    // SVD of 3x3 symmetric matrix O^T*O using Jacobi method
+    const svd = this.svd3x3Symmetric(OTO)
+
+    if (!svd) {
+      console.warn('ColorCorrector: SVD failed, using diagonal')
+      this.buildDiagonal(observed, expected)
+      return
+    }
+
+    // Compute pseudoinverse of singular values with regularization
+    // Threshold small values to avoid division by near-zero
+    const threshold = 1e-6 * Math.max(...svd.S)
+    const Sinv = svd.S.map(s => s > threshold ? 1 / s : 0)
+
+    // pinv(O^T*O) = V * diag(1/S^2) * V^T (since SVD of O^T*O gives squared singular values)
+    // But we want pinv(O^T) = V * diag(1/S) * U^T
+    // For the Gram matrix, sqrt of eigenvalues gives singular values
+    const SinvSqrt = Sinv.map(s => Math.sqrt(s))
+
+    // Compute pinv(O^T*O) = V * diag(Sinv) * V^T
+    const pinvOTO = this.reconstructFromSVD(svd.V, Sinv)
 
     // Compute E * O^T (3x3)
     const EOT = [
@@ -164,19 +180,118 @@ export class ColorCorrector {
       }
     }
 
-    // Invert OOT (3x3 matrix inversion)
-    const invOOT = this.invert3x3(OOT)
+    // M = EOT * pinv(OTO)
+    this.matrix = this.multiply3x3(EOT, pinvOTO)
 
-    if (!invOOT) {
-      // Matrix not invertible, fall back to diagonal
-      console.warn('ColorCorrector: matrix not invertible, using diagonal')
-      this.buildDiagonal(observed, expected)
-      return
+    // Validate matrix - check for extreme values that indicate instability
+    const maxVal = Math.max(...this.matrix.flat().map(Math.abs))
+    if (maxVal > 5) {
+      console.warn(`ColorCorrector: matrix has extreme values (max=${maxVal.toFixed(2)}), clamping`)
+      // Regularize by blending with identity
+      const blend = 3 / maxVal
+      for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+          const identity = i === j ? 1 : 0
+          this.matrix[i][j] = blend * this.matrix[i][j] + (1 - blend) * identity
+        }
+      }
     }
 
-    // M = EOT * invOOT
-    this.matrix = this.multiply3x3(EOT, invOOT)
     this.mode = 'matrix'
+  }
+
+  /**
+   * SVD of a 3x3 symmetric matrix using Jacobi eigenvalue algorithm
+   * Returns {V: eigenvectors (3x3), S: eigenvalues (array of 3)}
+   */
+  svd3x3Symmetric(A) {
+    // Copy matrix
+    const a = [
+      [...A[0]],
+      [...A[1]],
+      [...A[2]]
+    ]
+
+    // Initialize V as identity
+    const V = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1]
+    ]
+
+    const maxIter = 50
+    const tolerance = 1e-10
+
+    for (let iter = 0; iter < maxIter; iter++) {
+      // Find largest off-diagonal element
+      let maxOff = 0
+      let p = 0, q = 1
+
+      for (let i = 0; i < 3; i++) {
+        for (let j = i + 1; j < 3; j++) {
+          if (Math.abs(a[i][j]) > maxOff) {
+            maxOff = Math.abs(a[i][j])
+            p = i
+            q = j
+          }
+        }
+      }
+
+      if (maxOff < tolerance) break
+
+      // Compute Jacobi rotation
+      const theta = (a[q][q] - a[p][p]) / (2 * a[p][q])
+      const t = Math.sign(theta) / (Math.abs(theta) + Math.sqrt(theta * theta + 1))
+      const c = 1 / Math.sqrt(t * t + 1)
+      const s = t * c
+
+      // Apply rotation to A: A' = J^T * A * J
+      const app = a[p][p], aqq = a[q][q], apq = a[p][q]
+      a[p][p] = c * c * app - 2 * c * s * apq + s * s * aqq
+      a[q][q] = s * s * app + 2 * c * s * apq + c * c * aqq
+      a[p][q] = a[q][p] = 0
+
+      for (let k = 0; k < 3; k++) {
+        if (k !== p && k !== q) {
+          const akp = a[k][p], akq = a[k][q]
+          a[k][p] = a[p][k] = c * akp - s * akq
+          a[k][q] = a[q][k] = s * akp + c * akq
+        }
+      }
+
+      // Update eigenvectors: V' = V * J
+      for (let k = 0; k < 3; k++) {
+        const vkp = V[k][p], vkq = V[k][q]
+        V[k][p] = c * vkp - s * vkq
+        V[k][q] = s * vkp + c * vkq
+      }
+    }
+
+    // Eigenvalues are on diagonal, ensure non-negative
+    const S = [Math.max(0, a[0][0]), Math.max(0, a[1][1]), Math.max(0, a[2][2])]
+
+    return { V, S }
+  }
+
+  /**
+   * Reconstruct matrix from SVD: M = V * diag(S) * V^T
+   */
+  reconstructFromSVD(V, S) {
+    const result = [
+      [0, 0, 0],
+      [0, 0, 0],
+      [0, 0, 0]
+    ]
+
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) {
+        for (let k = 0; k < 3; k++) {
+          result[i][j] += V[i][k] * S[k] * V[j][k]
+        }
+      }
+    }
+
+    return result
   }
 
   /**
