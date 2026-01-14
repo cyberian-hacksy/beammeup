@@ -1379,7 +1379,13 @@ export function initReceiver(errorHandler) {
     receiverModeButtons: document.querySelectorAll('#receiver-mode-selector .mode-btn'),
     // Debug elements
     btnCopyLog: document.getElementById('btn-copy-log'),
-    debugLog: document.getElementById('debug-log')
+    debugLog: document.getElementById('debug-log'),
+    debugPanel: document.getElementById('debug-panel')
+  }
+
+  // Show debug panel only in test mode
+  if (DEBUG_MODE && elements.debugPanel) {
+    elements.debugPanel.style.display = 'block'
   }
 
   // Bind event handlers
