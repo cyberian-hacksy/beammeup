@@ -37,6 +37,7 @@ const state = {
   canvas: null,
   ctx: null,
   animationId: null,
+  callbackId: null,
   isScanning: false,
   frameCount: 0,
   validFrames: 0,
@@ -46,7 +47,18 @@ const state = {
   completedFile: null
 }
 
+// Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
+const hasVideoFrameCallback = typeof HTMLVideoElement !== 'undefined' &&
+  'requestVideoFrameCallback' in HTMLVideoElement.prototype
+
+// Check if VideoFrame API is available (direct frame access)
+const hasVideoFrame = typeof VideoFrame !== 'undefined'
+
+// Check if ImageCapture API is available (better for UVC devices)
+const hasImageCapture = typeof ImageCapture !== 'undefined'
+
 let elements = null
+let imageCapture = null
 let showError = (msg) => console.error(msg)
 
 function formatBytes(bytes) {
@@ -133,8 +145,28 @@ async function startCapture(deviceId) {
       debugLog(`Actual: ${settings.width}x${settings.height} @ ${settings.frameRate || '?'}fps`)
     }
 
+    // Log frame callback method
+    debugLog(`Frame capture method: ${hasVideoFrameCallback ? 'requestVideoFrameCallback' : 'requestAnimationFrame'}`)
+
+    // Set up ImageCapture if available
+    if (hasImageCapture && track) {
+      try {
+        imageCapture = new ImageCapture(track)
+        debugLog('ImageCapture API: initialized')
+      } catch (e) {
+        debugLog(`ImageCapture API: failed to initialize (${e.message})`)
+        imageCapture = null
+      }
+    } else {
+      debugLog('ImageCapture API: not available')
+    }
+
     state.canvas = document.createElement('canvas')
-    state.ctx = state.canvas.getContext('2d', { willReadFrequently: true })
+    state.ctx = state.canvas.getContext('2d', {
+      willReadFrequently: true,
+      alpha: false,  // Might help with consistent color handling
+      colorSpace: 'srgb'
+    })
 
     saveDevicePreference(deviceId)
 
@@ -151,12 +183,26 @@ async function startCapture(deviceId) {
   }
 }
 
-function processFrame() {
+function scheduleNextFrame() {
+  if (!state.isScanning || !state.stream) return
+
+  const video = elements.video
+
+  if (hasVideoFrameCallback) {
+    // Use requestVideoFrameCallback for accurate frame timing
+    state.callbackId = video.requestVideoFrameCallback(processFrame)
+  } else {
+    // Fallback to requestAnimationFrame
+    state.animationId = requestAnimationFrame(processFrame)
+  }
+}
+
+async function processFrame(now, metadata) {
   if (!state.isScanning || !state.stream) return
 
   const video = elements.video
   if (video.videoWidth === 0) {
-    state.animationId = requestAnimationFrame(processFrame)
+    scheduleNextFrame()
     return
   }
 
@@ -164,20 +210,88 @@ function processFrame() {
   const height = video.videoHeight
   state.canvas.width = width
   state.canvas.height = height
-  state.ctx.drawImage(video, 0, 0)
 
-  const imageData = state.ctx.getImageData(0, 0, width, height)
+  let imageData
+  let captureMethod = 'video'
+
+  // Try ImageCapture API first (works best with UVC devices)
+  if (imageCapture && state.frameCount % 30 === 1) {
+    try {
+      const bitmap = await imageCapture.grabFrame()
+      state.ctx.drawImage(bitmap, 0, 0)
+      bitmap.close()
+      imageData = state.ctx.getImageData(0, 0, width, height)
+      captureMethod = 'ImageCapture'
+    } catch (e) {
+      // Fall through to other methods
+    }
+  }
+
+  // Try VideoFrame API for direct frame access
+  if (!imageData && hasVideoFrame && metadata) {
+    try {
+      const frame = new VideoFrame(video, { timestamp: metadata.mediaTime * 1000000 || 0 })
+      state.ctx.drawImage(frame, 0, 0)
+      frame.close()
+      imageData = state.ctx.getImageData(0, 0, width, height)
+      captureMethod = 'VideoFrame'
+    } catch (e) {
+      // Fall through to default method
+    }
+  }
+
+  // Default: draw video directly to canvas
+  if (!imageData) {
+    state.ctx.drawImage(video, 0, 0)
+    imageData = state.ctx.getImageData(0, 0, width, height)
+  }
+
   state.frameCount++
 
   // Log frame info periodically
   if (state.frameCount === 1) {
     debugLog(`Video: ${width}x${height}, first frame captured`)
+    debugLog(`Video state: readyState=${video.readyState}, paused=${video.paused}, currentTime=${video.currentTime.toFixed(2)}`)
+    debugLog(`VideoFrame API: ${hasVideoFrame ? 'available' : 'not available'}`)
+    debugLog(`Capture method used: ${captureMethod}`)
+    if (metadata) {
+      debugLog(`Video frame metadata: presentedFrames=${metadata.presentedFrames}, mediaTime=${metadata.mediaTime?.toFixed(3)}`)
+    }
   }
 
-  // Log first 32 bytes every 30 frames to see what we're actually capturing
+  // Log first bytes every 30 frames to see what we're actually capturing
   if (state.frameCount % 30 === 1) {
     const firstBytes = Array.from(imageData.data.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-    debugLog(`Frame ${state.frameCount} bytes: ${firstBytes}`)
+    debugLog(`Frame ${state.frameCount} first 32 bytes: ${firstBytes}`)
+
+    // Also check some pixels further into the frame to see if content varies
+    const midOffset = Math.floor(width * height * 2) // Middle of frame
+    const midBytes = Array.from(imageData.data.slice(midOffset, midOffset + 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+    debugLog(`Frame ${state.frameCount} mid bytes: ${midBytes}`)
+
+    // Check expected BEAM header position (should be at byte 0 for RGB mode row 0)
+    const r = imageData.data[0]
+    const g = imageData.data[1]
+    const b = imageData.data[2]
+    const beamMagic = 'BEAM'
+    const expected = `${beamMagic.charCodeAt(0).toString(16)} ${beamMagic.charCodeAt(1).toString(16)} ${beamMagic.charCodeAt(2).toString(16)} ${beamMagic.charCodeAt(3).toString(16)}`
+    debugLog(`Expected BEAM magic: ${expected} (42 45 41 4d), got R=${r.toString(16)} G=${g.toString(16)} B=${b.toString(16)}`)
+
+    // Check how many unique colors are in the first row (should be highly varied for BEAM data)
+    const uniqueColors = new Set()
+    for (let i = 0; i < width * 4 && i < 4000; i += 4) {
+      uniqueColors.add(`${imageData.data[i]},${imageData.data[i + 1]},${imageData.data[i + 2]}`)
+    }
+    debugLog(`Unique colors in first row: ${uniqueColors.size} (expect many for BEAM data, few for desktop/solid)`)
+
+    // Update debug canvas every 30 frames so user can see what we're capturing
+    const debugCanvas = document.getElementById('hdmi-uvc-receiver-debug-canvas')
+    if (debugCanvas) {
+      debugCanvas.width = Math.min(width, 640)
+      debugCanvas.height = Math.min(height, 360)
+      const debugCtx = debugCanvas.getContext('2d')
+      debugCtx.drawImage(state.canvas, 0, 0, debugCanvas.width, debugCanvas.height)
+    }
   }
 
   const result = parseFrame(imageData.data, width, height)
@@ -244,7 +358,7 @@ function processFrame() {
     debugCurrent(`#${state.frameCount} no signal`)
   }
 
-  state.animationId = requestAnimationFrame(processFrame)
+  scheduleNextFrame()
 }
 
 function showReceivingStatus() {
@@ -280,10 +394,7 @@ function updateProgress() {
 async function handleComplete() {
   state.isScanning = false
 
-  if (state.animationId) {
-    cancelAnimationFrame(state.animationId)
-    state.animationId = null
-  }
+  cancelNextFrame()
 
   const decoder = state.decoder
   const meta = decoder.metadata
@@ -326,13 +437,21 @@ function downloadFile() {
   URL.revokeObjectURL(url)
 }
 
-function resetReceiver() {
-  state.isScanning = false
-
+function cancelNextFrame() {
   if (state.animationId) {
     cancelAnimationFrame(state.animationId)
     state.animationId = null
   }
+  if (state.callbackId && hasVideoFrameCallback && elements.video) {
+    elements.video.cancelVideoFrameCallback(state.callbackId)
+    state.callbackId = null
+  }
+}
+
+function resetReceiver() {
+  state.isScanning = false
+
+  cancelNextFrame()
 
   state.decoder = null
   state.frameCount = 0
@@ -355,7 +474,7 @@ function resetReceiver() {
 
 function startScanning() {
   state.isScanning = true
-  processFrame()
+  scheduleNextFrame()
 }
 
 async function handleDeviceChange() {
@@ -390,6 +509,8 @@ export function resetHdmiUvcReceiver() {
     state.stream.getTracks().forEach(t => t.stop())
     state.stream = null
   }
+
+  imageCapture = null
 
   elements.signalStatus.textContent = 'Waiting for signal...'
   elements.signalStatus.classList.remove('connected')
