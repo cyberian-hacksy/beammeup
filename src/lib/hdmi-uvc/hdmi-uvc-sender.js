@@ -163,6 +163,10 @@ function renderFrame() {
 
     if (state.frameCount === 0) {
       debugLog(`Frame built: ${frameData.length} bytes (${res.width}x${res.height}x4 RGBA)`)
+      // Log first 32 bytes (first 8 pixels) to verify header (now in safe range 16-240)
+      const firstBytes = Array.from(frameData.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+      debugLog(`Sender frame first 32 bytes: ${firstBytes}`)
+      debugLog(`Values now use safe range 16-240 to survive HDMI color crushing`)
     }
 
     // Draw to canvas
@@ -239,10 +243,9 @@ async function startSending() {
 
     debugLog(`Encoder created: K=${state.encoder.K}, K'=${state.encoder.K_prime}, M=${state.encoder.M}`)
 
-    // Show canvas, hide placeholder
+    // Show canvas, hide placeholder (no overlay - it would interfere with data)
     elements.canvas.style.display = 'block'
     elements.placeholder.style.display = 'none'
-    elements.overlay.classList.remove('hidden')
 
     // Try to go fullscreen on external display (for HDMI capture)
     await enterFullscreenOnExternalDisplay()
@@ -296,9 +299,8 @@ function pauseSending() {
 function resumeSending() {
   state.isPaused = false
 
-  // Show canvas, hide placeholder
+  // Show canvas, hide placeholder (no overlay - it would interfere with data)
   elements.canvas.style.display = 'block'
-  elements.overlay.classList.remove('hidden')
   elements.placeholder.style.display = 'none'
 
   // Disable controls during send

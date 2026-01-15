@@ -269,20 +269,17 @@ async function processFrame(now, metadata) {
     const midBytes = Array.from(imageData.data.slice(midOffset, midOffset + 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')
     debugLog(`Frame ${state.frameCount} mid bytes: ${midBytes}`)
 
-    // Check expected BEAM header position (should be at byte 0 for RGB mode row 0)
+    // Check expected BEAM header (now encoded in safe range 16-240)
+    // 'B'=0x42=66 maps to ~74 in safe range, 'E'=0x45=69 maps to ~77, etc.
     const r = imageData.data[0]
-    const g = imageData.data[1]
-    const b = imageData.data[2]
-    const beamMagic = 'BEAM'
-    const expected = `${beamMagic.charCodeAt(0).toString(16)} ${beamMagic.charCodeAt(1).toString(16)} ${beamMagic.charCodeAt(2).toString(16)} ${beamMagic.charCodeAt(3).toString(16)}`
-    debugLog(`Expected BEAM magic: ${expected} (42 45 41 4d), got R=${r.toString(16)} G=${g.toString(16)} B=${b.toString(16)}`)
+    debugLog(`First pixel R=${r} (expect ~74 for encoded 'B', range 16-240)`)
 
-    // Check how many unique colors are in the first row (should be highly varied for BEAM data)
+    // Check how many unique colors are in the first row
     const uniqueColors = new Set()
     for (let i = 0; i < width * 4 && i < 4000; i += 4) {
       uniqueColors.add(`${imageData.data[i]},${imageData.data[i + 1]},${imageData.data[i + 2]}`)
     }
-    debugLog(`Unique colors in first row: ${uniqueColors.size} (expect many for BEAM data, few for desktop/solid)`)
+    debugLog(`Unique colors in first row: ${uniqueColors.size}`)
 
     // Update debug canvas every 30 frames so user can see what we're capturing
     const debugCanvas = document.getElementById('hdmi-uvc-receiver-debug-canvas')

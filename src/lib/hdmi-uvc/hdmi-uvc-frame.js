@@ -3,6 +3,24 @@
 import { FRAME_MAGIC, HEADER_SIZE, HDMI_MODE, BLOCK_SIZES } from './hdmi-uvc-constants.js'
 import { crc32 } from './crc32.js'
 
+// Safe value range to avoid HDMI color crushing
+// Many HDMI pipelines crush values near 0 and 255
+const SAFE_MIN = 16
+const SAFE_MAX = 240
+const SAFE_RANGE = SAFE_MAX - SAFE_MIN // 224
+
+// Encode byte (0-255) to safe HDMI range (16-240)
+function encodeByte(val) {
+  return Math.round(SAFE_MIN + (val / 255) * SAFE_RANGE)
+}
+
+// Decode safe HDMI range (16-240) back to byte (0-255)
+function decodeByte(val) {
+  // Clamp to safe range first
+  const clamped = Math.max(SAFE_MIN, Math.min(SAFE_MAX, val))
+  return Math.round(((clamped - SAFE_MIN) / SAFE_RANGE) * 255)
+}
+
 // Build frame header (22 bytes)
 export function buildHeader(mode, width, height, fps, symbolId, payloadLength, payloadCrc) {
   const header = new ArrayBuffer(HEADER_SIZE)
@@ -73,11 +91,11 @@ export function encodePayloadGray(payload, width, height) {
   // Create RGBA image data (4 bytes per pixel for canvas)
   const imageData = new Uint8ClampedArray(width * height * 4)
 
-  // Fill header rows with recognizable pattern (alternating black/white)
+  // Fill header rows with recognizable pattern (alternating dark/light in safe range)
   for (let y = 0; y < headerRows; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4
-      const val = ((x + y) % 2) * 255
+      const val = ((x + y) % 2) === 0 ? SAFE_MIN : SAFE_MAX
       imageData[i] = val     // R
       imageData[i + 1] = val // G
       imageData[i + 2] = val // B
@@ -85,26 +103,26 @@ export function encodePayloadGray(payload, width, height) {
     }
   }
 
-  // Encode data rows
+  // Encode data rows (map to safe range)
   for (let p = 0; p < Math.min(payload.length, dataPixels); p++) {
     const x = p % width
     const y = headerRows + Math.floor(p / width)
     const i = (y * width + x) * 4
-    const val = payload[p]
+    const val = encodeByte(payload[p])
     imageData[i] = val     // R
     imageData[i + 1] = val // G
     imageData[i + 2] = val // B
     imageData[i + 3] = 255 // A
   }
 
-  // Fill remaining pixels with zeros
+  // Fill remaining pixels with safe minimum (encoded 0)
   for (let p = payload.length; p < dataPixels; p++) {
     const x = p % width
     const y = headerRows + Math.floor(p / width)
     const i = (y * width + x) * 4
-    imageData[i] = 0
-    imageData[i + 1] = 0
-    imageData[i + 2] = 0
+    imageData[i] = SAFE_MIN
+    imageData[i + 1] = SAFE_MIN
+    imageData[i + 2] = SAFE_MIN
     imageData[i + 3] = 255
   }
 
@@ -120,8 +138,8 @@ export function decodePayloadGray(imageData, width, height, expectedLength) {
     const x = p % width
     const y = headerRows + Math.floor(p / width)
     const i = (y * width + x) * 4
-    // Use red channel (all RGB should be same in grayscale)
-    payload[p] = imageData[i]
+    // Use red channel (all RGB should be same in grayscale), decode from safe range
+    payload[p] = decodeByte(imageData[i])
   }
 
   return payload
@@ -136,11 +154,11 @@ export function encodePayloadRGB(payload, width, height) {
 
   const imageData = new Uint8ClampedArray(width * height * 4)
 
-  // Fill header rows with pattern
+  // Fill header rows with pattern (alternating in safe range)
   for (let y = 0; y < headerRows; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4
-      const val = ((x + y) % 2) * 255
+      const val = ((x + y) % 2) === 0 ? SAFE_MIN : SAFE_MAX
       imageData[i] = val
       imageData[i + 1] = val
       imageData[i + 2] = val
@@ -148,14 +166,14 @@ export function encodePayloadRGB(payload, width, height) {
     }
   }
 
-  // Encode data rows (3 payload bytes per pixel in R, G, B)
+  // Encode data rows (3 payload bytes per pixel in R, G, B, mapped to safe range)
   let payloadIdx = 0
   for (let y = headerRows; y < height && payloadIdx < payload.length; y++) {
     for (let x = 0; x < width && payloadIdx < payload.length; x++) {
       const i = (y * width + x) * 4
-      imageData[i] = payloadIdx < payload.length ? payload[payloadIdx++] : 0     // R
-      imageData[i + 1] = payloadIdx < payload.length ? payload[payloadIdx++] : 0 // G
-      imageData[i + 2] = payloadIdx < payload.length ? payload[payloadIdx++] : 0 // B
+      imageData[i] = payloadIdx < payload.length ? encodeByte(payload[payloadIdx++]) : SAFE_MIN     // R
+      imageData[i + 1] = payloadIdx < payload.length ? encodeByte(payload[payloadIdx++]) : SAFE_MIN // G
+      imageData[i + 2] = payloadIdx < payload.length ? encodeByte(payload[payloadIdx++]) : SAFE_MIN // B
       imageData[i + 3] = 255
     }
   }
@@ -172,9 +190,9 @@ export function decodePayloadRGB(imageData, width, height, expectedLength) {
   for (let y = headerRows; y < height && payloadIdx < expectedLength; y++) {
     for (let x = 0; x < width && payloadIdx < expectedLength; x++) {
       const i = (y * width + x) * 4
-      if (payloadIdx < expectedLength) payload[payloadIdx++] = imageData[i]     // R
-      if (payloadIdx < expectedLength) payload[payloadIdx++] = imageData[i + 1] // G
-      if (payloadIdx < expectedLength) payload[payloadIdx++] = imageData[i + 2] // B
+      if (payloadIdx < expectedLength) payload[payloadIdx++] = decodeByte(imageData[i])     // R
+      if (payloadIdx < expectedLength) payload[payloadIdx++] = decodeByte(imageData[i + 1]) // G
+      if (payloadIdx < expectedLength) payload[payloadIdx++] = decodeByte(imageData[i + 2]) // B
     }
   }
 
@@ -270,22 +288,22 @@ export function encodePayloadCompat(payload, width, height, blockSize) {
     imageData[i + 3] = 255
   }
 
-  // Fill header rows with pattern
+  // Fill header rows with pattern (alternating in safe range)
   for (let y = 0; y < headerRows; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4
-      const val = ((x + y) % 2) * 255
+      const val = ((x + y) % 2) === 0 ? SAFE_MIN : SAFE_MAX
       imageData[i] = val
       imageData[i + 1] = val
       imageData[i + 2] = val
     }
   }
 
-  // Encode data as super-pixels
+  // Encode data as super-pixels (map to safe range)
   let payloadIdx = 0
   for (let by = 0; by < blocksY && payloadIdx < payload.length; by++) {
     for (let bx = 0; bx < blocksX && payloadIdx < payload.length; bx++) {
-      const val = payload[payloadIdx++]
+      const val = encodeByte(payload[payloadIdx++])
 
       // Fill entire block with this value
       const startY = headerRows + by * blockSize
@@ -338,7 +356,7 @@ export function decodePayloadCompat(imageData, width, height, blockSize, expecte
         }
       }
 
-      payload[payloadIdx++] = Math.round(sum / count)
+      payload[payloadIdx++] = decodeByte(Math.round(sum / count))
     }
   }
 
@@ -396,12 +414,13 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
       throw new Error('Unknown mode: ' + mode)
   }
 
-  // Embed header in first row (grayscale values)
+  // Embed header in first row (encoded to safe range)
   for (let i = 0; i < HEADER_SIZE; i++) {
     const pixelIdx = i * 4
-    imageData[pixelIdx] = header[i]     // R
-    imageData[pixelIdx + 1] = header[i] // G
-    imageData[pixelIdx + 2] = header[i] // B
+    const encoded = encodeByte(header[i])
+    imageData[pixelIdx] = encoded     // R
+    imageData[pixelIdx + 1] = encoded // G
+    imageData[pixelIdx + 2] = encoded // B
   }
 
   return imageData
@@ -409,10 +428,10 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
 
 // Parse frame: extract header and payload
 export function parseFrame(imageData, width, height) {
-  // Extract header from first row
+  // Extract header from first row (decode from safe range)
   const headerBytes = new Uint8Array(HEADER_SIZE)
   for (let i = 0; i < HEADER_SIZE; i++) {
-    headerBytes[i] = imageData[i * 4] // Red channel
+    headerBytes[i] = decodeByte(imageData[i * 4]) // Red channel, decoded
   }
 
   const header = parseHeader(headerBytes)
