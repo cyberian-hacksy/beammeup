@@ -4,10 +4,11 @@ import { FRAME_MAGIC, HEADER_SIZE, HDMI_MODE, BLOCK_SIZES } from './hdmi-uvc-con
 import { crc32 } from './crc32.js'
 
 // Safe value range to avoid HDMI color crushing
-// Many HDMI pipelines crush values near 0 and 255
-const SAFE_MIN = 16
-const SAFE_MAX = 240
-const SAFE_RANGE = SAFE_MAX - SAFE_MIN // 224
+// Some HDMI pipelines aggressively crush values below ~100
+// Using restricted mid-range to ensure values survive
+const SAFE_MIN = 100
+const SAFE_MAX = 200
+const SAFE_RANGE = SAFE_MAX - SAFE_MIN // 100
 
 // Encode byte (0-255) to safe HDMI range (16-240)
 function encodeByte(val) {

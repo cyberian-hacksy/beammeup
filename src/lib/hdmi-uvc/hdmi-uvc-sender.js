@@ -166,7 +166,7 @@ function renderFrame() {
       // Log first 32 bytes (first 8 pixels) to verify header (now in safe range 16-240)
       const firstBytes = Array.from(frameData.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
       debugLog(`Sender frame first 32 bytes: ${firstBytes}`)
-      debugLog(`Values now use safe range 16-240 to survive HDMI color crushing`)
+      debugLog(`Values now use safe range 100-200 to survive aggressive HDMI color crushing`)
     }
 
     // Draw to canvas

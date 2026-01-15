@@ -269,10 +269,10 @@ async function processFrame(now, metadata) {
     const midBytes = Array.from(imageData.data.slice(midOffset, midOffset + 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')
     debugLog(`Frame ${state.frameCount} mid bytes: ${midBytes}`)
 
-    // Check expected BEAM header (now encoded in safe range 16-240)
-    // 'B'=0x42=66 maps to ~74 in safe range, 'E'=0x45=69 maps to ~77, etc.
+    // Check expected BEAM header (now encoded in safe range 100-200)
+    // 'B'=0x42=66 maps to ~126, 'E'=69 maps to ~127, 'A'=65 maps to ~125, 'M'=77 maps to ~130
     const r = imageData.data[0]
-    debugLog(`First pixel R=${r} (expect ~74 for encoded 'B', range 16-240)`)
+    debugLog(`First pixel R=${r} (expect ~126 for encoded 'B', range 100-200)`)
 
     // Check how many unique colors are in the first row
     const uniqueColors = new Set()
