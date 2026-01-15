@@ -244,10 +244,8 @@ async function startSending() {
     elements.placeholder.style.display = 'none'
     elements.overlay.classList.remove('hidden')
 
-    // Enter fullscreen for maximum data area
-    if (elements.container.requestFullscreen) {
-      elements.container.requestFullscreen().catch(() => {})
-    }
+    // Try to go fullscreen on external display (for HDMI capture)
+    await enterFullscreenOnExternalDisplay()
 
     state.isSending = true
     state.isPaused = false
@@ -466,6 +464,49 @@ function handleFpsChange() {
 
   if (state.fileSize) {
     elements.estimate.textContent = estimateTime() + ' @ ' + estimateThroughput()
+  }
+}
+
+async function enterFullscreenOnExternalDisplay() {
+  try {
+    // Check if Multi-Screen Window Placement API is available
+    if ('getScreenDetails' in window) {
+      debugLog('Requesting screen details...')
+      const screenDetails = await window.getScreenDetails()
+      const screens = screenDetails.screens
+      const currentScreen = screenDetails.currentScreen
+
+      debugLog(`Found ${screens.length} screen(s)`)
+      screens.forEach((s, i) => {
+        const isCurrent = s === currentScreen ? ' [CURRENT]' : ''
+        debugLog(`  ${i}: ${s.width}x${s.height} left=${s.left}${isCurrent}`)
+      })
+
+      // Find any screen that's not the current one
+      const targetScreen = screens.find(s => s !== currentScreen)
+
+      if (targetScreen) {
+        debugLog(`Target: left=${targetScreen.left}, top=${targetScreen.top}`)
+
+        // Move window to target screen, then fullscreen
+        window.moveTo(targetScreen.left + 100, targetScreen.top + 100)
+        await new Promise(r => setTimeout(r, 150))
+
+        await elements.container.requestFullscreen({ screen: targetScreen })
+        return
+      } else {
+        debugLog('Only one screen available')
+      }
+    } else {
+      debugLog('Multi-Screen API not available')
+    }
+  } catch (err) {
+    debugLog(`Screen detection failed: ${err.message}`)
+  }
+
+  // Fallback to regular fullscreen on current screen
+  if (elements.container.requestFullscreen) {
+    await elements.container.requestFullscreen().catch(() => {})
   }
 }
 

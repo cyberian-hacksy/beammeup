@@ -169,12 +169,15 @@ function processFrame() {
   const imageData = state.ctx.getImageData(0, 0, width, height)
   state.frameCount++
 
-  // Log first frame info
+  // Log frame info periodically
   if (state.frameCount === 1) {
     debugLog(`Video: ${width}x${height}, first frame captured`)
-    // Log first 32 bytes of image data for debugging
+  }
+
+  // Log first 32 bytes every 30 frames to see what we're actually capturing
+  if (state.frameCount % 30 === 1) {
     const firstBytes = Array.from(imageData.data.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-    debugLog(`First 32 bytes: ${firstBytes}`)
+    debugLog(`Frame ${state.frameCount} bytes: ${firstBytes}`)
   }
 
   const result = parseFrame(imageData.data, width, height)
