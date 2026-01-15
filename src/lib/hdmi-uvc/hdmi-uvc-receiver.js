@@ -259,25 +259,13 @@ async function processFrame(now, metadata) {
     }
   }
 
-  // Log bytes from multiple rows every 30 frames to compare with sender
+  // Log first 20 rows every 30 frames to see what we're capturing
   if (state.frameCount % 30 === 1) {
-    const row0 = Array.from(imageData.data.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-    debugLog(`Frame ${state.frameCount} row 0: ${row0}`)
-
-    // Scan first 100 rows for potential BEAM header (look for mid-range values ~100-200)
-    // Encoded BEAM should be around: B=126, E=127, A=125, M=130
-    for (let row = 0; row < 100; row++) {
+    debugLog(`Frame ${state.frameCount} - first 20 rows:`)
+    for (let row = 0; row < 20; row++) {
       const offset = row * width * 4
-      const r0 = imageData.data[offset]
-      const r1 = imageData.data[offset + 4]
-      const r2 = imageData.data[offset + 8]
-      const r3 = imageData.data[offset + 12]
-
-      // Check if first 4 pixels are in the mid-range (100-150) - likely encoded header
-      if (r0 >= 100 && r0 <= 150 && r1 >= 100 && r1 <= 150 && r2 >= 100 && r2 <= 150 && r3 >= 100 && r3 <= 150) {
-        const rowBytes = Array.from(imageData.data.slice(offset, offset + 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-        debugLog(`*** Potential header at row ${row}: ${rowBytes}`)
-      }
+      const rowBytes = Array.from(imageData.data.slice(offset, offset + 24)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+      debugLog(`  row ${row}: ${rowBytes}`)
     }
 
     // Update debug canvas every 30 frames so user can see what we're capturing
