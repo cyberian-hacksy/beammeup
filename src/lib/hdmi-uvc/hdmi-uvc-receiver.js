@@ -259,27 +259,16 @@ async function processFrame(now, metadata) {
     }
   }
 
-  // Log first bytes every 30 frames to see what we're actually capturing
+  // Log bytes from multiple rows every 30 frames to compare with sender
   if (state.frameCount % 30 === 1) {
-    const firstBytes = Array.from(imageData.data.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-    debugLog(`Frame ${state.frameCount} first 32 bytes: ${firstBytes}`)
-
-    // Also check some pixels further into the frame to see if content varies
-    const midOffset = Math.floor(width * height * 2) // Middle of frame
-    const midBytes = Array.from(imageData.data.slice(midOffset, midOffset + 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-    debugLog(`Frame ${state.frameCount} mid bytes: ${midBytes}`)
-
-    // Check expected BEAM header (now encoded in safe range 100-200)
-    // 'B'=0x42=66 maps to ~126, 'E'=69 maps to ~127, 'A'=65 maps to ~125, 'M'=77 maps to ~130
-    const r = imageData.data[0]
-    debugLog(`First pixel R=${r} (expect ~126 for encoded 'B', range 100-200)`)
-
-    // Check how many unique colors are in the first row
-    const uniqueColors = new Set()
-    for (let i = 0; i < width * 4 && i < 4000; i += 4) {
-      uniqueColors.add(`${imageData.data[i]},${imageData.data[i + 1]},${imageData.data[i + 2]}`)
-    }
-    debugLog(`Unique colors in first row: ${uniqueColors.size}`)
+    const row0 = Array.from(imageData.data.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+    const row10offset = 10 * width * 4
+    const row10 = Array.from(imageData.data.slice(row10offset, row10offset + 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+    const row100offset = 100 * width * 4
+    const row100 = Array.from(imageData.data.slice(row100offset, row100offset + 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+    debugLog(`Frame ${state.frameCount} row 0: ${row0}`)
+    debugLog(`Frame ${state.frameCount} row 10: ${row10}`)
+    debugLog(`Frame ${state.frameCount} row 100: ${row100}`)
 
     // Update debug canvas every 30 frames so user can see what we're capturing
     const debugCanvas = document.getElementById('hdmi-uvc-receiver-debug-canvas')

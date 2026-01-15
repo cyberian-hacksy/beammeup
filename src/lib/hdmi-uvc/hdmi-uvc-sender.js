@@ -163,10 +163,16 @@ function renderFrame() {
 
     if (state.frameCount === 0) {
       debugLog(`Frame built: ${frameData.length} bytes (${res.width}x${res.height}x4 RGBA)`)
-      // Log first 32 bytes (first 8 pixels) to verify header (now in safe range 16-240)
-      const firstBytes = Array.from(frameData.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-      debugLog(`Sender frame first 32 bytes: ${firstBytes}`)
-      debugLog(`Values now use safe range 100-200 to survive aggressive HDMI color crushing`)
+      // Log bytes from multiple rows to compare with receiver
+      const row0 = Array.from(frameData.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+      const row10offset = 10 * res.width * 4
+      const row10 = Array.from(frameData.slice(row10offset, row10offset + 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+      const row100offset = 100 * res.width * 4
+      const row100 = Array.from(frameData.slice(row100offset, row100offset + 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+      debugLog(`Sender row 0: ${row0}`)
+      debugLog(`Sender row 10: ${row10}`)
+      debugLog(`Sender row 100: ${row100}`)
+      debugLog(`Values use safe range 100-200`)
     }
 
     // Draw to canvas
