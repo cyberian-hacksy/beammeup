@@ -253,8 +253,8 @@ async function startSending() {
     elements.canvas.style.display = 'block'
     elements.placeholder.style.display = 'none'
 
-    // Try to go fullscreen on external display (for HDMI capture)
-    await enterFullscreenOnExternalDisplay()
+    // Go fullscreen on selected display
+    await enterFullscreenOnSelectedDisplay()
 
     state.isSending = true
     state.isPaused = false
@@ -475,44 +475,63 @@ function handleFpsChange() {
   }
 }
 
-async function enterFullscreenOnExternalDisplay() {
+let cachedScreens = null
+
+async function populateDisplayDropdown() {
+  const dropdown = elements.displayDropdown
+
+  // Clear existing options except first
+  while (dropdown.options.length > 1) {
+    dropdown.remove(1)
+  }
+
   try {
-    // Check if Multi-Screen Window Placement API is available
     if ('getScreenDetails' in window) {
-      debugLog('Requesting screen details...')
       const screenDetails = await window.getScreenDetails()
-      const screens = screenDetails.screens
+      cachedScreens = screenDetails.screens
       const currentScreen = screenDetails.currentScreen
 
-      debugLog(`Found ${screens.length} screen(s)`)
-      screens.forEach((s, i) => {
-        const isCurrent = s === currentScreen ? ' [CURRENT]' : ''
-        debugLog(`  ${i}: ${s.width}x${s.height} left=${s.left}${isCurrent}`)
+      cachedScreens.forEach((s, i) => {
+        const option = document.createElement('option')
+        option.value = i.toString()
+        const isCurrent = s === currentScreen ? ' (current)' : ''
+        const label = s.label || `Screen ${i + 1}`
+        option.textContent = `${label}: ${s.width}x${s.height}${isCurrent}`
+        dropdown.appendChild(option)
       })
 
-      // Find any screen that's not the current one
-      const targetScreen = screens.find(s => s !== currentScreen)
+      debugLog(`Found ${cachedScreens.length} display(s)`)
+    }
+  } catch (err) {
+    debugLog(`Display detection failed: ${err.message}`)
+  }
+}
+
+async function enterFullscreenOnSelectedDisplay() {
+  const selectedValue = elements.displayDropdown.value
+
+  try {
+    if (selectedValue !== 'current' && cachedScreens) {
+      const screenIndex = parseInt(selectedValue)
+      const targetScreen = cachedScreens[screenIndex]
 
       if (targetScreen) {
-        debugLog(`Target: left=${targetScreen.left}, top=${targetScreen.top}`)
+        debugLog(`Going fullscreen on: ${targetScreen.label || 'Screen ' + (screenIndex + 1)} (${targetScreen.width}x${targetScreen.height})`)
 
-        // Move window to target screen, then fullscreen
+        // Move window to target screen first
         window.moveTo(targetScreen.left + 100, targetScreen.top + 100)
         await new Promise(r => setTimeout(r, 150))
 
         await elements.container.requestFullscreen({ screen: targetScreen })
         return
-      } else {
-        debugLog('Only one screen available')
       }
-    } else {
-      debugLog('Multi-Screen API not available')
     }
   } catch (err) {
-    debugLog(`Screen detection failed: ${err.message}`)
+    debugLog(`Fullscreen on selected display failed: ${err.message}`)
   }
 
-  // Fallback to regular fullscreen on current screen
+  // Fallback to regular fullscreen
+  debugLog('Using fullscreen on current screen')
   if (elements.container.requestFullscreen) {
     await elements.container.requestFullscreen().catch(() => {})
   }
@@ -550,6 +569,7 @@ export function initHdmiUvcSender(errorHandler) {
     overlay: document.getElementById('hdmi-uvc-overlay'),
     frameCount: document.getElementById('hdmi-uvc-frame-count'),
     progressDisplay: document.getElementById('hdmi-uvc-progress'),
+    displayDropdown: document.getElementById('hdmi-uvc-display-dropdown'),
     modeSelector: document.getElementById('hdmi-uvc-mode-selector'),
     modeButtons: document.querySelectorAll('#hdmi-uvc-mode-selector .mode-btn'),
     resolutionSlider: document.getElementById('hdmi-uvc-resolution-slider'),
@@ -564,6 +584,9 @@ export function initHdmiUvcSender(errorHandler) {
 
   elements.resolutionSlider.value = DEFAULT_RESOLUTION_PRESET
   elements.fpsSlider.value = DEFAULT_FPS_PRESET
+
+  // Populate display dropdown
+  populateDisplayDropdown()
 
   updateDropZoneState()
   updateActionButton()

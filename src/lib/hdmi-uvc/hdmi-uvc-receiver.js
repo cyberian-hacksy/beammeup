@@ -262,13 +262,23 @@ async function processFrame(now, metadata) {
   // Log bytes from multiple rows every 30 frames to compare with sender
   if (state.frameCount % 30 === 1) {
     const row0 = Array.from(imageData.data.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-    const row10offset = 10 * width * 4
-    const row10 = Array.from(imageData.data.slice(row10offset, row10offset + 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-    const row100offset = 100 * width * 4
-    const row100 = Array.from(imageData.data.slice(row100offset, row100offset + 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
     debugLog(`Frame ${state.frameCount} row 0: ${row0}`)
-    debugLog(`Frame ${state.frameCount} row 10: ${row10}`)
-    debugLog(`Frame ${state.frameCount} row 100: ${row100}`)
+
+    // Scan first 100 rows for potential BEAM header (look for mid-range values ~100-200)
+    // Encoded BEAM should be around: B=126, E=127, A=125, M=130
+    for (let row = 0; row < 100; row++) {
+      const offset = row * width * 4
+      const r0 = imageData.data[offset]
+      const r1 = imageData.data[offset + 4]
+      const r2 = imageData.data[offset + 8]
+      const r3 = imageData.data[offset + 12]
+
+      // Check if first 4 pixels are in the mid-range (100-150) - likely encoded header
+      if (r0 >= 100 && r0 <= 150 && r1 >= 100 && r1 <= 150 && r2 >= 100 && r2 <= 150 && r3 >= 100 && r3 <= 150) {
+        const rowBytes = Array.from(imageData.data.slice(offset, offset + 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+        debugLog(`*** Potential header at row ${row}: ${rowBytes}`)
+      }
+    }
 
     // Update debug canvas every 30 frames so user can see what we're capturing
     const debugCanvas = document.getElementById('hdmi-uvc-receiver-debug-canvas')
@@ -280,7 +290,26 @@ async function processFrame(now, metadata) {
     }
   }
 
-  const result = parseFrame(imageData.data, width, height)
+  // First try parsing from row 0
+  let result = parseFrame(imageData.data, width, height)
+  let headerRow = 0
+
+  // If not found, scan first 100 rows for BEAM header
+  if (!result && state.frameCount % 30 === 1) {
+    for (let row = 1; row < 100; row++) {
+      const rowOffset = row * width * 4
+      // Check if this row starts with something that could decode to BEAM magic
+      // After decoding from safe range (100-200), we need 0x42, 0x45, 0x41, 0x4D
+      const testData = new Uint8Array(imageData.data.buffer, imageData.data.byteOffset + rowOffset)
+      const testResult = parseFrame(testData, width, height - row)
+      if (testResult) {
+        debugLog(`*** BEAM HEADER FOUND AT ROW ${row}! ***`)
+        result = testResult
+        headerRow = row
+        break
+      }
+    }
+  }
 
   if (result) {
     if (result.crcValid) {
