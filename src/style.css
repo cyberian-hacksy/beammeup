@@ -609,3 +609,105 @@ select {
     min-width: auto;
   }
 }
+
+/* HDMI-UVC specific styles */
+.hdmi-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 1rem;
+  background: #000;
+  border-radius: 8px;
+  min-height: 540px;
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+.hdmi-container canvas {
+  display: block;
+}
+.hdmi-container.empty {
+  background: #16213e;
+  border: 2px dashed #444;
+}
+.hdmi-container.empty:hover, .hdmi-container.dragover {
+  border-color: #00d4ff;
+  background: #1a2a4e;
+}
+
+.hdmi-container.fullscreen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  border-radius: 0;
+  z-index: 1000;
+}
+
+.hdmi-overlay {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #00d4ff;
+  font-family: monospace;
+}
+
+.hdmi-overlay span {
+  margin-right: 12px;
+}
+
+.signal-status {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.8);
+  padding: 12px 24px;
+  border-radius: 8px;
+  color: #ff6b6b;
+  font-size: 14px;
+}
+
+.signal-status.connected {
+  color: #51cf66;
+}
+
+.device-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.device-selector label {
+  color: #888;
+  font-size: 14px;
+}
+
+.device-selector select {
+  flex: 1;
+  padding: 8px 12px;
+  background: #16213e;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 14px;
+}
+
+#hdmi-uvc-mode-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: center;
+}
+
+#hdmi-uvc-mode-selector .mode-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+}

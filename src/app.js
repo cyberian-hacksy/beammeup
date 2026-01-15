@@ -18,6 +18,18 @@ import { initCimbarSender, resetCimbarSender } from './lib/cimbar/cimbar-sender.
 import { initCimbarReceiver, resetCimbarReceiver, autoStartCimbarReceiver } from './lib/cimbar/cimbar-receiver.js'
 import { checkCompatibility } from './lib/cimbar/cimbar-loader.js'
 
+// Import HDMI-UVC modules
+import { initHdmiUvcSender, resetHdmiUvcSender } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
+import { initHdmiUvcReceiver, resetHdmiUvcReceiver, autoStartHdmiUvcReceiver } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
+import { testCrc32 } from './lib/hdmi-uvc/crc32.js'
+import {
+  testHeaderRoundtrip,
+  testPayloadGrayRoundtrip,
+  testPayloadRGBRoundtrip,
+  testPayloadCompatRoundtrip,
+  testFrameRoundtrip
+} from './lib/hdmi-uvc/hdmi-uvc-frame.js'
+
 // Make libraries available globally
 window.jsQR = jsQR
 window['qrcode'] = qrcode
@@ -30,6 +42,14 @@ window.testEncoder = testEncoder
 window.testCodecRoundtrip = testCodecRoundtrip
 window.testParityMap = testParityMap
 window.testParityRecovery = testParityRecovery
+
+// HDMI-UVC tests
+window.testCrc32 = testCrc32
+window.testHdmiHeaderRoundtrip = testHeaderRoundtrip
+window.testHdmiPayloadGray = testPayloadGrayRoundtrip
+window.testHdmiPayloadRGB = testPayloadRGBRoundtrip
+window.testHdmiPayloadCompat = testPayloadCompatRoundtrip
+window.testHdmiFrameRoundtrip = testFrameRoundtrip
 
 // ============ ERROR HANDLING ============
 function showError(message) {
@@ -52,7 +72,9 @@ const screens = {
   sender: document.getElementById('sender'),
   receiver: document.getElementById('receiver'),
   cimbarSender: document.getElementById('cimbar-sender'),
-  cimbarReceiver: document.getElementById('cimbar-receiver')
+  cimbarReceiver: document.getElementById('cimbar-receiver'),
+  hdmiUvcSender: document.getElementById('hdmi-uvc-sender'),
+  hdmiUvcReceiver: document.getElementById('hdmi-uvc-receiver')
 }
 
 function showScreen(screenId) {
@@ -77,6 +99,16 @@ document.getElementById('btn-cimbar-receive').onclick = () => {
   autoStartCimbarReceiver()
 }
 
+// HDMI-UVC mode selection buttons
+document.getElementById('btn-hdmi-uvc-send').onclick = () => {
+  showScreen('hdmiUvcSender')
+}
+
+document.getElementById('btn-hdmi-uvc-receive').onclick = () => {
+  showScreen('hdmiUvcReceiver')
+  autoStartHdmiUvcReceiver()
+}
+
 // Back buttons with cleanup
 document.querySelectorAll('.back-btn').forEach(btn => {
   btn.onclick = () => {
@@ -87,6 +119,10 @@ document.querySelectorAll('.back-btn').forEach(btn => {
     // Clean up CIMBAR state
     resetCimbarSender()
     resetCimbarReceiver()
+
+    // Clean up HDMI-UVC state
+    resetHdmiUvcSender()
+    resetHdmiUvcReceiver()
 
     // Return to mode selection
     showScreen('modeSelect')
@@ -100,6 +136,10 @@ initReceiver(showError)
 // Initialize CIMBAR modules
 initCimbarSender(showError)
 initCimbarReceiver(showError)
+
+// Initialize HDMI-UVC modules
+initHdmiUvcSender(showError)
+initHdmiUvcReceiver(showError)
 
 // Check CIMBAR compatibility and disable buttons if not supported
 const compat = checkCompatibility()
@@ -125,7 +165,14 @@ async function runAllTests() {
     parityMap: testParityMap(),
     parityRecovery: testParityRecovery(),
     encoder: await testEncoder(),
-    codec: await testCodecRoundtrip()
+    codec: await testCodecRoundtrip(),
+    // HDMI-UVC tests
+    crc32: testCrc32(),
+    hdmiHeader: testHeaderRoundtrip(),
+    hdmiPayloadGray: testPayloadGrayRoundtrip(),
+    hdmiPayloadRGB: testPayloadRGBRoundtrip(),
+    hdmiPayloadCompat: testPayloadCompatRoundtrip(),
+    hdmiFrame: testFrameRoundtrip()
   }
 
   const passed = Object.values(results).every(r => r)
