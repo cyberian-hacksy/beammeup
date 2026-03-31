@@ -60,6 +60,12 @@ let showError = (msg) => console.error(msg)
 function resetCanvasStyles() {
   if (!elements?.canvas) return
   elements.canvas.style.display = 'none'
+  elements.canvas.style.position = ''
+  elements.canvas.style.top = ''
+  elements.canvas.style.left = ''
+  elements.canvas.style.width = ''
+  elements.canvas.style.height = ''
+  elements.canvas.style.zIndex = ''
   elements.canvas.style.imageRendering = ''
   elements.canvas.style.background = ''
 }
@@ -249,17 +255,24 @@ async function startSending() {
     elements.canvas.width = res.width
     elements.canvas.height = res.height
 
-    // pixelated = nearest-neighbor scaling, preserves exact pixel values
+    // Cover the viewport with the canvas using position:fixed.
+    // We intentionally avoid requestFullscreen() because on macOS it creates
+    // a new Space that HDMI mirror doesn't follow — the dongle would still
+    // show the old Space with the app UI instead of the data frames.
     elements.canvas.style.display = 'block'
+    elements.canvas.style.position = 'fixed'
+    elements.canvas.style.top = '0'
+    elements.canvas.style.left = '0'
+    elements.canvas.style.width = '100vw'
+    elements.canvas.style.height = '100vh'
+    elements.canvas.style.zIndex = '999999'
     elements.canvas.style.imageRendering = 'pixelated'
     elements.canvas.style.background = '#000'
     elements.placeholder.style.display = 'none'
 
     debugLog(`Canvas bitmap: ${res.width}x${res.height}`)
     debugLog(`Screen: ${screen.width}x${screen.height}, devicePixelRatio: ${window.devicePixelRatio}`)
-
-    // Go fullscreen — use screen detection to target the HDMI/external display
-    await enterFullscreenOnSelectedDisplay()
+    debugLog(`Display mode: CSS fixed overlay (no fullscreen API — avoids macOS Spaces issue)`)
 
     state.isSending = true
     state.isPaused = false
@@ -287,12 +300,7 @@ function pauseSending() {
     state.timerId = null
   }
 
-  // Exit fullscreen
-  if (document.fullscreenElement) {
-    document.exitFullscreen().catch(() => {})
-  }
-
-  // Hide canvas, reset fullscreen styles, show paused placeholder
+  // Hide canvas, show paused placeholder
   resetCanvasStyles()
   elements.overlay.classList.add('hidden')
   elements.placeholder.style.display = 'flex'
@@ -310,20 +318,22 @@ function pauseSending() {
 function resumeSending() {
   state.isPaused = false
 
-  // Show canvas (dimensions already set)
+  // Restore canvas overlay
   elements.canvas.style.display = 'block'
+  elements.canvas.style.position = 'fixed'
+  elements.canvas.style.top = '0'
+  elements.canvas.style.left = '0'
+  elements.canvas.style.width = '100vw'
+  elements.canvas.style.height = '100vh'
+  elements.canvas.style.zIndex = '999999'
   elements.canvas.style.imageRendering = 'pixelated'
+  elements.canvas.style.background = '#000'
   elements.placeholder.style.display = 'none'
 
   // Disable controls during send
   elements.resolutionSlider.disabled = true
   elements.fpsSlider.disabled = true
   elements.modeButtons.forEach(btn => btn.disabled = true)
-
-  // Re-enter fullscreen on canvas directly
-  if (elements.canvas.requestFullscreen) {
-    elements.canvas.requestFullscreen().catch(() => {})
-  }
 
   updateActionButton()
   renderFrame()
@@ -333,11 +343,6 @@ function stopSending() {
   if (state.timerId) {
     clearTimeout(state.timerId)
     state.timerId = null
-  }
-
-  // Exit fullscreen
-  if (document.fullscreenElement) {
-    document.exitFullscreen().catch(() => {})
   }
 
   state.encoder = null
@@ -577,16 +582,8 @@ async function enterFullscreenOnSelectedDisplay() {
 }
 
 function handleKeydown(e) {
-  // Browser handles Escape to exit fullscreen, fullscreenchange event will pause
-  // This handles Escape when NOT in fullscreen (e.g., if fullscreen request failed)
-  if (e.key === 'Escape' && state.isSending && !state.isPaused && !document.fullscreenElement) {
-    pauseSending()
-  }
-}
-
-function handleFullscreenChange() {
-  // When user exits fullscreen (via Escape or browser UI), pause sending
-  if (!document.fullscreenElement && state.isSending && !state.isPaused) {
+  // Escape pauses/hides the canvas overlay
+  if (e.key === 'Escape' && state.isSending && !state.isPaused) {
     pauseSending()
   }
 }
@@ -650,7 +647,7 @@ export function initHdmiUvcSender(errorHandler) {
   })
 
   document.addEventListener('keydown', handleKeydown)
-  document.addEventListener('fullscreenchange', handleFullscreenChange)
+
 
   // Debug panel copy button
   const copyBtn = document.getElementById('btn-hdmi-uvc-sender-copy-log')
