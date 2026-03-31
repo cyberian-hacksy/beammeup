@@ -343,55 +343,43 @@ async function processFrame(now, metadata) {
   let headerInfo = ''
   let foundRow = 0, foundCol = 0
 
-  // Step 1: Quick probe at (0,0) and content offset
-  const probePositions = [[0, 0]]
-  if (firstNonBlackRow >= 0 && firstNonBlackCol >= 0) {
-    probePositions.push([firstNonBlackRow, firstNonBlackCol])
-    // Also try a few nearby offsets (±2 in each direction)
-    for (let dr = -2; dr <= 2; dr++) {
-      for (let dc = -2; dc <= 2; dc++) {
-        if (dr === 0 && dc === 0) continue
-        const r = firstNonBlackRow + dr
-        const c = firstNonBlackCol + dc
-        if (r >= 0 && r < height && c >= 0 && c < width) {
-          probePositions.push([r, c])
-        }
-      }
-    }
-  }
-
-  for (const [r, c] of probePositions) {
-    const probe = probeHeaderAt(imageData.data, width, r, c)
+  // Fast path: try the previously found header position first
+  if (state.headerOffset) {
+    const { row, col } = state.headerOffset
+    const probe = probeHeaderAt(imageData.data, width, row, col)
     if (probe) {
-      foundRow = r
-      foundCol = c
-      headerInfo = `row=${r} col=${c}`
-      // Header found! Now do the full parse with payload decoding
-      result = parseFrameAt(imageData.data, width, height, r, c)
-      break
+      foundRow = row
+      foundCol = col
+      headerInfo = `row=${row} col=${col} (cached)`
+      result = parseFrameAt(imageData.data, width, height, row, col)
     }
   }
 
-  // Step 2: If not found, scan rows near content offset with column=0 and content col
+  // Full 2D scan: the canvas could be at any offset due to browser chrome,
+  // window position, and DPR scaling. probeHeaderAt is fast (~22 reads),
+  // so scanning 200 rows × 150 cols = 30K probes is <2ms.
   if (!result) {
-    const startRow = Math.max(0, (firstNonBlackRow || 0) - 5)
-    const endRow = Math.min(height, startRow + 200)
-    const cols = firstNonBlackCol >= 0
-      ? [0, firstNonBlackCol]
-      : [0]
-
-    for (const col of cols) {
-      for (let row = startRow; row < endRow; row++) {
+    const maxRow = Math.min(200, height)
+    const maxCol = Math.min(150, width)
+    outer:
+    for (let row = 0; row < maxRow; row++) {
+      for (let col = 0; col < maxCol; col += 2) {
         const probe = probeHeaderAt(imageData.data, width, row, col)
         if (probe) {
           foundRow = row
           foundCol = col
-          headerInfo = `row=${row} col=${col} (scan)`
+          headerInfo = `row=${row} col=${col} bs=${probe.blockSize}`
           result = parseFrameAt(imageData.data, width, height, row, col)
-          break
+          if (result) {
+            // Cache the found position for subsequent frames
+            if (!state.headerOffset) {
+              state.headerOffset = { row, col }
+              debugLog(`*** HEADER LOCKED at row=${row} col=${col} blockSize=${probe.blockSize} ***`)
+            }
+          }
+          break outer
         }
       }
-      if (result) break
     }
   }
 
