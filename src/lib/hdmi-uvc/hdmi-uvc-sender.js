@@ -24,10 +24,10 @@ function debugLog(text) {
   if (el) {
     const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })
     el.textContent += timestamp + ' ' + text + '\n'
-    // Keep only last 100 lines
+    // Keep only last 500 lines
     const lines = el.textContent.split('\n')
-    if (lines.length > 100) {
-      el.textContent = lines.slice(-100).join('\n')
+    if (lines.length > 500) {
+      el.textContent = lines.slice(-500).join('\n')
     }
     el.scrollTop = el.scrollHeight
   }
@@ -60,14 +60,8 @@ let showError = (msg) => console.error(msg)
 function resetCanvasStyles() {
   if (!elements?.canvas) return
   elements.canvas.style.display = 'none'
-  elements.canvas.style.width = ''
-  elements.canvas.style.height = ''
-  elements.canvas.style.objectFit = ''
   elements.canvas.style.imageRendering = ''
-  elements.canvas.style.position = ''
-  elements.canvas.style.top = ''
-  elements.canvas.style.left = ''
-  elements.canvas.style.zIndex = ''
+  elements.canvas.style.background = ''
 }
 
 function formatBytes(bytes) {
@@ -174,52 +168,40 @@ function renderFrame() {
       state.symbolId
     )
 
-    if (state.frameCount === 0) {
-      debugLog(`Frame built: ${frameData.length} bytes (${res.width}x${res.height}x4 RGBA)`)
-
-      // Log header pixels (first 22 pixels = header bytes as pixel values)
-      debugLog(`--- SENDER HEADER PIXELS (first 22 pixels of row 0) ---`)
-      const headerPixels = []
-      for (let i = 0; i < 22; i++) {
-        const px = i * 4
-        headerPixels.push(`[${i}]R=${frameData[px]} G=${frameData[px+1]} B=${frameData[px+2]}`)
-      }
-      debugLog(headerPixels.slice(0, 11).join(' '))
-      debugLog(headerPixels.slice(11).join(' '))
-
-      // Show what BEAM magic looks like as pixels
-      debugLog(`BEAM magic as pixels: R=${frameData[0]},${frameData[4]},${frameData[8]},${frameData[12]} (expect 66,69,65,77)`)
-
-      // Log a few data rows for comparison
-      for (const rowNum of [2, 10, 100]) {
-        const off = rowNum * res.width * 4
-        const vals = Array.from(frameData.slice(off, off + 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-        debugLog(`Sender row ${rowNum} (first 8px RGBA): ${vals}`)
-      }
-
-      // Read back from canvas to verify putImageData preserved values
-      const ctx = elements.canvas.getContext('2d')
-      const readback = ctx.getImageData(0, 0, Math.min(22, res.width), 1)
-      const rbPixels = []
-      for (let i = 0; i < Math.min(22, readback.data.length / 4); i++) {
-        rbPixels.push(`[${i}]R=${readback.data[i*4]}`)
-      }
-      debugLog(`Canvas readback row 0: ${rbPixels.join(' ')}`)
-      debugLog(`--- END SENDER HEADER ---`)
-    }
-
-    // Draw to canvas
-    const canvas = elements.canvas
-    const ctx = canvas.getContext('2d')
-    canvas.width = res.width
-    canvas.height = res.height
-
+    // Draw to canvas (dimensions set once in startSending, not here)
+    const ctx = elements.canvas.getContext('2d')
     const imageData = new ImageData(
       new Uint8ClampedArray(frameData),
       res.width,
       res.height
     )
     ctx.putImageData(imageData, 0, 0)
+
+    if (state.frameCount === 0) {
+      debugLog(`Frame built: ${frameData.length} bytes (${res.width}x${res.height}x4 RGBA)`)
+
+      // Log header pixels from the frameData array
+      debugLog(`BEAM magic in frameData: R=${frameData[0]},${frameData[4]},${frameData[8]},${frameData[12]} (expect 66,69,65,77)`)
+
+      // Read back from canvas AFTER putImageData to verify
+      const readback = ctx.getImageData(0, 0, 22, 1)
+      const rbMagic = [readback.data[0], readback.data[4], readback.data[8], readback.data[12]]
+      debugLog(`Canvas readback magic: R=${rbMagic.join(',')} (expect 66,69,65,77)`)
+
+      if (rbMagic[0] !== 66 || rbMagic[1] !== 69) {
+        debugLog(`!!! CANVAS READBACK MISMATCH — putImageData may not be working !!!`)
+        debugLog(`Canvas actual size: ${elements.canvas.width}x${elements.canvas.height}`)
+        debugLog(`Fullscreen element: ${document.fullscreenElement?.tagName || 'none'}`)
+        // Try a simpler test: write a known value and read it back
+        const testImg = ctx.createImageData(1, 1)
+        testImg.data[0] = 42; testImg.data[1] = 42; testImg.data[2] = 42; testImg.data[3] = 255
+        ctx.putImageData(testImg, 0, 0)
+        const testRead = ctx.getImageData(0, 0, 1, 1)
+        debugLog(`Sanity test: wrote R=42, read R=${testRead.data[0]}`)
+        // Restore the actual frame
+        ctx.putImageData(imageData, 0, 0)
+      }
+    }
 
     // Update overlay
     state.frameCount++
@@ -282,23 +264,27 @@ async function startSending() {
 
     debugLog(`Encoder created: K=${state.encoder.K}, K'=${state.encoder.K_prime}, M=${state.encoder.M}`)
 
-    // Show canvas filling entire screen - pixelated rendering preserves exact pixel values
+    // Set canvas bitmap dimensions ONCE (not every frame - that clears the canvas)
+    elements.canvas.width = res.width
+    elements.canvas.height = res.height
+
+    // pixelated = nearest-neighbor scaling, preserves exact pixel values
     elements.canvas.style.display = 'block'
-    elements.canvas.style.width = '100vw'
-    elements.canvas.style.height = '100vh'
-    elements.canvas.style.objectFit = 'fill'
     elements.canvas.style.imageRendering = 'pixelated'
-    elements.canvas.style.position = 'fixed'
-    elements.canvas.style.top = '0'
-    elements.canvas.style.left = '0'
-    elements.canvas.style.zIndex = '999999'
+    elements.canvas.style.background = '#000'
     elements.placeholder.style.display = 'none'
 
-    debugLog(`Canvas CSS: 100vw x 100vh, image-rendering: pixelated, position: fixed`)
+    debugLog(`Canvas bitmap: ${res.width}x${res.height}`)
     debugLog(`Screen: ${screen.width}x${screen.height}, devicePixelRatio: ${window.devicePixelRatio}`)
 
-    // Go fullscreen on selected display
-    await enterFullscreenOnSelectedDisplay()
+    // Fullscreen the canvas directly (not the container) — this ensures it fills the HDMI output
+    try {
+      await elements.canvas.requestFullscreen()
+      debugLog(`Canvas entered fullscreen directly`)
+    } catch (e) {
+      debugLog(`Canvas fullscreen failed (${e.message}), trying container`)
+      await enterFullscreenOnSelectedDisplay()
+    }
 
     state.isSending = true
     state.isPaused = false
@@ -349,16 +335,9 @@ function pauseSending() {
 function resumeSending() {
   state.isPaused = false
 
-  // Show canvas filling entire screen
+  // Show canvas (dimensions already set)
   elements.canvas.style.display = 'block'
-  elements.canvas.style.width = '100vw'
-  elements.canvas.style.height = '100vh'
-  elements.canvas.style.objectFit = 'fill'
   elements.canvas.style.imageRendering = 'pixelated'
-  elements.canvas.style.position = 'fixed'
-  elements.canvas.style.top = '0'
-  elements.canvas.style.left = '0'
-  elements.canvas.style.zIndex = '999999'
   elements.placeholder.style.display = 'none'
 
   // Disable controls during send
@@ -366,9 +345,9 @@ function resumeSending() {
   elements.fpsSlider.disabled = true
   elements.modeButtons.forEach(btn => btn.disabled = true)
 
-  // Re-enter fullscreen
-  if (elements.container.requestFullscreen) {
-    elements.container.requestFullscreen().catch(() => {})
+  // Re-enter fullscreen on canvas directly
+  if (elements.canvas.requestFullscreen) {
+    elements.canvas.requestFullscreen().catch(() => {})
   }
 
   updateActionButton()
@@ -574,7 +553,7 @@ async function enterFullscreenOnSelectedDisplay() {
         window.moveTo(targetScreen.left + 100, targetScreen.top + 100)
         await new Promise(r => setTimeout(r, 150))
 
-        await elements.container.requestFullscreen({ screen: targetScreen })
+        await elements.canvas.requestFullscreen({ screen: targetScreen })
         return
       }
     }
@@ -582,10 +561,10 @@ async function enterFullscreenOnSelectedDisplay() {
     debugLog(`Fullscreen on selected display failed: ${err.message}`)
   }
 
-  // Fallback to regular fullscreen
-  debugLog('Using fullscreen on current screen')
-  if (elements.container.requestFullscreen) {
-    await elements.container.requestFullscreen().catch(() => {})
+  // Fallback to regular fullscreen on canvas
+  debugLog('Using fullscreen on current screen (canvas)')
+  if (elements.canvas.requestFullscreen) {
+    await elements.canvas.requestFullscreen().catch(() => {})
   }
 }
 

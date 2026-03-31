@@ -15,10 +15,10 @@ function debugLog(text) {
   if (el) {
     const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })
     el.textContent += timestamp + ' ' + text + '\n'
-    // Keep only last 100 lines
+    // Keep only last 500 lines
     const lines = el.textContent.split('\n')
-    if (lines.length > 100) {
-      el.textContent = lines.slice(-100).join('\n')
+    if (lines.length > 500) {
+      el.textContent = lines.slice(-500).join('\n')
     }
     el.scrollTop = el.scrollHeight
   }
