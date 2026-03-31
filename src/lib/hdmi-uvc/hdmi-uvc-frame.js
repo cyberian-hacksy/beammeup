@@ -45,9 +45,10 @@ export function buildHeader(mode, width, height, fps, symbolId, payloadLength, p
 export function parseHeader(data) {
   if (data.length < HEADER_SIZE) return null
 
-  // Fuzzy magic check: each byte of "BEAM" (66,69,65,77) must be within ±3
+  // Fuzzy magic check: each byte of "BEAM" (66,69,65,77) must be within ±8
+  // MJPEG quantization at block boundaries can introduce 5-8 units of error
   const MAGIC_BYTES = [0x42, 0x45, 0x41, 0x4D]
-  const TOLERANCE = 3
+  const TOLERANCE = 8
   for (let i = 0; i < 4; i++) {
     if (Math.abs(data[i] - MAGIC_BYTES[i]) > TOLERANCE) return null
   }

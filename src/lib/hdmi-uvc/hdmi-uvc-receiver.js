@@ -325,6 +325,29 @@ async function processFrame(now, metadata) {
       debugLog(`Row${row} stats: min=${min} max=${max} avg=${(sum/cnt).toFixed(1)}`)
     }
 
+    // Dump pixel values at expected header region (rows 60-100, low columns)
+    // The header should be ~16 rows below the canvas start, which is ~60-100 rows into the capture
+    debugLog(`Header region probe (R channel, col=2, rows 60-100 step 4):`)
+    const probeVals = []
+    for (let r = 60; r <= 100; r += 4) {
+      const idx = (r * width + 2) * 4
+      probeVals.push(`r${r}=${p[idx]}`)
+    }
+    debugLog(`  ${probeVals.join(' ')}`)
+
+    // Also probe at col=4 with block spacing to see if magic is detectable
+    debugLog(`Magic-like probe at col=4 (bs=4 centers: col 6,10,14,18):`)
+    for (let r = 60; r <= 100; r += 2) {
+      const v0 = p[(r * width + 6) * 4]
+      const v1 = p[(r * width + 10) * 4]
+      const v2 = p[(r * width + 14) * 4]
+      const v3 = p[(r * width + 18) * 4]
+      // Only log if any value is in the BEAM range (58-85)
+      if ((v0 > 55 && v0 < 85) || (v1 > 55 && v1 < 85)) {
+        debugLog(`  row ${r}: ${v0},${v1},${v2},${v3} (need ~66,69,65,77)`)
+      }
+    }
+
     // Update debug canvas
     const debugCanvas = document.getElementById('hdmi-uvc-receiver-debug-canvas')
     if (debugCanvas) {

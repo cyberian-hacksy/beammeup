@@ -184,10 +184,16 @@ function renderFrame() {
     ctx.putImageData(imageData, 0, 0)
 
     if (state.frameCount === 0) {
-      // For compat modes, header bytes are block-encoded (blockSize pixels wide)
+      // Header is at row 16 (after 16 padding rows). Read magic from correct position.
       const bs = BLOCK_SIZES[state.mode] || 1
-      const m = [0, 1, 2, 3].map(i => frameData[(i * bs + Math.floor(bs / 2)) * 4])
-      debugLog(`Frame: ${res.width}x${res.height}, headerBlockSize=${bs}, magic=${m.join(',')} (expect 66,69,65,77)`)
+      const headerRowOffset = 16 * res.width * 4  // row 16 in RGBA
+      const m = [0, 1, 2, 3].map(i => frameData[headerRowOffset + (i * bs + Math.floor(bs / 2)) * 4])
+      debugLog(`Frame: ${res.width}x${res.height}, bs=${bs}, header@row16 magic=${m.join(',')} (expect 66,69,65,77)`)
+      // Also log row 0 (should be padding=0) and row 18 (payload start)
+      const row0 = [0,1,2,3,4,5,6,7].map(i => frameData[i * 4])
+      const row18offset = 18 * res.width * 4
+      const row18 = [0,1,2,3,4,5,6,7].map(i => frameData[row18offset + i * 4])
+      debugLog(`Row0 (padding): ${row0.join(',')}  Row18 (payload): ${row18.join(',')}`)
     }
 
     // Update overlay
