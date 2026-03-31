@@ -661,7 +661,7 @@ export function initHdmiUvcReceiver(errorHandler) {
   elements.btnDownload.onclick = downloadFile
   elements.btnAnother.onclick = handleReceiveAnother
 
-  // Debug panel copy button
+  // Debug panel buttons
   const copyBtn = document.getElementById('btn-hdmi-uvc-receiver-copy-log')
   if (copyBtn) {
     copyBtn.onclick = async () => {
@@ -675,6 +675,15 @@ export function initHdmiUvcReceiver(errorHandler) {
           console.error('Copy failed:', e)
         }
       }
+    }
+  }
+  const clearBtn = document.getElementById('btn-hdmi-uvc-receiver-clear-log')
+  if (clearBtn) {
+    clearBtn.onclick = () => {
+      const log = document.getElementById('hdmi-uvc-receiver-debug-log')
+      if (log) log.textContent = ''
+      debugLog('=== LOG CLEARED ===')
+      debugLog(`Frame count at clear: ${state.frameCount}`)
     }
   }
   debugLog('HDMI-UVC Receiver initialized')

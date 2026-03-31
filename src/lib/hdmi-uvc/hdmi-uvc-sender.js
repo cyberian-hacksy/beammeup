@@ -258,14 +258,8 @@ async function startSending() {
     debugLog(`Canvas bitmap: ${res.width}x${res.height}`)
     debugLog(`Screen: ${screen.width}x${screen.height}, devicePixelRatio: ${window.devicePixelRatio}`)
 
-    // Fullscreen the canvas directly (not the container) — this ensures it fills the HDMI output
-    try {
-      await elements.canvas.requestFullscreen()
-      debugLog(`Canvas entered fullscreen directly`)
-    } catch (e) {
-      debugLog(`Canvas fullscreen failed (${e.message}), trying container`)
-      await enterFullscreenOnSelectedDisplay()
-    }
+    // Go fullscreen — use screen detection to target the HDMI/external display
+    await enterFullscreenOnSelectedDisplay()
 
     state.isSending = true
     state.isPaused = false
