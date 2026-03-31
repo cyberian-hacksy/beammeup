@@ -5,8 +5,8 @@ import { parsePacket } from '../packet.js'
 import { DEVICE_STORAGE_KEY, HDMI_MODE_NAMES } from './hdmi-uvc-constants.js'
 import { parseFrame } from './hdmi-uvc-frame.js'
 
-// Debug mode - enabled via ?test URL parameter
-const DEBUG_MODE = typeof location !== 'undefined' && location.search.includes('test')
+// Debug mode - always on while diagnosing HDMI-UVC issues
+const DEBUG_MODE = true
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -248,27 +248,63 @@ async function processFrame(now, metadata) {
 
   state.frameCount++
 
-  // Log frame info periodically
+  // === DIAGNOSTIC LOGGING ===
+  const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
+
   if (state.frameCount === 1) {
-    debugLog(`Video: ${width}x${height}, first frame captured`)
-    debugLog(`Video state: readyState=${video.readyState}, paused=${video.paused}, currentTime=${video.currentTime.toFixed(2)}`)
-    debugLog(`VideoFrame API: ${hasVideoFrame ? 'available' : 'not available'}`)
-    debugLog(`Capture method used: ${captureMethod}`)
+    debugLog(`=== RECEIVER DIAGNOSTICS ===`)
+    debugLog(`Video: ${width}x${height}`)
+    debugLog(`readyState=${video.readyState}, paused=${video.paused}, currentTime=${video.currentTime.toFixed(2)}`)
+    debugLog(`APIs: VideoFrame=${hasVideoFrame}, ImageCapture=${hasImageCapture}, VideoFrameCallback=${hasVideoFrameCallback}`)
+    debugLog(`Capture method: ${captureMethod}`)
     if (metadata) {
-      debugLog(`Video frame metadata: presentedFrames=${metadata.presentedFrames}, mediaTime=${metadata.mediaTime?.toFixed(3)}`)
+      debugLog(`Metadata: presentedFrames=${metadata.presentedFrames}, mediaTime=${metadata.mediaTime?.toFixed(3)}`)
+    }
+    // Log video track capabilities
+    const track = state.stream?.getVideoTracks()[0]
+    if (track) {
+      const settings = track.getSettings()
+      debugLog(`Track settings: ${JSON.stringify(settings)}`)
     }
   }
 
-  // Log first 20 rows every 30 frames to see what we're capturing
-  if (state.frameCount % 30 === 1) {
-    debugLog(`Frame ${state.frameCount} - first 20 rows:`)
-    for (let row = 0; row < 20; row++) {
-      const offset = row * width * 4
-      const rowBytes = Array.from(imageData.data.slice(offset, offset + 24)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-      debugLog(`  row ${row}: ${rowBytes}`)
-    }
+  if (isDiagFrame) {
+    debugLog(`--- Frame ${state.frameCount} (method=${captureMethod}) ---`)
 
-    // Update debug canvas every 30 frames so user can see what we're capturing
+    // Show header area: first 22 pixels of row 0 as decimal R values
+    const hdrPixels = []
+    for (let i = 0; i < Math.min(22, width); i++) {
+      hdrPixels.push(imageData.data[i * 4])  // Red channel only
+    }
+    debugLog(`Row0 R[0..21]: ${hdrPixels.join(',')}`)
+
+    // Show what BEAM magic would need: pixels 0-3 should be 66,69,65,77
+    const p = imageData.data
+    debugLog(`Px0: R=${p[0]} G=${p[1]} B=${p[2]} A=${p[3]} (need R=66 for 'B')`)
+    debugLog(`Px1: R=${p[4]} G=${p[5]} B=${p[6]} A=${p[7]} (need R=69 for 'E')`)
+    debugLog(`Px2: R=${p[8]} G=${p[9]} B=${p[10]} A=${p[11]} (need R=65 for 'A')`)
+    debugLog(`Px3: R=${p[12]} G=${p[13]} B=${p[14]} A=${p[15]} (need R=77 for 'M')`)
+
+    // Show pixel value ranges across first row to understand color space
+    let minR = 255, maxR = 0, sumR = 0
+    const sampleWidth = Math.min(width, 200)
+    for (let x = 0; x < sampleWidth; x++) {
+      const r = imageData.data[x * 4]
+      if (r < minR) minR = r
+      if (r > maxR) maxR = r
+      sumR += r
+    }
+    debugLog(`Row0 stats (${sampleWidth}px): min=${minR} max=${maxR} avg=${(sumR/sampleWidth).toFixed(1)}`)
+
+    // Show first few pixels of data row 2 (where payload starts)
+    const row2off = 2 * width * 4
+    const row2vals = []
+    for (let i = 0; i < Math.min(8, width); i++) {
+      row2vals.push(`${imageData.data[row2off + i*4]}`)
+    }
+    debugLog(`Row2 R[0..7]: ${row2vals.join(',')}`)
+
+    // Update debug canvas
     const debugCanvas = document.getElementById('hdmi-uvc-receiver-debug-canvas')
     if (debugCanvas) {
       debugCanvas.width = Math.min(width, 640)
@@ -278,16 +314,16 @@ async function processFrame(now, metadata) {
     }
   }
 
-  // First try parsing from row 0
+  // === FRAME PARSING ===
   let result = parseFrame(imageData.data, width, height)
   let headerRow = 0
 
   // If not found, scan first 100 rows for BEAM header
-  if (!result && state.frameCount % 30 === 1) {
-    for (let row = 1; row < 100; row++) {
+  if (!result && isDiagFrame) {
+    let closestRow = -1
+    let closestMagic = ''
+    for (let row = 1; row < Math.min(100, height); row++) {
       const rowOffset = row * width * 4
-      // Check if this row starts with something that could decode to BEAM magic
-      // We need pixel values that decode to 0x42, 0x45, 0x41, 0x4D (BEAM magic)
       const testData = new Uint8Array(imageData.data.buffer, imageData.data.byteOffset + rowOffset)
       const testResult = parseFrame(testData, width, height - row)
       if (testResult) {
@@ -296,10 +332,28 @@ async function processFrame(now, metadata) {
         headerRow = row
         break
       }
+      // Track closest match for diagnostics
+      if (closestRow === -1) {
+        const r0 = imageData.data[rowOffset]
+        const r1 = imageData.data[rowOffset + 4]
+        // Check if first two pixels are close to 'B'(66) and 'E'(69)
+        if (Math.abs(r0 - 66) < 10 && Math.abs(r1 - 69) < 10) {
+          closestRow = row
+          closestMagic = `R=${r0},${imageData.data[rowOffset+4]},${imageData.data[rowOffset+8]},${imageData.data[rowOffset+12]}`
+        }
+      }
+    }
+    if (!result && closestRow >= 0) {
+      debugLog(`Near-miss: row ${closestRow} had ${closestMagic} (need 66,69,65,77)`)
     }
   }
 
+  // === RESULT HANDLING ===
   if (result) {
+    if (isDiagFrame) {
+      debugLog(`Header found at row ${headerRow}: mode=${result.header.mode} ${result.header.width}x${result.header.height} sym=${result.header.symbolId} crc=${result.crcValid ? 'OK' : 'FAIL'}`)
+    }
+
     if (result.crcValid) {
       state.validFrames++
       elements.statFrames.textContent = state.validFrames + ' valid frames'
@@ -328,7 +382,6 @@ async function processFrame(now, metadata) {
 
         state.decoder.receive(packet)
 
-        // Debug progress every 10 valid frames
         if (state.validFrames % 10 === 0) {
           const progress = state.decoder.progress
           debugLog(`Progress: ${Math.round(progress * 100)}%, sym=${parsed.symbolId}, blocks=${state.decoder.solvedCount || 0}`)
@@ -344,19 +397,23 @@ async function processFrame(now, metadata) {
           return
         }
       } else {
-        debugLog(`Frame ${state.frameCount}: CRC OK but packet parse failed`)
+        debugLog(`Frame ${state.frameCount}: CRC OK but packet parse failed (payloadLen=${result.header.payloadLength})`)
       }
     } else {
-      // CRC failed - log occasionally
-      if (state.frameCount % 30 === 0) {
-        debugLog(`Frame ${state.frameCount}: CRC mismatch (expected ${result.header.payloadCrc?.toString(16)})`)
+      if (isDiagFrame) {
+        // Log CRC details to understand corruption pattern
+        const { crc32: computeCrc } = await import('./crc32.js')
+        const actualCrc = computeCrc(result.payload)
+        debugLog(`CRC FAIL: header says ${result.header.payloadCrc?.toString(16)}, computed ${actualCrc.toString(16)}, payloadLen=${result.payload.length}`)
+        // Show first 16 bytes of payload
+        const payloadHead = Array.from(result.payload.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+        debugLog(`Payload[0..15]: ${payloadHead}`)
       }
       debugCurrent(`#${state.frameCount} CRC fail`)
     }
   } else {
-    // No valid header found - log occasionally
-    if (state.frameCount % 60 === 0) {
-      debugLog(`Frame ${state.frameCount}: No BEAM header found`)
+    if (isDiagFrame) {
+      debugLog(`No BEAM header (row 0 pixels: ${imageData.data[0]},${imageData.data[4]},${imageData.data[8]},${imageData.data[12]} need 66,69,65,77)`)
     }
     debugCurrent(`#${state.frameCount} no signal`)
   }
@@ -549,26 +606,21 @@ export function initHdmiUvcReceiver(errorHandler) {
   elements.btnDownload.onclick = downloadFile
   elements.btnAnother.onclick = handleReceiveAnother
 
-  // Debug panel setup
-  if (DEBUG_MODE) {
-    const debugPanel = document.getElementById('hdmi-uvc-receiver-debug')
-    if (debugPanel) debugPanel.style.display = 'block'
-
-    const copyBtn = document.getElementById('btn-hdmi-uvc-receiver-copy-log')
-    if (copyBtn) {
-      copyBtn.onclick = async () => {
-        const log = document.getElementById('hdmi-uvc-receiver-debug-log')
-        if (log) {
-          try {
-            await navigator.clipboard.writeText(log.textContent)
-            copyBtn.textContent = 'Copied!'
-            setTimeout(() => copyBtn.textContent = 'Copy', 1000)
-          } catch (e) {
-            console.error('Copy failed:', e)
-          }
+  // Debug panel copy button
+  const copyBtn = document.getElementById('btn-hdmi-uvc-receiver-copy-log')
+  if (copyBtn) {
+    copyBtn.onclick = async () => {
+      const log = document.getElementById('hdmi-uvc-receiver-debug-log')
+      if (log) {
+        try {
+          await navigator.clipboard.writeText(log.textContent)
+          copyBtn.textContent = 'Copied!'
+          setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
+        } catch (e) {
+          console.error('Copy failed:', e)
         }
       }
     }
-    debugLog('HDMI-UVC Receiver initialized (debug mode)')
   }
+  debugLog('HDMI-UVC Receiver initialized')
 }

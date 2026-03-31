@@ -14,8 +14,8 @@ import {
 } from './hdmi-uvc-constants.js'
 import { buildFrame, getPayloadCapacity } from './hdmi-uvc-frame.js'
 
-// Debug mode - enabled via ?test URL parameter
-const DEBUG_MODE = typeof location !== 'undefined' && location.search.includes('test')
+// Debug mode - always on while diagnosing HDMI-UVC issues
+const DEBUG_MODE = true
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -163,16 +163,36 @@ function renderFrame() {
 
     if (state.frameCount === 0) {
       debugLog(`Frame built: ${frameData.length} bytes (${res.width}x${res.height}x4 RGBA)`)
-      // Log bytes from multiple rows to compare with receiver
-      const row0 = Array.from(frameData.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-      const row10offset = 10 * res.width * 4
-      const row10 = Array.from(frameData.slice(row10offset, row10offset + 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-      const row100offset = 100 * res.width * 4
-      const row100 = Array.from(frameData.slice(row100offset, row100offset + 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-      debugLog(`Sender row 0: ${row0}`)
-      debugLog(`Sender row 10: ${row10}`)
-      debugLog(`Sender row 100: ${row100}`)
-      debugLog(`Direct byte-to-pixel mapping (0-255)`)
+
+      // Log header pixels (first 22 pixels = header bytes as pixel values)
+      debugLog(`--- SENDER HEADER PIXELS (first 22 pixels of row 0) ---`)
+      const headerPixels = []
+      for (let i = 0; i < 22; i++) {
+        const px = i * 4
+        headerPixels.push(`[${i}]R=${frameData[px]} G=${frameData[px+1]} B=${frameData[px+2]}`)
+      }
+      debugLog(headerPixels.slice(0, 11).join(' '))
+      debugLog(headerPixels.slice(11).join(' '))
+
+      // Show what BEAM magic looks like as pixels
+      debugLog(`BEAM magic as pixels: R=${frameData[0]},${frameData[4]},${frameData[8]},${frameData[12]} (expect 66,69,65,77)`)
+
+      // Log a few data rows for comparison
+      for (const rowNum of [2, 10, 100]) {
+        const off = rowNum * res.width * 4
+        const vals = Array.from(frameData.slice(off, off + 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+        debugLog(`Sender row ${rowNum} (first 8px RGBA): ${vals}`)
+      }
+
+      // Read back from canvas to verify putImageData preserved values
+      const ctx = elements.canvas.getContext('2d')
+      const readback = ctx.getImageData(0, 0, Math.min(22, res.width), 1)
+      const rbPixels = []
+      for (let i = 0; i < Math.min(22, readback.data.length / 4); i++) {
+        rbPixels.push(`[${i}]R=${readback.data[i*4]}`)
+      }
+      debugLog(`Canvas readback row 0: ${rbPixels.join(' ')}`)
+      debugLog(`--- END SENDER HEADER ---`)
     }
 
     // Draw to canvas
@@ -612,26 +632,21 @@ export function initHdmiUvcSender(errorHandler) {
   document.addEventListener('keydown', handleKeydown)
   document.addEventListener('fullscreenchange', handleFullscreenChange)
 
-  // Debug panel setup
-  if (DEBUG_MODE) {
-    const debugPanel = document.getElementById('hdmi-uvc-sender-debug')
-    if (debugPanel) debugPanel.style.display = 'block'
-
-    const copyBtn = document.getElementById('btn-hdmi-uvc-sender-copy-log')
-    if (copyBtn) {
-      copyBtn.onclick = async () => {
-        const log = document.getElementById('hdmi-uvc-sender-debug-log')
-        if (log) {
-          try {
-            await navigator.clipboard.writeText(log.textContent)
-            copyBtn.textContent = 'Copied!'
-            setTimeout(() => copyBtn.textContent = 'Copy', 1000)
-          } catch (e) {
-            console.error('Copy failed:', e)
-          }
+  // Debug panel copy button
+  const copyBtn = document.getElementById('btn-hdmi-uvc-sender-copy-log')
+  if (copyBtn) {
+    copyBtn.onclick = async () => {
+      const log = document.getElementById('hdmi-uvc-sender-debug-log')
+      if (log) {
+        try {
+          await navigator.clipboard.writeText(log.textContent)
+          copyBtn.textContent = 'Copied!'
+          setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
+        } catch (e) {
+          console.error('Copy failed:', e)
         }
       }
     }
-    debugLog('HDMI-UVC Sender initialized (debug mode)')
   }
+  debugLog('HDMI-UVC Sender initialized')
 }
