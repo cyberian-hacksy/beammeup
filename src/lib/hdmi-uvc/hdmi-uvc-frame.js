@@ -108,8 +108,8 @@ export function encodePayloadGray(payload, width, height, startRow = 2) {
   // Create RGBA image data (4 bytes per pixel for canvas)
   const imageData = new Uint8ClampedArray(width * height * 4)
 
-  // Fill header rows with alternating pattern (visually distinct from data)
-  for (let y = 0; y < headerRows; y++) {
+  // Fill only the 2 actual header rows with alternating pattern (padding rows stay black) (visually distinct from data)
+  for (let y = Math.max(0, headerRows - 2); y < headerRows; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4
       const val = ((x + y) % 2) === 0 ? 0 : 255
@@ -171,8 +171,8 @@ export function encodePayloadRGB(payload, width, height, startRow = 2) {
 
   const imageData = new Uint8ClampedArray(width * height * 4)
 
-  // Fill header rows with alternating pattern
-  for (let y = 0; y < headerRows; y++) {
+  // Fill only the 2 actual header rows with alternating pattern (padding rows stay black)
+  for (let y = Math.max(0, headerRows - 2); y < headerRows; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4
       const val = ((x + y) % 2) === 0 ? 0 : 255
@@ -305,8 +305,8 @@ export function encodePayloadCompat(payload, width, height, blockSize, startRow 
     imageData[i + 3] = 255
   }
 
-  // Fill header rows with alternating pattern
-  for (let y = 0; y < headerRows; y++) {
+  // Fill only the 2 actual header rows with alternating pattern (padding rows stay black)
+  for (let y = Math.max(0, headerRows - 2); y < headerRows; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4
       const val = ((x + y) % 2) === 0 ? 0 : 255

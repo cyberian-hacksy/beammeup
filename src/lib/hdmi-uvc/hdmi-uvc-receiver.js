@@ -325,24 +325,23 @@ async function processFrame(now, metadata) {
       debugLog(`Row${row} stats: min=${min} max=${max} avg=${(sum/cnt).toFixed(1)}`)
     }
 
-    // Dump pixel values at expected header region (rows 60-100, low columns)
-    // The header should be ~16 rows below the canvas start, which is ~60-100 rows into the capture
-    debugLog(`Header region probe (R channel, col=2, rows 60-100 step 4):`)
+    // Dump pixel values to find where canvas starts and where the header is
+    // Probe col=2 from row 0 to 250 — look for the transition from chrome→black→header
+    debugLog(`Col=2 probe (rows 0-250 step 8):`)
     const probeVals = []
-    for (let r = 60; r <= 100; r += 4) {
+    for (let r = 0; r <= 250; r += 8) {
       const idx = (r * width + 2) * 4
-      probeVals.push(`r${r}=${p[idx]}`)
+      probeVals.push(`${r}:${p[idx]}`)
     }
     debugLog(`  ${probeVals.join(' ')}`)
 
-    // Also probe at col=4 with block spacing to see if magic is detectable
-    debugLog(`Magic-like probe at col=4 (bs=4 centers: col 6,10,14,18):`)
-    for (let r = 60; r <= 100; r += 2) {
-      const v0 = p[(r * width + 6) * 4]
-      const v1 = p[(r * width + 10) * 4]
-      const v2 = p[(r * width + 14) * 4]
-      const v3 = p[(r * width + 18) * 4]
-      // Only log if any value is in the BEAM range (58-85)
+    // Probe for BEAM magic at block centers across rows 80-200
+    debugLog(`Magic probe (bs=4 centers at col 2,6,10,14):`)
+    for (let r = 80; r <= 200; r += 2) {
+      const v0 = p[(r * width + 2) * 4]
+      const v1 = p[(r * width + 6) * 4]
+      const v2 = p[(r * width + 10) * 4]
+      const v3 = p[(r * width + 14) * 4]
       if ((v0 > 55 && v0 < 85) || (v1 > 55 && v1 < 85)) {
         debugLog(`  row ${r}: ${v0},${v1},${v2},${v3} (need ~66,69,65,77)`)
       }
@@ -382,7 +381,7 @@ async function processFrame(now, metadata) {
   // window position, and DPR scaling. probeHeaderAt is fast (~22 reads),
   // so scanning 200 rows × 150 cols = 30K probes is <2ms.
   if (!result) {
-    const maxRow = Math.min(200, height)
+    const maxRow = Math.min(300, height)
     const maxCol = Math.min(150, width)
     outer:
     for (let row = 0; row < maxRow; row++) {
