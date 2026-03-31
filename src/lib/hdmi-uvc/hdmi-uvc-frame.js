@@ -3,6 +3,12 @@
 import { FRAME_MAGIC, HEADER_SIZE, HDMI_MODE, BLOCK_SIZES } from './hdmi-uvc-constants.js'
 import { crc32 } from './crc32.js'
 
+// Padding rows before header to avoid MJPEG boundary corruption at chrome/canvas edge.
+// The header starts at row HEADER_START_ROW, payload at DATA_START_ROW.
+// Receiver uses shifted views so these only affect the sender encoding.
+const HEADER_START_ROW = 16
+const DATA_START_ROW = HEADER_START_ROW + 2
+
 // Direct byte-to-pixel mapping for lossless HDMI-UVC capture.
 // HDMI-UVC is a digital path — pixel values should survive intact.
 // If the capture pipeline corrupts extreme values (e.g. HDMI limited range
@@ -72,8 +78,7 @@ export function parseHeader(data) {
 
 // Calculate payload capacity for given resolution and mode
 export function getPayloadCapacity(width, height, mode) {
-  const headerRows = 2
-  const dataRows = height - headerRows
+  const dataRows = height - DATA_START_ROW
   const dataPixels = width * dataRows
 
   switch (mode) {
@@ -94,8 +99,8 @@ export function getPayloadCapacity(width, height, mode) {
 }
 
 // Encode payload to grayscale pixels (1 byte per pixel)
-export function encodePayloadGray(payload, width, height) {
-  const headerRows = 2
+export function encodePayloadGray(payload, width, height, startRow = 2) {
+  const headerRows = startRow
   const dataRows = height - headerRows
   const dataPixels = width * dataRows
 
@@ -141,8 +146,8 @@ export function encodePayloadGray(payload, width, height) {
 }
 
 // Decode grayscale pixels to payload
-export function decodePayloadGray(imageData, width, height, expectedLength) {
-  const headerRows = 2
+export function decodePayloadGray(imageData, width, height, expectedLength, startRow = 2) {
+  const headerRows = startRow
   const payload = new Uint8Array(expectedLength)
 
   for (let p = 0; p < expectedLength; p++) {
@@ -157,8 +162,8 @@ export function decodePayloadGray(imageData, width, height, expectedLength) {
 }
 
 // Encode payload to RGB pixels (3 bytes per pixel)
-export function encodePayloadRGB(payload, width, height) {
-  const headerRows = 2
+export function encodePayloadRGB(payload, width, height, startRow = 2) {
+  const headerRows = startRow
   const dataRows = height - headerRows
   const dataPixels = width * dataRows
   const capacity = dataPixels * 3
@@ -193,8 +198,8 @@ export function encodePayloadRGB(payload, width, height) {
 }
 
 // Decode RGB pixels to payload
-export function decodePayloadRGB(imageData, width, height, expectedLength) {
-  const headerRows = 2
+export function decodePayloadRGB(imageData, width, height, expectedLength, startRow = 2) {
+  const headerRows = startRow
   const payload = new Uint8Array(expectedLength)
 
   let payloadIdx = 0
@@ -283,8 +288,8 @@ export function testPayloadRGBRoundtrip() {
 }
 
 // Encode payload using super-pixels (NxN block per byte)
-export function encodePayloadCompat(payload, width, height, blockSize) {
-  const headerRows = 2
+export function encodePayloadCompat(payload, width, height, blockSize, startRow = 2) {
+  const headerRows = startRow
   const dataRows = height - headerRows
   const blocksX = Math.floor(width / blockSize)
   const blocksY = Math.floor(dataRows / blockSize)
@@ -337,8 +342,8 @@ export function encodePayloadCompat(payload, width, height, blockSize) {
 }
 
 // Decode super-pixels to payload using majority voting
-export function decodePayloadCompat(imageData, width, height, blockSize, expectedLength) {
-  const headerRows = 2
+export function decodePayloadCompat(imageData, width, height, blockSize, expectedLength, startRow = 2) {
+  const headerRows = startRow
   const dataRows = height - headerRows
   const blocksX = Math.floor(width / blockSize)
   const blocksY = Math.floor(dataRows / blockSize)
@@ -404,34 +409,34 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
   const payloadCrc = crc32(payload)
   const header = buildHeader(mode, width, height, fps, symbolId, payload.length, payloadCrc)
 
+  // Encode payload starting after padding + header rows
   let imageData
   switch (mode) {
     case HDMI_MODE.RAW_RGB:
-      imageData = encodePayloadRGB(payload, width, height)
+      imageData = encodePayloadRGB(payload, width, height, DATA_START_ROW)
       break
     case HDMI_MODE.RAW_GRAY:
-      imageData = encodePayloadGray(payload, width, height)
+      imageData = encodePayloadGray(payload, width, height, DATA_START_ROW)
       break
     case HDMI_MODE.COMPAT_4:
-      imageData = encodePayloadCompat(payload, width, height, 4)
+      imageData = encodePayloadCompat(payload, width, height, 4, DATA_START_ROW)
       break
     case HDMI_MODE.COMPAT_8:
-      imageData = encodePayloadCompat(payload, width, height, 8)
+      imageData = encodePayloadCompat(payload, width, height, 8, DATA_START_ROW)
       break
     case HDMI_MODE.COMPAT_16:
-      imageData = encodePayloadCompat(payload, width, height, 16)
+      imageData = encodePayloadCompat(payload, width, height, 16, DATA_START_ROW)
       break
     default:
       throw new Error('Unknown mode: ' + mode)
   }
 
-  // Embed header in first rows
-  // For compat modes, repeat each byte as a blockSize-wide block across both header rows
-  // This survives MJPEG compression which destroys single-pixel values
+  // Embed header at HEADER_START_ROW (after padding, before payload)
+  // For compat modes, repeat each byte as a blockSize-wide block across 2 rows
   const headerBlockSize = BLOCK_SIZES[mode] || 1
   for (let i = 0; i < HEADER_SIZE; i++) {
     const encoded = encodeByte(header[i])
-    for (let row = 0; row < 2; row++) {
+    for (let row = HEADER_START_ROW; row < HEADER_START_ROW + 2; row++) {
       for (let dx = 0; dx < headerBlockSize; dx++) {
         const x = i * headerBlockSize + dx
         if (x >= width) break
@@ -517,40 +522,31 @@ export function parseFrameAt(imageData, width, height, row, col) {
 
 // Parse frame: extract header and payload (assumes header at pixel 0,0)
 // Tries multiple block sizes to auto-detect raw vs compat header encoding
+// Parse frame from origin (used in unit tests and loopback).
+// Header is at HEADER_START_ROW, payload at DATA_START_ROW.
 export function parseFrame(imageData, width, height) {
-  let header = null
-  for (const bs of [1, 4, 8, 16]) {
-    const headerBytes = new Uint8Array(HEADER_SIZE)
-    let valid = true
-    for (let i = 0; i < HEADER_SIZE; i++) {
-      // Read from center of each block region
-      const centerX = i * bs + Math.floor(bs / 2)
-      if (centerX * 4 + 3 >= imageData.length) { valid = false; break }
-      headerBytes[i] = decodeByte(imageData[centerX * 4])
-    }
-    if (!valid) continue
-    header = parseHeader(headerBytes)
-    if (header) break
-  }
-  if (!header) return null
+  // Probe at HEADER_START_ROW
+  const probe = probeHeaderAt(imageData, width, HEADER_START_ROW, 0)
+  if (!probe) return null
+  const header = probe.header
 
-  // Decode payload based on mode
+  // Decode payload starting at DATA_START_ROW
   let payload
   switch (header.mode) {
     case HDMI_MODE.RAW_RGB:
-      payload = decodePayloadRGB(imageData, width, height, header.payloadLength)
+      payload = decodePayloadRGB(imageData, width, height, header.payloadLength, DATA_START_ROW)
       break
     case HDMI_MODE.RAW_GRAY:
-      payload = decodePayloadGray(imageData, width, height, header.payloadLength)
+      payload = decodePayloadGray(imageData, width, height, header.payloadLength, DATA_START_ROW)
       break
     case HDMI_MODE.COMPAT_4:
-      payload = decodePayloadCompat(imageData, width, height, 4, header.payloadLength)
+      payload = decodePayloadCompat(imageData, width, height, 4, header.payloadLength, DATA_START_ROW)
       break
     case HDMI_MODE.COMPAT_8:
-      payload = decodePayloadCompat(imageData, width, height, 8, header.payloadLength)
+      payload = decodePayloadCompat(imageData, width, height, 8, header.payloadLength, DATA_START_ROW)
       break
     case HDMI_MODE.COMPAT_16:
-      payload = decodePayloadCompat(imageData, width, height, 16, header.payloadLength)
+      payload = decodePayloadCompat(imageData, width, height, 16, header.payloadLength, DATA_START_ROW)
       break
     default:
       return null
