@@ -3,7 +3,7 @@
 import { createDecoder } from '../decoder.js'
 import { parsePacket } from '../packet.js'
 import { DEVICE_STORAGE_KEY, HDMI_MODE_NAMES } from './hdmi-uvc-constants.js'
-import { parseFrame } from './hdmi-uvc-frame.js'
+import { parseFrame, probeHeaderAt, parseFrameAt } from './hdmi-uvc-frame.js'
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
@@ -336,54 +336,58 @@ async function processFrame(now, metadata) {
   }
 
   // === FRAME PARSING ===
-  // parseFrame now tries block sizes 1,4,8,16 internally for header detection
-  // We need to handle both (0,0) origin and offset origin (from HDMI borders)
+  // Fast header probe: check key positions without copying frame data
+  // Only builds the full shifted view when header is actually found
 
-  // Helper: try parsing at a given (row, col) offset within the captured frame
-  // For column offset, we create a shifted view where "pixel 0" starts at (row, col)
-  function tryParseAt(row, col) {
-    if (row >= height || col >= width) return null
-    const effectiveWidth = width - col
-    const effectiveHeight = height - row
-    if (effectiveWidth < 100 || effectiveHeight < 100) return null
+  let result = null
+  let headerInfo = ''
+  let foundRow = 0, foundCol = 0
 
-    // Create a new pixel array shifted to start at (row, col)
-    // parseFrame expects contiguous rows of effectiveWidth pixels
-    const shifted = new Uint8Array(effectiveWidth * effectiveHeight * 4)
-    for (let y = 0; y < effectiveHeight; y++) {
-      const srcOffset = ((row + y) * width + col) * 4
-      const dstOffset = y * effectiveWidth * 4
-      shifted.set(
-        new Uint8Array(imageData.data.buffer, imageData.data.byteOffset + srcOffset, effectiveWidth * 4),
-        dstOffset
-      )
+  // Step 1: Quick probe at (0,0) and content offset
+  const probePositions = [[0, 0]]
+  if (firstNonBlackRow >= 0 && firstNonBlackCol >= 0) {
+    probePositions.push([firstNonBlackRow, firstNonBlackCol])
+    // Also try a few nearby offsets (±2 in each direction)
+    for (let dr = -2; dr <= 2; dr++) {
+      for (let dc = -2; dc <= 2; dc++) {
+        if (dr === 0 && dc === 0) continue
+        const r = firstNonBlackRow + dr
+        const c = firstNonBlackCol + dc
+        if (r >= 0 && r < height && c >= 0 && c < width) {
+          probePositions.push([r, c])
+        }
+      }
     }
-    return parseFrame(shifted, effectiveWidth, effectiveHeight)
   }
 
-  let result = tryParseAt(0, 0)
-  let headerInfo = 'row=0 col=0'
-
-  // If not found at origin, try at detected content offset
-  if (!result && firstNonBlackRow >= 0 && firstNonBlackCol >= 0) {
-    result = tryParseAt(firstNonBlackRow, firstNonBlackCol)
-    if (result) headerInfo = `row=${firstNonBlackRow} col=${firstNonBlackCol} (content offset)`
+  for (const [r, c] of probePositions) {
+    const probe = probeHeaderAt(imageData.data, width, r, c)
+    if (probe) {
+      foundRow = r
+      foundCol = c
+      headerInfo = `row=${r} col=${c}`
+      // Header found! Now do the full parse with payload decoding
+      result = parseFrameAt(imageData.data, width, height, r, c)
+      break
+    }
   }
 
-  // Scan rows near the content offset
+  // Step 2: If not found, scan rows near content offset with column=0 and content col
   if (!result) {
     const startRow = Math.max(0, (firstNonBlackRow || 0) - 5)
     const endRow = Math.min(height, startRow + 200)
-    const colStart = Math.max(0, (firstNonBlackCol || 0) - 5)
-    // Try a few column offsets around the detected content edge
-    const cols = [0, colStart, colStart + 1, colStart + 2, colStart - 1, colStart - 2].filter(c => c >= 0 && c < width)
-    const uniqueCols = [...new Set(cols)]
+    const cols = firstNonBlackCol >= 0
+      ? [0, firstNonBlackCol]
+      : [0]
 
-    for (const col of uniqueCols) {
+    for (const col of cols) {
       for (let row = startRow; row < endRow; row++) {
-        result = tryParseAt(row, col)
-        if (result) {
-          headerInfo = `row=${row} col=${col}`
+        const probe = probeHeaderAt(imageData.data, width, row, col)
+        if (probe) {
+          foundRow = row
+          foundCol = col
+          headerInfo = `row=${row} col=${col} (scan)`
+          result = parseFrameAt(imageData.data, width, height, row, col)
           break
         }
       }
@@ -393,9 +397,9 @@ async function processFrame(now, metadata) {
 
   if (isDiagFrame) {
     if (result) {
-      debugLog(`Header found at ${headerInfo}: mode=${result.header.mode} ${result.header.width}x${result.header.height} sym=${result.header.symbolId} crc=${result.crcValid ? 'OK' : 'FAIL'}`)
+      debugLog(`Header at ${headerInfo}: mode=${result.header.mode} ${result.header.width}x${result.header.height} sym=${result.header.symbolId} crc=${result.crcValid ? 'OK' : 'FAIL'}`)
     } else {
-      debugLog(`No BEAM header found (scanned origin + offset ${firstNonBlackRow},${firstNonBlackCol} + nearby rows)`)
+      debugLog(`No BEAM header found (probed ${probePositions.length} positions + row scan near ${firstNonBlackRow},${firstNonBlackCol})`)
     }
   }
 

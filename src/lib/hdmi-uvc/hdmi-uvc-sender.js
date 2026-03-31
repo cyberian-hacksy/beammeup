@@ -178,29 +178,10 @@ function renderFrame() {
     ctx.putImageData(imageData, 0, 0)
 
     if (state.frameCount === 0) {
-      debugLog(`Frame built: ${frameData.length} bytes (${res.width}x${res.height}x4 RGBA)`)
-
-      // Log header pixels from the frameData array
-      debugLog(`BEAM magic in frameData: R=${frameData[0]},${frameData[4]},${frameData[8]},${frameData[12]} (expect 66,69,65,77)`)
-
-      // Read back from canvas AFTER putImageData to verify
-      const readback = ctx.getImageData(0, 0, 22, 1)
-      const rbMagic = [readback.data[0], readback.data[4], readback.data[8], readback.data[12]]
-      debugLog(`Canvas readback magic: R=${rbMagic.join(',')} (expect 66,69,65,77)`)
-
-      if (rbMagic[0] !== 66 || rbMagic[1] !== 69) {
-        debugLog(`!!! CANVAS READBACK MISMATCH — putImageData may not be working !!!`)
-        debugLog(`Canvas actual size: ${elements.canvas.width}x${elements.canvas.height}`)
-        debugLog(`Fullscreen element: ${document.fullscreenElement?.tagName || 'none'}`)
-        // Try a simpler test: write a known value and read it back
-        const testImg = ctx.createImageData(1, 1)
-        testImg.data[0] = 42; testImg.data[1] = 42; testImg.data[2] = 42; testImg.data[3] = 255
-        ctx.putImageData(testImg, 0, 0)
-        const testRead = ctx.getImageData(0, 0, 1, 1)
-        debugLog(`Sanity test: wrote R=42, read R=${testRead.data[0]}`)
-        // Restore the actual frame
-        ctx.putImageData(imageData, 0, 0)
-      }
+      // For compat modes, header bytes are block-encoded (blockSize pixels wide)
+      const bs = BLOCK_SIZES[state.mode] || 1
+      const m = [0, 1, 2, 3].map(i => frameData[(i * bs + Math.floor(bs / 2)) * 4])
+      debugLog(`Frame: ${res.width}x${res.height}, headerBlockSize=${bs}, magic=${m.join(',')} (expect 66,69,65,77)`)
     }
 
     // Update overlay

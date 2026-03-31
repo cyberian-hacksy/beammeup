@@ -430,7 +430,76 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
   return imageData
 }
 
-// Parse frame: extract header and payload
+// Fast header probe: read header bytes at (row, col) without copying frame data
+// Returns parsed header or null. Tries all block sizes automatically.
+export function probeHeaderAt(imageData, width, row, col) {
+  for (const bs of [1, 4, 8, 16]) {
+    const headerBytes = new Uint8Array(HEADER_SIZE)
+    let valid = true
+    for (let i = 0; i < HEADER_SIZE; i++) {
+      const x = col + i * bs + Math.floor(bs / 2)
+      if (x >= width) { valid = false; break }
+      const idx = (row * width + x) * 4
+      if (idx + 3 >= imageData.length) { valid = false; break }
+      headerBytes[i] = decodeByte(imageData[idx])
+    }
+    if (!valid) continue
+    const header = parseHeader(headerBytes)
+    if (header) return { header, blockSize: bs }
+  }
+  return null
+}
+
+// Parse full frame at (row, col) offset: extract header + decode payload
+export function parseFrameAt(imageData, width, height, row, col) {
+  const probe = probeHeaderAt(imageData, width, row, col)
+  if (!probe) return null
+
+  const { header } = probe
+  const effectiveWidth = width - col
+  const effectiveHeight = height - row
+
+  // Decode payload: read directly from the offset position
+  // Create a shifted view for the payload decoders
+  const shifted = new Uint8Array(effectiveWidth * effectiveHeight * 4)
+  for (let y = 0; y < effectiveHeight; y++) {
+    const srcOffset = ((row + y) * width + col) * 4
+    const dstOffset = y * effectiveWidth * 4
+    shifted.set(
+      new Uint8Array(imageData.buffer, imageData.byteOffset + srcOffset, effectiveWidth * 4),
+      dstOffset
+    )
+  }
+
+  let payload
+  switch (header.mode) {
+    case HDMI_MODE.RAW_RGB:
+      payload = decodePayloadRGB(shifted, effectiveWidth, effectiveHeight, header.payloadLength)
+      break
+    case HDMI_MODE.RAW_GRAY:
+      payload = decodePayloadGray(shifted, effectiveWidth, effectiveHeight, header.payloadLength)
+      break
+    case HDMI_MODE.COMPAT_4:
+      payload = decodePayloadCompat(shifted, effectiveWidth, effectiveHeight, 4, header.payloadLength)
+      break
+    case HDMI_MODE.COMPAT_8:
+      payload = decodePayloadCompat(shifted, effectiveWidth, effectiveHeight, 8, header.payloadLength)
+      break
+    case HDMI_MODE.COMPAT_16:
+      payload = decodePayloadCompat(shifted, effectiveWidth, effectiveHeight, 16, header.payloadLength)
+      break
+    default:
+      return null
+  }
+
+  const actualCrc = crc32(payload)
+  if (actualCrc !== header.payloadCrc) {
+    return { header, payload, crcValid: false }
+  }
+  return { header, payload, crcValid: true }
+}
+
+// Parse frame: extract header and payload (assumes header at pixel 0,0)
 // Tries multiple block sizes to auto-detect raw vs compat header encoding
 export function parseFrame(imageData, width, height) {
   let header = null
