@@ -164,13 +164,16 @@ async function startSending() {
     window.moveTo(0, 0)
     window.resizeTo(screen.availWidth, screen.availHeight)
 
-    // Canvas bitmap = viewport size (1:1 CSS pixel mapping, no scaling)
-    const canvasWidth = window.innerWidth
-    const canvasHeight = window.innerHeight
+    // Canvas bitmap = physical pixel dimensions so HDMI output matches 1:1.
+    // CSS 100vw/100vh stretches the bitmap to fill viewport; dpr ensures
+    // the bitmap resolution matches what the display actually sends over HDMI.
+    const dpr = window.devicePixelRatio || 1
+    const canvasWidth = Math.round(window.innerWidth * dpr)
+    const canvasHeight = Math.round(window.innerHeight * dpr)
     elements.canvas.width = canvasWidth
     elements.canvas.height = canvasHeight
 
-    debugLog(`Canvas: ${canvasWidth}x${canvasHeight}, dpr: ${window.devicePixelRatio}`)
+    debugLog(`Canvas: ${canvasWidth}x${canvasHeight} (css: ${window.innerWidth}x${window.innerHeight}, dpr: ${dpr})`)
 
     // Compute capacity from actual canvas dimensions
     const capacity = getPayloadCapacity(canvasWidth, canvasHeight)
