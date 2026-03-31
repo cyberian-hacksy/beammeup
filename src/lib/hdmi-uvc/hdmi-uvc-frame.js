@@ -34,22 +34,38 @@ export function buildHeader(mode, width, height, fps, symbolId, payloadLength, p
 }
 
 // Parse frame header from bytes
+// Uses fuzzy magic matching (±3 per byte) to survive MJPEG compression artifacts,
+// then validates remaining fields for sanity
 export function parseHeader(data) {
   if (data.length < HEADER_SIZE) return null
 
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-  const magic = view.getUint32(0, false)
+  // Fuzzy magic check: each byte of "BEAM" (66,69,65,77) must be within ±3
+  const MAGIC_BYTES = [0x42, 0x45, 0x41, 0x4D]
+  const TOLERANCE = 3
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(data[i] - MAGIC_BYTES[i]) > TOLERANCE) return null
+  }
 
-  if (magic !== FRAME_MAGIC) return null
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+
+  const mode = view.getUint8(4)
+  if (mode > 4) return null  // Invalid mode
+
+  const width = view.getUint16(5, false)
+  const height = view.getUint16(7, false)
+  if (width < 100 || width > 8000 || height < 100 || height > 8000) return null
+
+  const payloadLength = view.getUint32(14, false)
+  if (payloadLength === 0 || payloadLength > width * height * 3) return null
 
   return {
-    magic,
-    mode: view.getUint8(4),
-    width: view.getUint16(5, false),
-    height: view.getUint16(7, false),
+    magic: FRAME_MAGIC, // Normalize to exact magic for downstream code
+    mode,
+    width,
+    height,
     fps: view.getUint8(9),
     symbolId: view.getUint32(10, false),
-    payloadLength: view.getUint32(14, false),
+    payloadLength,
     payloadCrc: view.getUint32(18, false)
   }
 }

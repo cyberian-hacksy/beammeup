@@ -270,8 +270,13 @@ async function startSending() {
     elements.canvas.style.background = '#000'
     elements.placeholder.style.display = 'none'
 
+    // Maximize the browser window to eliminate horizontal/vertical offset
+    window.moveTo(0, 0)
+    window.resizeTo(screen.availWidth, screen.availHeight)
+
     debugLog(`Canvas bitmap: ${res.width}x${res.height}`)
-    debugLog(`Screen: ${screen.width}x${screen.height}, devicePixelRatio: ${window.devicePixelRatio}`)
+    debugLog(`Screen: ${screen.width}x${screen.height}, avail: ${screen.availWidth}x${screen.availHeight}, dpr: ${window.devicePixelRatio}`)
+    debugLog(`Window: outer=${window.outerWidth}x${window.outerHeight} at (${window.screenX},${window.screenY})`)
     debugLog(`Display mode: CSS fixed overlay (no fullscreen API — avoids macOS Spaces issue)`)
 
     state.isSending = true
