@@ -268,33 +268,29 @@ async function processFrame(now, metadata) {
     }
   }
 
+  const p = imageData.data
+
+  // Always detect content offset (needed for header scanning below)
+  let firstNonBlackCol = -1, firstNonBlackRow = -1
+  const midCol = Math.floor(width / 2)
+  for (let row = 0; row < height; row++) {
+    const idx = (row * width + midCol) * 4
+    if (p[idx] > 10 || p[idx + 1] > 10 || p[idx + 2] > 10) {
+      firstNonBlackRow = row
+      break
+    }
+  }
+  const midRow = Math.floor(height / 2)
+  for (let col = 0; col < width; col++) {
+    const idx = (midRow * width + col) * 4
+    if (p[idx] > 10 || p[idx + 1] > 10 || p[idx + 2] > 10) {
+      firstNonBlackCol = col
+      break
+    }
+  }
+
   if (isDiagFrame) {
     debugLog(`--- Frame ${state.frameCount} (method=${captureMethod}) ---`)
-
-    const p = imageData.data
-
-    // Scan the frame to find where actual content begins (non-black area)
-    // This detects black borders from fullscreen offset
-    let firstNonBlackCol = -1, firstNonBlackRow = -1
-    // Scan rows: check pixel at column width/2 (middle of frame)
-    const midCol = Math.floor(width / 2)
-    for (let row = 0; row < height; row++) {
-      const idx = (row * width + midCol) * 4
-      if (p[idx] > 10 || p[idx + 1] > 10 || p[idx + 2] > 10) {
-        firstNonBlackRow = row
-        break
-      }
-    }
-    // Scan cols: check pixel at row height/2 (middle of frame)
-    const midRow = Math.floor(height / 2)
-    for (let col = 0; col < width; col++) {
-      const idx = (midRow * width + col) * 4
-      if (p[idx] > 10 || p[idx + 1] > 10 || p[idx + 2] > 10) {
-        firstNonBlackCol = col
-        break
-      }
-    }
-
     debugLog(`Content offset: row=${firstNonBlackRow} col=${firstNonBlackCol} (frame ${width}x${height})`)
 
     // Show first 22 pixels at (0,0) - what we currently try to parse as header
@@ -340,48 +336,66 @@ async function processFrame(now, metadata) {
   }
 
   // === FRAME PARSING ===
-  let result = parseFrame(imageData.data, width, height)
-  let headerRow = 0
+  // parseFrame now tries block sizes 1,4,8,16 internally for header detection
+  // We need to handle both (0,0) origin and offset origin (from HDMI borders)
 
-  // If not found, scan for header at different positions
-  // Handles both row offset (vertical borders) and column offset (horizontal borders)
-  if (!result) {
-    // Quick scan: try row-only offsets first (most common case)
-    for (let row = 1; row < Math.min(200, height); row++) {
-      const rowOffset = row * width * 4
-      const testData = new Uint8Array(imageData.data.buffer, imageData.data.byteOffset + rowOffset)
-      const testResult = parseFrame(testData, width, height - row)
-      if (testResult) {
-        if (isDiagFrame) debugLog(`*** HEADER FOUND at row ${row} ***`)
-        result = testResult
-        headerRow = row
-        break
-      }
+  // Helper: try parsing at a given (row, col) offset within the captured frame
+  // For column offset, we create a shifted view where "pixel 0" starts at (row, col)
+  function tryParseAt(row, col) {
+    if (row >= height || col >= width) return null
+    const effectiveWidth = width - col
+    const effectiveHeight = height - row
+    if (effectiveWidth < 100 || effectiveHeight < 100) return null
+
+    // Create a new pixel array shifted to start at (row, col)
+    // parseFrame expects contiguous rows of effectiveWidth pixels
+    const shifted = new Uint8Array(effectiveWidth * effectiveHeight * 4)
+    for (let y = 0; y < effectiveHeight; y++) {
+      const srcOffset = ((row + y) * width + col) * 4
+      const dstOffset = y * effectiveWidth * 4
+      shifted.set(
+        new Uint8Array(imageData.data.buffer, imageData.data.byteOffset + srcOffset, effectiveWidth * 4),
+        dstOffset
+      )
     }
+    return parseFrame(shifted, effectiveWidth, effectiveHeight)
+  }
 
-    // If still not found, scan for BEAM magic bytes at any (row, col) position
-    // The magic bytes 66,69,65,77 appear as consecutive pixel R values
-    if (!result && isDiagFrame) {
-      debugLog(`Row scan failed, searching for BEAM magic across full frame...`)
-      let found = false
-      // Sample every 4th row and scan columns
-      for (let row = 0; row < Math.min(300, height) && !found; row += 2) {
-        for (let col = 0; col < Math.min(300, width) && !found; col++) {
-          const idx = (row * width + col) * 4
-          const r0 = imageData.data[idx]
-          const r1 = imageData.data[idx + 4]
-          const r2 = imageData.data[idx + 8]
-          const r3 = imageData.data[idx + 12]
-          if (r0 === 66 && r1 === 69 && r2 === 65 && r3 === 77) {
-            debugLog(`*** EXACT MAGIC at row=${row} col=${col}! R=${r0},${r1},${r2},${r3} ***`)
-            found = true
-          } else if (Math.abs(r0 - 66) <= 3 && Math.abs(r1 - 69) <= 3 && Math.abs(r2 - 65) <= 3 && Math.abs(r3 - 77) <= 3) {
-            debugLog(`Near-magic at row=${row} col=${col}: R=${r0},${r1},${r2},${r3} (need 66,69,65,77)`)
-            found = true
-          }
+  let result = tryParseAt(0, 0)
+  let headerInfo = 'row=0 col=0'
+
+  // If not found at origin, try at detected content offset
+  if (!result && firstNonBlackRow >= 0 && firstNonBlackCol >= 0) {
+    result = tryParseAt(firstNonBlackRow, firstNonBlackCol)
+    if (result) headerInfo = `row=${firstNonBlackRow} col=${firstNonBlackCol} (content offset)`
+  }
+
+  // Scan rows near the content offset
+  if (!result) {
+    const startRow = Math.max(0, (firstNonBlackRow || 0) - 5)
+    const endRow = Math.min(height, startRow + 200)
+    const colStart = Math.max(0, (firstNonBlackCol || 0) - 5)
+    // Try a few column offsets around the detected content edge
+    const cols = [0, colStart, colStart + 1, colStart + 2, colStart - 1, colStart - 2].filter(c => c >= 0 && c < width)
+    const uniqueCols = [...new Set(cols)]
+
+    for (const col of uniqueCols) {
+      for (let row = startRow; row < endRow; row++) {
+        result = tryParseAt(row, col)
+        if (result) {
+          headerInfo = `row=${row} col=${col}`
+          break
         }
       }
-      if (!found) debugLog(`No magic found in first 300x300 area`)
+      if (result) break
+    }
+  }
+
+  if (isDiagFrame) {
+    if (result) {
+      debugLog(`Header found at ${headerInfo}: mode=${result.header.mode} ${result.header.width}x${result.header.height} sym=${result.header.symbolId} crc=${result.crcValid ? 'OK' : 'FAIL'}`)
+    } else {
+      debugLog(`No BEAM header found (scanned origin + offset ${firstNonBlackRow},${firstNonBlackCol} + nearby rows)`)
     }
   }
 

@@ -409,27 +409,44 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
       throw new Error('Unknown mode: ' + mode)
   }
 
-  // Embed header in first row pixels
+  // Embed header in first rows
+  // For compat modes, repeat each byte as a blockSize-wide block across both header rows
+  // This survives MJPEG compression which destroys single-pixel values
+  const headerBlockSize = BLOCK_SIZES[mode] || 1
   for (let i = 0; i < HEADER_SIZE; i++) {
-    const pixelIdx = i * 4
     const encoded = encodeByte(header[i])
-    imageData[pixelIdx] = encoded     // R
-    imageData[pixelIdx + 1] = encoded // G
-    imageData[pixelIdx + 2] = encoded // B
+    for (let row = 0; row < 2; row++) {
+      for (let dx = 0; dx < headerBlockSize; dx++) {
+        const x = i * headerBlockSize + dx
+        if (x >= width) break
+        const pixelIdx = (row * width + x) * 4
+        imageData[pixelIdx] = encoded
+        imageData[pixelIdx + 1] = encoded
+        imageData[pixelIdx + 2] = encoded
+      }
+    }
   }
 
   return imageData
 }
 
 // Parse frame: extract header and payload
+// Tries multiple block sizes to auto-detect raw vs compat header encoding
 export function parseFrame(imageData, width, height) {
-  // Extract header from first row pixels
-  const headerBytes = new Uint8Array(HEADER_SIZE)
-  for (let i = 0; i < HEADER_SIZE; i++) {
-    headerBytes[i] = decodeByte(imageData[i * 4]) // Red channel, decoded
+  let header = null
+  for (const bs of [1, 4, 8, 16]) {
+    const headerBytes = new Uint8Array(HEADER_SIZE)
+    let valid = true
+    for (let i = 0; i < HEADER_SIZE; i++) {
+      // Read from center of each block region
+      const centerX = i * bs + Math.floor(bs / 2)
+      if (centerX * 4 + 3 >= imageData.length) { valid = false; break }
+      headerBytes[i] = decodeByte(imageData[centerX * 4])
+    }
+    if (!valid) continue
+    header = parseHeader(headerBytes)
+    if (header) break
   }
-
-  const header = parseHeader(headerBytes)
   if (!header) return null
 
   // Decode payload based on mode

@@ -526,9 +526,16 @@ async function populateDisplayDropdown() {
         const option = document.createElement('option')
         option.value = i.toString()
         const isCurrent = s === currentScreen ? ' (current)' : ''
+        const isInternal = s.isInternal ? ' [built-in]' : ' [external]'
         const label = s.label || `Screen ${i + 1}`
-        option.textContent = `${label}: ${s.width}x${s.height}${isCurrent}`
+        option.textContent = `${label}: ${s.width}x${s.height}${isCurrent}${isInternal}`
         dropdown.appendChild(option)
+
+        // Auto-select first external (non-current) display — likely the HDMI dongle
+        if (!s.isInternal && s !== currentScreen && dropdown.value === 'current') {
+          dropdown.value = i.toString()
+          debugLog(`Auto-selected external display: ${label} (${s.width}x${s.height})`)
+        }
       })
 
       debugLog(`Found ${cachedScreens.length} display(s)`)
@@ -539,6 +546,12 @@ async function populateDisplayDropdown() {
 }
 
 async function enterFullscreenOnSelectedDisplay() {
+  // Re-detect displays now (we're in a user gesture context, so getScreenDetails will work)
+  if (!cachedScreens) {
+    debugLog(`Detecting displays (user gesture context)...`)
+    await populateDisplayDropdown()
+  }
+
   const selectedValue = elements.displayDropdown.value
 
   try {
@@ -547,13 +560,14 @@ async function enterFullscreenOnSelectedDisplay() {
       const targetScreen = cachedScreens[screenIndex]
 
       if (targetScreen) {
-        debugLog(`Going fullscreen on: ${targetScreen.label || 'Screen ' + (screenIndex + 1)} (${targetScreen.width}x${targetScreen.height})`)
+        debugLog(`Going fullscreen on: ${targetScreen.label || 'Screen ' + (screenIndex + 1)} (${targetScreen.width}x${targetScreen.height}, internal=${targetScreen.isInternal})`)
 
         // Move window to target screen first
         window.moveTo(targetScreen.left + 100, targetScreen.top + 100)
-        await new Promise(r => setTimeout(r, 150))
+        await new Promise(r => setTimeout(r, 200))
 
         await elements.canvas.requestFullscreen({ screen: targetScreen })
+        debugLog(`Fullscreen on target display succeeded`)
         return
       }
     }
@@ -561,8 +575,27 @@ async function enterFullscreenOnSelectedDisplay() {
     debugLog(`Fullscreen on selected display failed: ${err.message}`)
   }
 
-  // Fallback to regular fullscreen on canvas
-  debugLog('Using fullscreen on current screen (canvas)')
+  // Fallback: try each non-current screen
+  if (cachedScreens && cachedScreens.length > 1) {
+    debugLog(`Trying each display as fallback...`)
+    for (const s of cachedScreens) {
+      try {
+        if (!s.isInternal || cachedScreens.length === 2) {
+          debugLog(`Trying: ${s.label || 'unknown'} (${s.width}x${s.height})`)
+          window.moveTo(s.left + 100, s.top + 100)
+          await new Promise(r => setTimeout(r, 200))
+          await elements.canvas.requestFullscreen({ screen: s })
+          debugLog(`Fullscreen succeeded on: ${s.label}`)
+          return
+        }
+      } catch (e) {
+        debugLog(`Failed: ${e.message}`)
+      }
+    }
+  }
+
+  // Last resort: fullscreen on current screen
+  debugLog('Fallback: fullscreen on current screen (canvas)')
   if (elements.canvas.requestFullscreen) {
     await elements.canvas.requestFullscreen().catch(() => {})
   }
@@ -616,8 +649,9 @@ export function initHdmiUvcSender(errorHandler) {
   elements.resolutionSlider.value = DEFAULT_RESOLUTION_PRESET
   elements.fpsSlider.value = DEFAULT_FPS_PRESET
 
-  // Populate display dropdown
+  // Populate display dropdown (may fail without user gesture - will retry on click and on Start)
   populateDisplayDropdown()
+  elements.displayDropdown.onfocus = () => populateDisplayDropdown()
 
   updateDropZoneState()
   updateActionButton()
