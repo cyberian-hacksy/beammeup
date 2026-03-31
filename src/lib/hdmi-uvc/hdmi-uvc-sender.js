@@ -172,7 +172,7 @@ function renderFrame() {
       debugLog(`Sender row 0: ${row0}`)
       debugLog(`Sender row 10: ${row10}`)
       debugLog(`Sender row 100: ${row100}`)
-      debugLog(`Values use safe range 100-200`)
+      debugLog(`Direct byte-to-pixel mapping (0-255)`)
     }
 
     // Draw to canvas

@@ -215,7 +215,7 @@ async function processFrame(now, metadata) {
   let captureMethod = 'video'
 
   // Try ImageCapture API first (works best with UVC devices)
-  if (imageCapture && state.frameCount % 30 === 1) {
+  if (imageCapture) {
     try {
       const bitmap = await imageCapture.grabFrame()
       state.ctx.drawImage(bitmap, 0, 0)
@@ -287,7 +287,7 @@ async function processFrame(now, metadata) {
     for (let row = 1; row < 100; row++) {
       const rowOffset = row * width * 4
       // Check if this row starts with something that could decode to BEAM magic
-      // After decoding from safe range (100-200), we need 0x42, 0x45, 0x41, 0x4D
+      // We need pixel values that decode to 0x42, 0x45, 0x41, 0x4D (BEAM magic)
       const testData = new Uint8Array(imageData.data.buffer, imageData.data.byteOffset + rowOffset)
       const testResult = parseFrame(testData, width, height - row)
       if (testResult) {
