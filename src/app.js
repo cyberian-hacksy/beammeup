@@ -24,10 +24,9 @@ import { initHdmiUvcReceiver, resetHdmiUvcReceiver, autoStartHdmiUvcReceiver } f
 import { testCrc32 } from './lib/hdmi-uvc/crc32.js'
 import {
   testHeaderRoundtrip,
-  testPayloadGrayRoundtrip,
-  testPayloadRGBRoundtrip,
-  testPayloadCompatRoundtrip,
-  testFrameRoundtrip
+  testAnchorRoundtrip,
+  testFrameRoundtrip,
+  testAnchorDetectionWithOffset
 } from './lib/hdmi-uvc/hdmi-uvc-frame.js'
 
 // Make libraries available globally
@@ -46,10 +45,9 @@ window.testParityRecovery = testParityRecovery
 // HDMI-UVC tests
 window.testCrc32 = testCrc32
 window.testHdmiHeaderRoundtrip = testHeaderRoundtrip
-window.testHdmiPayloadGray = testPayloadGrayRoundtrip
-window.testHdmiPayloadRGB = testPayloadRGBRoundtrip
-window.testHdmiPayloadCompat = testPayloadCompatRoundtrip
+window.testHdmiAnchorRoundtrip = testAnchorRoundtrip
 window.testHdmiFrameRoundtrip = testFrameRoundtrip
+window.testHdmiAnchorOffset = testAnchorDetectionWithOffset
 
 // ============ ERROR HANDLING ============
 function showError(message) {
@@ -169,10 +167,9 @@ async function runAllTests() {
     // HDMI-UVC tests
     crc32: testCrc32(),
     hdmiHeader: testHeaderRoundtrip(),
-    hdmiPayloadGray: testPayloadGrayRoundtrip(),
-    hdmiPayloadRGB: testPayloadRGBRoundtrip(),
-    hdmiPayloadCompat: testPayloadCompatRoundtrip(),
-    hdmiFrame: testFrameRoundtrip()
+    hdmiAnchor: testAnchorRoundtrip(),
+    hdmiFrame: testFrameRoundtrip(),
+    hdmiAnchorOffset: testAnchorDetectionWithOffset()
   }
 
   const passed = Object.values(results).every(r => r)

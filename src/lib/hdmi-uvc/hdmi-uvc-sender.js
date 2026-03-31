@@ -1,16 +1,12 @@
 // HDMI-UVC Sender module - handles file encoding and full-screen display
 
 import { createEncoder } from '../encoder.js'
-import { parsePacket } from '../packet.js'
 import {
   HDMI_UVC_MAX_FILE_SIZE,
   HDMI_MODE,
   HDMI_MODE_NAMES,
-  RESOLUTION_PRESETS,
   FPS_PRESETS,
-  DEFAULT_RESOLUTION_PRESET,
-  DEFAULT_FPS_PRESET,
-  BLOCK_SIZES
+  DEFAULT_FPS_PRESET
 } from './hdmi-uvc-constants.js'
 import { buildFrame, getPayloadCapacity } from './hdmi-uvc-frame.js'
 
@@ -77,41 +73,9 @@ function formatBytes(bytes) {
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
 }
 
-function getResolution() {
-  const index = parseInt(elements.resolutionSlider.value)
-  return RESOLUTION_PRESETS[index]
-}
-
 function getFps() {
   const index = parseInt(elements.fpsSlider.value)
   return FPS_PRESETS[index]
-}
-
-function estimateTime() {
-  if (!state.fileSize) return ''
-
-  const res = getResolution()
-  const fps = getFps()
-  const capacity = getPayloadCapacity(res.width, res.height, state.mode)
-
-  if (capacity === 0) return ''
-
-  const effectiveCapacity = capacity * 0.9
-  const totalFrames = Math.ceil(state.fileSize / effectiveCapacity)
-  const seconds = totalFrames / fps.fps
-
-  if (seconds < 1) return '<1s'
-  if (seconds < 60) return '~' + Math.ceil(seconds) + 's'
-  if (seconds < 3600) return '~' + (seconds / 60).toFixed(1) + 'm'
-  return '~' + (seconds / 3600).toFixed(1) + 'h'
-}
-
-function estimateThroughput() {
-  const res = getResolution()
-  const fps = getFps()
-  const capacity = getPayloadCapacity(res.width, res.height, state.mode)
-  const bytesPerSecond = capacity * fps.fps
-  return formatBytes(bytesPerSecond) + '/s'
 }
 
 function updateDropZoneState() {
@@ -143,13 +107,6 @@ function updateActionButton() {
   elements.btnStop.disabled = !state.fileData
 }
 
-function updateModeButtons() {
-  elements.modeButtons.forEach(btn => {
-    const mode = parseInt(btn.dataset.mode)
-    btn.classList.toggle('active', mode === state.mode)
-  })
-}
-
 function renderFrame() {
   if (!state.isSending || state.isPaused || !state.encoder) return
 
@@ -158,68 +115,30 @@ function renderFrame() {
   const ch = elements.canvas.height
 
   try {
-    // Generate fountain symbol
     const packet = state.encoder.generateSymbol(state.symbolId)
 
-    if (state.frameCount === 0) {
-      debugLog(`First packet: ${packet.length} bytes, symbolId=${state.symbolId}`)
-    }
+    const frameData = buildFrame(packet, HDMI_MODE.COMPAT_4, cw, ch, fps.fps, state.symbolId)
 
-    // Build frame with packet payload
-    const frameData = buildFrame(
-      packet,
-      state.mode,
-      cw,
-      ch,
-      fps.fps,
-      state.symbolId
-    )
-
-    // Draw to canvas (dimensions set once in startSending, not here)
     const ctx = elements.canvas.getContext('2d')
-    const imageData = new ImageData(
-      new Uint8ClampedArray(frameData),
-      cw,
-      ch
-    )
-    ctx.putImageData(imageData, 0, 0)
+    ctx.putImageData(new ImageData(new Uint8ClampedArray(frameData), cw, ch), 0, 0)
 
-    if (state.frameCount === 0) {
-      // Header is at row 16 (after 16 padding rows). Read magic from correct position.
-      const bs = BLOCK_SIZES[state.mode] || 1
-      const headerRowOffset = 16 * cw * 4  // row 16 in RGBA
-      const m = [0, 1, 2, 3].map(i => frameData[headerRowOffset + (i * bs + Math.floor(bs / 2)) * 4])
-      debugLog(`Frame: ${cw}x${ch}, bs=${bs}, header@row16 magic=${m.join(',')} (expect 66,69,65,77)`)
-      // Also log row 0 (should be padding=0) and row 18 (payload start)
-      const row0 = [0,1,2,3,4,5,6,7].map(i => frameData[i * 4])
-      const row18offset = 18 * cw * 4
-      const row18 = [0,1,2,3,4,5,6,7].map(i => frameData[row18offset + i * 4])
-      debugLog(`Row0 (padding): ${row0.join(',')}  Row18 (payload): ${row18.join(',')}`)
-    }
-
-    // Update overlay
     state.frameCount++
     elements.frameCount.textContent = state.frameCount
 
     const progress = Math.min(100, Math.round((state.symbolId / state.encoder.K_prime) * 100))
     elements.progressDisplay.textContent = progress + '%'
-
-    // Debug current status
     debugCurrent(`#${state.frameCount} sym=${state.symbolId}/${state.encoder.K_prime} ${progress}%`)
 
-    // Advance symbol ID, loop back after K_prime
     state.symbolId++
     if (state.symbolId > state.encoder.K_prime) {
       state.symbolId = 1
       debugLog(`Looped back to symbol 1 after ${state.frameCount} frames`)
     }
 
-    // Schedule next frame
     state.timerId = setTimeout(renderFrame, fps.interval)
 
   } catch (err) {
-    debugLog(`ERROR in renderFrame: ${err.message}`)
-    console.error('renderFrame error:', err)
+    debugLog(`ERROR: ${err.message}`)
     showError('Frame render error: ' + err.message)
   }
 }
@@ -230,7 +149,7 @@ async function startSending() {
   try {
     debugLog(`=== START SENDING ===`)
 
-    // Step 1: Set up canvas overlay FIRST to determine actual viewport size
+    // Set up canvas overlay (no fullscreen — avoids macOS Spaces issue)
     elements.canvas.style.display = 'block'
     elements.canvas.style.position = 'fixed'
     elements.canvas.style.top = '0'
@@ -242,53 +161,40 @@ async function startSending() {
     elements.canvas.style.background = '#000'
     elements.placeholder.style.display = 'none'
 
-    // Try to maximize window
     window.moveTo(0, 0)
     window.resizeTo(screen.availWidth, screen.availHeight)
 
-    // Step 2: Set canvas bitmap to viewport size for 1:1 CSS pixel mapping.
-    // This avoids CSS scaling which would shift block positions in the HDMI capture.
+    // Canvas bitmap = viewport size (1:1 CSS pixel mapping, no scaling)
     const canvasWidth = window.innerWidth
     const canvasHeight = window.innerHeight
     elements.canvas.width = canvasWidth
     elements.canvas.height = canvasHeight
 
-    debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}, Canvas: ${canvasWidth}x${canvasHeight}`)
-    debugLog(`Screen: ${screen.width}x${screen.height}, dpr: ${window.devicePixelRatio}`)
-    debugLog(`Window: ${window.outerWidth}x${window.outerHeight} at (${window.screenX},${window.screenY})`)
+    debugLog(`Canvas: ${canvasWidth}x${canvasHeight}, dpr: ${window.devicePixelRatio}`)
 
-    // Step 3: Compute capacity using actual canvas dimensions
-    const capacity = getPayloadCapacity(canvasWidth, canvasHeight, state.mode)
-    debugLog(`Frame capacity: ${capacity} bytes`)
+    // Compute capacity from actual canvas dimensions
+    const capacity = getPayloadCapacity(canvasWidth, canvasHeight)
+    debugLog(`Payload capacity: ${capacity} bytes/frame`)
 
     const frameBlockSize = capacity - 16
     const minBlocks = 5
     const blockSizeForMinBlocks = Math.floor(state.fileSize / minBlocks)
     const blockSize = Math.min(frameBlockSize, Math.max(blockSizeForMinBlocks, 200))
 
-    debugLog(`Block size: ${blockSize}, File: ${state.fileName} (${state.fileSize} bytes)`)
+    debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)}), blockSize: ${blockSize}`)
 
-    // Step 4: Create encoder
     state.encoder = createEncoder(
-      state.fileData,
-      state.fileName,
-      'application/octet-stream',
-      state.fileHash,
-      blockSize
+      state.fileData, state.fileName, 'application/octet-stream', state.fileHash, blockSize
     )
 
-    debugLog(`Encoder: K=${state.encoder.K}, K'=${state.encoder.K_prime}, M=${state.encoder.M}`)
+    debugLog(`Encoder: K=${state.encoder.K}, K'=${state.encoder.K_prime}`)
 
     state.isSending = true
     state.isPaused = false
     state.symbolId = 1
     state.frameCount = 0
 
-    // Disable controls during send
-    elements.resolutionSlider.disabled = true
     elements.fpsSlider.disabled = true
-    elements.modeButtons.forEach(btn => btn.disabled = true)
-
     updateActionButton()
     renderFrame()
 
@@ -305,25 +211,19 @@ function pauseSending() {
     state.timerId = null
   }
 
-  // Hide canvas, show paused placeholder
   resetCanvasStyles()
   elements.overlay.classList.add('hidden')
   elements.placeholder.style.display = 'flex'
   elements.placeholderIcon.textContent = '⏸'
   elements.placeholderText.textContent = 'Transfer paused - ' + state.frameCount + ' frames sent'
 
-  // Re-enable controls while paused
-  elements.resolutionSlider.disabled = false
   elements.fpsSlider.disabled = false
-  elements.modeButtons.forEach(btn => btn.disabled = false)
-
   updateActionButton()
 }
 
 function resumeSending() {
   state.isPaused = false
 
-  // Restore canvas overlay
   elements.canvas.style.display = 'block'
   elements.canvas.style.position = 'fixed'
   elements.canvas.style.top = '0'
@@ -335,11 +235,7 @@ function resumeSending() {
   elements.canvas.style.background = '#000'
   elements.placeholder.style.display = 'none'
 
-  // Disable controls during send
-  elements.resolutionSlider.disabled = true
   elements.fpsSlider.disabled = true
-  elements.modeButtons.forEach(btn => btn.disabled = true)
-
   updateActionButton()
   renderFrame()
 }
@@ -360,10 +256,7 @@ function stopSending() {
   state.symbolId = 1
   state.frameCount = 0
 
-  // Re-enable controls
-  elements.resolutionSlider.disabled = false
   elements.fpsSlider.disabled = false
-  elements.modeButtons.forEach(btn => btn.disabled = false)
 
   resetCanvasStyles()
   elements.placeholder.style.display = 'flex'
@@ -410,7 +303,7 @@ async function processFile(file) {
     state.isPaused = false
 
     elements.fileInfo.textContent = file.name + ' (' + formatBytes(file.size) + ')'
-    elements.estimate.textContent = estimateTime() + ' @ ' + estimateThroughput()
+    elements.estimate.textContent = ''
 
     elements.placeholderIcon.textContent = '✓'
     elements.placeholderText.textContent = 'File ready, click Start'
@@ -461,129 +354,9 @@ async function handleDrop(e) {
   }
 }
 
-function handleModeClick(e) {
-  const mode = parseInt(e.target.dataset.mode)
-  if (isNaN(mode)) return
-
-  state.mode = mode
-  updateModeButtons()
-
-  if (state.fileSize) {
-    elements.estimate.textContent = estimateTime() + ' @ ' + estimateThroughput()
-  }
-}
-
-function handleResolutionChange() {
-  const preset = getResolution()
-  elements.resolutionDisplay.textContent = preset.name + ' (' + preset.width + 'x' + preset.height + ')'
-
-  if (state.fileSize) {
-    elements.estimate.textContent = estimateTime() + ' @ ' + estimateThroughput()
-  }
-}
-
 function handleFpsChange() {
   const preset = getFps()
   elements.fpsDisplay.textContent = preset.name
-
-  if (state.fileSize) {
-    elements.estimate.textContent = estimateTime() + ' @ ' + estimateThroughput()
-  }
-}
-
-let cachedScreens = null
-
-async function populateDisplayDropdown() {
-  const dropdown = elements.displayDropdown
-
-  // Clear existing options except first
-  while (dropdown.options.length > 1) {
-    dropdown.remove(1)
-  }
-
-  try {
-    if ('getScreenDetails' in window) {
-      const screenDetails = await window.getScreenDetails()
-      cachedScreens = screenDetails.screens
-      const currentScreen = screenDetails.currentScreen
-
-      cachedScreens.forEach((s, i) => {
-        const option = document.createElement('option')
-        option.value = i.toString()
-        const isCurrent = s === currentScreen ? ' (current)' : ''
-        const isInternal = s.isInternal ? ' [built-in]' : ' [external]'
-        const label = s.label || `Screen ${i + 1}`
-        option.textContent = `${label}: ${s.width}x${s.height}${isCurrent}${isInternal}`
-        dropdown.appendChild(option)
-
-        // Auto-select first external (non-current) display — likely the HDMI dongle
-        if (!s.isInternal && s !== currentScreen && dropdown.value === 'current') {
-          dropdown.value = i.toString()
-          debugLog(`Auto-selected external display: ${label} (${s.width}x${s.height})`)
-        }
-      })
-
-      debugLog(`Found ${cachedScreens.length} display(s)`)
-    }
-  } catch (err) {
-    debugLog(`Display detection failed: ${err.message}`)
-  }
-}
-
-async function enterFullscreenOnSelectedDisplay() {
-  // Re-detect displays now (we're in a user gesture context, so getScreenDetails will work)
-  if (!cachedScreens) {
-    debugLog(`Detecting displays (user gesture context)...`)
-    await populateDisplayDropdown()
-  }
-
-  const selectedValue = elements.displayDropdown.value
-
-  try {
-    if (selectedValue !== 'current' && cachedScreens) {
-      const screenIndex = parseInt(selectedValue)
-      const targetScreen = cachedScreens[screenIndex]
-
-      if (targetScreen) {
-        debugLog(`Going fullscreen on: ${targetScreen.label || 'Screen ' + (screenIndex + 1)} (${targetScreen.width}x${targetScreen.height}, internal=${targetScreen.isInternal})`)
-
-        // Move window to target screen first
-        window.moveTo(targetScreen.left + 100, targetScreen.top + 100)
-        await new Promise(r => setTimeout(r, 200))
-
-        await elements.canvas.requestFullscreen({ screen: targetScreen })
-        debugLog(`Fullscreen on target display succeeded`)
-        return
-      }
-    }
-  } catch (err) {
-    debugLog(`Fullscreen on selected display failed: ${err.message}`)
-  }
-
-  // Fallback: try each non-current screen
-  if (cachedScreens && cachedScreens.length > 1) {
-    debugLog(`Trying each display as fallback...`)
-    for (const s of cachedScreens) {
-      try {
-        if (!s.isInternal || cachedScreens.length === 2) {
-          debugLog(`Trying: ${s.label || 'unknown'} (${s.width}x${s.height})`)
-          window.moveTo(s.left + 100, s.top + 100)
-          await new Promise(r => setTimeout(r, 200))
-          await elements.canvas.requestFullscreen({ screen: s })
-          debugLog(`Fullscreen succeeded on: ${s.label}`)
-          return
-        }
-      } catch (e) {
-        debugLog(`Failed: ${e.message}`)
-      }
-    }
-  }
-
-  // Last resort: fullscreen on current screen
-  debugLog('Fallback: fullscreen on current screen (canvas)')
-  if (elements.canvas.requestFullscreen) {
-    await elements.canvas.requestFullscreen().catch(() => {})
-  }
 }
 
 function handleKeydown(e) {
@@ -610,11 +383,6 @@ export function initHdmiUvcSender(errorHandler) {
     overlay: document.getElementById('hdmi-uvc-overlay'),
     frameCount: document.getElementById('hdmi-uvc-frame-count'),
     progressDisplay: document.getElementById('hdmi-uvc-progress'),
-    displayDropdown: document.getElementById('hdmi-uvc-display-dropdown'),
-    modeSelector: document.getElementById('hdmi-uvc-mode-selector'),
-    modeButtons: document.querySelectorAll('#hdmi-uvc-mode-selector .mode-btn'),
-    resolutionSlider: document.getElementById('hdmi-uvc-resolution-slider'),
-    resolutionDisplay: document.getElementById('hdmi-uvc-resolution-display'),
     fpsSlider: document.getElementById('hdmi-uvc-fps-slider'),
     fpsDisplay: document.getElementById('hdmi-uvc-fps-display'),
     fileInfo: document.getElementById('hdmi-uvc-file-info'),
@@ -623,21 +391,13 @@ export function initHdmiUvcSender(errorHandler) {
     btnStop: document.getElementById('btn-hdmi-uvc-stop')
   }
 
-  elements.resolutionSlider.value = DEFAULT_RESOLUTION_PRESET
   elements.fpsSlider.value = DEFAULT_FPS_PRESET
-
-  // Populate display dropdown (may fail without user gesture - will retry on click and on Start)
-  populateDisplayDropdown()
-  elements.displayDropdown.onfocus = () => populateDisplayDropdown()
 
   updateDropZoneState()
   updateActionButton()
-  updateModeButtons()
-  handleResolutionChange()
   handleFpsChange()
 
   elements.fileInput.onchange = handleFileSelect
-  elements.resolutionSlider.oninput = handleResolutionChange
   elements.fpsSlider.oninput = handleFpsChange
   elements.btnAction.onclick = handleActionClick
   elements.btnStop.onclick = stopSending
@@ -646,10 +406,6 @@ export function initHdmiUvcSender(errorHandler) {
   elements.container.ondragover = handleDragOver
   elements.container.ondragleave = handleDragLeave
   elements.container.ondrop = handleDrop
-
-  elements.modeButtons.forEach(btn => {
-    btn.onclick = handleModeClick
-  })
 
   document.addEventListener('keydown', handleKeydown)
 

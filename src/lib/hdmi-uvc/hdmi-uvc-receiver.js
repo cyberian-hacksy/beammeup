@@ -3,7 +3,7 @@
 import { createDecoder } from '../decoder.js'
 import { parsePacket } from '../packet.js'
 import { DEVICE_STORAGE_KEY, HDMI_MODE_NAMES } from './hdmi-uvc-constants.js'
-import { parseFrame, probeHeaderAt, parseFrameAt } from './hdmi-uvc-frame.js'
+import { detectAnchors, dataRegionFromAnchors, decodeDataRegion } from './hdmi-uvc-frame.js'
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
@@ -44,7 +44,8 @@ const state = {
   startTime: null,
   detectedMode: null,
   detectedResolution: null,
-  completedFile: null
+  completedFile: null,
+  anchorBounds: null  // Cached data region from detected anchors
 }
 
 // Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
@@ -247,237 +248,88 @@ async function processFrame(now, metadata) {
   }
 
   state.frameCount++
-
-  // === DIAGNOSTIC LOGGING ===
   const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
 
-  if (state.frameCount === 1) {
-    debugLog(`=== RECEIVER DIAGNOSTICS ===`)
-    debugLog(`Video: ${width}x${height}`)
-    debugLog(`readyState=${video.readyState}, paused=${video.paused}, currentTime=${video.currentTime.toFixed(2)}`)
-    debugLog(`APIs: VideoFrame=${hasVideoFrame}, ImageCapture=${hasImageCapture}, VideoFrameCallback=${hasVideoFrameCallback}`)
-    debugLog(`Capture method: ${captureMethod}`)
-    if (metadata) {
-      debugLog(`Metadata: presentedFrames=${metadata.presentedFrames}, mediaTime=${metadata.mediaTime?.toFixed(3)}`)
-    }
-    // Log video track capabilities
-    const track = state.stream?.getVideoTracks()[0]
-    if (track) {
-      const settings = track.getSettings()
-      debugLog(`Track settings: ${JSON.stringify(settings)}`)
+  // === ANCHOR DETECTION ===
+  let region = state.anchorBounds
+
+  if (!region) {
+    const anchors = detectAnchors(imageData.data, width, height)
+    if (anchors.length >= 2) {
+      region = dataRegionFromAnchors(anchors)
+      state.anchorBounds = region
+      debugLog(`*** ANCHORS LOCKED: ${anchors.length} found, region (${region.x},${region.y}) ${region.w}x${region.h} ***`)
+    } else if (isDiagFrame) {
+      debugLog(`Frame ${state.frameCount}: ${anchors.length} anchors found (need ≥2)`)
+      debugCurrent(`#${state.frameCount} scanning...`)
     }
   }
 
-  const p = imageData.data
-
-  // Always detect content offset (needed for header scanning below)
-  let firstNonBlackCol = -1, firstNonBlackRow = -1
-  const midCol = Math.floor(width / 2)
-  for (let row = 0; row < height; row++) {
-    const idx = (row * width + midCol) * 4
-    if (p[idx] > 10 || p[idx + 1] > 10 || p[idx + 2] > 10) {
-      firstNonBlackRow = row
-      break
-    }
-  }
-  const midRow = Math.floor(height / 2)
-  for (let col = 0; col < width; col++) {
-    const idx = (midRow * width + col) * 4
-    if (p[idx] > 10 || p[idx + 1] > 10 || p[idx + 2] > 10) {
-      firstNonBlackCol = col
-      break
-    }
+  if (!region) {
+    scheduleNextFrame()
+    return
   }
 
+  // === DECODE DATA REGION ===
+  const result = decodeDataRegion(imageData.data, width, region)
+
+  if (result && result.crcValid) {
+    state.validFrames++
+    elements.statFrames.textContent = state.validFrames + ' valid frames'
+
+    if (!state.detectedMode) {
+      state.detectedMode = result.header.mode
+      state.detectedResolution = { width: result.header.width, height: result.header.height }
+      elements.signalStatus.textContent = `Detected: ${result.header.width}x${result.header.height}`
+      debugLog(`=== SIGNAL DETECTED ===`)
+      debugLog(`Mode: ${HDMI_MODE_NAMES[result.header.mode]}, ${result.header.width}x${result.header.height}`)
+    }
+
+    const packet = result.payload
+    const parsed = parsePacket(packet)
+
+    if (parsed) {
+      if (!state.decoder) {
+        state.decoder = createDecoder()
+        state.startTime = Date.now()
+        showReceivingStatus()
+        debugLog(`Decoder created`)
+      }
+
+      state.decoder.receive(packet)
+
+      if (state.validFrames % 10 === 0) {
+        debugLog(`Progress: ${Math.round(state.decoder.progress * 100)}%, sym=${parsed.symbolId}`)
+      }
+
+      debugCurrent(`#${state.validFrames} sym=${parsed.symbolId} ${Math.round((state.decoder.progress || 0) * 100)}%`)
+      updateProgress()
+
+      if (state.decoder.isComplete()) {
+        debugLog(`=== TRANSFER COMPLETE ===`)
+        handleComplete()
+        return
+      }
+    }
+  } else if (result && !result.crcValid) {
+    if (isDiagFrame) debugLog(`Frame ${state.frameCount}: CRC fail`)
+    debugCurrent(`#${state.frameCount} CRC fail`)
+    // Anchor position may have drifted — clear cache to re-detect
+    state.anchorBounds = null
+  } else {
+    if (isDiagFrame) debugLog(`Frame ${state.frameCount}: decode failed`)
+    debugCurrent(`#${state.frameCount} no data`)
+    state.anchorBounds = null
+  }
+
+  // Update debug canvas
   if (isDiagFrame) {
-    debugLog(`--- Frame ${state.frameCount} (method=${captureMethod}) ---`)
-    debugLog(`Content offset: row=${firstNonBlackRow} col=${firstNonBlackCol} (frame ${width}x${height})`)
-
-    // Show first 22 pixels at (0,0) - what we currently try to parse as header
-    const hdrPixels = []
-    for (let i = 0; i < Math.min(22, width); i++) {
-      hdrPixels.push(p[i * 4])
-    }
-    debugLog(`Row0 R[0..21]: ${hdrPixels.join(',')}`)
-
-    // If there's an offset, show pixels at the content origin too
-    if (firstNonBlackRow >= 0 && firstNonBlackCol >= 0 && (firstNonBlackRow > 0 || firstNonBlackCol > 0)) {
-      const contentPixels = []
-      for (let i = 0; i < Math.min(22, width - firstNonBlackCol); i++) {
-        const idx = (firstNonBlackRow * width + firstNonBlackCol + i) * 4
-        contentPixels.push(p[idx])
-      }
-      debugLog(`Content origin R[0..21]: ${contentPixels.join(',')}`)
-      debugLog(`Magic at content origin: ${contentPixels[0]},${contentPixels[1]},${contentPixels[2]},${contentPixels[3]} (need 66,69,65,77)`)
-    }
-
-    // Full-frame stats: sample at multiple points to show spatial distribution
-    const rows = [0, Math.floor(height * 0.1), Math.floor(height * 0.25), Math.floor(height * 0.5), Math.floor(height * 0.75)]
-    for (const row of rows) {
-      let min = 255, max = 0, sum = 0, cnt = 0
-      for (let x = 0; x < width; x += 4) {
-        const v = p[(row * width + x) * 4]
-        if (v < min) min = v
-        if (v > max) max = v
-        sum += v
-        cnt++
-      }
-      debugLog(`Row${row} stats: min=${min} max=${max} avg=${(sum/cnt).toFixed(1)}`)
-    }
-
-    // Dump pixel values to find where canvas starts and where the header is
-    // Probe col=2 from row 0 to 250 — look for the transition from chrome→black→header
-    debugLog(`Col=2 probe (rows 0-250 step 8):`)
-    const probeVals = []
-    for (let r = 0; r <= 250; r += 8) {
-      const idx = (r * width + 2) * 4
-      probeVals.push(`${r}:${p[idx]}`)
-    }
-    debugLog(`  ${probeVals.join(' ')}`)
-
-    // Probe for BEAM magic at block centers across rows 80-200
-    debugLog(`Magic probe (bs=4 centers at col 2,6,10,14):`)
-    for (let r = 80; r <= 200; r += 2) {
-      const v0 = p[(r * width + 2) * 4]
-      const v1 = p[(r * width + 6) * 4]
-      const v2 = p[(r * width + 10) * 4]
-      const v3 = p[(r * width + 14) * 4]
-      if ((v0 > 55 && v0 < 85) || (v1 > 55 && v1 < 85)) {
-        debugLog(`  row ${r}: ${v0},${v1},${v2},${v3} (need ~66,69,65,77)`)
-      }
-    }
-
-    // Update debug canvas
     const debugCanvas = document.getElementById('hdmi-uvc-receiver-debug-canvas')
     if (debugCanvas) {
       debugCanvas.width = Math.min(width, 640)
       debugCanvas.height = Math.min(height, 360)
-      const debugCtx = debugCanvas.getContext('2d')
-      debugCtx.drawImage(state.canvas, 0, 0, debugCanvas.width, debugCanvas.height)
+      debugCanvas.getContext('2d').drawImage(state.canvas, 0, 0, debugCanvas.width, debugCanvas.height)
     }
-  }
-
-  // === FRAME PARSING ===
-  // Fast header probe: check key positions without copying frame data
-  // Only builds the full shifted view when header is actually found
-
-  let result = null
-  let headerInfo = ''
-  let foundRow = 0, foundCol = 0
-
-  // Fast path: try the previously found header position first
-  if (state.headerOffset) {
-    const { row, col } = state.headerOffset
-    const probe = probeHeaderAt(imageData.data, width, row, col)
-    if (probe) {
-      foundRow = row
-      foundCol = col
-      headerInfo = `row=${row} col=${col} (cached)`
-      result = parseFrameAt(imageData.data, width, height, row, col)
-    }
-  }
-
-  // Full 2D scan: the canvas could be at any offset due to browser chrome,
-  // window position, and DPR scaling. probeHeaderAt is fast (~22 reads),
-  // so scanning 200 rows × 150 cols = 30K probes is <2ms.
-  if (!result) {
-    const maxRow = Math.min(300, height)
-    const maxCol = Math.min(150, width)
-    outer:
-    for (let row = 0; row < maxRow; row++) {
-      for (let col = 0; col < maxCol; col += 2) {
-        const probe = probeHeaderAt(imageData.data, width, row, col)
-        if (probe) {
-          foundRow = row
-          foundCol = col
-          headerInfo = `row=${row} col=${col} bs=${probe.blockSize}`
-          result = parseFrameAt(imageData.data, width, height, row, col)
-          if (result) {
-            // Cache the found position for subsequent frames
-            if (!state.headerOffset) {
-              state.headerOffset = { row, col }
-              debugLog(`*** HEADER LOCKED at row=${row} col=${col} blockSize=${probe.blockSize} ***`)
-            }
-          }
-          break outer
-        }
-      }
-    }
-  }
-
-  if (isDiagFrame) {
-    if (result) {
-      debugLog(`Header at ${headerInfo}: mode=${result.header.mode} ${result.header.width}x${result.header.height} sym=${result.header.symbolId} crc=${result.crcValid ? 'OK' : 'FAIL'}`)
-    } else {
-      debugLog(`No BEAM header found (scanned 200x150 area, offset=${firstNonBlackRow},${firstNonBlackCol})`)
-    }
-  }
-
-  // === RESULT HANDLING ===
-  if (result) {
-
-    if (result.crcValid) {
-      state.validFrames++
-      elements.statFrames.textContent = state.validFrames + ' valid frames'
-
-      const modeName = HDMI_MODE_NAMES[result.header.mode] || result.header.mode
-
-      if (!state.detectedMode) {
-        state.detectedMode = result.header.mode
-        state.detectedResolution = { width: result.header.width, height: result.header.height }
-        elements.signalStatus.textContent = `Detected: ${result.header.width}x${result.header.height}`
-        debugLog(`=== SIGNAL DETECTED ===`)
-        debugLog(`Mode: ${modeName}, Resolution: ${result.header.width}x${result.header.height}`)
-        debugLog(`FPS: ${result.header.fps}, Payload: ${result.header.payloadLength} bytes`)
-      }
-
-      const packet = result.payload
-      const parsed = parsePacket(packet)
-
-      if (parsed) {
-        if (!state.decoder) {
-          state.decoder = createDecoder()
-          state.startTime = Date.now()
-          showReceivingStatus()
-          debugLog(`Decoder created, receiving...`)
-        }
-
-        state.decoder.receive(packet)
-
-        if (state.validFrames % 10 === 0) {
-          const progress = state.decoder.progress
-          debugLog(`Progress: ${Math.round(progress * 100)}%, sym=${parsed.symbolId}, blocks=${state.decoder.solvedCount || 0}`)
-        }
-
-        debugCurrent(`#${state.validFrames} sym=${parsed.symbolId} ${Math.round((state.decoder.progress || 0) * 100)}%`)
-
-        updateProgress()
-
-        if (state.decoder.isComplete()) {
-          debugLog(`=== TRANSFER COMPLETE ===`)
-          handleComplete()
-          return
-        }
-      } else {
-        debugLog(`Frame ${state.frameCount}: CRC OK but packet parse failed (payloadLen=${result.header.payloadLength})`)
-      }
-    } else {
-      if (isDiagFrame) {
-        // Log CRC details to understand corruption pattern
-        const { crc32: computeCrc } = await import('./crc32.js')
-        const actualCrc = computeCrc(result.payload)
-        debugLog(`CRC FAIL: header says ${result.header.payloadCrc?.toString(16)}, computed ${actualCrc.toString(16)}, payloadLen=${result.payload.length}`)
-        // Show first 16 bytes of payload
-        const payloadHead = Array.from(result.payload.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-        debugLog(`Payload[0..15]: ${payloadHead}`)
-      }
-      debugCurrent(`#${state.frameCount} CRC fail`)
-    }
-  } else {
-    if (isDiagFrame) {
-      debugLog(`No BEAM header (row 0 pixels: ${imageData.data[0]},${imageData.data[4]},${imageData.data[8]},${imageData.data[12]} need 66,69,65,77)`)
-    }
-    debugCurrent(`#${state.frameCount} no signal`)
   }
 
   scheduleNextFrame()
@@ -582,6 +434,7 @@ function resetReceiver() {
   state.detectedMode = null
   state.detectedResolution = null
   state.completedFile = null
+  state.anchorBounds = null
 
   elements.statFrames.textContent = '0 frames'
   elements.statusScanning.classList.remove('hidden')

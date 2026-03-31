@@ -1,19 +1,13 @@
-// HDMI-UVC frame encoding/decoding utilities
+// HDMI-UVC frame encoding/decoding with anchor-based layout
 
-import { FRAME_MAGIC, HEADER_SIZE, HDMI_MODE, BLOCK_SIZES } from './hdmi-uvc-constants.js'
+import {
+  FRAME_MAGIC, HEADER_SIZE, ANCHOR_SIZE, MARGIN_SIZE, BLOCK_SIZE,
+  ANCHOR_PATTERN, HDMI_MODE
+} from './hdmi-uvc-constants.js'
 import { crc32 } from './crc32.js'
 
-// Padding rows before header to avoid MJPEG boundary corruption at chrome/canvas edge.
-// The header starts at row HEADER_START_ROW, payload at DATA_START_ROW.
-// Receiver uses shifted views so these only affect the sender encoding.
-const HEADER_START_ROW = 16
-const DATA_START_ROW = HEADER_START_ROW + 2
+// --- Byte encoding (direct mapping) ---
 
-// Direct byte-to-pixel mapping for lossless HDMI-UVC capture.
-// HDMI-UVC is a digital path — pixel values should survive intact.
-// If the capture pipeline corrupts extreme values (e.g. HDMI limited range
-// maps 0-15→16, 236-255→235), the CRC check catches it and the frame
-// is skipped. Fountain codes provide redundancy for dropped frames.
 function encodeByte(val) {
   return val
 }
@@ -22,51 +16,86 @@ function decodeByte(val) {
   return Math.max(0, Math.min(255, Math.round(val)))
 }
 
-// Build frame header (22 bytes)
+// --- Anchor rendering ---
+
+// Draw a 32×32 anchor pattern at (originX, originY) into RGBA imageData
+export function renderAnchor(imageData, width, originX, originY) {
+  for (let by = 0; by < 8; by++) {
+    for (let bx = 0; bx < 8; bx++) {
+      const val = ANCHOR_PATTERN[by][bx] ? 255 : 0
+      const startX = originX + bx * BLOCK_SIZE
+      const startY = originY + by * BLOCK_SIZE
+      for (let dy = 0; dy < BLOCK_SIZE; dy++) {
+        for (let dx = 0; dx < BLOCK_SIZE; dx++) {
+          const px = startX + dx
+          const py = startY + dy
+          if (px >= 0 && px < width) {
+            const i = (py * width + px) * 4
+            imageData[i] = val
+            imageData[i + 1] = val
+            imageData[i + 2] = val
+            // Alpha already set to 255
+          }
+        }
+      }
+    }
+  }
+}
+
+// --- Data region geometry ---
+
+// Get the data region bounds for a frame of given dimensions
+export function getDataRegion(width, height) {
+  return {
+    x: MARGIN_SIZE,
+    y: MARGIN_SIZE,
+    w: width - 2 * MARGIN_SIZE,
+    h: height - 2 * MARGIN_SIZE
+  }
+}
+
+// Calculate payload capacity: total data blocks minus 22 header blocks
+export function getPayloadCapacity(width, height) {
+  const dr = getDataRegion(width, height)
+  const blocksX = Math.floor(dr.w / BLOCK_SIZE)
+  const blocksY = Math.floor(dr.h / BLOCK_SIZE)
+  const totalBlocks = blocksX * blocksY
+  return Math.max(0, totalBlocks - HEADER_SIZE) // subtract header blocks
+}
+
+// --- Header serialization ---
+
 export function buildHeader(mode, width, height, fps, symbolId, payloadLength, payloadCrc) {
   const header = new ArrayBuffer(HEADER_SIZE)
   const view = new DataView(header)
-
-  view.setUint32(0, FRAME_MAGIC, false)      // Magic
-  view.setUint8(4, mode)                      // Mode
-  view.setUint16(5, width, false)             // Width
-  view.setUint16(7, height, false)            // Height
-  view.setUint8(9, fps)                       // FPS
-  view.setUint32(10, symbolId, false)         // Symbol ID
-  view.setUint32(14, payloadLength, false)    // Payload length
-  view.setUint32(18, payloadCrc, false)       // Payload CRC32
-
+  view.setUint32(0, FRAME_MAGIC, false)
+  view.setUint8(4, mode)
+  view.setUint16(5, width, false)
+  view.setUint16(7, height, false)
+  view.setUint8(9, fps)
+  view.setUint32(10, symbolId, false)
+  view.setUint32(14, payloadLength, false)
+  view.setUint32(18, payloadCrc, false)
   return new Uint8Array(header)
 }
 
-// Parse frame header from bytes
-// Uses fuzzy magic matching (±3 per byte) to survive MJPEG compression artifacts,
-// then validates remaining fields for sanity
 export function parseHeader(data) {
   if (data.length < HEADER_SIZE) return null
-
-  // Fuzzy magic check: each byte of "BEAM" (66,69,65,77) must be within ±8
-  // MJPEG quantization at block boundaries can introduce 5-8 units of error
   const MAGIC_BYTES = [0x42, 0x45, 0x41, 0x4D]
   const TOLERANCE = 8
   for (let i = 0; i < 4; i++) {
     if (Math.abs(data[i] - MAGIC_BYTES[i]) > TOLERANCE) return null
   }
-
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-
   const mode = view.getUint8(4)
-  if (mode > 4) return null  // Invalid mode
-
+  if (mode > 4) return null
   const width = view.getUint16(5, false)
   const height = view.getUint16(7, false)
   if (width < 100 || width > 8000 || height < 100 || height > 8000) return null
-
   const payloadLength = view.getUint32(14, false)
   if (payloadLength === 0 || payloadLength > width * height * 3) return null
-
   return {
-    magic: FRAME_MAGIC, // Normalize to exact magic for downstream code
+    magic: FRAME_MAGIC,
     mode,
     width,
     height,
@@ -77,508 +106,313 @@ export function parseHeader(data) {
   }
 }
 
-// Calculate payload capacity for given resolution and mode
-export function getPayloadCapacity(width, height, mode) {
-  const dataRows = height - DATA_START_ROW
-  const dataPixels = width * dataRows
+// --- Frame building (sender) ---
 
-  switch (mode) {
-    case HDMI_MODE.RAW_RGB:
-      return dataPixels * 3
-    case HDMI_MODE.RAW_GRAY:
-      return dataPixels
-    case HDMI_MODE.COMPAT_4:
-    case HDMI_MODE.COMPAT_8:
-    case HDMI_MODE.COMPAT_16:
-      const blockSize = BLOCK_SIZES[mode]
-      const blocksX = Math.floor(width / blockSize)
-      const blocksY = Math.floor(dataRows / blockSize)
-      return blocksX * blocksY
-    default:
-      return 0
-  }
-}
+// Build a complete frame: black background + 4 anchors + data blocks (header + payload)
+export function buildFrame(payload, mode, width, height, fps, symbolId) {
+  const payloadCrc = crc32(payload)
+  const headerBytes = buildHeader(mode, width, height, fps, symbolId, payload.length, payloadCrc)
 
-// Encode payload to grayscale pixels (1 byte per pixel)
-export function encodePayloadGray(payload, width, height, startRow = 2) {
-  const headerRows = startRow
-  const dataRows = height - headerRows
-  const dataPixels = width * dataRows
-
-  // Create RGBA image data (4 bytes per pixel for canvas)
+  // Create RGBA image (black background, alpha=255)
   const imageData = new Uint8ClampedArray(width * height * 4)
-
-  // Fill only the 2 actual header rows with alternating pattern (padding rows stay black) (visually distinct from data)
-  for (let y = Math.max(0, headerRows - 2); y < headerRows; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * 4
-      const val = ((x + y) % 2) === 0 ? 0 : 255
-      imageData[i] = val     // R
-      imageData[i + 1] = val // G
-      imageData[i + 2] = val // B
-      imageData[i + 3] = 255 // A
-    }
+  for (let i = 3; i < imageData.length; i += 4) {
+    imageData[i] = 255 // Set all alpha to 255, RGB stays 0 (black)
   }
 
-  // Encode data rows
-  for (let p = 0; p < Math.min(payload.length, dataPixels); p++) {
-    const x = p % width
-    const y = headerRows + Math.floor(p / width)
-    const i = (y * width + x) * 4
-    const val = encodeByte(payload[p])
-    imageData[i] = val     // R
-    imageData[i + 1] = val // G
-    imageData[i + 2] = val // B
-    imageData[i + 3] = 255 // A
-  }
+  // Draw 4 corner anchors
+  renderAnchor(imageData, width, 0, 0)                                    // top-left
+  renderAnchor(imageData, width, width - ANCHOR_SIZE, 0)                  // top-right
+  renderAnchor(imageData, width, 0, height - ANCHOR_SIZE)                 // bottom-left
+  renderAnchor(imageData, width, width - ANCHOR_SIZE, height - ANCHOR_SIZE) // bottom-right
 
-  // Fill remaining pixels with safe minimum (encoded 0)
-  for (let p = payload.length; p < dataPixels; p++) {
-    const x = p % width
-    const y = headerRows + Math.floor(p / width)
-    const i = (y * width + x) * 4
-    imageData[i] = 0
-    imageData[i + 1] = 0
-    imageData[i + 2] = 0
-    imageData[i + 3] = 255
-  }
+  // Fill data region with 4×4 blocks
+  // First HEADER_SIZE blocks = header bytes, rest = payload bytes
+  const dr = getDataRegion(width, height)
+  const blocksX = Math.floor(dr.w / BLOCK_SIZE)
+  const blocksY = Math.floor(dr.h / BLOCK_SIZE)
 
-  return imageData
-}
+  let blockIdx = 0
+  for (let by = 0; by < blocksY; by++) {
+    for (let bx = 0; bx < blocksX; bx++) {
+      // Determine byte value for this block
+      let val
+      if (blockIdx < HEADER_SIZE) {
+        val = encodeByte(headerBytes[blockIdx])
+      } else {
+        const payloadIdx = blockIdx - HEADER_SIZE
+        val = payloadIdx < payload.length ? encodeByte(payload[payloadIdx]) : 0
+      }
 
-// Decode grayscale pixels to payload
-export function decodePayloadGray(imageData, width, height, expectedLength, startRow = 2) {
-  const headerRows = startRow
-  const payload = new Uint8Array(expectedLength)
-
-  for (let p = 0; p < expectedLength; p++) {
-    const x = p % width
-    const y = headerRows + Math.floor(p / width)
-    const i = (y * width + x) * 4
-    // Use red channel (all RGB should be same in grayscale)
-    payload[p] = decodeByte(imageData[i])
-  }
-
-  return payload
-}
-
-// Encode payload to RGB pixels (3 bytes per pixel)
-export function encodePayloadRGB(payload, width, height, startRow = 2) {
-  const headerRows = startRow
-  const dataRows = height - headerRows
-  const dataPixels = width * dataRows
-  const capacity = dataPixels * 3
-
-  const imageData = new Uint8ClampedArray(width * height * 4)
-
-  // Fill only the 2 actual header rows with alternating pattern (padding rows stay black)
-  for (let y = Math.max(0, headerRows - 2); y < headerRows; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * 4
-      const val = ((x + y) % 2) === 0 ? 0 : 255
-      imageData[i] = val
-      imageData[i + 1] = val
-      imageData[i + 2] = val
-      imageData[i + 3] = 255
-    }
-  }
-
-  // Encode data rows (3 payload bytes per pixel in R, G, B)
-  let payloadIdx = 0
-  for (let y = headerRows; y < height && payloadIdx < payload.length; y++) {
-    for (let x = 0; x < width && payloadIdx < payload.length; x++) {
-      const i = (y * width + x) * 4
-      imageData[i] = payloadIdx < payload.length ? encodeByte(payload[payloadIdx++]) : 0     // R
-      imageData[i + 1] = payloadIdx < payload.length ? encodeByte(payload[payloadIdx++]) : 0 // G
-      imageData[i + 2] = payloadIdx < payload.length ? encodeByte(payload[payloadIdx++]) : 0 // B
-      imageData[i + 3] = 255
-    }
-  }
-
-  return imageData
-}
-
-// Decode RGB pixels to payload
-export function decodePayloadRGB(imageData, width, height, expectedLength, startRow = 2) {
-  const headerRows = startRow
-  const payload = new Uint8Array(expectedLength)
-
-  let payloadIdx = 0
-  for (let y = headerRows; y < height && payloadIdx < expectedLength; y++) {
-    for (let x = 0; x < width && payloadIdx < expectedLength; x++) {
-      const i = (y * width + x) * 4
-      if (payloadIdx < expectedLength) payload[payloadIdx++] = decodeByte(imageData[i])     // R
-      if (payloadIdx < expectedLength) payload[payloadIdx++] = decodeByte(imageData[i + 1]) // G
-      if (payloadIdx < expectedLength) payload[payloadIdx++] = decodeByte(imageData[i + 2]) // B
-    }
-  }
-
-  return payload
-}
-
-// Test header roundtrip
-export function testHeaderRoundtrip() {
-  const header = buildHeader(
-    HDMI_MODE.RAW_GRAY,
-    1920, 1080,
-    30,
-    42,
-    1000000,
-    0xDEADBEEF
-  )
-
-  const parsed = parseHeader(header)
-  const pass = parsed !== null &&
-    parsed.magic === FRAME_MAGIC &&
-    parsed.mode === HDMI_MODE.RAW_GRAY &&
-    parsed.width === 1920 &&
-    parsed.height === 1080 &&
-    parsed.fps === 30 &&
-    parsed.symbolId === 42 &&
-    parsed.payloadLength === 1000000 &&
-    parsed.payloadCrc === 0xDEADBEEF
-
-  console.log('Header roundtrip test:', pass ? 'PASS' : 'FAIL')
-  return pass
-}
-
-// Test raw grayscale encoding roundtrip
-export function testPayloadGrayRoundtrip() {
-  const payload = new Uint8Array(1000)
-  for (let i = 0; i < payload.length; i++) payload[i] = i % 256
-
-  const width = 100
-  const height = 20
-
-  const encoded = encodePayloadGray(payload, width, height)
-  const decoded = decodePayloadGray(encoded, width, height, payload.length)
-
-  let pass = true
-  for (let i = 0; i < payload.length; i++) {
-    if (payload[i] !== decoded[i]) {
-      pass = false
-      break
-    }
-  }
-
-  console.log('Payload Gray roundtrip test:', pass ? 'PASS' : 'FAIL')
-  return pass
-}
-
-// Test raw RGB encoding roundtrip
-export function testPayloadRGBRoundtrip() {
-  const payload = new Uint8Array(3000)
-  for (let i = 0; i < payload.length; i++) payload[i] = i % 256
-
-  const width = 100
-  const height = 20
-
-  const encoded = encodePayloadRGB(payload, width, height)
-  const decoded = decodePayloadRGB(encoded, width, height, payload.length)
-
-  let pass = true
-  for (let i = 0; i < payload.length; i++) {
-    if (payload[i] !== decoded[i]) {
-      pass = false
-      break
-    }
-  }
-
-  console.log('Payload RGB roundtrip test:', pass ? 'PASS' : 'FAIL')
-  return pass
-}
-
-// Encode payload using super-pixels (NxN block per byte)
-export function encodePayloadCompat(payload, width, height, blockSize, startRow = 2) {
-  const headerRows = startRow
-  const dataRows = height - headerRows
-  const blocksX = Math.floor(width / blockSize)
-  const blocksY = Math.floor(dataRows / blockSize)
-
-  const imageData = new Uint8ClampedArray(width * height * 4)
-
-  // Fill entire image with black first
-  for (let i = 0; i < imageData.length; i += 4) {
-    imageData[i] = 0
-    imageData[i + 1] = 0
-    imageData[i + 2] = 0
-    imageData[i + 3] = 255
-  }
-
-  // Fill only the 2 actual header rows with alternating pattern (padding rows stay black)
-  for (let y = Math.max(0, headerRows - 2); y < headerRows; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * 4
-      const val = ((x + y) % 2) === 0 ? 0 : 255
-      imageData[i] = val
-      imageData[i + 1] = val
-      imageData[i + 2] = val
-    }
-  }
-
-  // Encode data as super-pixels
-  let payloadIdx = 0
-  for (let by = 0; by < blocksY && payloadIdx < payload.length; by++) {
-    for (let bx = 0; bx < blocksX && payloadIdx < payload.length; bx++) {
-      const val = encodeByte(payload[payloadIdx++])
-
-      // Fill entire block with this value
-      const startY = headerRows + by * blockSize
-      const startX = bx * blockSize
-
-      for (let dy = 0; dy < blockSize; dy++) {
-        for (let dx = 0; dx < blockSize; dx++) {
-          const y = startY + dy
-          const x = startX + dx
-          const i = (y * width + x) * 4
+      // Fill 4×4 block
+      const startX = dr.x + bx * BLOCK_SIZE
+      const startY = dr.y + by * BLOCK_SIZE
+      for (let dy = 0; dy < BLOCK_SIZE; dy++) {
+        for (let dx = 0; dx < BLOCK_SIZE; dx++) {
+          const i = ((startY + dy) * width + (startX + dx)) * 4
           imageData[i] = val
           imageData[i + 1] = val
           imageData[i + 2] = val
         }
       }
+      blockIdx++
     }
   }
 
   return imageData
 }
 
-// Decode super-pixels to payload using majority voting
-export function decodePayloadCompat(imageData, width, height, blockSize, expectedLength, startRow = 2) {
-  const headerRows = startRow
-  const dataRows = height - headerRows
-  const blocksX = Math.floor(width / blockSize)
-  const blocksY = Math.floor(dataRows / blockSize)
+// --- Anchor detection (receiver) ---
 
-  const payload = new Uint8Array(expectedLength)
-
-  let payloadIdx = 0
-  for (let by = 0; by < blocksY && payloadIdx < expectedLength; by++) {
-    for (let bx = 0; bx < blocksX && payloadIdx < expectedLength; bx++) {
-      // Sample center pixels for majority voting (more reliable)
-      const startY = headerRows + by * blockSize
-      const startX = bx * blockSize
-      const centerOffset = Math.floor(blockSize / 4)
-      const sampleSize = Math.floor(blockSize / 2)
-
-      let sum = 0
-      let count = 0
-
-      for (let dy = centerOffset; dy < centerOffset + sampleSize; dy++) {
-        for (let dx = centerOffset; dx < centerOffset + sampleSize; dx++) {
-          const y = startY + dy
-          const x = startX + dx
-          const i = (y * width + x) * 4
-          sum += imageData[i] // Use red channel
-          count++
-        }
-      }
-
-      payload[payloadIdx++] = decodeByte(Math.round(sum / count))
+// Sample a block's average value at (px, py) in the image
+// Returns the average R value of the center 2×2 pixels of a 4×4 block
+function sampleBlock(imageData, width, px, py) {
+  // Center 2×2 of the 4×4 block starting at (px, py)
+  const cx = px + 1
+  const cy = py + 1
+  let sum = 0
+  for (let dy = 0; dy < 2; dy++) {
+    for (let dx = 0; dx < 2; dx++) {
+      sum += imageData[((cy + dy) * width + (cx + dx)) * 4]
     }
   }
-
-  return payload
+  return sum / 4
 }
 
-// Test compatible mode encoding roundtrip
-export function testPayloadCompatRoundtrip() {
-  const payload = new Uint8Array(100)
-  for (let i = 0; i < payload.length; i++) payload[i] = i * 2
+// Check if an 8×8 block grid at (originX, originY) matches the anchor pattern
+// threshold: value above which a block is considered "white"
+function verifyAnchorAt(imageData, width, height, originX, originY, threshold = 128) {
+  if (originX < 0 || originY < 0 ||
+      originX + ANCHOR_SIZE > width || originY + ANCHOR_SIZE > height) {
+    return false
+  }
 
-  const width = 128
-  const height = 72
-  const blockSize = 8
+  for (let by = 0; by < 8; by++) {
+    for (let bx = 0; bx < 8; bx++) {
+      const px = originX + bx * BLOCK_SIZE
+      const py = originY + by * BLOCK_SIZE
+      const val = sampleBlock(imageData, width, px, py)
+      const isWhite = val > threshold
+      const expected = ANCHOR_PATTERN[by][bx] === 1
+      if (isWhite !== expected) return false
+    }
+  }
+  return true
+}
 
-  const encoded = encodePayloadCompat(payload, width, height, blockSize)
-  const decoded = decodePayloadCompat(encoded, width, height, blockSize, payload.length)
+// Scan the frame for anchor patterns. Returns array of {x, y} positions found.
+// Scans at block-center resolution (every BLOCK_SIZE pixels) for efficiency.
+export function detectAnchors(imageData, width, height) {
+  const anchors = []
+  const step = 2 // Scan every 2px for sub-block alignment tolerance
+  // Only scan edges where anchors could be (within ANCHOR_SIZE of each edge)
+  // Plus some tolerance for offset
+  const scanMargin = ANCHOR_SIZE + 64 // extra 64px tolerance for window offset
 
-  let pass = true
-  for (let i = 0; i < payload.length; i++) {
-    if (payload[i] !== decoded[i]) {
-      pass = false
-      console.log('Mismatch at', i, ':', payload[i], '!=', decoded[i])
-      break
+  for (let y = 0; y < Math.min(scanMargin, height - ANCHOR_SIZE); y += step) {
+    for (let x = 0; x < Math.min(scanMargin, width - ANCHOR_SIZE); x += step) {
+      if (verifyAnchorAt(imageData, width, height, x, y)) {
+        anchors.push({ x, y, corner: 'TL' })
+      }
+    }
+  }
+  for (let y = 0; y < Math.min(scanMargin, height - ANCHOR_SIZE); y += step) {
+    for (let x = Math.max(0, width - scanMargin); x < width - ANCHOR_SIZE + 1; x += step) {
+      if (verifyAnchorAt(imageData, width, height, x, y)) {
+        anchors.push({ x, y, corner: 'TR' })
+      }
+    }
+  }
+  for (let y = Math.max(0, height - scanMargin); y < height - ANCHOR_SIZE + 1; y += step) {
+    for (let x = 0; x < Math.min(scanMargin, width - ANCHOR_SIZE); x += step) {
+      if (verifyAnchorAt(imageData, width, height, x, y)) {
+        anchors.push({ x, y, corner: 'BL' })
+      }
+    }
+  }
+  for (let y = Math.max(0, height - scanMargin); y < height - ANCHOR_SIZE + 1; y += step) {
+    for (let x = Math.max(0, width - scanMargin); x < width - ANCHOR_SIZE + 1; x += step) {
+      if (verifyAnchorAt(imageData, width, height, x, y)) {
+        anchors.push({ x, y, corner: 'BR' })
+      }
     }
   }
 
-  console.log('Payload Compat roundtrip test:', pass ? 'PASS' : 'FAIL')
+  return anchors
+}
+
+// Derive data region from detected anchor positions
+export function dataRegionFromAnchors(anchors) {
+  if (anchors.length < 2) return null
+
+  // Find bounding box of all anchors
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const a of anchors) {
+    if (a.x < minX) minX = a.x
+    if (a.y < minY) minY = a.y
+    if (a.x + ANCHOR_SIZE > maxX) maxX = a.x + ANCHOR_SIZE
+    if (a.y + ANCHOR_SIZE > maxY) maxY = a.y + ANCHOR_SIZE
+  }
+
+  // Data region is inside the anchors (offset by MARGIN_SIZE from anchor origins)
+  return {
+    x: minX + MARGIN_SIZE,
+    y: minY + MARGIN_SIZE,
+    w: maxX - minX - 2 * MARGIN_SIZE,
+    h: maxY - minY - 2 * MARGIN_SIZE
+  }
+}
+
+// --- Data region decoding (receiver) ---
+
+// Decode data blocks from a data region. Returns { header, payload, crcValid }
+export function decodeDataRegion(imageData, width, region) {
+  const blocksX = Math.floor(region.w / BLOCK_SIZE)
+  const blocksY = Math.floor(region.h / BLOCK_SIZE)
+  const totalBlocks = blocksX * blocksY
+
+  if (totalBlocks < HEADER_SIZE) return null
+
+  // Read all blocks (header + payload) as bytes
+  const headerBytes = new Uint8Array(HEADER_SIZE)
+  let blockIdx = 0
+
+  // Read header
+  for (let by = 0; by < blocksY && blockIdx < HEADER_SIZE; by++) {
+    for (let bx = 0; bx < blocksX && blockIdx < HEADER_SIZE; bx++) {
+      const px = region.x + bx * BLOCK_SIZE
+      const py = region.y + by * BLOCK_SIZE
+      headerBytes[blockIdx] = decodeByte(sampleBlock(imageData, width, px, py))
+      blockIdx++
+    }
+  }
+
+  const header = parseHeader(headerBytes)
+  if (!header) return null
+
+  // Read payload blocks
+  const payload = new Uint8Array(header.payloadLength)
+  let payloadIdx = 0
+  blockIdx = 0
+
+  for (let by = 0; by < blocksY && payloadIdx < header.payloadLength; by++) {
+    for (let bx = 0; bx < blocksX && payloadIdx < header.payloadLength; bx++) {
+      if (blockIdx >= HEADER_SIZE) {
+        const px = region.x + bx * BLOCK_SIZE
+        const py = region.y + by * BLOCK_SIZE
+        payload[payloadIdx++] = decodeByte(sampleBlock(imageData, width, px, py))
+      }
+      blockIdx++
+    }
+  }
+
+  const actualCrc = crc32(payload)
+  return {
+    header,
+    payload,
+    crcValid: actualCrc === header.payloadCrc
+  }
+}
+
+// --- Tests ---
+
+export function testHeaderRoundtrip() {
+  const header = buildHeader(HDMI_MODE.COMPAT_4, 1920, 1080, 30, 42, 1000000, 0xDEADBEEF)
+  const parsed = parseHeader(header)
+  const pass = parsed !== null &&
+    parsed.magic === FRAME_MAGIC &&
+    parsed.mode === HDMI_MODE.COMPAT_4 &&
+    parsed.width === 1920 && parsed.height === 1080 &&
+    parsed.fps === 30 && parsed.symbolId === 42 &&
+    parsed.payloadLength === 1000000 && parsed.payloadCrc === 0xDEADBEEF
+  console.log('Header roundtrip test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 
-// Build complete frame with header embedded in pixels
-export function buildFrame(payload, mode, width, height, fps, symbolId) {
-  const payloadCrc = crc32(payload)
-  const header = buildHeader(mode, width, height, fps, symbolId, payload.length, payloadCrc)
+export function testAnchorRoundtrip() {
+  const width = 640, height = 480
+  const imageData = new Uint8ClampedArray(width * height * 4)
+  for (let i = 3; i < imageData.length; i += 4) imageData[i] = 255
 
-  // Encode payload starting after padding + header rows
-  let imageData
-  switch (mode) {
-    case HDMI_MODE.RAW_RGB:
-      imageData = encodePayloadRGB(payload, width, height, DATA_START_ROW)
-      break
-    case HDMI_MODE.RAW_GRAY:
-      imageData = encodePayloadGray(payload, width, height, DATA_START_ROW)
-      break
-    case HDMI_MODE.COMPAT_4:
-      imageData = encodePayloadCompat(payload, width, height, 4, DATA_START_ROW)
-      break
-    case HDMI_MODE.COMPAT_8:
-      imageData = encodePayloadCompat(payload, width, height, 8, DATA_START_ROW)
-      break
-    case HDMI_MODE.COMPAT_16:
-      imageData = encodePayloadCompat(payload, width, height, 16, DATA_START_ROW)
-      break
-    default:
-      throw new Error('Unknown mode: ' + mode)
-  }
+  // Render one anchor at (0, 0)
+  renderAnchor(imageData, width, 0, 0)
 
-  // Embed header at HEADER_START_ROW (after padding, before payload)
-  // For compat modes, repeat each byte as a blockSize-wide block across 2 rows
-  const headerBlockSize = BLOCK_SIZES[mode] || 1
-  for (let i = 0; i < HEADER_SIZE; i++) {
-    const encoded = encodeByte(header[i])
-    for (let row = HEADER_START_ROW; row < HEADER_START_ROW + 2; row++) {
-      for (let dx = 0; dx < headerBlockSize; dx++) {
-        const x = i * headerBlockSize + dx
-        if (x >= width) break
-        const pixelIdx = (row * width + x) * 4
-        imageData[pixelIdx] = encoded
-        imageData[pixelIdx + 1] = encoded
-        imageData[pixelIdx + 2] = encoded
-      }
-    }
-  }
-
-  return imageData
+  // Verify it
+  const pass = verifyAnchorAt(imageData, width, height, 0, 0)
+  console.log('Anchor roundtrip test:', pass ? 'PASS' : 'FAIL')
+  return pass
 }
 
-// Fast header probe: read header bytes at (row, col) without copying frame data
-// Returns parsed header or null. Tries all block sizes automatically.
-export function probeHeaderAt(imageData, width, row, col) {
-  for (const bs of [1, 4, 8, 16]) {
-    const headerBytes = new Uint8Array(HEADER_SIZE)
-    let valid = true
-    for (let i = 0; i < HEADER_SIZE; i++) {
-      const x = col + i * bs + Math.floor(bs / 2)
-      if (x >= width) { valid = false; break }
-      const idx = (row * width + x) * 4
-      if (idx + 3 >= imageData.length) { valid = false; break }
-      headerBytes[i] = decodeByte(imageData[idx])
-    }
-    if (!valid) continue
-    const header = parseHeader(headerBytes)
-    if (header) return { header, blockSize: bs }
-  }
-  return null
-}
-
-// Parse full frame at (row, col) offset: extract header + decode payload
-export function parseFrameAt(imageData, width, height, row, col) {
-  const probe = probeHeaderAt(imageData, width, row, col)
-  if (!probe) return null
-
-  const { header } = probe
-  const effectiveWidth = width - col
-  const effectiveHeight = height - row
-
-  // Decode payload: read directly from the offset position
-  // Create a shifted view for the payload decoders
-  const shifted = new Uint8Array(effectiveWidth * effectiveHeight * 4)
-  for (let y = 0; y < effectiveHeight; y++) {
-    const srcOffset = ((row + y) * width + col) * 4
-    const dstOffset = y * effectiveWidth * 4
-    shifted.set(
-      new Uint8Array(imageData.buffer, imageData.byteOffset + srcOffset, effectiveWidth * 4),
-      dstOffset
-    )
-  }
-
-  let payload
-  switch (header.mode) {
-    case HDMI_MODE.RAW_RGB:
-      payload = decodePayloadRGB(shifted, effectiveWidth, effectiveHeight, header.payloadLength)
-      break
-    case HDMI_MODE.RAW_GRAY:
-      payload = decodePayloadGray(shifted, effectiveWidth, effectiveHeight, header.payloadLength)
-      break
-    case HDMI_MODE.COMPAT_4:
-      payload = decodePayloadCompat(shifted, effectiveWidth, effectiveHeight, 4, header.payloadLength)
-      break
-    case HDMI_MODE.COMPAT_8:
-      payload = decodePayloadCompat(shifted, effectiveWidth, effectiveHeight, 8, header.payloadLength)
-      break
-    case HDMI_MODE.COMPAT_16:
-      payload = decodePayloadCompat(shifted, effectiveWidth, effectiveHeight, 16, header.payloadLength)
-      break
-    default:
-      return null
-  }
-
-  const actualCrc = crc32(payload)
-  if (actualCrc !== header.payloadCrc) {
-    return { header, payload, crcValid: false }
-  }
-  return { header, payload, crcValid: true }
-}
-
-// Parse frame: extract header and payload (assumes header at pixel 0,0)
-// Tries multiple block sizes to auto-detect raw vs compat header encoding
-// Parse frame from origin (used in unit tests and loopback).
-// Header is at HEADER_START_ROW, payload at DATA_START_ROW.
-export function parseFrame(imageData, width, height) {
-  // Probe at HEADER_START_ROW
-  const probe = probeHeaderAt(imageData, width, HEADER_START_ROW, 0)
-  if (!probe) return null
-  const header = probe.header
-
-  // Decode payload starting at DATA_START_ROW
-  let payload
-  switch (header.mode) {
-    case HDMI_MODE.RAW_RGB:
-      payload = decodePayloadRGB(imageData, width, height, header.payloadLength, DATA_START_ROW)
-      break
-    case HDMI_MODE.RAW_GRAY:
-      payload = decodePayloadGray(imageData, width, height, header.payloadLength, DATA_START_ROW)
-      break
-    case HDMI_MODE.COMPAT_4:
-      payload = decodePayloadCompat(imageData, width, height, 4, header.payloadLength, DATA_START_ROW)
-      break
-    case HDMI_MODE.COMPAT_8:
-      payload = decodePayloadCompat(imageData, width, height, 8, header.payloadLength, DATA_START_ROW)
-      break
-    case HDMI_MODE.COMPAT_16:
-      payload = decodePayloadCompat(imageData, width, height, 16, header.payloadLength, DATA_START_ROW)
-      break
-    default:
-      return null
-  }
-
-  // Verify CRC
-  const actualCrc = crc32(payload)
-  if (actualCrc !== header.payloadCrc) {
-    console.warn('CRC mismatch:', header.payloadCrc, '!=', actualCrc)
-    return { header, payload, crcValid: false }
-  }
-
-  return { header, payload, crcValid: true }
-}
-
-// Test complete frame roundtrip
 export function testFrameRoundtrip() {
   const payload = new Uint8Array(500)
   for (let i = 0; i < payload.length; i++) payload[i] = i % 256
 
-  const width = 640
-  const height = 480
+  const width = 640, height = 480
+  const frame = buildFrame(payload, HDMI_MODE.COMPAT_4, width, height, 30, 42)
 
-  const frame = buildFrame(payload, HDMI_MODE.RAW_GRAY, width, height, 30, 42)
-  const parsed = parseFrame(frame, width, height)
+  // Detect anchors
+  const anchors = detectAnchors(frame, width, height)
+  if (anchors.length < 2) {
+    console.log('Frame roundtrip test: FAIL (found', anchors.length, 'anchors)')
+    return false
+  }
 
-  const pass = parsed !== null &&
-    parsed.crcValid &&
-    parsed.header.symbolId === 42 &&
-    parsed.payload.length === payload.length
+  // Derive data region and decode
+  const region = dataRegionFromAnchors(anchors)
+  if (!region) {
+    console.log('Frame roundtrip test: FAIL (no data region)')
+    return false
+  }
+
+  const result = decodeDataRegion(frame, width, region)
+  const pass = result !== null &&
+    result.crcValid &&
+    result.header.symbolId === 42 &&
+    result.payload.length === payload.length &&
+    result.payload.every((v, i) => v === payload[i])
 
   console.log('Frame roundtrip test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testAnchorDetectionWithOffset() {
+  // Build a frame at 400×300, embed it at offset (22, 20) in a 460×350 canvas
+  // Simulates HDMI capture with small black borders (realistic scenario)
+  const innerW = 400, innerH = 300
+  const outerW = 460, outerH = 350
+  const offsetX = 22, offsetY = 20
+
+  const payload = new Uint8Array(100)
+  for (let i = 0; i < payload.length; i++) payload[i] = i
+
+  // Build inner frame
+  const innerFrame = buildFrame(payload, HDMI_MODE.COMPAT_4, innerW, innerH, 30, 7)
+
+  // Create outer canvas (black)
+  const outer = new Uint8ClampedArray(outerW * outerH * 4)
+  for (let i = 3; i < outer.length; i += 4) outer[i] = 255
+
+  // Copy inner frame to offset position
+  for (let y = 0; y < innerH; y++) {
+    for (let x = 0; x < innerW; x++) {
+      const srcIdx = (y * innerW + x) * 4
+      const dstIdx = ((y + offsetY) * outerW + (x + offsetX)) * 4
+      outer[dstIdx] = innerFrame[srcIdx]
+      outer[dstIdx + 1] = innerFrame[srcIdx + 1]
+      outer[dstIdx + 2] = innerFrame[srcIdx + 2]
+    }
+  }
+
+  // Detect anchors in outer canvas
+  const anchors = detectAnchors(outer, outerW, outerH)
+  if (anchors.length < 2) {
+    console.log('Anchor offset test: FAIL (found', anchors.length, 'anchors)')
+    return false
+  }
+
+  const region = dataRegionFromAnchors(anchors)
+  const result = decodeDataRegion(outer, outerW, region)
+  const pass = result !== null && result.crcValid && result.header.symbolId === 7
+
+  console.log('Anchor offset test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
