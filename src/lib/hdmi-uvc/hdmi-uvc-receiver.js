@@ -387,15 +387,12 @@ async function processFrame(now, metadata) {
     if (result) {
       debugLog(`Header at ${headerInfo}: mode=${result.header.mode} ${result.header.width}x${result.header.height} sym=${result.header.symbolId} crc=${result.crcValid ? 'OK' : 'FAIL'}`)
     } else {
-      debugLog(`No BEAM header found (probed ${probePositions.length} positions + row scan near ${firstNonBlackRow},${firstNonBlackCol})`)
+      debugLog(`No BEAM header found (scanned 200x150 area, offset=${firstNonBlackRow},${firstNonBlackCol})`)
     }
   }
 
   // === RESULT HANDLING ===
   if (result) {
-    if (isDiagFrame) {
-      debugLog(`Header found at row ${headerRow}: mode=${result.header.mode} ${result.header.width}x${result.header.height} sym=${result.header.symbolId} crc=${result.crcValid ? 'OK' : 'FAIL'}`)
-    }
 
     if (result.crcValid) {
       state.validFrames++
