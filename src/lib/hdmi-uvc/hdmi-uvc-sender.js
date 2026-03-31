@@ -153,8 +153,9 @@ function updateModeButtons() {
 function renderFrame() {
   if (!state.isSending || state.isPaused || !state.encoder) return
 
-  const res = getResolution()
   const fps = getFps()
+  const cw = elements.canvas.width
+  const ch = elements.canvas.height
 
   try {
     // Generate fountain symbol
@@ -168,8 +169,8 @@ function renderFrame() {
     const frameData = buildFrame(
       packet,
       state.mode,
-      res.width,
-      res.height,
+      cw,
+      ch,
       fps.fps,
       state.symbolId
     )
@@ -178,20 +179,20 @@ function renderFrame() {
     const ctx = elements.canvas.getContext('2d')
     const imageData = new ImageData(
       new Uint8ClampedArray(frameData),
-      res.width,
-      res.height
+      cw,
+      ch
     )
     ctx.putImageData(imageData, 0, 0)
 
     if (state.frameCount === 0) {
       // Header is at row 16 (after 16 padding rows). Read magic from correct position.
       const bs = BLOCK_SIZES[state.mode] || 1
-      const headerRowOffset = 16 * res.width * 4  // row 16 in RGBA
+      const headerRowOffset = 16 * cw * 4  // row 16 in RGBA
       const m = [0, 1, 2, 3].map(i => frameData[headerRowOffset + (i * bs + Math.floor(bs / 2)) * 4])
-      debugLog(`Frame: ${res.width}x${res.height}, bs=${bs}, header@row16 magic=${m.join(',')} (expect 66,69,65,77)`)
+      debugLog(`Frame: ${cw}x${ch}, bs=${bs}, header@row16 magic=${m.join(',')} (expect 66,69,65,77)`)
       // Also log row 0 (should be padding=0) and row 18 (payload start)
       const row0 = [0,1,2,3,4,5,6,7].map(i => frameData[i * 4])
-      const row18offset = 18 * res.width * 4
+      const row18offset = 18 * cw * 4
       const row18 = [0,1,2,3,4,5,6,7].map(i => frameData[row18offset + i * 4])
       debugLog(`Row0 (padding): ${row0.join(',')}  Row18 (payload): ${row18.join(',')}`)
     }
@@ -227,44 +228,9 @@ async function startSending() {
   if (!state.fileData || !state.fileHash) return
 
   try {
-    const res = getResolution()
-    const capacity = getPayloadCapacity(res.width, res.height, state.mode)
-    const modeName = HDMI_MODE_NAMES[state.mode] || state.mode
-
     debugLog(`=== START SENDING ===`)
-    debugLog(`Mode: ${modeName}, Resolution: ${res.width}x${res.height}`)
-    debugLog(`Frame capacity: ${capacity} bytes`)
 
-    // Calculate block size to maximize frame utilization:
-    // - Use full frame capacity (minus 16-byte packet header) for large files
-    // - For small files, use smaller blocks to ensure K >= 5 for fountain efficiency
-    const frameBlockSize = capacity - 16  // Maximum payload that fits in one frame
-    const minBlocks = 5
-    const blockSizeForMinBlocks = Math.floor(state.fileSize / minBlocks)
-    const blockSize = Math.min(frameBlockSize, Math.max(blockSizeForMinBlocks, 200))
-
-    debugLog(`Block size: ${blockSize} bytes (frame capacity: ${capacity})`)
-    debugLog(`File: ${state.fileName}, size: ${state.fileSize} bytes`)
-
-    // Create encoder with file data
-    state.encoder = createEncoder(
-      state.fileData,
-      state.fileName,
-      'application/octet-stream',
-      state.fileHash,
-      blockSize
-    )
-
-    debugLog(`Encoder created: K=${state.encoder.K}, K'=${state.encoder.K_prime}, M=${state.encoder.M}`)
-
-    // Set canvas bitmap dimensions ONCE (not every frame - that clears the canvas)
-    elements.canvas.width = res.width
-    elements.canvas.height = res.height
-
-    // Cover the viewport with the canvas using position:fixed.
-    // We intentionally avoid requestFullscreen() because on macOS it creates
-    // a new Space that HDMI mirror doesn't follow — the dongle would still
-    // show the old Space with the app UI instead of the data frames.
+    // Step 1: Set up canvas overlay FIRST to determine actual viewport size
     elements.canvas.style.display = 'block'
     elements.canvas.style.position = 'fixed'
     elements.canvas.style.top = '0'
@@ -276,14 +242,42 @@ async function startSending() {
     elements.canvas.style.background = '#000'
     elements.placeholder.style.display = 'none'
 
-    // Maximize the browser window to eliminate horizontal/vertical offset
+    // Try to maximize window
     window.moveTo(0, 0)
     window.resizeTo(screen.availWidth, screen.availHeight)
 
-    debugLog(`Canvas bitmap: ${res.width}x${res.height}`)
-    debugLog(`Screen: ${screen.width}x${screen.height}, avail: ${screen.availWidth}x${screen.availHeight}, dpr: ${window.devicePixelRatio}`)
-    debugLog(`Window: outer=${window.outerWidth}x${window.outerHeight} at (${window.screenX},${window.screenY})`)
-    debugLog(`Display mode: CSS fixed overlay (no fullscreen API — avoids macOS Spaces issue)`)
+    // Step 2: Set canvas bitmap to viewport size for 1:1 CSS pixel mapping.
+    // This avoids CSS scaling which would shift block positions in the HDMI capture.
+    const canvasWidth = window.innerWidth
+    const canvasHeight = window.innerHeight
+    elements.canvas.width = canvasWidth
+    elements.canvas.height = canvasHeight
+
+    debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}, Canvas: ${canvasWidth}x${canvasHeight}`)
+    debugLog(`Screen: ${screen.width}x${screen.height}, dpr: ${window.devicePixelRatio}`)
+    debugLog(`Window: ${window.outerWidth}x${window.outerHeight} at (${window.screenX},${window.screenY})`)
+
+    // Step 3: Compute capacity using actual canvas dimensions
+    const capacity = getPayloadCapacity(canvasWidth, canvasHeight, state.mode)
+    debugLog(`Frame capacity: ${capacity} bytes`)
+
+    const frameBlockSize = capacity - 16
+    const minBlocks = 5
+    const blockSizeForMinBlocks = Math.floor(state.fileSize / minBlocks)
+    const blockSize = Math.min(frameBlockSize, Math.max(blockSizeForMinBlocks, 200))
+
+    debugLog(`Block size: ${blockSize}, File: ${state.fileName} (${state.fileSize} bytes)`)
+
+    // Step 4: Create encoder
+    state.encoder = createEncoder(
+      state.fileData,
+      state.fileName,
+      'application/octet-stream',
+      state.fileHash,
+      blockSize
+    )
+
+    debugLog(`Encoder: K=${state.encoder.K}, K'=${state.encoder.K_prime}, M=${state.encoder.M}`)
 
     state.isSending = true
     state.isPaused = false
