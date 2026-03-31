@@ -271,38 +271,63 @@ async function processFrame(now, metadata) {
   if (isDiagFrame) {
     debugLog(`--- Frame ${state.frameCount} (method=${captureMethod}) ---`)
 
-    // Show header area: first 22 pixels of row 0 as decimal R values
+    const p = imageData.data
+
+    // Scan the frame to find where actual content begins (non-black area)
+    // This detects black borders from fullscreen offset
+    let firstNonBlackCol = -1, firstNonBlackRow = -1
+    // Scan rows: check pixel at column width/2 (middle of frame)
+    const midCol = Math.floor(width / 2)
+    for (let row = 0; row < height; row++) {
+      const idx = (row * width + midCol) * 4
+      if (p[idx] > 10 || p[idx + 1] > 10 || p[idx + 2] > 10) {
+        firstNonBlackRow = row
+        break
+      }
+    }
+    // Scan cols: check pixel at row height/2 (middle of frame)
+    const midRow = Math.floor(height / 2)
+    for (let col = 0; col < width; col++) {
+      const idx = (midRow * width + col) * 4
+      if (p[idx] > 10 || p[idx + 1] > 10 || p[idx + 2] > 10) {
+        firstNonBlackCol = col
+        break
+      }
+    }
+
+    debugLog(`Content offset: row=${firstNonBlackRow} col=${firstNonBlackCol} (frame ${width}x${height})`)
+
+    // Show first 22 pixels at (0,0) - what we currently try to parse as header
     const hdrPixels = []
     for (let i = 0; i < Math.min(22, width); i++) {
-      hdrPixels.push(imageData.data[i * 4])  // Red channel only
+      hdrPixels.push(p[i * 4])
     }
     debugLog(`Row0 R[0..21]: ${hdrPixels.join(',')}`)
 
-    // Show what BEAM magic would need: pixels 0-3 should be 66,69,65,77
-    const p = imageData.data
-    debugLog(`Px0: R=${p[0]} G=${p[1]} B=${p[2]} A=${p[3]} (need R=66 for 'B')`)
-    debugLog(`Px1: R=${p[4]} G=${p[5]} B=${p[6]} A=${p[7]} (need R=69 for 'E')`)
-    debugLog(`Px2: R=${p[8]} G=${p[9]} B=${p[10]} A=${p[11]} (need R=65 for 'A')`)
-    debugLog(`Px3: R=${p[12]} G=${p[13]} B=${p[14]} A=${p[15]} (need R=77 for 'M')`)
-
-    // Show pixel value ranges across first row to understand color space
-    let minR = 255, maxR = 0, sumR = 0
-    const sampleWidth = Math.min(width, 200)
-    for (let x = 0; x < sampleWidth; x++) {
-      const r = imageData.data[x * 4]
-      if (r < minR) minR = r
-      if (r > maxR) maxR = r
-      sumR += r
+    // If there's an offset, show pixels at the content origin too
+    if (firstNonBlackRow >= 0 && firstNonBlackCol >= 0 && (firstNonBlackRow > 0 || firstNonBlackCol > 0)) {
+      const contentPixels = []
+      for (let i = 0; i < Math.min(22, width - firstNonBlackCol); i++) {
+        const idx = (firstNonBlackRow * width + firstNonBlackCol + i) * 4
+        contentPixels.push(p[idx])
+      }
+      debugLog(`Content origin R[0..21]: ${contentPixels.join(',')}`)
+      debugLog(`Magic at content origin: ${contentPixels[0]},${contentPixels[1]},${contentPixels[2]},${contentPixels[3]} (need 66,69,65,77)`)
     }
-    debugLog(`Row0 stats (${sampleWidth}px): min=${minR} max=${maxR} avg=${(sumR/sampleWidth).toFixed(1)}`)
 
-    // Show first few pixels of data row 2 (where payload starts)
-    const row2off = 2 * width * 4
-    const row2vals = []
-    for (let i = 0; i < Math.min(8, width); i++) {
-      row2vals.push(`${imageData.data[row2off + i*4]}`)
+    // Full-frame stats: sample at multiple points to show spatial distribution
+    const rows = [0, Math.floor(height * 0.1), Math.floor(height * 0.25), Math.floor(height * 0.5), Math.floor(height * 0.75)]
+    for (const row of rows) {
+      let min = 255, max = 0, sum = 0, cnt = 0
+      for (let x = 0; x < width; x += 4) {
+        const v = p[(row * width + x) * 4]
+        if (v < min) min = v
+        if (v > max) max = v
+        sum += v
+        cnt++
+      }
+      debugLog(`Row${row} stats: min=${min} max=${max} avg=${(sum/cnt).toFixed(1)}`)
     }
-    debugLog(`Row2 R[0..7]: ${row2vals.join(',')}`)
 
     // Update debug canvas
     const debugCanvas = document.getElementById('hdmi-uvc-receiver-debug-canvas')
@@ -318,33 +343,45 @@ async function processFrame(now, metadata) {
   let result = parseFrame(imageData.data, width, height)
   let headerRow = 0
 
-  // If not found, scan first 100 rows for BEAM header
-  if (!result && isDiagFrame) {
-    let closestRow = -1
-    let closestMagic = ''
-    for (let row = 1; row < Math.min(100, height); row++) {
+  // If not found, scan for header at different positions
+  // Handles both row offset (vertical borders) and column offset (horizontal borders)
+  if (!result) {
+    // Quick scan: try row-only offsets first (most common case)
+    for (let row = 1; row < Math.min(200, height); row++) {
       const rowOffset = row * width * 4
       const testData = new Uint8Array(imageData.data.buffer, imageData.data.byteOffset + rowOffset)
       const testResult = parseFrame(testData, width, height - row)
       if (testResult) {
-        debugLog(`*** BEAM HEADER FOUND AT ROW ${row}! ***`)
+        if (isDiagFrame) debugLog(`*** HEADER FOUND at row ${row} ***`)
         result = testResult
         headerRow = row
         break
       }
-      // Track closest match for diagnostics
-      if (closestRow === -1) {
-        const r0 = imageData.data[rowOffset]
-        const r1 = imageData.data[rowOffset + 4]
-        // Check if first two pixels are close to 'B'(66) and 'E'(69)
-        if (Math.abs(r0 - 66) < 10 && Math.abs(r1 - 69) < 10) {
-          closestRow = row
-          closestMagic = `R=${r0},${imageData.data[rowOffset+4]},${imageData.data[rowOffset+8]},${imageData.data[rowOffset+12]}`
+    }
+
+    // If still not found, scan for BEAM magic bytes at any (row, col) position
+    // The magic bytes 66,69,65,77 appear as consecutive pixel R values
+    if (!result && isDiagFrame) {
+      debugLog(`Row scan failed, searching for BEAM magic across full frame...`)
+      let found = false
+      // Sample every 4th row and scan columns
+      for (let row = 0; row < Math.min(300, height) && !found; row += 2) {
+        for (let col = 0; col < Math.min(300, width) && !found; col++) {
+          const idx = (row * width + col) * 4
+          const r0 = imageData.data[idx]
+          const r1 = imageData.data[idx + 4]
+          const r2 = imageData.data[idx + 8]
+          const r3 = imageData.data[idx + 12]
+          if (r0 === 66 && r1 === 69 && r2 === 65 && r3 === 77) {
+            debugLog(`*** EXACT MAGIC at row=${row} col=${col}! R=${r0},${r1},${r2},${r3} ***`)
+            found = true
+          } else if (Math.abs(r0 - 66) <= 3 && Math.abs(r1 - 69) <= 3 && Math.abs(r2 - 65) <= 3 && Math.abs(r3 - 77) <= 3) {
+            debugLog(`Near-magic at row=${row} col=${col}: R=${r0},${r1},${r2},${r3} (need 66,69,65,77)`)
+            found = true
+          }
         }
       }
-    }
-    if (!result && closestRow >= 0) {
-      debugLog(`Near-miss: row ${closestRow} had ${closestMagic} (need 66,69,65,77)`)
+      if (!found) debugLog(`No magic found in first 300x300 area`)
     }
   }
 

@@ -57,6 +57,19 @@ const state = {
 let elements = null
 let showError = (msg) => console.error(msg)
 
+function resetCanvasStyles() {
+  if (!elements?.canvas) return
+  elements.canvas.style.display = 'none'
+  elements.canvas.style.width = ''
+  elements.canvas.style.height = ''
+  elements.canvas.style.objectFit = ''
+  elements.canvas.style.imageRendering = ''
+  elements.canvas.style.position = ''
+  elements.canvas.style.top = ''
+  elements.canvas.style.left = ''
+  elements.canvas.style.zIndex = ''
+}
+
 function formatBytes(bytes) {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
@@ -269,9 +282,20 @@ async function startSending() {
 
     debugLog(`Encoder created: K=${state.encoder.K}, K'=${state.encoder.K_prime}, M=${state.encoder.M}`)
 
-    // Show canvas, hide placeholder (no overlay - it would interfere with data)
+    // Show canvas filling entire screen - pixelated rendering preserves exact pixel values
     elements.canvas.style.display = 'block'
+    elements.canvas.style.width = '100vw'
+    elements.canvas.style.height = '100vh'
+    elements.canvas.style.objectFit = 'fill'
+    elements.canvas.style.imageRendering = 'pixelated'
+    elements.canvas.style.position = 'fixed'
+    elements.canvas.style.top = '0'
+    elements.canvas.style.left = '0'
+    elements.canvas.style.zIndex = '999999'
     elements.placeholder.style.display = 'none'
+
+    debugLog(`Canvas CSS: 100vw x 100vh, image-rendering: pixelated, position: fixed`)
+    debugLog(`Screen: ${screen.width}x${screen.height}, devicePixelRatio: ${window.devicePixelRatio}`)
 
     // Go fullscreen on selected display
     await enterFullscreenOnSelectedDisplay()
@@ -307,8 +331,8 @@ function pauseSending() {
     document.exitFullscreen().catch(() => {})
   }
 
-  // Hide canvas, show paused placeholder
-  elements.canvas.style.display = 'none'
+  // Hide canvas, reset fullscreen styles, show paused placeholder
+  resetCanvasStyles()
   elements.overlay.classList.add('hidden')
   elements.placeholder.style.display = 'flex'
   elements.placeholderIcon.textContent = '⏸'
@@ -325,8 +349,16 @@ function pauseSending() {
 function resumeSending() {
   state.isPaused = false
 
-  // Show canvas, hide placeholder (no overlay - it would interfere with data)
+  // Show canvas filling entire screen
   elements.canvas.style.display = 'block'
+  elements.canvas.style.width = '100vw'
+  elements.canvas.style.height = '100vh'
+  elements.canvas.style.objectFit = 'fill'
+  elements.canvas.style.imageRendering = 'pixelated'
+  elements.canvas.style.position = 'fixed'
+  elements.canvas.style.top = '0'
+  elements.canvas.style.left = '0'
+  elements.canvas.style.zIndex = '999999'
   elements.placeholder.style.display = 'none'
 
   // Disable controls during send
@@ -369,7 +401,7 @@ function stopSending() {
   elements.fpsSlider.disabled = false
   elements.modeButtons.forEach(btn => btn.disabled = false)
 
-  elements.canvas.style.display = 'none'
+  resetCanvasStyles()
   elements.placeholder.style.display = 'flex'
   elements.overlay.classList.add('hidden')
   elements.placeholderIcon.textContent = '+'
