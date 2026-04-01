@@ -408,11 +408,10 @@ async function processFrame(now, metadata) {
     }
   } else if (result && !result.crcValid) {
     state.decodeFailCount++
-    if (isDiagFrame) debugLog(`Frame ${state.frameCount}: CRC fail`)
+    if (isDiagFrame) {
+      debugLog(`Frame ${state.frameCount}: CRC fail (sym=${result.header.symbolId} len=${result.header.payloadLength})`)
+    }
     debugCurrent(`#${state.frameCount} CRC fail`)
-    // Anchor position may have drifted — clear cache to re-detect
-    state.anchorBounds = null
-    state.decodeFailCount = 0
   } else {
     state.decodeFailCount++
     if (isDiagFrame) {
@@ -447,12 +446,13 @@ async function processFrame(now, metadata) {
       debugLog(`Header probe: [${probeValues.join(',')}]`)
     }
     debugCurrent(`#${state.frameCount} no data`)
-    // Check if we've had too many consecutive decode failures — relock anchors
-    if (state.decodeFailCount > 30) {
-      debugLog(`Relock: too many decode failures (${state.decodeFailCount})`)
-      state.anchorBounds = null
-      state.decodeFailCount = 0
-    }
+  }
+
+  // Relock anchors after too many consecutive failures (CRC or decode)
+  if (state.decodeFailCount > 30) {
+    debugLog(`Relock: ${state.decodeFailCount} consecutive failures`)
+    state.anchorBounds = null
+    state.decodeFailCount = 0
   }
 
   // Update debug canvas

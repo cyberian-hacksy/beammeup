@@ -176,14 +176,10 @@ async function startSending() {
 
     debugLog(`Canvas: ${canvasWidth}x${canvasHeight}, dpr: ${window.devicePixelRatio}`)
 
-    // Compute capacity from actual canvas dimensions
-    const capacity = getPayloadCapacity(canvasWidth, canvasHeight)
-    debugLog(`Payload capacity: ${capacity} bytes/frame`)
-
-    const frameBlockSize = capacity - 16
-    const minBlocks = 5
-    const blockSizeForMinBlocks = Math.floor(state.fileSize / minBlocks)
-    const blockSize = Math.min(frameBlockSize, Math.max(blockSizeForMinBlocks, 200))
+    // Small fixed block size for MJPEG reliability.
+    // Large blocks (filling the whole frame) require perfect byte recovery;
+    // small blocks let fountain codes tolerate per-frame errors.
+    const blockSize = 2048
 
     debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)}), blockSize: ${blockSize}`)
 

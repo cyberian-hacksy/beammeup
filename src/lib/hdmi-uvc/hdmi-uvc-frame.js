@@ -462,8 +462,16 @@ export function decodeDataRegion(imageData, width, region) {
         const header = parseHeader(headerBytes)
         if (!header) continue
 
-        // Valid header found! Read full payload at this alignment.
+        // Valid header found — check grid can hold the payload
         const blocksY = Math.floor(region.h / stepY)
+        const totalDataBlocks = blocksX * blocksY - HEADER_SIZE
+        if (totalDataBlocks < header.payloadLength) continue // grid too small for payload
+
+        // Log grid parameters on first successful header parse
+        if (!region._logged) {
+          region._logged = true
+          console.log(`[HDMI-RX] Header found: bs=${bs.toFixed(2)} stepX=${stepX.toFixed(2)} stepY=${stepY.toFixed(2)} grid=${blocksX}x${blocksY} payload=${header.payloadLength} capacity=${totalDataBlocks} off=(${xOff},${yOff})`)
+        }
         const payload = new Uint8Array(header.payloadLength)
         let payloadIdx = 0
         let blockIdx = 0
