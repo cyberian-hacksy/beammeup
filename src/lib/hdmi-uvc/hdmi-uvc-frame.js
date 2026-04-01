@@ -205,8 +205,9 @@ export function detectAnchors(imageData, width, height) {
   const anchors = []
   const step = 2 // Scan every 2px for sub-block alignment tolerance
   // Only scan edges where anchors could be (within ANCHOR_SIZE of each edge)
-  // Plus some tolerance for offset
-  const scanMargin = ANCHOR_SIZE + 64 // extra 64px tolerance for window offset
+  // Browser chrome (menu bar + tabs + address bar) offsets content by ~100-150px
+  // in the HDMI capture, so we need a generous scan margin.
+  const scanMargin = ANCHOR_SIZE + 200
 
   for (let y = 0; y < Math.min(scanMargin, height - ANCHOR_SIZE); y += step) {
     for (let x = 0; x < Math.min(scanMargin, width - ANCHOR_SIZE); x += step) {

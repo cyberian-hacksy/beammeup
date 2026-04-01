@@ -164,16 +164,17 @@ async function startSending() {
     window.moveTo(0, 0)
     window.resizeTo(screen.availWidth, screen.availHeight)
 
-    // Canvas bitmap = physical pixel dimensions so HDMI output matches 1:1.
-    // CSS 100vw/100vh stretches the bitmap to fill viewport; dpr ensures
-    // the bitmap resolution matches what the display actually sends over HDMI.
-    const dpr = window.devicePixelRatio || 1
-    const canvasWidth = Math.round(window.innerWidth * dpr)
-    const canvasHeight = Math.round(window.innerHeight * dpr)
+    // Canvas bitmap = capture card resolution (1920x1080) for ~1:1 pixel mapping.
+    // CSS 100vw/100vh stretches the bitmap to fill the viewport visually.
+    // Through the HDMI pipeline (CSS upscale × dpr × HDMI downscale), each
+    // canvas pixel maps to approximately 1 capture pixel regardless of the
+    // Mac's display resolution or dpr setting.
+    const canvasWidth = 1920
+    const canvasHeight = 1080
     elements.canvas.width = canvasWidth
     elements.canvas.height = canvasHeight
 
-    debugLog(`Canvas: ${canvasWidth}x${canvasHeight} (css: ${window.innerWidth}x${window.innerHeight}, dpr: ${dpr})`)
+    debugLog(`Canvas: ${canvasWidth}x${canvasHeight} (viewport: ${window.innerWidth}x${window.innerHeight}, dpr: ${window.devicePixelRatio})`)
 
     // Compute capacity from actual canvas dimensions
     const capacity = getPayloadCapacity(canvasWidth, canvasHeight)
