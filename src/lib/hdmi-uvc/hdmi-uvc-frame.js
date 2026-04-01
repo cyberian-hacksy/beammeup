@@ -380,12 +380,27 @@ function refineAnchorScale(imageData, width, height, anchor) {
   return approxBs
 }
 
+// Detect chrome bottom edge: scan down center column for bright→dark transition.
+// Only activates if the top of the frame is bright (actual browser chrome present).
+function findChromeBottom(imageData, width, height) {
+  const midX = Math.floor(width / 2)
+  // If top of frame is dark, there's no chrome (e.g. unit test or direct canvas)
+  if (imageData[(0 * width + midX) * 4] < 50) return 0
+  for (let y = 0; y < Math.min(400, height - 1); y++) {
+    const v = imageData[(y * width + midX) * 4]
+    const vNext = imageData[((y + 1) * width + midX) * 4]
+    if (v > 80 && vNext < 30) return y + 1
+  }
+  return 0
+}
+
 // Scan the frame for anchor patterns. Returns array of {x, y, corner, blockSize}.
 // Strategy: find bottom anchors first (reliable, away from browser chrome),
-// then use their positions to guide top anchor search.
+// then use their positions to guide top anchor search BELOW chromeBottom.
 export function detectAnchors(imageData, width, height) {
   const anchors = []
   const margin = 300
+  const chromeBottom = findChromeBottom(imageData, width, height)
 
   // Phase 1: Bottom anchors (scan upward from bottom — away from chrome)
   const bl = findCornerAnchor(imageData, width, height,
@@ -396,16 +411,27 @@ export function detectAnchors(imageData, width, height) {
   if (bl) { bl.blockSize = refineAnchorScale(imageData, width, height, bl); anchors.push(bl) }
   if (br) { br.blockSize = refineAnchorScale(imageData, width, height, br); anchors.push(br) }
 
-  // Phase 2: Top anchors — scan down from top, but only near known x positions
+  // Phase 2: Top anchors — search BELOW chromeBottom, near known x positions
+  const topSearchStart = Math.max(chromeBottom, 0)
   if (bl) {
     const tl = findCornerAnchor(imageData, width, height,
-      Math.max(0, bl.x - 20), Math.min(width, bl.x + 50), 0, bl.y - 50, 1, 'TL')
+      Math.max(0, bl.x - 20), Math.min(width, bl.x + 50), topSearchStart, bl.y - 50, 1, 'TL')
     if (tl) { tl.blockSize = refineAnchorScale(imageData, width, height, tl); anchors.push(tl) }
   }
   if (br) {
     const tr = findCornerAnchor(imageData, width, height,
-      Math.max(0, br.x - 20), Math.min(width, br.x + 50), 0, br.y - 50, 1, 'TR')
+      Math.max(0, br.x - 20), Math.min(width, br.x + 50), topSearchStart, br.y - 50, 1, 'TR')
     if (tr) { tr.blockSize = refineAnchorScale(imageData, width, height, tr); anchors.push(tr) }
+  }
+
+  // Geometry sanity: TL/TR should be at similar y, BL/BR at similar y
+  const tl = anchors.find(a => a.corner === 'TL')
+  const tr = anchors.find(a => a.corner === 'TR')
+  if (tl && tr && Math.abs(tl.y - tr.y) > 20) {
+    // Mismatched top anchors — drop the worse one
+    const keep = tl.y > tr.y ? tl : tr // keep the lower one (further from chrome)
+    const drop = tl.y > tr.y ? tr : tl
+    anchors.splice(anchors.indexOf(drop), 1)
   }
 
   return anchors
@@ -697,6 +723,10 @@ export function testAnchorDetectionWithOffset() {
   }
 
   const region = dataRegionFromAnchors(anchors)
+  if (!region) {
+    console.log('Anchor offset test: FAIL (no data region)')
+    return false
+  }
   const result = decodeDataRegion(outer, outerW, region)
   const pass = result !== null && result.crcValid && result.header.symbolId === 7
 

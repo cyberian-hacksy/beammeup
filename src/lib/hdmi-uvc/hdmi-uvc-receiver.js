@@ -346,7 +346,9 @@ async function processFrame(now, metadata) {
       region = dataRegionFromAnchors(anchors)
       if (region) {
         state.anchorBounds = region
-        debugLog(`*** ANCHORS LOCKED: ${anchors.length} found, region (${region.x},${region.y}) ${region.w}x${region.h} ***`)
+        const pos = anchors.map(a => `${a.corner}(${a.x},${a.y} bs=${a.blockSize.toFixed(1)})`).join(' ')
+        debugLog(`*** ANCHORS LOCKED: ${anchors.length} found, region (${region.x},${region.y}) ${region.w}x${region.h} step=${region.stepX.toFixed(1)}/${region.stepY.toFixed(1)} ***`)
+        debugLog(`  Anchors: ${pos}`)
       } else if (isDiagFrame) {
         // Anchors found but region invalid (e.g. all at same y = false positives)
         const pos = anchors.map(a => `(${a.x},${a.y} ${a.corner})`).join(' ')
