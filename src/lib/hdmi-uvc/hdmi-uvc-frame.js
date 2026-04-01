@@ -416,25 +416,63 @@ export function dataRegionFromAnchors(anchors) {
 
 // --- Data region decoding (receiver) ---
 
+// Read payload blocks at a given alignment. Returns { header, payload, crcValid }.
+function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header) {
+  const blocksY = Math.floor(region.h / stepY)
+  const payload = new Uint8Array(header.payloadLength)
+  let payloadIdx = 0
+  let blockIdx = 0
+  const height = imageData.length / (width * 4)
+
+  for (let by = 0; by < blocksY && payloadIdx < header.payloadLength; by++) {
+    for (let bx = 0; bx < blocksX && payloadIdx < header.payloadLength; bx++) {
+      if (blockIdx >= HEADER_SIZE) {
+        const px = rx + Math.round(bx * stepX)
+        const py = ry + Math.round(by * stepY)
+        if (px >= 0 && px < width && py >= 0 && py < height) {
+          payload[payloadIdx++] = decodeByte(sampleBlockAt(imageData, width, px, py, bs))
+        } else {
+          payload[payloadIdx++] = 0
+        }
+      }
+      blockIdx++
+    }
+  }
+
+  const actualCrc = crc32(payload)
+  return { header, payload, crcValid: actualCrc === header.payloadCrc }
+}
+
+// Score a candidate header: higher = better. CRC-valid candidates always win.
+function scoreCandidate(result) {
+  if (result.crcValid) return 10000
+  let score = 0
+  // Prefer payloadLength === 2064 (2048 block + 16 packet header)
+  if (result.header.payloadLength === 2064) score += 100
+  // Prefer round payloadLength values (likely real, not noise)
+  if (result.header.payloadLength > 0 && result.header.payloadLength <= 4096) score += 50
+  return score
+}
+
 // Decode data blocks from a data region. Returns { header, payload, crcValid }
-// Searches nearby positions and block sizes to find valid header alignment,
-// since the bright-run-derived block size may differ from the actual scale.
+// Searches ALL nearby positions/block sizes and returns the best candidate.
+// CRC-valid results win immediately; otherwise the highest-scoring candidate is returned.
 export function decodeDataRegion(imageData, width, region) {
   const baseBs = region.blockSize || BLOCK_SIZE
   const baseStepX = region.stepX || baseBs
   const baseStepY = region.stepY || baseBs
 
-  // Try multiple offsets and block size adjustments to find the correct alignment.
-  // The magic bytes in parseHeader validate correct positioning.
   const offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5]
   const yOffsets = [0, -1, 1, -2, 2, -3, 3]
   const bsAdjustments = [0, 0.15, -0.15, 0.3, -0.3, 0.5, -0.5]
+
+  let bestResult = null
+  let bestScore = -1
 
   for (const bsAdj of bsAdjustments) {
     const bs = baseBs + bsAdj
     if (bs < 2 || bs > 6) continue
 
-    // Scale stepX/stepY proportionally to the block size adjustment
     const scale = bs / baseBs
     const stepX = baseStepX * scale
     const stepY = baseStepY * scale
@@ -462,46 +500,33 @@ export function decodeDataRegion(imageData, width, region) {
         const header = parseHeader(headerBytes)
         if (!header) continue
 
-        // Valid header found — check grid can hold the payload
+        // Check grid can hold payload
         const blocksY = Math.floor(region.h / stepY)
         const totalDataBlocks = blocksX * blocksY - HEADER_SIZE
-        if (totalDataBlocks < header.payloadLength) continue // grid too small for payload
+        if (totalDataBlocks < header.payloadLength) continue
 
-        // Log grid parameters on first successful header parse
+        // Read and score this candidate
+        const result = readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header)
+        const score = scoreCandidate(result)
+
+        // Log on first header parse
         if (!region._logged) {
           region._logged = true
-          console.log(`[HDMI-RX] Header found: bs=${bs.toFixed(2)} stepX=${stepX.toFixed(2)} stepY=${stepY.toFixed(2)} grid=${blocksX}x${blocksY} payload=${header.payloadLength} capacity=${totalDataBlocks} off=(${xOff},${yOff})`)
-        }
-        const payload = new Uint8Array(header.payloadLength)
-        let payloadIdx = 0
-        let blockIdx = 0
-
-        for (let by = 0; by < blocksY && payloadIdx < header.payloadLength; by++) {
-          for (let bx = 0; bx < blocksX && payloadIdx < header.payloadLength; bx++) {
-            if (blockIdx >= HEADER_SIZE) {
-              const px = rx + Math.round(bx * stepX)
-              const py = ry + Math.round(by * stepY)
-              if (px >= 0 && px < width && py >= 0 && py < imageData.length / (width * 4)) {
-                payload[payloadIdx++] = decodeByte(sampleBlockAt(imageData, width, px, py, bs))
-              } else {
-                payload[payloadIdx++] = 0
-              }
-            }
-            blockIdx++
-          }
+          console.log(`[HDMI-RX] Header: bs=${bs.toFixed(2)} step=${stepX.toFixed(2)}/${stepY.toFixed(2)} grid=${blocksX}x${blocksY} len=${header.payloadLength} cap=${totalDataBlocks} off=(${xOff},${yOff}) crc=${result.crcValid}`)
         }
 
-        const actualCrc = crc32(payload)
-        return {
-          header,
-          payload,
-          crcValid: actualCrc === header.payloadCrc
+        // CRC-valid = immediate win
+        if (result.crcValid) return result
+
+        if (score > bestScore) {
+          bestScore = score
+          bestResult = result
         }
       }
     }
   }
 
-  return null
+  return bestResult
 }
 
 // --- Tests ---

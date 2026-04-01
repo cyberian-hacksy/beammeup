@@ -107,6 +107,10 @@ function updateActionButton() {
   elements.btnStop.disabled = !state.fileData
 }
 
+// Repeat each symbol for FRAMES_PER_SYMBOL frames to give the capture
+// pipeline multiple chances at the same data before advancing.
+const FRAMES_PER_SYMBOL = 3
+
 function renderFrame() {
   if (!state.isSending || state.isPaused || !state.encoder) return
 
@@ -129,10 +133,13 @@ function renderFrame() {
     elements.progressDisplay.textContent = progress + '%'
     debugCurrent(`#${state.frameCount} sym=${state.symbolId}/${state.encoder.K_prime} ${progress}%`)
 
-    state.symbolId++
-    if (state.symbolId > state.encoder.K_prime) {
-      state.symbolId = 1
-      debugLog(`Looped back to symbol 1 after ${state.frameCount} frames`)
+    // Advance symbol only every FRAMES_PER_SYMBOL frames
+    if (state.frameCount % FRAMES_PER_SYMBOL === 0) {
+      state.symbolId++
+      if (state.symbolId > state.encoder.K_prime) {
+        state.symbolId = 1
+        debugLog(`Looped back to symbol 1 after ${state.frameCount} frames`)
+      }
     }
 
     state.timerId = setTimeout(renderFrame, fps.interval)
