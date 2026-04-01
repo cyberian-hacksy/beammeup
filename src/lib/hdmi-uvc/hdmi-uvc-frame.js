@@ -81,8 +81,8 @@ export function buildHeader(mode, width, height, fps, symbolId, payloadLength, p
 
 export function parseHeader(data) {
   if (data.length < HEADER_SIZE) return null
-  const MAGIC_BYTES = [0x42, 0x45, 0x41, 0x4D]
-  const TOLERANCE = 8
+  const MAGIC_BYTES = [0xFE, 0x01, 0xFE, 0x01]
+  const TOLERANCE = 30
   for (let i = 0; i < 4; i++) {
     if (Math.abs(data[i] - MAGIC_BYTES[i]) > TOLERANCE) return null
   }
@@ -378,62 +378,122 @@ export function dataRegionFromAnchors(anchors) {
   const h = maxY - minY - 2 * actualAnchorSize
   if (w < 100 || h < 100) return null
 
+  // Compute stepX/stepY from anchor grid when we have 4 anchors
+  let stepX = bs
+  let stepY = bs
+
+  const tl = anchors.find(a => a.corner === 'TL')
+  const tr = anchors.find(a => a.corner === 'TR')
+  const bl = anchors.find(a => a.corner === 'BL')
+  const br = anchors.find(a => a.corner === 'BR')
+
+  if (tl && tr && bl && br) {
+    // Horizontal span: average of top and bottom anchor-to-anchor distance
+    const hSpan = ((tr.x - tl.x) + (br.x - bl.x)) / 2
+    // Vertical span: average of left and right anchor-to-anchor distance
+    const vSpan = ((bl.y - tl.y) + (br.y - tr.y)) / 2
+
+    if (hSpan > 0 && vSpan > 0) {
+      // Use the average block size from all anchors as the base
+      const avgBs = anchors.reduce((sum, a) => sum + a.blockSize, 0) / anchors.length
+      stepX = avgBs
+      // Scale stepY by the aspect ratio of the anchor grid
+      stepY = avgBs * (vSpan / hSpan) * (w / h) || avgBs
+      // Sanity check: stepY shouldn't deviate wildly from stepX
+      if (stepY < avgBs * 0.5 || stepY > avgBs * 2.0) stepY = avgBs
+    }
+  }
+
   return {
     x: minX + actualAnchorSize,
     y: minY + actualAnchorSize,
     w, h,
-    blockSize: bs
+    blockSize: bs,
+    stepX,
+    stepY
   }
 }
 
 // --- Data region decoding (receiver) ---
 
 // Decode data blocks from a data region. Returns { header, payload, crcValid }
-// Uses the region's detected block size for sampling positions.
+// Searches nearby positions and block sizes to find valid header alignment,
+// since the bright-run-derived block size may differ from the actual scale.
 export function decodeDataRegion(imageData, width, region) {
-  const bs = region.blockSize || BLOCK_SIZE
-  const blocksX = Math.floor(region.w / bs)
-  const blocksY = Math.floor(region.h / bs)
-  const totalBlocks = blocksX * blocksY
+  const baseBs = region.blockSize || BLOCK_SIZE
+  const baseStepX = region.stepX || baseBs
+  const baseStepY = region.stepY || baseBs
 
-  if (totalBlocks < HEADER_SIZE) return null
+  // Try multiple offsets and block size adjustments to find the correct alignment.
+  // The magic bytes in parseHeader validate correct positioning.
+  const offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5]
+  const yOffsets = [0, -1, 1, -2, 2, -3, 3]
+  const bsAdjustments = [0, 0.15, -0.15, 0.3, -0.3, 0.5, -0.5]
 
-  const headerBytes = new Uint8Array(HEADER_SIZE)
-  let blockIdx = 0
+  for (const bsAdj of bsAdjustments) {
+    const bs = baseBs + bsAdj
+    if (bs < 2 || bs > 6) continue
 
-  for (let by = 0; by < blocksY && blockIdx < HEADER_SIZE; by++) {
-    for (let bx = 0; bx < blocksX && blockIdx < HEADER_SIZE; bx++) {
-      const px = region.x + Math.round(bx * bs)
-      const py = region.y + Math.round(by * bs)
-      headerBytes[blockIdx] = decodeByte(sampleBlockAt(imageData, width, px, py, bs))
-      blockIdx++
-    }
-  }
+    // Scale stepX/stepY proportionally to the block size adjustment
+    const scale = bs / baseBs
+    const stepX = baseStepX * scale
+    const stepY = baseStepY * scale
 
-  const header = parseHeader(headerBytes)
-  if (!header) return null
+    const blocksX = Math.floor(region.w / stepX)
+    if (blocksX < HEADER_SIZE) continue
 
-  const payload = new Uint8Array(header.payloadLength)
-  let payloadIdx = 0
-  blockIdx = 0
+    for (const xOff of offsets) {
+      for (const yOff of yOffsets) {
+        const rx = region.x + xOff
+        const ry = region.y + yOff
 
-  for (let by = 0; by < blocksY && payloadIdx < header.payloadLength; by++) {
-    for (let bx = 0; bx < blocksX && payloadIdx < header.payloadLength; bx++) {
-      if (blockIdx >= HEADER_SIZE) {
-        const px = region.x + Math.round(bx * bs)
-        const py = region.y + Math.round(by * bs)
-        payload[payloadIdx++] = decodeByte(sampleBlockAt(imageData, width, px, py, bs))
+        // Quick header probe
+        const headerBytes = new Uint8Array(HEADER_SIZE)
+        for (let i = 0; i < HEADER_SIZE; i++) {
+          const px = rx + Math.round(i * stepX)
+          const py = ry
+          if (px < 0 || px >= width || py < 0 || py >= imageData.length / (width * 4)) {
+            headerBytes[i] = 0
+          } else {
+            headerBytes[i] = decodeByte(sampleBlockAt(imageData, width, px, py, bs))
+          }
+        }
+
+        const header = parseHeader(headerBytes)
+        if (!header) continue
+
+        // Valid header found! Read full payload at this alignment.
+        const blocksY = Math.floor(region.h / stepY)
+        const payload = new Uint8Array(header.payloadLength)
+        let payloadIdx = 0
+        let blockIdx = 0
+
+        for (let by = 0; by < blocksY && payloadIdx < header.payloadLength; by++) {
+          for (let bx = 0; bx < blocksX && payloadIdx < header.payloadLength; bx++) {
+            if (blockIdx >= HEADER_SIZE) {
+              const px = rx + Math.round(bx * stepX)
+              const py = ry + Math.round(by * stepY)
+              if (px >= 0 && px < width && py >= 0 && py < imageData.length / (width * 4)) {
+                payload[payloadIdx++] = decodeByte(sampleBlockAt(imageData, width, px, py, bs))
+              } else {
+                payload[payloadIdx++] = 0
+              }
+            }
+            blockIdx++
+          }
+        }
+
+        const actualCrc = crc32(payload)
+        return {
+          header,
+          payload,
+          crcValid: actualCrc === header.payloadCrc
+        }
       }
-      blockIdx++
     }
   }
 
-  const actualCrc = crc32(payload)
-  return {
-    header,
-    payload,
-    crcValid: actualCrc === header.payloadCrc
-  }
+  return null
 }
 
 // --- Tests ---

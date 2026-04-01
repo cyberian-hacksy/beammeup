@@ -2,8 +2,9 @@
 
 export const HDMI_UVC_MAX_FILE_SIZE = 1024 * 1024 * 1024 // 1GB
 
-// Magic number for frame header: "BEAM" in ASCII
-export const FRAME_MAGIC = 0x4245414D
+// Magic number for frame header: high-contrast alternating bytes [254, 1, 254, 1]
+// (near-white/near-black survives MJPEG compression better than mid-gray ASCII values)
+export const FRAME_MAGIC = 0xFE01FE01
 
 // Frame layout constants
 export const ANCHOR_SIZE = 32    // Anchor pattern: 32×32 pixels (8×8 grid of 4×4 blocks)

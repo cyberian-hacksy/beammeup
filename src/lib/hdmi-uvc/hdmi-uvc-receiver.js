@@ -2,7 +2,7 @@
 
 import { createDecoder } from '../decoder.js'
 import { parsePacket } from '../packet.js'
-import { DEVICE_STORAGE_KEY, HDMI_MODE_NAMES } from './hdmi-uvc-constants.js'
+import { DEVICE_STORAGE_KEY, HDMI_MODE_NAMES, HEADER_SIZE } from './hdmi-uvc-constants.js'
 import { detectAnchors, dataRegionFromAnchors, decodeDataRegion } from './hdmi-uvc-frame.js'
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
@@ -45,7 +45,8 @@ const state = {
   detectedMode: null,
   detectedResolution: null,
   completedFile: null,
-  anchorBounds: null  // Cached data region from detected anchors
+  anchorBounds: null,  // Cached data region from detected anchors
+  decodeFailCount: 0   // Consecutive decode failures (triggers relock when too many)
 }
 
 // Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
@@ -368,6 +369,7 @@ async function processFrame(now, metadata) {
 
   if (result && result.crcValid) {
     state.validFrames++
+    state.decodeFailCount = 0
     elements.statFrames.textContent = state.validFrames + ' valid frames'
 
     if (!state.detectedMode) {
@@ -405,15 +407,52 @@ async function processFrame(now, metadata) {
       }
     }
   } else if (result && !result.crcValid) {
+    state.decodeFailCount++
     if (isDiagFrame) debugLog(`Frame ${state.frameCount}: CRC fail`)
     debugCurrent(`#${state.frameCount} CRC fail`)
     // Anchor position may have drifted — clear cache to re-detect
     state.anchorBounds = null
+    state.decodeFailCount = 0
   } else {
-    if (isDiagFrame) debugLog(`Frame ${state.frameCount}: decode failed`)
+    state.decodeFailCount++
+    if (isDiagFrame) {
+      debugLog(`Frame ${state.frameCount}: decode failed`)
+      // Sample first 22 block-center values from the data region for diagnosis
+      const bs = region.blockSize || 4
+      const stepX = region.stepX || bs
+      const stepY = region.stepY || bs
+      const rx = region.x
+      const ry = region.y
+      const blocksX = Math.floor(region.w / stepX)
+      const probeCount = Math.min(HEADER_SIZE, blocksX)
+      const probeValues = []
+      for (let i = 0; i < probeCount; i++) {
+        const px = rx + Math.round(i * stepX)
+        const py = ry
+        if (px >= 0 && px < width && py >= 0 && py < height) {
+          // Sample 2x2 center of block
+          const cx = Math.round(px + bs / 2) - 1
+          const cy = Math.round(py + bs / 2) - 1
+          let sum = 0
+          for (let dy = 0; dy < 2; dy++) {
+            for (let dx = 0; dx < 2; dx++) {
+              sum += imageData.data[((cy + dy) * width + (cx + dx)) * 4]
+            }
+          }
+          probeValues.push(Math.round(sum / 4))
+        } else {
+          probeValues.push(-1)
+        }
+      }
+      debugLog(`Header probe: [${probeValues.join(',')}]`)
+    }
     debugCurrent(`#${state.frameCount} no data`)
-    // Don't clear anchorBounds here — decode failure may be transient.
-    // Only CRC failure (above) clears it, indicating position drift.
+    // Check if we've had too many consecutive decode failures — relock anchors
+    if (state.decodeFailCount > 30) {
+      debugLog(`Relock: too many decode failures (${state.decodeFailCount})`)
+      state.anchorBounds = null
+      state.decodeFailCount = 0
+    }
   }
 
   // Update debug canvas
@@ -529,6 +568,7 @@ function resetReceiver() {
   state.detectedResolution = null
   state.completedFile = null
   state.anchorBounds = null
+  state.decodeFailCount = 0
 
   elements.statFrames.textContent = '0 frames'
   elements.statusScanning.classList.remove('hidden')
