@@ -164,17 +164,17 @@ async function startSending() {
     window.moveTo(0, 0)
     window.resizeTo(screen.availWidth, screen.availHeight)
 
-    // Canvas bitmap = capture card resolution (1920x1080) for ~1:1 pixel mapping.
-    // CSS 100vw/100vh stretches the bitmap to fill the viewport visually.
-    // Through the HDMI pipeline (CSS upscale × dpr × HDMI downscale), each
-    // canvas pixel maps to approximately 1 capture pixel regardless of the
-    // Mac's display resolution or dpr setting.
-    const canvasWidth = 1920
-    const canvasHeight = 1080
+    // Canvas bitmap = CSS viewport dimensions for ~1:1 capture pixel mapping.
+    // With CSS 100vw/100vh, a viewport-sized bitmap needs no CSS scaling.
+    // Through the HDMI pipeline (dpr upscale × HDMI downscale), the net
+    // scale is approximately viewport_capture_width / viewport_css_width ≈ 0.98,
+    // close enough to 1:1 for the 4px block detection to work.
+    const canvasWidth = window.innerWidth
+    const canvasHeight = window.innerHeight
     elements.canvas.width = canvasWidth
     elements.canvas.height = canvasHeight
 
-    debugLog(`Canvas: ${canvasWidth}x${canvasHeight} (viewport: ${window.innerWidth}x${window.innerHeight}, dpr: ${window.devicePixelRatio})`)
+    debugLog(`Canvas: ${canvasWidth}x${canvasHeight}, dpr: ${window.devicePixelRatio}`)
 
     // Compute capacity from actual canvas dimensions
     const capacity = getPayloadCapacity(canvasWidth, canvasHeight)
