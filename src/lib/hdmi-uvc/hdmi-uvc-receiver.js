@@ -343,8 +343,15 @@ async function processFrame(now, metadata) {
     const anchors = detectAnchors(imageData.data, width, height)
     if (anchors.length >= 2) {
       region = dataRegionFromAnchors(anchors)
-      state.anchorBounds = region
-      debugLog(`*** ANCHORS LOCKED: ${anchors.length} found, region (${region.x},${region.y}) ${region.w}x${region.h} ***`)
+      if (region) {
+        state.anchorBounds = region
+        debugLog(`*** ANCHORS LOCKED: ${anchors.length} found, region (${region.x},${region.y}) ${region.w}x${region.h} ***`)
+      } else if (isDiagFrame) {
+        // Anchors found but region invalid (e.g. all at same y = false positives)
+        const pos = anchors.map(a => `(${a.x},${a.y} ${a.corner})`).join(' ')
+        debugLog(`Frame ${state.frameCount}: ${anchors.length} anchors but invalid region: ${pos}`)
+        debugCurrent(`#${state.frameCount} bad anchors`)
+      }
     } else if (isDiagFrame) {
       debugLog(`Frame ${state.frameCount}: ${anchors.length} anchors found (need ≥2)`)
       debugCurrent(`#${state.frameCount} scanning...`)
@@ -405,7 +412,8 @@ async function processFrame(now, metadata) {
   } else {
     if (isDiagFrame) debugLog(`Frame ${state.frameCount}: decode failed`)
     debugCurrent(`#${state.frameCount} no data`)
-    state.anchorBounds = null
+    // Don't clear anchorBounds here — decode failure may be transient.
+    // Only CRC failure (above) clears it, indicating position drift.
   }
 
   // Update debug canvas

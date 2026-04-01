@@ -178,9 +178,10 @@ function sampleBlock(imageData, width, px, py) {
   return sum / 4
 }
 
-// Check if an 8×8 block grid at (originX, originY) matches the anchor pattern
-// threshold: value above which a block is considered "white"
-function verifyAnchorAt(imageData, width, height, originX, originY, threshold = 128) {
+// Check if an 8×8 block grid at (originX, originY) matches the anchor pattern.
+// Uses strict thresholds to reject browser chrome patterns: white blocks must be
+// clearly bright (>180) and black blocks must be clearly dark (<75).
+function verifyAnchorAt(imageData, width, height, originX, originY) {
   if (originX < 0 || originY < 0 ||
       originX + ANCHOR_SIZE > width || originY + ANCHOR_SIZE > height) {
     return false
@@ -191,9 +192,12 @@ function verifyAnchorAt(imageData, width, height, originX, originY, threshold = 
       const px = originX + bx * BLOCK_SIZE
       const py = originY + by * BLOCK_SIZE
       const val = sampleBlock(imageData, width, px, py)
-      const isWhite = val > threshold
       const expected = ANCHOR_PATTERN[by][bx] === 1
-      if (isWhite !== expected) return false
+      if (expected) {
+        if (val < 180) return false  // white block must be clearly bright
+      } else {
+        if (val > 75) return false   // black block must be clearly dark
+      }
     }
   }
   return true
@@ -204,10 +208,9 @@ function verifyAnchorAt(imageData, width, height, originX, originY, threshold = 
 export function detectAnchors(imageData, width, height) {
   const anchors = []
   const step = 2 // Scan every 2px for sub-block alignment tolerance
-  // Only scan edges where anchors could be (within ANCHOR_SIZE of each edge)
-  // Browser chrome (menu bar + tabs + address bar) offsets content by ~100-150px
-  // in the HDMI capture, so we need a generous scan margin.
-  const scanMargin = ANCHOR_SIZE + 200
+  // Browser chrome + HDMI scaling can place anchors up to ~270px from capture
+  // frame edges, so we need a generous scan margin.
+  const scanMargin = 300
 
   for (let y = 0; y < Math.min(scanMargin, height - ANCHOR_SIZE); y += step) {
     for (let x = 0; x < Math.min(scanMargin, width - ANCHOR_SIZE); x += step) {
@@ -255,12 +258,13 @@ export function dataRegionFromAnchors(anchors) {
   }
 
   // Data region is inside the anchors (offset by MARGIN_SIZE from anchor origins)
-  return {
-    x: minX + MARGIN_SIZE,
-    y: minY + MARGIN_SIZE,
-    w: maxX - minX - 2 * MARGIN_SIZE,
-    h: maxY - minY - 2 * MARGIN_SIZE
-  }
+  const w = maxX - minX - 2 * MARGIN_SIZE
+  const h = maxY - minY - 2 * MARGIN_SIZE
+
+  // Reject if anchors don't span enough area (e.g. all at same y = false positives)
+  if (w < 100 || h < 100) return null
+
+  return { x: minX + MARGIN_SIZE, y: minY + MARGIN_SIZE, w, h }
 }
 
 // --- Data region decoding (receiver) ---
