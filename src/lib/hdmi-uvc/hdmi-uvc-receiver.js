@@ -250,79 +250,51 @@ async function processFrame(now, metadata) {
   state.frameCount++
   const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
 
-  // Diagnostic: find canvas origin and probe anchor regions
+  // Diagnostic: scan corners for bright pixels (anchor white blocks)
   if (!state.anchorBounds && isDiagFrame) {
     const p = imageData.data
 
-    // Find data region left edge (first pixel >10 at mid-height)
-    const midY = Math.floor(height / 2)
-    let dataLeft = -1
-    for (let x = 0; x < width; x++) {
-      if (p[(midY * width + x) * 4] > 10) { dataLeft = x; break }
-    }
-
-    // Find canvas top: scan down at frame center, find where values
-    // transition from browser chrome (>100) to near-black (<20) = canvas margin
-    const midX = Math.floor(width / 2)
-    let canvasTop = -1
-    for (let y = 0; y < height - 1; y++) {
-      const v = p[(y * width + midX) * 4]
-      const vNext = p[((y + 1) * width + midX) * 4]
-      // Look for transition from bright chrome to dark canvas
-      if (v > 80 && vNext < 30) { canvasTop = y + 1; break }
-    }
-
-    // Canvas origin = data region left - MARGIN_SIZE, canvas top
-    const canvasX = dataLeft >= 0 ? dataLeft - 32 : -1
-    const canvasY = canvasTop >= 0 ? canvasTop : -1
-    debugLog(`Canvas origin estimate: (${canvasX}, ${canvasY}), dataLeft=${dataLeft}`)
-
-    if (canvasX >= 0 && canvasY >= 0) {
-      // Dump the TL anchor area: 8x8 blocks at 4px spacing
-      // Each value is the center pixel of where a 4x4 block would be
-      debugLog(`TL anchor probe at (${canvasX},${canvasY}):`)
-      for (let by = 0; by < 8; by++) {
-        const row = []
-        for (let bx = 0; bx < 8; bx++) {
-          const px = canvasX + bx * 4 + 2
-          const py = canvasY + by * 4 + 2
-          if (px >= 0 && px < width && py >= 0 && py < height) {
-            row.push(p[(py * width + px) * 4])
-          } else {
-            row.push(-1)
-          }
-        }
-        debugLog(`  row${by}: ${row.join(',')}`)
+    // Scan top-left 250x250 for first pixel >150 (anchor white)
+    let tlX = -1, tlY = -1
+    outer_tl:
+    for (let y = 0; y < Math.min(250, height); y++) {
+      for (let x = 0; x < Math.min(250, width); x++) {
+        if (p[(y * width + x) * 4] > 150) { tlX = x; tlY = y; break outer_tl }
       }
-
-      // Also show what the BR anchor looks like
-      const dataRight = width - 1 - dataLeft  // mirror of dataLeft
-      const brX = canvasX + Math.round((width - 2 * canvasX) * (1920 - 32) / 1920)
-      // Try bottom-right: canvas anchor at (1888, 1048) → capture position
-      const canvasBottom = height - 1  // approximate
-      const brY = canvasBottom - 32
-      debugLog(`BR anchor probe at (~${brX},${brY}):`)
-      for (let by = 0; by < 8; by++) {
-        const row = []
-        for (let bx = 0; bx < 8; bx++) {
-          const px = brX + bx * 4 + 2
-          const py = brY + by * 4 + 2
-          if (px >= 0 && px < width && py >= 0 && py < height) {
-            row.push(p[(py * width + px) * 4])
-          } else {
-            row.push(-1)
-          }
-        }
-        debugLog(`  row${by}: ${row.join(',')}`)
-      }
-
-      // Center data probe (should change between frames if transmitting)
-      const cx = Math.floor(width / 2)
-      const cy = Math.floor(height / 2)
-      const center = []
-      for (let x = cx - 5; x <= cx + 5; x++) center.push(p[(cy * width + x) * 4])
-      debugLog(`Center[${cx},${cy}]: ${center.join(',')}`)
     }
+    debugLog(`TL first bright(>150): (${tlX},${tlY})`)
+
+    // If found, dump a horizontal strip at that y
+    if (tlX >= 0) {
+      const strip = []
+      for (let x = Math.max(0, tlX - 10); x < Math.min(width, tlX + 50); x++) {
+        strip.push(p[(tlY * width + x) * 4])
+      }
+      debugLog(`  Row${tlY} R[${Math.max(0,tlX-10)}..${Math.min(width,tlX+50)-1}]: ${strip.join(',')}`)
+
+      // Dump vertical strip at tlX
+      const vstrip = []
+      for (let y = Math.max(0, tlY - 5); y < Math.min(height, tlY + 40); y++) {
+        vstrip.push(p[(y * width + tlX) * 4])
+      }
+      debugLog(`  Col${tlX} R[${Math.max(0,tlY-5)}..${Math.min(height,tlY+40)-1}]: ${vstrip.join(',')}`)
+    }
+
+    // Scan bottom-right 250x250
+    let brX = -1, brY = -1
+    outer_br:
+    for (let y = height - 1; y >= Math.max(0, height - 250); y--) {
+      for (let x = width - 1; x >= Math.max(0, width - 250); x--) {
+        if (p[(y * width + x) * 4] > 150) { brX = x; brY = y; break outer_br }
+      }
+    }
+    debugLog(`BR last bright(>150): (${brX},${brY})`)
+
+    // Center data probe
+    const cx = Math.floor(width / 2), cy = Math.floor(height / 2)
+    const center = []
+    for (let x = cx - 5; x <= cx + 5; x++) center.push(p[(cy * width + x) * 4])
+    debugLog(`Center[${cx},${cy}]: ${center.join(',')}`)
   }
 
   // === ANCHOR DETECTION ===
