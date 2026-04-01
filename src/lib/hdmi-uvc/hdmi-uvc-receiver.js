@@ -250,47 +250,86 @@ async function processFrame(now, metadata) {
   state.frameCount++
   const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
 
-  // Diagnostic: scan corners for bright pixels (anchor white blocks)
+  // Diagnostic: find canvas bounds and scan for anchors
   if (!state.anchorBounds && isDiagFrame) {
     const p = imageData.data
 
-    // Scan top-left 250x250 for first pixel >150 (anchor white)
+    // Step 1: Find chrome bottom (transition from bright to dark at center x)
+    const midX = Math.floor(width / 2)
+    let chromeBottom = 0
+    for (let y = 0; y < Math.min(200, height - 1); y++) {
+      if (p[(y * width + midX) * 4] > 100 && p[((y + 1) * width + midX) * 4] < 30) {
+        chromeBottom = y + 1
+        break
+      }
+    }
+
+    // Step 2: Find canvas left edge — scan right from x=0 at chromeBottom+16
+    // (skip MJPEG ringing zone, probe mid-margin area)
+    const probeY = chromeBottom + 16
+    let canvasLeft = 0
+    // The canvas margin is black (≤5). Find where values go from HDMI-black to canvas-black.
+    // They look the same, so instead scan for first pixel >20 (data region)
+    // then subtract margin width to estimate canvas left.
+    let firstData = -1
+    for (let x = 0; x < width; x++) {
+      if (p[(probeY * width + x) * 4] > 20) { firstData = x; break }
+    }
+
+    debugLog(`Chrome bottom: ${chromeBottom}, probeY: ${probeY}, firstData@probeY: ${firstData}`)
+
+    // Step 3: Scan for ANY bright pixel below chrome, skipping the chrome area
+    // Search in top-left quadrant below chrome
     let tlX = -1, tlY = -1
     outer_tl:
-    for (let y = 0; y < Math.min(250, height); y++) {
-      for (let x = 0; x < Math.min(250, width); x++) {
+    for (let y = chromeBottom; y < Math.min(chromeBottom + 200, height); y++) {
+      for (let x = 0; x < Math.min(300, width); x++) {
         if (p[(y * width + x) * 4] > 150) { tlX = x; tlY = y; break outer_tl }
       }
     }
-    debugLog(`TL first bright(>150): (${tlX},${tlY})`)
+    debugLog(`TL first bright(>150) below chrome: (${tlX},${tlY})`)
 
-    // If found, dump a horizontal strip at that y
-    if (tlX >= 0) {
-      const strip = []
-      for (let x = Math.max(0, tlX - 10); x < Math.min(width, tlX + 50); x++) {
-        strip.push(p[(tlY * width + x) * 4])
+    if (tlX >= 0 && tlY >= 0) {
+      // Dump horizontal and vertical strips around the find
+      const hstrip = []
+      for (let x = Math.max(0, tlX - 5); x < Math.min(width, tlX + 45); x++) {
+        hstrip.push(p[(tlY * width + x) * 4])
       }
-      debugLog(`  Row${tlY} R[${Math.max(0,tlX-10)}..${Math.min(width,tlX+50)-1}]: ${strip.join(',')}`)
+      debugLog(`  Row${tlY} R[${Math.max(0,tlX-5)}..+50]: ${hstrip.join(',')}`)
 
-      // Dump vertical strip at tlX
       const vstrip = []
       for (let y = Math.max(0, tlY - 5); y < Math.min(height, tlY + 40); y++) {
         vstrip.push(p[(y * width + tlX) * 4])
       }
-      debugLog(`  Col${tlX} R[${Math.max(0,tlY-5)}..${Math.min(height,tlY+40)-1}]: ${vstrip.join(',')}`)
+      debugLog(`  Col${tlX} R[${Math.max(0,tlY-5)}..+45]: ${vstrip.join(',')}`)
+    } else {
+      // No bright pixel found! Dump raw values in the expected anchor zone
+      debugLog(`NO bright pixel found below chrome! Dumping rows ${chromeBottom}..${chromeBottom+5} x=0..60:`)
+      for (let y = chromeBottom; y < Math.min(chromeBottom + 6, height); y++) {
+        const row = []
+        for (let x = 0; x < Math.min(60, width); x++) row.push(p[(y * width + x) * 4])
+        debugLog(`  Row${y}: ${row.join(',')}`)
+      }
     }
 
-    // Scan bottom-right 250x250
+    // Bottom-right scan (skip last few rows which might be chrome/dock)
     let brX = -1, brY = -1
     outer_br:
-    for (let y = height - 1; y >= Math.max(0, height - 250); y--) {
-      for (let x = width - 1; x >= Math.max(0, width - 250); x--) {
+    for (let y = height - 1; y >= Math.max(0, height - 200); y--) {
+      for (let x = width - 1; x >= Math.max(0, width - 300); x--) {
         if (p[(y * width + x) * 4] > 150) { brX = x; brY = y; break outer_br }
       }
     }
     debugLog(`BR last bright(>150): (${brX},${brY})`)
+    if (brX >= 0) {
+      const hstrip = []
+      for (let x = Math.max(0, brX - 40); x < Math.min(width, brX + 10); x++) {
+        hstrip.push(p[(brY * width + x) * 4])
+      }
+      debugLog(`  Row${brY} R[${Math.max(0,brX-40)}..+50]: ${hstrip.join(',')}`)
+    }
 
-    // Center data probe
+    // Center
     const cx = Math.floor(width / 2), cy = Math.floor(height / 2)
     const center = []
     for (let x = cx - 5; x <= cx + 5; x++) center.push(p[(cy * width + x) * 4])
