@@ -250,52 +250,78 @@ async function processFrame(now, metadata) {
   state.frameCount++
   const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
 
-  // Diagnostic: find content bounds and probe anchor regions while scanning
+  // Diagnostic: find canvas origin and probe anchor regions
   if (!state.anchorBounds && isDiagFrame) {
     const p = imageData.data
 
-    // Find content bounds: first non-black pixel from each edge
-    let contentLeft = -1, contentTop = -1, contentRight = -1, contentBottom = -1
+    // Find data region left edge (first pixel >10 at mid-height)
     const midY = Math.floor(height / 2)
+    let dataLeft = -1
     for (let x = 0; x < width; x++) {
-      if (p[(midY * width + x) * 4] > 10) { contentLeft = x; break }
+      if (p[(midY * width + x) * 4] > 10) { dataLeft = x; break }
     }
-    for (let x = width - 1; x >= 0; x--) {
-      if (p[(midY * width + x) * 4] > 10) { contentRight = x; break }
-    }
+
+    // Find canvas top: scan down at frame center, find where values
+    // transition from browser chrome (>100) to near-black (<20) = canvas margin
     const midX = Math.floor(width / 2)
-    for (let y = 0; y < height; y++) {
-      if (p[(y * width + midX) * 4] > 10) { contentTop = y; break }
+    let canvasTop = -1
+    for (let y = 0; y < height - 1; y++) {
+      const v = p[(y * width + midX) * 4]
+      const vNext = p[((y + 1) * width + midX) * 4]
+      // Look for transition from bright chrome to dark canvas
+      if (v > 80 && vNext < 30) { canvasTop = y + 1; break }
     }
-    for (let y = height - 1; y >= 0; y--) {
-      if (p[(y * width + midX) * 4] > 10) { contentBottom = y; break }
-    }
-    debugLog(`Content bounds: L=${contentLeft} T=${contentTop} R=${contentRight} B=${contentBottom} (${contentRight-contentLeft}x${contentBottom-contentTop})`)
 
-    // Probe at content origin: first 60 R values along the content top-left
-    if (contentLeft >= 0 && contentTop >= 0) {
-      // Row at content top: should show anchor white border if transmitting
-      const r1 = []
-      for (let x = contentLeft; x < Math.min(contentLeft + 60, width); x++) {
-        r1.push(p[(contentTop * width + x) * 4])
+    // Canvas origin = data region left - MARGIN_SIZE, canvas top
+    const canvasX = dataLeft >= 0 ? dataLeft - 32 : -1
+    const canvasY = canvasTop >= 0 ? canvasTop : -1
+    debugLog(`Canvas origin estimate: (${canvasX}, ${canvasY}), dataLeft=${dataLeft}`)
+
+    if (canvasX >= 0 && canvasY >= 0) {
+      // Dump the TL anchor area: 8x8 blocks at 4px spacing
+      // Each value is the center pixel of where a 4x4 block would be
+      debugLog(`TL anchor probe at (${canvasX},${canvasY}):`)
+      for (let by = 0; by < 8; by++) {
+        const row = []
+        for (let bx = 0; bx < 8; bx++) {
+          const px = canvasX + bx * 4 + 2
+          const py = canvasY + by * 4 + 2
+          if (px >= 0 && px < width && py >= 0 && py < height) {
+            row.push(p[(py * width + px) * 4])
+          } else {
+            row.push(-1)
+          }
+        }
+        debugLog(`  row${by}: ${row.join(',')}`)
       }
-      debugLog(`Content row${contentTop} R[${contentLeft}..+60]: ${r1.join(',')}`)
 
-      // Column at content left edge going down: shows vertical structure
-      const c1 = []
-      for (let y = contentTop; y < Math.min(contentTop + 60, height); y++) {
-        c1.push(p[(y * width + contentLeft) * 4])
+      // Also show what the BR anchor looks like
+      const dataRight = width - 1 - dataLeft  // mirror of dataLeft
+      const brX = canvasX + Math.round((width - 2 * canvasX) * (1920 - 32) / 1920)
+      // Try bottom-right: canvas anchor at (1888, 1048) → capture position
+      const canvasBottom = height - 1  // approximate
+      const brY = canvasBottom - 32
+      debugLog(`BR anchor probe at (~${brX},${brY}):`)
+      for (let by = 0; by < 8; by++) {
+        const row = []
+        for (let bx = 0; bx < 8; bx++) {
+          const px = brX + bx * 4 + 2
+          const py = brY + by * 4 + 2
+          if (px >= 0 && px < width && py >= 0 && py < height) {
+            row.push(p[(py * width + px) * 4])
+          } else {
+            row.push(-1)
+          }
+        }
+        debugLog(`  row${by}: ${row.join(',')}`)
       }
-      debugLog(`Content col${contentLeft} R[${contentTop}..+60]: ${c1.join(',')}`)
 
-      // Probe center of frame (should show data blocks if transmitting)
-      const cx = Math.floor((contentLeft + contentRight) / 2)
-      const cy = Math.floor((contentTop + contentBottom) / 2)
+      // Center data probe (should change between frames if transmitting)
+      const cx = Math.floor(width / 2)
+      const cy = Math.floor(height / 2)
       const center = []
-      for (let x = cx - 10; x < cx + 10; x++) {
-        center.push(p[(cy * width + x) * 4])
-      }
-      debugLog(`Center row${cy} R[${cx-10}..${cx+10}]: ${center.join(',')}`)
+      for (let x = cx - 5; x <= cx + 5; x++) center.push(p[(cy * width + x) * 4])
+      debugLog(`Center[${cx},${cy}]: ${center.join(',')}`)
     }
   }
 
