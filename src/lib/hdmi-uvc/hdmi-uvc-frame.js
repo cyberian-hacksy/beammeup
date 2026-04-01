@@ -2,7 +2,7 @@
 
 import {
   FRAME_MAGIC, HEADER_SIZE, ANCHOR_SIZE, MARGIN_SIZE, BLOCK_SIZE,
-  ANCHOR_PATTERN, HDMI_MODE
+  DATA_BLOCK_SIZE, ANCHOR_PATTERN, HDMI_MODE
 } from './hdmi-uvc-constants.js'
 import { crc32 } from './crc32.js'
 
@@ -69,11 +69,11 @@ export function getDataRegion(width, height) {
   }
 }
 
-// Calculate payload capacity in bytes (binary modulation: 8 blocks per byte)
+// Calculate payload capacity in bytes (binary modulation: 8 data-blocks per byte)
 export function getPayloadCapacity(width, height) {
   const dr = getDataRegion(width, height)
-  const blocksX = Math.floor(dr.w / BLOCK_SIZE)
-  const blocksY = Math.floor(dr.h / BLOCK_SIZE)
+  const blocksX = Math.floor(dr.w / DATA_BLOCK_SIZE)
+  const blocksY = Math.floor(dr.h / DATA_BLOCK_SIZE)
   const totalBlocks = blocksX * blocksY
   return Math.max(0, Math.floor((totalBlocks - HEADER_BLOCKS) / BITS_PER_BYTE))
 }
@@ -140,34 +140,33 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
   renderAnchor(imageData, width, 0, height - ANCHOR_SIZE)                 // bottom-left
   renderAnchor(imageData, width, width - ANCHOR_SIZE, height - ANCHOR_SIZE) // bottom-right
 
-  // Fill data region with binary-encoded 4×4 blocks.
-  // Each byte (header or payload) is encoded as 8 blocks (MSB first, 0/255).
+  // Fill data region with binary-encoded 8×8 blocks (DATA_BLOCK_SIZE).
+  // Each byte is encoded as 8 blocks (MSB first, 0/255).
+  // 8×8 blocks match MJPEG DCT block size for reliable binary modulation.
   const dr = getDataRegion(width, height)
-  const blocksX = Math.floor(dr.w / BLOCK_SIZE)
-  const blocksY = Math.floor(dr.h / BLOCK_SIZE)
+  const blocksX = Math.floor(dr.w / DATA_BLOCK_SIZE)
+  const blocksY = Math.floor(dr.h / DATA_BLOCK_SIZE)
 
   // Combine header + payload into a single byte stream
   const allBytes = new Uint8Array(headerBytes.length + payload.length)
   allBytes.set(headerBytes)
   allBytes.set(payload, headerBytes.length)
 
-  let blockIdx = 0
   let byteIdx = 0
   let bitIdx = 0
 
   for (let by = 0; by < blocksY; by++) {
     for (let bx = 0; bx < blocksX; bx++) {
-      // Determine block value from current bit
       let val = 0
       if (byteIdx < allBytes.length) {
         val = (allBytes[byteIdx] >> (7 - bitIdx)) & 1 ? 255 : 0
       }
 
-      // Fill 4×4 block
-      const startX = dr.x + bx * BLOCK_SIZE
-      const startY = dr.y + by * BLOCK_SIZE
-      for (let dy = 0; dy < BLOCK_SIZE; dy++) {
-        for (let dx = 0; dx < BLOCK_SIZE; dx++) {
+      // Fill 8×8 data block
+      const startX = dr.x + bx * DATA_BLOCK_SIZE
+      const startY = dr.y + by * DATA_BLOCK_SIZE
+      for (let dy = 0; dy < DATA_BLOCK_SIZE; dy++) {
+        for (let dx = 0; dx < DATA_BLOCK_SIZE; dx++) {
           const i = ((startY + dy) * width + (startX + dx)) * 4
           imageData[i] = val
           imageData[i + 1] = val
@@ -175,13 +174,11 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
         }
       }
 
-      // Advance to next bit
       bitIdx++
       if (bitIdx >= 8) {
         bitIdx = 0
         byteIdx++
       }
-      blockIdx++
     }
   }
 
@@ -405,31 +402,12 @@ export function dataRegionFromAnchors(anchors) {
   const h = maxY - minY - 2 * actualAnchorSize
   if (w < 100 || h < 100) return null
 
-  // Compute stepX/stepY from anchor grid when we have 4 anchors
-  let stepX = bs
-  let stepY = bs
-
-  const tl = anchors.find(a => a.corner === 'TL')
-  const tr = anchors.find(a => a.corner === 'TR')
-  const bl = anchors.find(a => a.corner === 'BL')
-  const br = anchors.find(a => a.corner === 'BR')
-
-  if (tl && tr && bl && br) {
-    // Horizontal span: average of top and bottom anchor-to-anchor distance
-    const hSpan = ((tr.x - tl.x) + (br.x - bl.x)) / 2
-    // Vertical span: average of left and right anchor-to-anchor distance
-    const vSpan = ((bl.y - tl.y) + (br.y - tr.y)) / 2
-
-    if (hSpan > 0 && vSpan > 0) {
-      // Use the average block size from all anchors as the base
-      const avgBs = anchors.reduce((sum, a) => sum + a.blockSize, 0) / anchors.length
-      stepX = avgBs
-      // Scale stepY by the aspect ratio of the anchor grid
-      stepY = avgBs * (vSpan / hSpan) * (w / h) || avgBs
-      // Sanity check: stepY shouldn't deviate wildly from stepX
-      if (stepY < avgBs * 0.5 || stepY > avgBs * 2.0) stepY = avgBs
-    }
-  }
+  // Compute step from average detected anchor block size.
+  // Assume uniform scaling (stepX = stepY). The DATA_BLOCK_SIZE multiplier
+  // is applied in decodeDataRegion.
+  const avgBs = anchors.reduce((sum, a) => sum + a.blockSize, 0) / anchors.length
+  const stepX = avgBs
+  const stepY = avgBs
 
   return {
     x: minX + actualAnchorSize,
@@ -516,12 +494,16 @@ function probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, bs, b
   return parseHeader(headerBytes)
 }
 
-// Decode data blocks from a data region using binary modulation.
-// Searches nearby positions/block sizes. CRC-valid wins immediately.
+// Decode data blocks from a data region using binary modulation with 8×8 blocks.
+// The anchor detection gives 4×4 block steps; data uses 2× that for 8×8 blocks.
 export function decodeDataRegion(imageData, width, region) {
   const baseBs = region.blockSize || BLOCK_SIZE
-  const baseStepX = region.stepX || baseBs
-  const baseStepY = region.stepY || baseBs
+  // Data blocks are DATA_BLOCK_SIZE/BLOCK_SIZE times larger than anchor blocks
+  const dataScale = DATA_BLOCK_SIZE / BLOCK_SIZE
+  const baseStepX = (region.stepX || baseBs) * dataScale
+  const baseStepY = (region.stepY || baseBs) * dataScale
+  // Effective data block size for sampling
+  const baseDataBs = baseBs * dataScale
 
   const offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5]
   const yOffsets = [0, -1, 1, -2, 2, -3, 3]
@@ -531,12 +513,13 @@ export function decodeDataRegion(imageData, width, region) {
   let bestScore = -1
 
   for (const bsAdj of bsAdjustments) {
-    const bs = baseBs + bsAdj
-    if (bs < 2 || bs > 6) continue
+    const anchorBs = baseBs + bsAdj
+    if (anchorBs < 2 || anchorBs > 6) continue
 
-    const scale = bs / baseBs
+    const scale = anchorBs / baseBs
     const stepX = baseStepX * scale
     const stepY = baseStepY * scale
+    const dataBs = baseDataBs * scale  // data block size for center sampling
 
     const blocksX = Math.floor(region.w / stepX)
     const totalBlocksY = Math.floor(region.h / stepY)
@@ -547,7 +530,7 @@ export function decodeDataRegion(imageData, width, region) {
         const rx = region.x + xOff
         const ry = region.y + yOff
 
-        const header = probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX)
+        const header = probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, dataBs, blocksX)
         if (!header) continue
 
         // Check grid can hold payload (in bytes, 8 blocks per byte)
@@ -557,12 +540,12 @@ export function decodeDataRegion(imageData, width, region) {
         if (payloadCapacity < header.payloadLength) continue
 
         // Read and score this candidate
-        const result = readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header)
+        const result = readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, dataBs, blocksX, header)
         const score = scoreCandidate(result)
 
         if (!region._logged) {
           region._logged = true
-          console.log(`[HDMI-RX] Header: bs=${bs.toFixed(2)} step=${stepX.toFixed(2)}/${stepY.toFixed(2)} grid=${blocksX}x${blocksY} len=${header.payloadLength} cap=${payloadCapacity} off=(${xOff},${yOff}) crc=${result.crcValid}`)
+          console.log(`[HDMI-RX] Header: dataBs=${dataBs.toFixed(2)} step=${stepX.toFixed(2)}/${stepY.toFixed(2)} grid=${blocksX}x${blocksY} len=${header.payloadLength} cap=${payloadCapacity} off=(${xOff},${yOff}) crc=${result.crcValid}`)
         }
 
         if (result.crcValid) return result
@@ -609,7 +592,7 @@ export function testAnchorRoundtrip() {
 }
 
 export function testFrameRoundtrip() {
-  const payload = new Uint8Array(500)
+  const payload = new Uint8Array(400) // fits within 8×8 block capacity
   for (let i = 0; i < payload.length; i++) payload[i] = i % 256
 
   const width = 640, height = 480

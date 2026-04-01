@@ -416,9 +416,9 @@ async function processFrame(now, metadata) {
     state.decodeFailCount++
     if (isDiagFrame) {
       debugLog(`Frame ${state.frameCount}: decode failed`)
-      // Sample first 176 block values (22 header bytes × 8 bits) for diagnosis
-      const bs = region.blockSize || 4
-      const stepX = region.stepX || bs
+      // Sample first data block values for diagnosis (8×8 data blocks = 2× anchor blocks)
+      const bs = (region.blockSize || 4) * 2 // data block size = 2× anchor block
+      const stepX = (region.stepX || region.blockSize || 4) * 2
       const rx = region.x
       const ry = region.y
       const blocksX = Math.floor(region.w / stepX)

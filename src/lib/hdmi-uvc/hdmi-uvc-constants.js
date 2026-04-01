@@ -9,7 +9,8 @@ export const FRAME_MAGIC = 0xFE01FE01
 // Frame layout constants
 export const ANCHOR_SIZE = 32    // Anchor pattern: 32×32 pixels (8×8 grid of 4×4 blocks)
 export const MARGIN_SIZE = 32    // Black margin on all sides
-export const BLOCK_SIZE = 4      // Each data byte = 4×4 pixel block
+export const BLOCK_SIZE = 4      // Anchor block: 4×4 pixels
+export const DATA_BLOCK_SIZE = 8 // Data block: 8×8 pixels (matches MJPEG DCT block for reliable binary)
 export const HEADER_SIZE = 22    // Frame header: 22 bytes
 
 // Anchor pattern as 8×8 block grid (1=white, 0=black)
