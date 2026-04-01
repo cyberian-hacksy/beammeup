@@ -263,6 +263,8 @@ function verifyAnchorAt(imageData, width, height, originX, originY) {
 }
 
 // Scan the frame for anchor patterns. Returns array of {x, y, corner, blockSize}.
+// Strategy: find bottom anchors first (reliable, away from browser chrome),
+// then scan upward from them to find top anchors at the same x positions.
 export function detectAnchors(imageData, width, height) {
   const anchors = []
   const step = 2
@@ -273,21 +275,31 @@ export function detectAnchors(imageData, width, height) {
       for (let x = xStart; x < xEnd; x += step) {
         const bs = verifyAnchorAt(imageData, width, height, x, y)
         if (bs > 0) {
-          anchors.push({ x, y, corner, blockSize: bs })
-          return // one per corner is enough
+          return { x, y, corner, blockSize: bs }
         }
       }
     }
+    return null
   }
 
-  // Top-left
-  scanCorner(0, Math.min(scanMargin, height - 24), 0, Math.min(scanMargin, width - 24), 'TL')
-  // Top-right
-  scanCorner(0, Math.min(scanMargin, height - 24), Math.max(0, width - scanMargin), width - 24, 'TR')
-  // Bottom-left
-  scanCorner(Math.max(0, height - scanMargin), height - 24, 0, Math.min(scanMargin, width - 24), 'BL')
-  // Bottom-right
-  scanCorner(Math.max(0, height - scanMargin), height - 24, Math.max(0, width - scanMargin), width - 24, 'BR')
+  // Phase 1: Find bottom anchors (away from browser chrome)
+  const bl = scanCorner(Math.max(0, height - scanMargin), height - 24, 0, Math.min(scanMargin, width - 24), 'BL')
+  const br = scanCorner(Math.max(0, height - scanMargin), height - 24, Math.max(0, width - scanMargin), width - 24, 'BR')
+
+  if (bl) anchors.push(bl)
+  if (br) anchors.push(br)
+
+  // Phase 2: Scan upward from bottom anchors to find top anchors
+  // TL should be directly above BL (same x ± tolerance)
+  if (bl) {
+    const tl = scanCorner(0, bl.y - 50, Math.max(0, bl.x - 20), Math.min(width - 24, bl.x + 20), 'TL')
+    if (tl) anchors.push(tl)
+  }
+  // TR should be directly above BR
+  if (br) {
+    const tr = scanCorner(0, br.y - 50, Math.max(0, br.x - 20), Math.min(width - 24, br.x + 20), 'TR')
+    if (tr) anchors.push(tr)
+  }
 
   return anchors
 }
