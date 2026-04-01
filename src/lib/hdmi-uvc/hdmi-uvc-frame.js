@@ -207,12 +207,37 @@ function verifyAnchorWithBlockSize(imageData, width, height, originX, originY, b
   return true
 }
 
+// Check that the area around a detected anchor is dark (canvas margin/HDMI border).
+// Rejects false positives from browser chrome where surroundings are bright.
+function verifyAnchorContext(imageData, width, height, originX, originY, bs) {
+  const aSize = Math.ceil(8 * bs)
+  const mid = Math.round(aSize / 2)
+  const gap = 5 // pixels outside anchor to check
+
+  const isDark = (x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return true
+    return imageData[(y * width + x) * 4] < 50
+  }
+
+  // Check above, below, left, right of anchor — at least 3 of 4 must be dark
+  let darkCount = 0
+  if (originY <= gap || isDark(originX + mid, originY - gap)) darkCount++
+  if (originY + aSize + gap >= height || isDark(originX + mid, originY + aSize + gap)) darkCount++
+  if (originX <= gap || isDark(originX - gap, originY + mid)) darkCount++
+  if (originX + aSize + gap >= width || isDark(originX + aSize + gap, originY + mid)) darkCount++
+
+  return darkCount >= 3
+}
+
 // Try to verify an anchor at (originX, originY) across multiple block sizes.
 // Returns the matching block size, or 0 if no match.
 function verifyAnchorAt(imageData, width, height, originX, originY) {
-  // Try block sizes 3.0 to 5.0 in 0.5 steps to handle HDMI scaling
-  for (let bs = 3.0; bs <= 5.0; bs += 0.5) {
-    if (verifyAnchorWithBlockSize(imageData, width, height, originX, originY, bs)) {
+  // Try block sizes starting from sender's native 4.0, spiraling outward.
+  // This ensures exact match at 1:1 scale and finds scaled anchors efficiently.
+  const blockSizes = [4.0, 3.75, 4.25, 3.5, 4.5, 3.25, 4.75, 3.0, 5.0, 2.75, 5.25, 2.5, 5.5]
+  for (const bs of blockSizes) {
+    if (verifyAnchorWithBlockSize(imageData, width, height, originX, originY, bs) &&
+        verifyAnchorContext(imageData, width, height, originX, originY, bs)) {
       return bs
     }
   }
