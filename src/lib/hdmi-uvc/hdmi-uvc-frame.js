@@ -262,42 +262,96 @@ function verifyAnchorAt(imageData, width, height, originX, originY) {
   return 0
 }
 
-// Scan the frame for anchor patterns. Returns array of {x, y, corner, blockSize}.
-// Strategy: find bottom anchors first (reliable, away from browser chrome),
-// then scan upward from them to find top anchors at the same x positions.
-export function detectAnchors(imageData, width, height) {
-  const anchors = []
-  const step = 2
-  const scanMargin = 300
-
-  const scanCorner = (yStart, yEnd, xStart, xEnd, corner) => {
-    for (let y = yStart; y < yEnd; y += step) {
-      for (let x = xStart; x < xEnd; x += step) {
-        const bs = verifyAnchorAt(imageData, width, height, x, y)
-        if (bs > 0) {
-          return { x, y, corner, blockSize: bs }
+// Find an anchor by scanning a corner for a bright rectangle, then verifying
+// with a lightweight 2-point check (black ring + white center).
+function findCornerAnchor(imageData, width, height, xStart, xEnd, yStart, yEnd, yDir, corner) {
+  // Scan row by row in yDir direction for a horizontal bright run (15-50px)
+  for (let y = yStart; y !== yEnd; y += yDir) {
+    if (y < 0 || y >= height) continue
+    let runStart = -1, runLen = 0
+    for (let x = xStart; x < xEnd; x++) {
+      if (imageData[(y * width + x) * 4] > 200) {
+        if (runStart < 0) runStart = x
+        runLen++
+      } else {
+        if (runLen >= 15 && runLen <= 50) {
+          const anchor = verifyBrightRun(imageData, width, height, runStart, y, runLen, yDir, corner)
+          if (anchor) return anchor
         }
+        runStart = -1
+        runLen = 0
       }
     }
-    return null
+    if (runLen >= 15 && runLen <= 50) {
+      const anchor = verifyBrightRun(imageData, width, height, runStart, y, runLen, yDir, corner)
+      if (anchor) return anchor
+    }
   }
+  return null
+}
 
-  // Phase 1: Find bottom anchors (away from browser chrome)
-  const bl = scanCorner(Math.max(0, height - scanMargin), height - 24, 0, Math.min(scanMargin, width - 24), 'BL')
-  const br = scanCorner(Math.max(0, height - scanMargin), height - 24, Math.max(0, width - scanMargin), width - 24, 'BR')
+// Verify a bright run is an anchor edge and derive anchor position/block size
+function verifyBrightRun(imageData, width, height, runX, runY, runLen, yDir, corner) {
+  const bs = runLen / 8
+  if (bs < 2 || bs > 6) return null
+
+  // The bright run is an all-white row of the anchor.
+  // If scanning from bottom (yDir=-1), this is the last row → origin is above.
+  // If scanning from top (yDir=1), this is the first row → origin is here.
+  const originX = runX
+  const originY = yDir < 0 ? Math.round(runY - 7 * bs) : runY
+  const aSize = Math.ceil(8 * bs)
+
+  if (originY < 0 || originY + aSize > height) return null
+  if (originX < 0 || originX + aSize > width) return null
+
+  // Lightweight concentric-pattern check:
+  // 1. Black ring at block (2,2) — should be dark
+  const ringX = originX + Math.round(2.5 * bs)
+  const ringY = originY + Math.round(2.5 * bs)
+  if (ringX >= width || ringY >= height) return null
+  if (imageData[(ringY * width + ringX) * 4] > 75) return null
+
+  // 2. White center at block (3.5, 3.5) — should be bright
+  const centerX = originX + Math.round(3.5 * bs)
+  const centerY = originY + Math.round(3.5 * bs)
+  if (centerX >= width || centerY >= height) return null
+  if (imageData[(centerY * width + centerX) * 4] < 150) return null
+
+  // 3. Black ring at block (5,5) — should be dark (opposite side)
+  const ring2X = originX + Math.round(5.5 * bs)
+  const ring2Y = originY + Math.round(5.5 * bs)
+  if (ring2X >= width || ring2Y >= height) return null
+  if (imageData[(ring2Y * width + ring2X) * 4] > 75) return null
+
+  return { x: originX, y: originY, corner, blockSize: bs }
+}
+
+// Scan the frame for anchor patterns. Returns array of {x, y, corner, blockSize}.
+// Strategy: find bottom anchors first (reliable, away from browser chrome),
+// then use their positions to guide top anchor search.
+export function detectAnchors(imageData, width, height) {
+  const anchors = []
+  const margin = 300
+
+  // Phase 1: Bottom anchors (scan upward from bottom — away from chrome)
+  const bl = findCornerAnchor(imageData, width, height,
+    0, Math.min(margin, width), height - 1, Math.max(0, height - margin), -1, 'BL')
+  const br = findCornerAnchor(imageData, width, height,
+    Math.max(0, width - margin), width, height - 1, Math.max(0, height - margin), -1, 'BR')
 
   if (bl) anchors.push(bl)
   if (br) anchors.push(br)
 
-  // Phase 2: Scan upward from bottom anchors to find top anchors
-  // TL should be directly above BL (same x ± tolerance)
+  // Phase 2: Top anchors — scan down from top, but only near known x positions
   if (bl) {
-    const tl = scanCorner(0, bl.y - 50, Math.max(0, bl.x - 20), Math.min(width - 24, bl.x + 20), 'TL')
+    const tl = findCornerAnchor(imageData, width, height,
+      Math.max(0, bl.x - 20), Math.min(width, bl.x + 50), 0, bl.y - 50, 1, 'TL')
     if (tl) anchors.push(tl)
   }
-  // TR should be directly above BR
   if (br) {
-    const tr = scanCorner(0, br.y - 50, Math.max(0, br.x - 20), Math.min(width - 24, br.x + 20), 'TR')
+    const tr = findCornerAnchor(imageData, width, height,
+      Math.max(0, br.x - 20), Math.min(width, br.x + 50), 0, br.y - 50, 1, 'TR')
     if (tr) anchors.push(tr)
   }
 
