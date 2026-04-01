@@ -97,7 +97,7 @@ export function buildHeader(mode, width, height, fps, symbolId, payloadLength, p
 export function parseHeader(data) {
   if (data.length < HEADER_SIZE) return null
   const MAGIC_BYTES = [0xFE, 0x01, 0xFE, 0x01]
-  const TOLERANCE = 30
+  const TOLERANCE = 5 // tight for binary: decoded bytes are exact 0x00 or 0xFF via threshold
   for (let i = 0; i < 4; i++) {
     if (Math.abs(data[i] - MAGIC_BYTES[i]) > TOLERANCE) return null
   }
@@ -351,6 +351,35 @@ function verifyBrightRun(imageData, width, height, runX, runY, runLen, yDir, cor
   return { x: originX, y: originY, corner, blockSize: bs }
 }
 
+// Refine an anchor's block size by measuring the white→black transition at row 2.
+// The anchor pattern row 2 is [W,W,B,B,B,B,W,W] — the transition at column 2
+// gives a precise scale measurement that's more accurate than the bright-run width.
+function refineAnchorScale(imageData, width, height, anchor) {
+  const approxBs = anchor.blockSize
+  // Sample at block row 2.5 (middle of the white-to-black transition row)
+  const rowY = Math.round(anchor.y + 2.5 * approxBs)
+  if (rowY >= height) return approxBs
+
+  // Scan from anchor origin for the first dark pixel (transition from white border to black ring)
+  let lastBright = anchor.x
+  for (let x = anchor.x; x < anchor.x + Math.ceil(8 * approxBs) + 20 && x < width; x++) {
+    if (imageData[(rowY * width + x) * 4] > 128) {
+      lastBright = x
+    } else if (x > anchor.x + approxBs) {
+      // Found the transition after at least 1 block of white
+      break
+    }
+  }
+
+  // The transition occurs at 2 * BLOCK_SIZE sender pixels from the origin
+  // refined_bs = (lastBright - anchor.x + 1) / (2 * BLOCK_SIZE) * BLOCK_SIZE
+  // simplified: capture_distance / 2 = one block's capture size
+  const captureDistance = lastBright - anchor.x + 1
+  const refinedBs = captureDistance / 2
+  if (refinedBs >= 2 && refinedBs <= 8) return refinedBs
+  return approxBs
+}
+
 // Scan the frame for anchor patterns. Returns array of {x, y, corner, blockSize}.
 // Strategy: find bottom anchors first (reliable, away from browser chrome),
 // then use their positions to guide top anchor search.
@@ -364,19 +393,19 @@ export function detectAnchors(imageData, width, height) {
   const br = findCornerAnchor(imageData, width, height,
     Math.max(0, width - margin), width, height - 1, Math.max(0, height - margin), -1, 'BR')
 
-  if (bl) anchors.push(bl)
-  if (br) anchors.push(br)
+  if (bl) { bl.blockSize = refineAnchorScale(imageData, width, height, bl); anchors.push(bl) }
+  if (br) { br.blockSize = refineAnchorScale(imageData, width, height, br); anchors.push(br) }
 
   // Phase 2: Top anchors — scan down from top, but only near known x positions
   if (bl) {
     const tl = findCornerAnchor(imageData, width, height,
       Math.max(0, bl.x - 20), Math.min(width, bl.x + 50), 0, bl.y - 50, 1, 'TL')
-    if (tl) anchors.push(tl)
+    if (tl) { tl.blockSize = refineAnchorScale(imageData, width, height, tl); anchors.push(tl) }
   }
   if (br) {
     const tr = findCornerAnchor(imageData, width, height,
       Math.max(0, br.x - 20), Math.min(width, br.x + 50), 0, br.y - 50, 1, 'TR')
-    if (tr) anchors.push(tr)
+    if (tr) { tr.blockSize = refineAnchorScale(imageData, width, height, tr); anchors.push(tr) }
   }
 
   return anchors
@@ -460,8 +489,9 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
 function scoreCandidate(result) {
   if (result.crcValid) return 10000
   let score = 0
-  if (result.header.payloadLength === 2064) score += 100
-  if (result.header.payloadLength > 0 && result.header.payloadLength <= 4096) score += 50
+  // Strongly prefer exact expected payload length (2048 blockSize + 16 packet header)
+  if (result.header.payloadLength === 2064) score += 1000
+  else if (result.header.payloadLength > 0 && result.header.payloadLength <= 4096) score += 10
   return score
 }
 
@@ -505,9 +535,17 @@ export function decodeDataRegion(imageData, width, region) {
   // Effective data block size for sampling
   const baseDataBs = baseBs * dataScale
 
-  const offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5]
-  const yOffsets = [0, -1, 1, -2, 2, -3, 3]
-  const bsAdjustments = [0, 0.15, -0.15, 0.3, -0.3, 0.5, -0.5]
+  // Coarse phase offsets in data-bit steps (multiples of ~8px) plus fine pixel jitter.
+  // A 2-bit phase error means the search must try offsets of ±1-2 data blocks.
+  const baseDataStep = Math.round(baseStepX)
+  const offsets = []
+  for (let coarse = -2; coarse <= 2; coarse++) {
+    for (let fine = -2; fine <= 2; fine++) {
+      offsets.push(coarse * baseDataStep + fine)
+    }
+  }
+  const yOffsets = [0, -1, 1, -2, 2]
+  const bsAdjustments = [0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.5, -0.5]
 
   let bestResult = null
   let bestScore = -1
