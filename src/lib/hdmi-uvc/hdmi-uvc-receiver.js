@@ -250,36 +250,53 @@ async function processFrame(now, metadata) {
   state.frameCount++
   const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
 
-  // Diagnostic: dump corner pixel values while scanning (every 30th frame)
-  // to understand what the capture card actually delivers
+  // Diagnostic: find content bounds and probe anchor regions while scanning
   if (!state.anchorBounds && isDiagFrame) {
     const p = imageData.data
 
-    // Find first white pixel along row 0 and a mid-row
-    const scanRows = [0, Math.floor(height / 2)]
-    for (const row of scanRows) {
-      let firstWhite = -1, firstBlack = -1
-      for (let x = 0; x < width; x++) {
-        const v = p[(row * width + x) * 4]
-        if (firstWhite < 0 && v > 128) firstWhite = x
-        if (firstWhite >= 0 && firstBlack < 0 && v < 64) firstBlack = x
-      }
-      if (firstWhite >= 0) {
-        debugLog(`Row${row}: white@${firstWhite} black@${firstBlack} run=${firstBlack >= 0 ? firstBlack - firstWhite : '∞'}`)
-      }
+    // Find content bounds: first non-black pixel from each edge
+    let contentLeft = -1, contentTop = -1, contentRight = -1, contentBottom = -1
+    const midY = Math.floor(height / 2)
+    for (let x = 0; x < width; x++) {
+      if (p[(midY * width + x) * 4] > 10) { contentLeft = x; break }
     }
+    for (let x = width - 1; x >= 0; x--) {
+      if (p[(midY * width + x) * 4] > 10) { contentRight = x; break }
+    }
+    const midX = Math.floor(width / 2)
+    for (let y = 0; y < height; y++) {
+      if (p[(y * width + midX) * 4] > 10) { contentTop = y; break }
+    }
+    for (let y = height - 1; y >= 0; y--) {
+      if (p[(y * width + midX) * 4] > 10) { contentBottom = y; break }
+    }
+    debugLog(`Content bounds: L=${contentLeft} T=${contentTop} R=${contentRight} B=${contentBottom} (${contentRight-contentLeft}x${contentBottom-contentTop})`)
 
-    // Dump first 60 R values along row at 1/4 height (likely inside anchor area if transmitting)
-    const probeRow = Math.floor(height / 8)
-    const vals = []
-    for (let x = 0; x < Math.min(60, width); x++) vals.push(p[(probeRow * width + x) * 4])
-    debugLog(`Row${probeRow} R[0..59]: ${vals.join(',')}`)
+    // Probe at content origin: first 60 R values along the content top-left
+    if (contentLeft >= 0 && contentTop >= 0) {
+      // Row at content top: should show anchor white border if transmitting
+      const r1 = []
+      for (let x = contentLeft; x < Math.min(contentLeft + 60, width); x++) {
+        r1.push(p[(contentTop * width + x) * 4])
+      }
+      debugLog(`Content row${contentTop} R[${contentLeft}..+60]: ${r1.join(',')}`)
 
-    // Also probe bottom-left corner
-    const blRow = height - Math.floor(height / 8)
-    const blVals = []
-    for (let x = 0; x < Math.min(60, width); x++) blVals.push(p[(blRow * width + x) * 4])
-    debugLog(`Row${blRow} R[0..59]: ${blVals.join(',')}`)
+      // Column at content left edge going down: shows vertical structure
+      const c1 = []
+      for (let y = contentTop; y < Math.min(contentTop + 60, height); y++) {
+        c1.push(p[(y * width + contentLeft) * 4])
+      }
+      debugLog(`Content col${contentLeft} R[${contentTop}..+60]: ${c1.join(',')}`)
+
+      // Probe center of frame (should show data blocks if transmitting)
+      const cx = Math.floor((contentLeft + contentRight) / 2)
+      const cy = Math.floor((contentTop + contentBottom) / 2)
+      const center = []
+      for (let x = cx - 10; x < cx + 10; x++) {
+        center.push(p[(cy * width + x) * 4])
+      }
+      debugLog(`Center row${cy} R[${cx-10}..${cx+10}]: ${center.join(',')}`)
+    }
   }
 
   // === ANCHOR DETECTION ===
