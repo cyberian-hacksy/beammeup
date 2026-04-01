@@ -250,36 +250,36 @@ async function processFrame(now, metadata) {
   state.frameCount++
   const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
 
-  // Diagnostic: dump corner pixel values on first few frames to understand scale
-  if (state.frameCount <= 3) {
+  // Diagnostic: dump corner pixel values while scanning (every 30th frame)
+  // to understand what the capture card actually delivers
+  if (!state.anchorBounds && isDiagFrame) {
     const p = imageData.data
-    // Top-left corner: scan R channel along row 0 and col 0
-    const row0 = []
-    for (let x = 0; x < Math.min(100, width); x += 2) row0.push(p[x * 4])
-    debugLog(`TL row0 R[0..${Math.min(100,width)} step2]: ${row0.join(',')}`)
 
-    const col0 = []
-    for (let y = 0; y < Math.min(100, height); y += 2) col0.push(p[(y * width) * 4])
-    debugLog(`TL col0 R[0..${Math.min(100,height)} step2]: ${col0.join(',')}`)
-
-    // Top-right corner
-    const trRow = []
-    for (let x = Math.max(0, width - 100); x < width; x += 2) trRow.push(p[x * 4])
-    debugLog(`TR row0 R[${Math.max(0,width-100)}..${width} step2]: ${trRow.join(',')}`)
-
-    // Find first white pixel along row 0 (anchor starts with white)
-    let firstWhite = -1
-    for (let x = 0; x < width; x++) {
-      if (p[x * 4] > 128) { firstWhite = x; break }
-    }
-    let firstBlackAfterWhite = -1
-    if (firstWhite >= 0) {
-      for (let x = firstWhite; x < width; x++) {
-        if (p[x * 4] < 64) { firstBlackAfterWhite = x; break }
+    // Find first white pixel along row 0 and a mid-row
+    const scanRows = [0, Math.floor(height / 2)]
+    for (const row of scanRows) {
+      let firstWhite = -1, firstBlack = -1
+      for (let x = 0; x < width; x++) {
+        const v = p[(row * width + x) * 4]
+        if (firstWhite < 0 && v > 128) firstWhite = x
+        if (firstWhite >= 0 && firstBlack < 0 && v < 64) firstBlack = x
+      }
+      if (firstWhite >= 0) {
+        debugLog(`Row${row}: white@${firstWhite} black@${firstBlack} run=${firstBlack >= 0 ? firstBlack - firstWhite : '∞'}`)
       }
     }
-    debugLog(`Row0: first white@${firstWhite}, first black after white@${firstBlackAfterWhite} → white run=${firstBlackAfterWhite - firstWhite}px`)
-    debugLog(`Expected anchor: 2 blocks white = ${2 * 4}px at sender scale. Actual=${firstBlackAfterWhite - firstWhite}px → scale≈${((firstBlackAfterWhite - firstWhite) / 8).toFixed(2)}x`)
+
+    // Dump first 60 R values along row at 1/4 height (likely inside anchor area if transmitting)
+    const probeRow = Math.floor(height / 8)
+    const vals = []
+    for (let x = 0; x < Math.min(60, width); x++) vals.push(p[(probeRow * width + x) * 4])
+    debugLog(`Row${probeRow} R[0..59]: ${vals.join(',')}`)
+
+    // Also probe bottom-left corner
+    const blRow = height - Math.floor(height / 8)
+    const blVals = []
+    for (let x = 0; x < Math.min(60, width); x++) blVals.push(p[(blRow * width + x) * 4])
+    debugLog(`Row${blRow} R[0..59]: ${blVals.join(',')}`)
   }
 
   // === ANCHOR DETECTION ===
