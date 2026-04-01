@@ -163,12 +163,16 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
 
 // --- Anchor detection (receiver) ---
 
-// Sample a block's average value at (px, py) in the image
-// Returns the average R value of the center 2×2 pixels of a 4×4 block
-function sampleBlock(imageData, width, px, py) {
-  // Center 2×2 of the 4×4 block starting at (px, py)
-  const cx = px + 1
-  const cy = py + 1
+// Sample a single pixel's R value at integer coordinates
+function samplePixel(imageData, width, x, y) {
+  return imageData[(y * width + x) * 4]
+}
+
+// Sample the center of a block at (px, py) with given block size.
+// Averages a 2×2 area around the block center for noise tolerance.
+function sampleBlockAt(imageData, width, px, py, bs) {
+  const cx = Math.round(px + bs / 2) - 1
+  const cy = Math.round(py + bs / 2) - 1
   let sum = 0
   for (let dy = 0; dy < 2; dy++) {
     for (let dx = 0; dx < 2; dx++) {
@@ -178,115 +182,121 @@ function sampleBlock(imageData, width, px, py) {
   return sum / 4
 }
 
-// Check if an 8×8 block grid at (originX, originY) matches the anchor pattern.
-// Uses strict thresholds to reject browser chrome patterns: white blocks must be
-// clearly bright (>180) and black blocks must be clearly dark (<75).
-function verifyAnchorAt(imageData, width, height, originX, originY) {
+// Check if an 8×8 block grid at (originX, originY) matches the anchor pattern
+// at the given block size. Returns true if all blocks match strict thresholds.
+function verifyAnchorWithBlockSize(imageData, width, height, originX, originY, bs) {
+  const aSize = Math.ceil(8 * bs)
   if (originX < 0 || originY < 0 ||
-      originX + ANCHOR_SIZE > width || originY + ANCHOR_SIZE > height) {
+      originX + aSize > width || originY + aSize > height) {
     return false
   }
 
   for (let by = 0; by < 8; by++) {
     for (let bx = 0; bx < 8; bx++) {
-      const px = originX + bx * BLOCK_SIZE
-      const py = originY + by * BLOCK_SIZE
-      const val = sampleBlock(imageData, width, px, py)
+      const px = originX + Math.round(bx * bs)
+      const py = originY + Math.round(by * bs)
+      const val = sampleBlockAt(imageData, width, px, py, bs)
       const expected = ANCHOR_PATTERN[by][bx] === 1
       if (expected) {
-        if (val < 180) return false  // white block must be clearly bright
+        if (val < 180) return false
       } else {
-        if (val > 75) return false   // black block must be clearly dark
+        if (val > 75) return false
       }
     }
   }
   return true
 }
 
-// Scan the frame for anchor patterns. Returns array of {x, y} positions found.
-// Scans at block-center resolution (every BLOCK_SIZE pixels) for efficiency.
+// Try to verify an anchor at (originX, originY) across multiple block sizes.
+// Returns the matching block size, or 0 if no match.
+function verifyAnchorAt(imageData, width, height, originX, originY) {
+  // Try block sizes 3.0 to 5.0 in 0.5 steps to handle HDMI scaling
+  for (let bs = 3.0; bs <= 5.0; bs += 0.5) {
+    if (verifyAnchorWithBlockSize(imageData, width, height, originX, originY, bs)) {
+      return bs
+    }
+  }
+  return 0
+}
+
+// Scan the frame for anchor patterns. Returns array of {x, y, corner, blockSize}.
 export function detectAnchors(imageData, width, height) {
   const anchors = []
-  const step = 2 // Scan every 2px for sub-block alignment tolerance
-  // Browser chrome + HDMI scaling can place anchors up to ~270px from capture
-  // frame edges, so we need a generous scan margin.
+  const step = 2
   const scanMargin = 300
 
-  for (let y = 0; y < Math.min(scanMargin, height - ANCHOR_SIZE); y += step) {
-    for (let x = 0; x < Math.min(scanMargin, width - ANCHOR_SIZE); x += step) {
-      if (verifyAnchorAt(imageData, width, height, x, y)) {
-        anchors.push({ x, y, corner: 'TL' })
+  const scanCorner = (yStart, yEnd, xStart, xEnd, corner) => {
+    for (let y = yStart; y < yEnd; y += step) {
+      for (let x = xStart; x < xEnd; x += step) {
+        const bs = verifyAnchorAt(imageData, width, height, x, y)
+        if (bs > 0) {
+          anchors.push({ x, y, corner, blockSize: bs })
+          return // one per corner is enough
+        }
       }
     }
   }
-  for (let y = 0; y < Math.min(scanMargin, height - ANCHOR_SIZE); y += step) {
-    for (let x = Math.max(0, width - scanMargin); x < width - ANCHOR_SIZE + 1; x += step) {
-      if (verifyAnchorAt(imageData, width, height, x, y)) {
-        anchors.push({ x, y, corner: 'TR' })
-      }
-    }
-  }
-  for (let y = Math.max(0, height - scanMargin); y < height - ANCHOR_SIZE + 1; y += step) {
-    for (let x = 0; x < Math.min(scanMargin, width - ANCHOR_SIZE); x += step) {
-      if (verifyAnchorAt(imageData, width, height, x, y)) {
-        anchors.push({ x, y, corner: 'BL' })
-      }
-    }
-  }
-  for (let y = Math.max(0, height - scanMargin); y < height - ANCHOR_SIZE + 1; y += step) {
-    for (let x = Math.max(0, width - scanMargin); x < width - ANCHOR_SIZE + 1; x += step) {
-      if (verifyAnchorAt(imageData, width, height, x, y)) {
-        anchors.push({ x, y, corner: 'BR' })
-      }
-    }
-  }
+
+  // Top-left
+  scanCorner(0, Math.min(scanMargin, height - 24), 0, Math.min(scanMargin, width - 24), 'TL')
+  // Top-right
+  scanCorner(0, Math.min(scanMargin, height - 24), Math.max(0, width - scanMargin), width - 24, 'TR')
+  // Bottom-left
+  scanCorner(Math.max(0, height - scanMargin), height - 24, 0, Math.min(scanMargin, width - 24), 'BL')
+  // Bottom-right
+  scanCorner(Math.max(0, height - scanMargin), height - 24, Math.max(0, width - scanMargin), width - 24, 'BR')
 
   return anchors
 }
 
-// Derive data region from detected anchor positions
+// Derive data region from detected anchor positions.
+// Uses the detected block size to calculate actual anchor/margin sizes in capture.
 export function dataRegionFromAnchors(anchors) {
   if (anchors.length < 2) return null
 
-  // Find bounding box of all anchors
+  const bs = anchors[0].blockSize || BLOCK_SIZE
+  const actualAnchorSize = Math.ceil(8 * bs)
+
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const a of anchors) {
     if (a.x < minX) minX = a.x
     if (a.y < minY) minY = a.y
-    if (a.x + ANCHOR_SIZE > maxX) maxX = a.x + ANCHOR_SIZE
-    if (a.y + ANCHOR_SIZE > maxY) maxY = a.y + ANCHOR_SIZE
+    if (a.x + actualAnchorSize > maxX) maxX = a.x + actualAnchorSize
+    if (a.y + actualAnchorSize > maxY) maxY = a.y + actualAnchorSize
   }
 
-  // Data region is inside the anchors (offset by MARGIN_SIZE from anchor origins)
-  const w = maxX - minX - 2 * MARGIN_SIZE
-  const h = maxY - minY - 2 * MARGIN_SIZE
-
-  // Reject if anchors don't span enough area (e.g. all at same y = false positives)
+  const w = maxX - minX - 2 * actualAnchorSize
+  const h = maxY - minY - 2 * actualAnchorSize
   if (w < 100 || h < 100) return null
 
-  return { x: minX + MARGIN_SIZE, y: minY + MARGIN_SIZE, w, h }
+  return {
+    x: minX + actualAnchorSize,
+    y: minY + actualAnchorSize,
+    w, h,
+    blockSize: bs
+  }
 }
 
 // --- Data region decoding (receiver) ---
 
 // Decode data blocks from a data region. Returns { header, payload, crcValid }
+// Uses the region's detected block size for sampling positions.
 export function decodeDataRegion(imageData, width, region) {
-  const blocksX = Math.floor(region.w / BLOCK_SIZE)
-  const blocksY = Math.floor(region.h / BLOCK_SIZE)
+  const bs = region.blockSize || BLOCK_SIZE
+  const blocksX = Math.floor(region.w / bs)
+  const blocksY = Math.floor(region.h / bs)
   const totalBlocks = blocksX * blocksY
 
   if (totalBlocks < HEADER_SIZE) return null
 
-  // Read all blocks (header + payload) as bytes
   const headerBytes = new Uint8Array(HEADER_SIZE)
   let blockIdx = 0
 
-  // Read header
   for (let by = 0; by < blocksY && blockIdx < HEADER_SIZE; by++) {
     for (let bx = 0; bx < blocksX && blockIdx < HEADER_SIZE; bx++) {
-      const px = region.x + bx * BLOCK_SIZE
-      const py = region.y + by * BLOCK_SIZE
-      headerBytes[blockIdx] = decodeByte(sampleBlock(imageData, width, px, py))
+      const px = region.x + Math.round(bx * bs)
+      const py = region.y + Math.round(by * bs)
+      headerBytes[blockIdx] = decodeByte(sampleBlockAt(imageData, width, px, py, bs))
       blockIdx++
     }
   }
@@ -294,7 +304,6 @@ export function decodeDataRegion(imageData, width, region) {
   const header = parseHeader(headerBytes)
   if (!header) return null
 
-  // Read payload blocks
   const payload = new Uint8Array(header.payloadLength)
   let payloadIdx = 0
   blockIdx = 0
@@ -302,9 +311,9 @@ export function decodeDataRegion(imageData, width, region) {
   for (let by = 0; by < blocksY && payloadIdx < header.payloadLength; by++) {
     for (let bx = 0; bx < blocksX && payloadIdx < header.payloadLength; bx++) {
       if (blockIdx >= HEADER_SIZE) {
-        const px = region.x + bx * BLOCK_SIZE
-        const py = region.y + by * BLOCK_SIZE
-        payload[payloadIdx++] = decodeByte(sampleBlock(imageData, width, px, py))
+        const px = region.x + Math.round(bx * bs)
+        const py = region.y + Math.round(by * bs)
+        payload[payloadIdx++] = decodeByte(sampleBlockAt(imageData, width, px, py, bs))
       }
       blockIdx++
     }
@@ -341,9 +350,10 @@ export function testAnchorRoundtrip() {
   // Render one anchor at (0, 0)
   renderAnchor(imageData, width, 0, 0)
 
-  // Verify it
-  const pass = verifyAnchorAt(imageData, width, height, 0, 0)
-  console.log('Anchor roundtrip test:', pass ? 'PASS' : 'FAIL')
+  // Verify it (verifyAnchorAt returns block size > 0 on match)
+  const bs = verifyAnchorAt(imageData, width, height, 0, 0)
+  const pass = bs > 0
+  console.log('Anchor roundtrip test:', pass ? `PASS (bs=${bs})` : 'FAIL')
   return pass
 }
 
