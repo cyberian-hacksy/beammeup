@@ -416,20 +416,18 @@ async function processFrame(now, metadata) {
     state.decodeFailCount++
     if (isDiagFrame) {
       debugLog(`Frame ${state.frameCount}: decode failed`)
-      // Sample first 22 block-center values from the data region for diagnosis
+      // Sample first 176 block values (22 header bytes × 8 bits) for diagnosis
       const bs = region.blockSize || 4
       const stepX = region.stepX || bs
-      const stepY = region.stepY || bs
       const rx = region.x
       const ry = region.y
       const blocksX = Math.floor(region.w / stepX)
-      const probeCount = Math.min(HEADER_SIZE, blocksX)
-      const probeValues = []
-      for (let i = 0; i < probeCount; i++) {
+      const probeCount = Math.min(176, blocksX) // 22 bytes × 8 bits
+      const rawValues = []
+      for (let i = 0; i < Math.min(24, probeCount); i++) {
         const px = rx + Math.round(i * stepX)
         const py = ry
         if (px >= 0 && px < width && py >= 0 && py < height) {
-          // Sample 2x2 center of block
           const cx = Math.round(px + bs / 2) - 1
           const cy = Math.round(py + bs / 2) - 1
           let sum = 0
@@ -438,12 +436,20 @@ async function processFrame(now, metadata) {
               sum += imageData.data[((cy + dy) * width + (cx + dx)) * 4]
             }
           }
-          probeValues.push(Math.round(sum / 4))
-        } else {
-          probeValues.push(-1)
+          rawValues.push(Math.round(sum / 4))
         }
       }
-      debugLog(`Header probe: [${probeValues.join(',')}]`)
+      debugLog(`First 24 block values: [${rawValues.join(',')}]`)
+      // Decode as binary: show what bytes they produce
+      const decodedBytes = []
+      for (let b = 0; b < Math.min(3, Math.floor(rawValues.length / 8)); b++) {
+        let byte = 0
+        for (let bit = 0; bit < 8; bit++) {
+          if (rawValues[b * 8 + bit] > 128) byte |= (1 << (7 - bit))
+        }
+        decodedBytes.push(byte)
+      }
+      debugLog(`Decoded bytes: [${decodedBytes.join(',')}] (expect magic: 254,1,254,1)`)
     }
     debugCurrent(`#${state.frameCount} no data`)
   }

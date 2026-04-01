@@ -6,14 +6,29 @@ import {
 } from './hdmi-uvc-constants.js'
 import { crc32 } from './crc32.js'
 
-// --- Byte encoding (direct mapping) ---
+// --- Binary modulation (1 bit per block) ---
+// Each byte is encoded as 8 blocks (MSB first): bit=1 → white (255), bit=0 → black (0).
+// Receiver thresholds at 128. MJPEG corrupts values by ±20 but binary has 108+ margin.
 
-function encodeByte(val) {
-  return val
+const BITS_PER_BYTE = 8
+const HEADER_BLOCKS = HEADER_SIZE * BITS_PER_BYTE // 22 bytes × 8 bits = 176 blocks
+
+// Encode a byte into 8 binary block values (returned as array of 0/255)
+function encodeBits(byte) {
+  const bits = new Array(8)
+  for (let i = 0; i < 8; i++) {
+    bits[i] = (byte >> (7 - i)) & 1 ? 255 : 0
+  }
+  return bits
 }
 
-function decodeByte(val) {
-  return Math.max(0, Math.min(255, Math.round(val)))
+// Decode 8 sampled block values into a byte (threshold at 128)
+function decodeBits(values) {
+  let byte = 0
+  for (let i = 0; i < 8; i++) {
+    if (values[i] > 128) byte |= (1 << (7 - i))
+  }
+  return byte
 }
 
 // --- Anchor rendering ---
@@ -54,13 +69,13 @@ export function getDataRegion(width, height) {
   }
 }
 
-// Calculate payload capacity: total data blocks minus 22 header blocks
+// Calculate payload capacity in bytes (binary modulation: 8 blocks per byte)
 export function getPayloadCapacity(width, height) {
   const dr = getDataRegion(width, height)
   const blocksX = Math.floor(dr.w / BLOCK_SIZE)
   const blocksY = Math.floor(dr.h / BLOCK_SIZE)
   const totalBlocks = blocksX * blocksY
-  return Math.max(0, totalBlocks - HEADER_SIZE) // subtract header blocks
+  return Math.max(0, Math.floor((totalBlocks - HEADER_BLOCKS) / BITS_PER_BYTE))
 }
 
 // --- Header serialization ---
@@ -125,22 +140,27 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
   renderAnchor(imageData, width, 0, height - ANCHOR_SIZE)                 // bottom-left
   renderAnchor(imageData, width, width - ANCHOR_SIZE, height - ANCHOR_SIZE) // bottom-right
 
-  // Fill data region with 4×4 blocks
-  // First HEADER_SIZE blocks = header bytes, rest = payload bytes
+  // Fill data region with binary-encoded 4×4 blocks.
+  // Each byte (header or payload) is encoded as 8 blocks (MSB first, 0/255).
   const dr = getDataRegion(width, height)
   const blocksX = Math.floor(dr.w / BLOCK_SIZE)
   const blocksY = Math.floor(dr.h / BLOCK_SIZE)
 
+  // Combine header + payload into a single byte stream
+  const allBytes = new Uint8Array(headerBytes.length + payload.length)
+  allBytes.set(headerBytes)
+  allBytes.set(payload, headerBytes.length)
+
   let blockIdx = 0
+  let byteIdx = 0
+  let bitIdx = 0
+
   for (let by = 0; by < blocksY; by++) {
     for (let bx = 0; bx < blocksX; bx++) {
-      // Determine byte value for this block
-      let val
-      if (blockIdx < HEADER_SIZE) {
-        val = encodeByte(headerBytes[blockIdx])
-      } else {
-        const payloadIdx = blockIdx - HEADER_SIZE
-        val = payloadIdx < payload.length ? encodeByte(payload[payloadIdx]) : 0
+      // Determine block value from current bit
+      let val = 0
+      if (byteIdx < allBytes.length) {
+        val = (allBytes[byteIdx] >> (7 - bitIdx)) & 1 ? 255 : 0
       }
 
       // Fill 4×4 block
@@ -153,6 +173,13 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
           imageData[i + 1] = val
           imageData[i + 2] = val
         }
+      }
+
+      // Advance to next bit
+      bitIdx++
+      if (bitIdx >= 8) {
+        bitIdx = 0
+        byteIdx++
       }
       blockIdx++
     }
@@ -416,23 +443,31 @@ export function dataRegionFromAnchors(anchors) {
 
 // --- Data region decoding (receiver) ---
 
-// Read payload blocks at a given alignment. Returns { header, payload, crcValid }.
+// Read payload using binary modulation (8 blocks per byte, threshold at 128).
 function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header) {
   const blocksY = Math.floor(region.h / stepY)
   const payload = new Uint8Array(header.payloadLength)
   let payloadIdx = 0
   let blockIdx = 0
+  let currentByte = 0
+  let bitIdx = 0
   const height = imageData.length / (width * 4)
 
   for (let by = 0; by < blocksY && payloadIdx < header.payloadLength; by++) {
     for (let bx = 0; bx < blocksX && payloadIdx < header.payloadLength; bx++) {
-      if (blockIdx >= HEADER_SIZE) {
+      if (blockIdx >= HEADER_BLOCKS) {
         const px = rx + Math.round(bx * stepX)
         const py = ry + Math.round(by * stepY)
+        let val = 0
         if (px >= 0 && px < width && py >= 0 && py < height) {
-          payload[payloadIdx++] = decodeByte(sampleBlockAt(imageData, width, px, py, bs))
-        } else {
-          payload[payloadIdx++] = 0
+          val = sampleBlockAt(imageData, width, px, py, bs)
+        }
+        if (val > 128) currentByte |= (1 << (7 - bitIdx))
+        bitIdx++
+        if (bitIdx >= 8) {
+          payload[payloadIdx++] = currentByte
+          currentByte = 0
+          bitIdx = 0
         }
       }
       blockIdx++
@@ -447,16 +482,42 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
 function scoreCandidate(result) {
   if (result.crcValid) return 10000
   let score = 0
-  // Prefer payloadLength === 2064 (2048 block + 16 packet header)
   if (result.header.payloadLength === 2064) score += 100
-  // Prefer round payloadLength values (likely real, not noise)
   if (result.header.payloadLength > 0 && result.header.payloadLength <= 4096) score += 50
   return score
 }
 
-// Decode data blocks from a data region. Returns { header, payload, crcValid }
-// Searches ALL nearby positions/block sizes and returns the best candidate.
-// CRC-valid results win immediately; otherwise the highest-scoring candidate is returned.
+// Read header bytes using binary modulation at given alignment.
+// Returns parsed header or null. Reads HEADER_BLOCKS blocks, decodes 8 per byte.
+function probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX) {
+  const headerBytes = new Uint8Array(HEADER_SIZE)
+  let byteIdx = 0, bitIdx = 0, currentByte = 0
+  const imgHeight = imageData.length / (width * 4)
+  const blocksY = Math.floor(region.h / stepY)
+
+  for (let by = 0; by < blocksY && byteIdx < HEADER_SIZE; by++) {
+    for (let bx = 0; bx < blocksX && byteIdx < HEADER_SIZE; bx++) {
+      const px = rx + Math.round(bx * stepX)
+      const py = ry + Math.round(by * stepY)
+      let val = 0
+      if (px >= 0 && px < width && py >= 0 && py < imgHeight) {
+        val = sampleBlockAt(imageData, width, px, py, bs)
+      }
+      if (val > 128) currentByte |= (1 << (7 - bitIdx))
+      bitIdx++
+      if (bitIdx >= 8) {
+        headerBytes[byteIdx++] = currentByte
+        currentByte = 0
+        bitIdx = 0
+      }
+    }
+  }
+
+  return parseHeader(headerBytes)
+}
+
+// Decode data blocks from a data region using binary modulation.
+// Searches nearby positions/block sizes. CRC-valid wins immediately.
 export function decodeDataRegion(imageData, width, region) {
   const baseBs = region.blockSize || BLOCK_SIZE
   const baseStepX = region.stepX || baseBs
@@ -478,44 +539,32 @@ export function decodeDataRegion(imageData, width, region) {
     const stepY = baseStepY * scale
 
     const blocksX = Math.floor(region.w / stepX)
-    if (blocksX < HEADER_SIZE) continue
+    const totalBlocksY = Math.floor(region.h / stepY)
+    if (blocksX * totalBlocksY < HEADER_BLOCKS + BITS_PER_BYTE) continue
 
     for (const xOff of offsets) {
       for (const yOff of yOffsets) {
         const rx = region.x + xOff
         const ry = region.y + yOff
 
-        // Quick header probe
-        const headerBytes = new Uint8Array(HEADER_SIZE)
-        for (let i = 0; i < HEADER_SIZE; i++) {
-          const px = rx + Math.round(i * stepX)
-          const py = ry
-          if (px < 0 || px >= width || py < 0 || py >= imageData.length / (width * 4)) {
-            headerBytes[i] = 0
-          } else {
-            headerBytes[i] = decodeByte(sampleBlockAt(imageData, width, px, py, bs))
-          }
-        }
-
-        const header = parseHeader(headerBytes)
+        const header = probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX)
         if (!header) continue
 
-        // Check grid can hold payload
+        // Check grid can hold payload (in bytes, 8 blocks per byte)
         const blocksY = Math.floor(region.h / stepY)
-        const totalDataBlocks = blocksX * blocksY - HEADER_SIZE
-        if (totalDataBlocks < header.payloadLength) continue
+        const payloadBlocks = blocksX * blocksY - HEADER_BLOCKS
+        const payloadCapacity = Math.floor(payloadBlocks / BITS_PER_BYTE)
+        if (payloadCapacity < header.payloadLength) continue
 
         // Read and score this candidate
         const result = readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header)
         const score = scoreCandidate(result)
 
-        // Log on first header parse
         if (!region._logged) {
           region._logged = true
-          console.log(`[HDMI-RX] Header: bs=${bs.toFixed(2)} step=${stepX.toFixed(2)}/${stepY.toFixed(2)} grid=${blocksX}x${blocksY} len=${header.payloadLength} cap=${totalDataBlocks} off=(${xOff},${yOff}) crc=${result.crcValid}`)
+          console.log(`[HDMI-RX] Header: bs=${bs.toFixed(2)} step=${stepX.toFixed(2)}/${stepY.toFixed(2)} grid=${blocksX}x${blocksY} len=${header.payloadLength} cap=${payloadCapacity} off=(${xOff},${yOff}) crc=${result.crcValid}`)
         }
 
-        // CRC-valid = immediate win
         if (result.crcValid) return result
 
         if (score > bestScore) {
