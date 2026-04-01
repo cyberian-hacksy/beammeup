@@ -209,24 +209,42 @@ function verifyAnchorWithBlockSize(imageData, width, height, originX, originY, b
 
 // Check that the area around a detected anchor is dark (canvas margin/HDMI border).
 // Rejects false positives from browser chrome where surroundings are bright.
+// Checks 3 points per direction at increasing distances for robustness.
 function verifyAnchorContext(imageData, width, height, originX, originY, bs) {
   const aSize = Math.ceil(8 * bs)
   const mid = Math.round(aSize / 2)
-  const gap = 5 // pixels outside anchor to check
 
-  const isDark = (x, y) => {
+  const isDarkAt = (x, y) => {
     if (x < 0 || y < 0 || x >= width || y >= height) return true
     return imageData[(y * width + x) * 4] < 50
   }
 
-  // Check above, below, left, right of anchor — at least 3 of 4 must be dark
-  let darkCount = 0
-  if (originY <= gap || isDark(originX + mid, originY - gap)) darkCount++
-  if (originY + aSize + gap >= height || isDark(originX + mid, originY + aSize + gap)) darkCount++
-  if (originX <= gap || isDark(originX - gap, originY + mid)) darkCount++
-  if (originX + aSize + gap >= width || isDark(originX + aSize + gap, originY + mid)) darkCount++
+  // For each of 4 directions, check 3 points at 8/14/20px from anchor edge.
+  // Direction counts as "dark" if majority (2+) of points are dark.
+  let darkDirs = 0
+  const distances = [8, 14, 20]
 
-  return darkCount >= 3
+  // Above
+  let dk = 0
+  for (const d of distances) if (isDarkAt(originX + mid, originY - d)) dk++
+  if (dk >= 2) darkDirs++
+
+  // Below
+  dk = 0
+  for (const d of distances) if (isDarkAt(originX + mid, originY + aSize + d)) dk++
+  if (dk >= 2) darkDirs++
+
+  // Left
+  dk = 0
+  for (const d of distances) if (isDarkAt(originX - d, originY + mid)) dk++
+  if (dk >= 2) darkDirs++
+
+  // Right
+  dk = 0
+  for (const d of distances) if (isDarkAt(originX + aSize + d, originY + mid)) dk++
+  if (dk >= 2) darkDirs++
+
+  return darkDirs >= 3
 }
 
 // Try to verify an anchor at (originX, originY) across multiple block sizes.
