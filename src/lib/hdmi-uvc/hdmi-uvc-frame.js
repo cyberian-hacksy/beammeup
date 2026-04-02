@@ -361,22 +361,25 @@ function refineAnchorScale(imageData, width, height, anchor) {
   if (rowY >= height) return approxBs
 
   // Scan from anchor origin for the first dark pixel (transition from white border to black ring)
-  let lastBright = anchor.x
-  for (let x = anchor.x; x < anchor.x + Math.ceil(8 * approxBs) + 20 && x < width; x++) {
-    if (imageData[(rowY * width + x) * 4] > 128) {
-      lastBright = x
-    } else if (x > anchor.x + approxBs) {
-      // Found the transition after at least 1 block of white
+  // Scan right for the white→black transition. Require 3 consecutive dark
+  // pixels to confirm (avoids single-pixel MJPEG noise).
+  let transitionX = -1
+  for (let x = anchor.x + Math.round(approxBs); x < anchor.x + Math.ceil(8 * approxBs) + 20 && x < width - 2; x++) {
+    const v0 = imageData[(rowY * width + x) * 4]
+    const v1 = imageData[(rowY * width + x + 1) * 4]
+    const v2 = imageData[(rowY * width + x + 2) * 4]
+    if (v0 < 100 && v1 < 100 && v2 < 100) {
+      transitionX = x
       break
     }
   }
 
-  // The transition occurs at 2 * BLOCK_SIZE sender pixels from the origin
-  // refined_bs = (lastBright - anchor.x + 1) / (2 * BLOCK_SIZE) * BLOCK_SIZE
-  // simplified: capture_distance / 2 = one block's capture size
-  const captureDistance = lastBright - anchor.x + 1
+  if (transitionX < 0) return approxBs
+
+  // The transition from white border to black ring occurs at 2 * BLOCK_SIZE sender pixels
+  const captureDistance = transitionX - anchor.x
   const refinedBs = captureDistance / 2
-  if (refinedBs >= 2 && refinedBs <= 8) return refinedBs
+  if (refinedBs >= 2.5 && refinedBs <= 6) return refinedBs
   return approxBs
 }
 
@@ -440,7 +443,7 @@ export function detectAnchors(imageData, width, height) {
 }
 
 // Derive data region from detected anchor positions.
-// Handles both 4-anchor (full geometry) and 2-anchor (BL+BR only, estimate top) cases.
+// Requires at least one top and one bottom anchor with consistent block sizes.
 export function dataRegionFromAnchors(anchors) {
   if (anchors.length < 2) return null
 
@@ -449,44 +452,39 @@ export function dataRegionFromAnchors(anchors) {
   const tl = anchors.find(a => a.corner === 'TL')
   const tr = anchors.find(a => a.corner === 'TR')
 
-  // Need at least BL+BR (bottom pair is most reliable)
-  if (!bl || !br) return null
+  // Need at least one top anchor and one bottom anchor
+  const hasTop = tl || tr
+  const hasBottom = bl || br
+  if (!hasTop || !hasBottom) return null
 
-  // Use average of the two most reliable anchors (bottom pair) for block size
-  const avgBs = (bl.blockSize + br.blockSize) / 2
+  // Check block size consistency: all anchors within 20% of median
+  const sizes = anchors.map(a => a.blockSize).sort((a, b) => a - b)
+  const median = sizes[Math.floor(sizes.length / 2)]
+  if (sizes.some(s => Math.abs(s - median) / median > 0.20)) return null
+
+  const avgBs = anchors.reduce((s, a) => s + a.blockSize, 0) / anchors.length
   const actualAnchorSize = Math.ceil(8 * avgBs)
 
-  // Horizontal bounds from bottom anchors
-  const dataLeft = bl.x + actualAnchorSize
-  const dataRight = br.x
-  const dataBottom = Math.min(bl.y, br.y)
-  const w = dataRight - dataLeft
-
-  // Vertical bounds: use top anchors if available, otherwise estimate
-  let dataTop
-  if (tl && tr) {
-    dataTop = Math.max(tl.y, tr.y) + actualAnchorSize
-  } else {
-    // Estimate top from horizontal span and typical display aspect ratio (~0.53)
-    const hSpan = br.x + actualAnchorSize - bl.x
-    const estimatedVSpan = Math.round(hSpan * 0.53)
-    dataTop = dataBottom + actualAnchorSize - estimatedVSpan
-    if (dataTop < 0) dataTop = 0
+  // Compute bounds from available anchors
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const a of anchors) {
+    if (a.x < minX) minX = a.x
+    if (a.y < minY) minY = a.y
+    if (a.x + actualAnchorSize > maxX) maxX = a.x + actualAnchorSize
+    if (a.y + actualAnchorSize > maxY) maxY = a.y + actualAnchorSize
   }
 
-  const h = dataBottom - dataTop
+  const w = maxX - minX - 2 * actualAnchorSize
+  const h = maxY - minY - 2 * actualAnchorSize
   if (w < 100 || h < 100) return null
 
-  const stepX = avgBs
-  const stepY = avgBs
-
   return {
-    x: dataLeft,
-    y: dataTop,
+    x: minX + actualAnchorSize,
+    y: minY + actualAnchorSize,
     w, h,
     blockSize: avgBs,
-    stepX,
-    stepY
+    stepX: avgBs,
+    stepY: avgBs
   }
 }
 
