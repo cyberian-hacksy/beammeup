@@ -214,13 +214,14 @@ const TARGET_SOURCE_BLOCKS = 128
 function getBatchingProfile(mode) {
   switch (mode) {
     case HDMI_MODE.RAW_GRAY:
-      // 2 bits per 4x4 block: keep roughly the same spatial footprint that
-      // proved stable in 1-bit 4x4 mode, but carry more payload per used block.
+      // Gray2 is denser but materially less tolerant of capture noise than
+      // binary 4x4. Keep total bytes/frame conservative and shard them across
+      // many packets so packet-level salvage still has useful granularity.
       return {
-        maxPacketsPerFrame: 8,
-        targetFrameFill: 0.55,
-        maxBlockSize: MAX_BLOCK_SIZE,
-        maxUsedBytes: 12544
+        maxPacketsPerFrame: 12,
+        targetFrameFill: 0.40,
+        maxBlockSize: 768,
+        maxUsedBytes: 8192
       }
     case HDMI_MODE.COMPAT_4:
       // 4x4 mode can carry more packets per frame, but very large per-packet
