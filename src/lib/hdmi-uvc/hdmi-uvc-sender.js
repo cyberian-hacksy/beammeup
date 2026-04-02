@@ -378,8 +378,14 @@ function handleFpsChange() {
 }
 
 function handleKeydown(e) {
-  // Escape pauses/hides the canvas overlay
-  if (e.key === 'Escape' && state.isSending && !state.isPaused) {
+  if (e.key === 'Escape' && state.isSending) {
+    stopSending()
+  }
+}
+
+function handleFullscreenChange() {
+  // If we were sending and fullscreen was exited (e.g. by pressing Escape), pause
+  if (state.isSending && !state.isPaused && !document.fullscreenElement) {
     pauseSending()
   }
 }
@@ -426,6 +432,7 @@ export function initHdmiUvcSender(errorHandler) {
   elements.container.ondrop = handleDrop
 
   document.addEventListener('keydown', handleKeydown)
+  document.addEventListener('fullscreenchange', handleFullscreenChange)
 
 
   // Debug panel copy button

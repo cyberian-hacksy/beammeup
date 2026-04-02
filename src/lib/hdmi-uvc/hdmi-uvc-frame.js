@@ -97,7 +97,7 @@ export function buildHeader(mode, width, height, fps, symbolId, payloadLength, p
 export function parseHeader(data) {
   if (data.length < HEADER_SIZE) return null
   const MAGIC_BYTES = [0xFF, 0x00, 0xFF, 0x00]
-  const TOLERANCE = 1 // binary decoding should produce exact 0xFF/0x00; allow 1 for edge smear
+  const TOLERANCE = 0 // exact match — prevents 1-bit-shifted [0xFE,0x01] from passing as [0xFF,0x00]
   for (let i = 0; i < 4; i++) {
     if (Math.abs(data[i] - MAGIC_BYTES[i]) > TOLERANCE) return null
   }
