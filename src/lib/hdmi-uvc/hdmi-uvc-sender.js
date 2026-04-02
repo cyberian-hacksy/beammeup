@@ -1,6 +1,7 @@
 // HDMI-UVC Sender module - handles file encoding and full-screen display
 
 import { createEncoder } from '../encoder.js'
+import { METADATA_INTERVAL } from '../constants.js'
 import {
   HDMI_UVC_MAX_FILE_SIZE,
   HDMI_MODE,
@@ -110,6 +111,11 @@ function updateActionButton() {
 // Repeat each symbol for FRAMES_PER_SYMBOL frames to give the capture
 // pipeline multiple chances at the same data before advancing.
 const FRAMES_PER_SYMBOL = 3
+const METADATA_BURST_FRAMES = 6
+
+function shouldSendMetadata(frameNumber) {
+  return frameNumber <= METADATA_BURST_FRAMES || frameNumber % METADATA_INTERVAL === 0
+}
 
 function renderFrame() {
   if (!state.isSending || state.isPaused || !state.encoder) return
@@ -119,22 +125,30 @@ function renderFrame() {
   const ch = elements.canvas.height
 
   try {
-    const packet = state.encoder.generateSymbol(state.symbolId)
+    const nextFrameNumber = state.frameCount + 1
+    const sendMetadata = shouldSendMetadata(nextFrameNumber)
+    const symbolId = sendMetadata ? 0 : state.symbolId
+    const packet = state.encoder.generateSymbol(symbolId)
 
-    const frameData = buildFrame(packet, HDMI_MODE.COMPAT_4, cw, ch, fps.fps, state.symbolId)
+    const frameData = buildFrame(packet, HDMI_MODE.COMPAT_4, cw, ch, fps.fps, symbolId)
 
     const ctx = elements.canvas.getContext('2d')
     ctx.putImageData(new ImageData(new Uint8ClampedArray(frameData), cw, ch), 0, 0)
 
-    state.frameCount++
+    state.frameCount = nextFrameNumber
     elements.frameCount.textContent = state.frameCount
 
     const progress = Math.min(100, Math.round((state.symbolId / state.encoder.K_prime) * 100))
     elements.progressDisplay.textContent = progress + '%'
-    debugCurrent(`#${state.frameCount} sym=${state.symbolId}/${state.encoder.K_prime} ${progress}%`)
+    debugCurrent(
+      sendMetadata
+        ? `#${state.frameCount} META ${progress}%`
+        : `#${state.frameCount} sym=${state.symbolId}/${state.encoder.K_prime} ${progress}%`
+    )
 
-    // Advance symbol only every FRAMES_PER_SYMBOL frames
-    if (state.frameCount % FRAMES_PER_SYMBOL === 0) {
+    // Advance data symbol only on non-metadata frames, repeating each symbol
+    // across several frames to give the capture pipeline multiple chances.
+    if (!sendMetadata && state.frameCount % FRAMES_PER_SYMBOL === 0) {
       state.symbolId++
       if (state.symbolId > state.encoder.K_prime) {
         state.symbolId = 1
