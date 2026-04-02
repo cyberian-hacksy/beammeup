@@ -411,7 +411,12 @@ async function processFrame(now, metadata) {
   } else if (result && !result.crcValid) {
     state.decodeFailCount++
     if (isDiagFrame) {
-      debugLog(`Frame ${state.frameCount}: CRC fail (sym=${result.header.symbolId} len=${result.header.payloadLength})`)
+      // Dump full header for diagnosis
+      const h = result.header
+      const hBytes = `magic=${h.magic.toString(16)} mode=${h.mode} ${h.width}x${h.height} fps=${h.fps} sym=${h.symbolId} len=${h.payloadLength} crc=${h.payloadCrc.toString(16)}`
+      const diag = result._diag || {}
+      debugLog(`Frame ${state.frameCount}: CRC fail — ${hBytes}`)
+      debugLog(`  Grid: dataBs=${diag.dataBs?.toFixed(2)} step=${diag.stepX?.toFixed(2)}/${diag.stepY?.toFixed(2)} off=(${diag.xOff},${diag.yOff}) bsAdj=${diag.bsAdj}`)
     }
     debugCurrent(`#${state.frameCount} CRC fail`)
   } else {

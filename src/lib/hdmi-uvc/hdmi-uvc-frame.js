@@ -619,6 +619,7 @@ export function decodeDataRegion(imageData, width, region) {
 
         // Read and score this candidate
         const result = readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, dataBs, blocksX, header)
+        result._diag = { dataBs, stepX, stepY, blocksX, blocksY, xOff, yOff, bsAdj, payloadCapacity }
         const score = scoreCandidate(result)
 
         if (!region._logged) {
