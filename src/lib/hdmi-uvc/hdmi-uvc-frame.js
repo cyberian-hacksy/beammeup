@@ -96,8 +96,8 @@ export function buildHeader(mode, width, height, fps, symbolId, payloadLength, p
 
 export function parseHeader(data) {
   if (data.length < HEADER_SIZE) return null
-  const MAGIC_BYTES = [0xFE, 0x01, 0xFE, 0x01]
-  const TOLERANCE = 5 // tight for binary: decoded bytes are exact 0x00 or 0xFF via threshold
+  const MAGIC_BYTES = [0xFF, 0x00, 0xFF, 0x00]
+  const TOLERANCE = 1 // binary decoding should produce exact 0xFF/0x00; allow 1 for edge smear
   for (let i = 0; i < 4; i++) {
     if (Math.abs(data[i] - MAGIC_BYTES[i]) > TOLERANCE) return null
   }
@@ -529,8 +529,8 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
 function scoreCandidate(result) {
   if (result.crcValid) return 10000
   let score = 0
-  // Strongly prefer exact expected payload length (2048 blockSize + 16 packet header)
-  if (result.header.payloadLength === 2064) score += 1000
+  // Strongly prefer exact expected payload length (256 blockSize + 16 packet header)
+  if (result.header.payloadLength === 272) score += 1000
   else if (result.header.payloadLength > 0 && result.header.payloadLength <= 4096) score += 10
   return score
 }

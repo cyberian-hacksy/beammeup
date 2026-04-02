@@ -189,9 +189,8 @@ async function startSending() {
     debugLog(`Canvas: ${canvasWidth}x${canvasHeight}, dpr: ${window.devicePixelRatio}`)
 
     // Small fixed block size for MJPEG reliability.
-    // Large blocks (filling the whole frame) require perfect byte recovery;
-    // small blocks let fountain codes tolerate per-frame errors.
-    const blockSize = 2048
+    // Start small to get first CRC-valid frames, then increase.
+    const blockSize = 256
 
     debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)}), blockSize: ${blockSize}`)
 
