@@ -89,6 +89,12 @@ function extractFramePackets(framePayload, expectedPacketSize = null) {
   return offset === framePayload.length ? packets : []
 }
 
+function getFramePacketSlotCount(framePayload, expectedPacketSize = null) {
+  if (!expectedPacketSize || expectedPacketSize < PACKET_HEADER_SIZE) return null
+  if (framePayload.length % expectedPacketSize !== 0) return null
+  return Math.floor(framePayload.length / expectedPacketSize)
+}
+
 function ensureDecoder() {
   if (!state.decoder) {
     state.decoder = createDecoder()
@@ -113,7 +119,7 @@ function tryFixedLayoutPackets(imageData, width, region) {
   return extractFramePackets(payload, expectedPacketSize)
 }
 
-function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true) {
+function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expectedFramePacketCount = packets.length) {
   if (packets.length === 0) return false
 
   ensureDecoder()
@@ -134,7 +140,7 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true) {
     elements.statFrames.textContent = state.validFrames + ' valid frames'
   }
 
-  state.expectedPacketCount = packets.length
+  state.expectedPacketCount = Math.max(packets.length, expectedFramePacketCount || 0)
 
   if (state.validFrames % 10 === 0) {
     debugLog(
@@ -520,16 +526,18 @@ async function processFrame(now, metadata) {
     }
 
     const expectedPacketSize = getExpectedPacketSize()
+    const totalFramePackets = getFramePacketSlotCount(result.payload, expectedPacketSize)
     const packets = extractFramePackets(result.payload, expectedPacketSize)
 
-    if (acceptPackets(packets, result.header.symbolId)) {
+    if (acceptPackets(packets, result.header.symbolId, true, totalFramePackets)) {
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (state.decoder?.isComplete()) return
     }
   } else if (result && !result.crcValid) {
     const expectedPacketSize = getExpectedPacketSize()
+    const totalFramePackets = getFramePacketSlotCount(result.payload, expectedPacketSize)
     const salvagedPackets = extractFramePackets(result.payload, expectedPacketSize)
-    if (acceptPackets(salvagedPackets, result.header.symbolId)) {
+    if (acceptPackets(salvagedPackets, result.header.symbolId, true, totalFramePackets)) {
       if (result._diag) state.fixedLayout = { ...result._diag }
       debugLog(`Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) from CRC-fail frame`)
       if (state.decoder?.isComplete()) return
@@ -538,7 +546,7 @@ async function processFrame(now, metadata) {
     }
 
     const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
-    if (acceptPackets(fixedPackets, result.header.symbolId)) {
+    if (acceptPackets(fixedPackets, result.header.symbolId, true, state.expectedPacketCount)) {
       debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) via fixed layout`)
       if (state.decoder?.isComplete()) return
       scheduleNextFrame()
@@ -557,7 +565,7 @@ async function processFrame(now, metadata) {
     debugCurrent(`#${state.frameCount} CRC fail`)
   } else {
     const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
-    if (acceptPackets(fixedPackets, state.frameCount)) {
+    if (acceptPackets(fixedPackets, state.frameCount, true, state.expectedPacketCount)) {
       debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) without outer header`)
       if (state.decoder?.isComplete()) return
       scheduleNextFrame()

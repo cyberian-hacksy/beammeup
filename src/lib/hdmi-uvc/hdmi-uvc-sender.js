@@ -210,8 +210,21 @@ const METADATA_INTERVAL_FRAMES = METADATA_INTERVAL * 2
 const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 1536
 const TARGET_SOURCE_BLOCKS = 128
-const MAX_PACKETS_PER_FRAME = 4
-const TARGET_FRAME_FILL = 0.85
+
+function getBatchingProfile(mode) {
+  switch (mode) {
+    case HDMI_MODE.COMPAT_4:
+      // 4x4 mode has enough spatial redundancy now that it can use near-full
+      // frames. Inner packet CRCs and fixed-layout recovery absorb partial loss.
+      return { maxPacketsPerFrame: 8, targetFrameFill: 0.99 }
+    case HDMI_MODE.COMPAT_8:
+      return { maxPacketsPerFrame: 4, targetFrameFill: 0.90 }
+    case HDMI_MODE.COMPAT_16:
+      return { maxPacketsPerFrame: 2, targetFrameFill: 0.85 }
+    default:
+      return { maxPacketsPerFrame: 4, targetFrameFill: 0.90 }
+  }
+}
 
 function shouldSendMetadata(frameNumber) {
   return frameNumber <= METADATA_BURST_FRAMES || frameNumber % METADATA_INTERVAL_FRAMES === 0
@@ -345,6 +358,7 @@ async function startSending() {
     const { metrics, capacity } = measureAndApplyCanvasSize()
     const canvasWidth = metrics.width
     const canvasHeight = metrics.height
+    const { maxPacketsPerFrame, targetFrameFill } = getBatchingProfile(state.mode)
 
     // Size payloads from the actual frame capacity instead of pinning them to
     // 256 bytes. This keeps small files snappy and makes larger transfers practical
@@ -355,13 +369,13 @@ async function startSending() {
     const minBlockSize = Math.min(MIN_BLOCK_SIZE, maxBlockSize)
     let blockSize = Math.min(maxBlockSize, Math.max(preferredBlockSize, minBlockSize))
     let bestPacketsPerFrame = Math.min(
-      MAX_PACKETS_PER_FRAME,
+      maxPacketsPerFrame,
       Math.max(1, Math.floor(capacity / (blockSize + PACKET_HEADER_SIZE)))
     )
     let bestUsedBytes = bestPacketsPerFrame * (blockSize + PACKET_HEADER_SIZE)
     let bestPayloadPerFrame = bestPacketsPerFrame * blockSize
 
-    if (bestUsedBytes / capacity > TARGET_FRAME_FILL) {
+    if (bestUsedBytes / capacity > targetFrameFill) {
       bestPacketsPerFrame = 1
       bestUsedBytes = blockSize + PACKET_HEADER_SIZE
       bestPayloadPerFrame = blockSize
@@ -369,13 +383,13 @@ async function startSending() {
 
     for (let candidate = minBlockSize; candidate <= maxBlockSize; candidate += 4) {
       const packetsPerFrame = Math.min(
-        MAX_PACKETS_PER_FRAME,
+        maxPacketsPerFrame,
         Math.floor(capacity / (candidate + PACKET_HEADER_SIZE))
       )
       if (packetsPerFrame < 1) continue
 
       const usedBytes = packetsPerFrame * (candidate + PACKET_HEADER_SIZE)
-      if (usedBytes / capacity > TARGET_FRAME_FILL) continue
+      if (usedBytes / capacity > targetFrameFill) continue
 
       const payloadPerFrame = packetsPerFrame * candidate
       if (
@@ -392,6 +406,7 @@ async function startSending() {
 
     debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
     debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
+    debugLog(`Batch profile: maxPackets=${maxPacketsPerFrame}, targetFill=${(targetFrameFill * 100).toFixed(0)}%`)
     debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)}), blockSize: ${blockSize}`)
 
     state.encoder = createEncoder(
