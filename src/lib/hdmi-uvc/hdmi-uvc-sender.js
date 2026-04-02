@@ -113,7 +113,7 @@ function updateActionButton() {
 const FRAMES_PER_SYMBOL = 1
 const METADATA_BURST_FRAMES = 6
 const MIN_BLOCK_SIZE = 512
-const MAX_BLOCK_SIZE = 2048
+const MAX_BLOCK_SIZE = 1024
 const TARGET_SOURCE_BLOCKS = 128
 
 function shouldSendMetadata(frameNumber) {

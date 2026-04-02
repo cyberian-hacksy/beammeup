@@ -420,7 +420,7 @@ async function processFrame(now, metadata) {
       const hBytes = `magic=${h.magic.toString(16)} mode=${h.mode} ${h.width}x${h.height} fps=${h.fps} sym=${h.symbolId} len=${h.payloadLength} crc=${h.payloadCrc.toString(16)}`
       const diag = result._diag || {}
       debugLog(`Frame ${state.frameCount}: CRC fail — ${hBytes}`)
-      debugLog(`  Grid${diag.refined ? ' refined' : ''}: dataBs=${diag.dataBs?.toFixed(2)} step=${diag.stepX?.toFixed(2)}/${diag.stepY?.toFixed(2)} blocks=${diag.blocksX}x${diag.blocksY} off=(${diag.xOff},${diag.yOff}) bsAdj=${diag.bsAdj ?? 'n/a'}`)
+      debugLog(`  Grid${diag.refined ? ' refined' : ''}${diag.hypothesis ? `/${diag.hypothesis}` : ''}: dataBs=${diag.dataBs?.toFixed(2)} step=${diag.stepX?.toFixed(2)}/${diag.stepY?.toFixed(2)} blocks=${diag.blocksX}x${diag.blocksY} off=(${diag.xOff},${diag.yOff}) bsAdj=${diag.bsAdj ?? 'n/a'}`)
     }
     debugCurrent(`#${state.frameCount} CRC fail`)
   } else {

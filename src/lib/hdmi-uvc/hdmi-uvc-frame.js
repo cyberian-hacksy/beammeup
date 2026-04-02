@@ -569,7 +569,7 @@ function probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, bs, b
 
 // Once a plausible header is found, derive a more precise capture scale from the
 // measured frame span. This reduces horizontal drift across later header fields.
-function refineCandidateFromHeader(imageData, width, region, header, rx, ry) {
+function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hypothesis = 'base') {
   if (!region.frameW || !region.frameH) return null
   if (header.width < 100 || header.height < 100) return null
 
@@ -613,6 +613,7 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry) {
         xOff: refinedRx - region.x,
         yOff: refinedRy - region.y,
         refined: true,
+        hypothesis,
         payloadCapacity,
         scaleX: region.frameW / refinedHeader.width,
         scaleY: region.frameH / refinedHeader.height
@@ -629,6 +630,48 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry) {
   }
 
   return bestResult
+}
+
+function getHeaderRefinementHypotheses(header, region) {
+  const hypotheses = [{ header, name: 'base' }]
+
+  if (
+    header.width * 2 <= 8000 &&
+    header.height * 2 <= 8000 &&
+    (header.width < region.frameW * 0.75 || header.height < region.frameH * 0.75)
+  ) {
+    hypotheses.push({
+      name: 'double',
+      header: {
+        ...header,
+        width: header.width * 2,
+        height: header.height * 2,
+        fps: Math.min(header.fps * 2, 255),
+        symbolId: header.symbolId * 2,
+        payloadLength: header.payloadLength * 2
+      }
+    })
+  }
+
+  if (
+    header.width >= 200 &&
+    header.height >= 200 &&
+    (header.width > region.frameW * 1.5 || header.height > region.frameH * 1.5)
+  ) {
+    hypotheses.push({
+      name: 'half',
+      header: {
+        ...header,
+        width: Math.floor(header.width / 2),
+        height: Math.floor(header.height / 2),
+        fps: Math.max(1, Math.floor(header.fps / 2)),
+        symbolId: Math.floor(header.symbolId / 2),
+        payloadLength: Math.floor(header.payloadLength / 2)
+      }
+    })
+  }
+
+  return hypotheses
 }
 
 // Decode data blocks from a data region using binary modulation with 8×8 blocks.
@@ -688,12 +731,27 @@ export function decodeDataRegion(imageData, width, region) {
         let result = readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, dataBs, blocksX, header)
         result._diag = { dataBs, stepX, stepY, blocksX, blocksY, xOff, yOff, bsAdj, payloadCapacity }
 
-        const refined = refineCandidateFromHeader(imageData, width, region, header, rx, ry)
-        if (refined) {
-          const refinedScore = scoreCandidate(refined)
+        const refinements = getHeaderRefinementHypotheses(header, region)
+          .map(({ header: hypothesisHeader, name }) =>
+            refineCandidateFromHeader(imageData, width, region, hypothesisHeader, rx, ry, name)
+          )
+          .filter(Boolean)
+
+        if (refinements.length > 0) {
+          let bestRefined = refinements[0]
+          let bestRefinedScore = scoreCandidate(bestRefined)
+          for (let i = 1; i < refinements.length; i++) {
+            const candidate = refinements[i]
+            const candidateScore = scoreCandidate(candidate)
+            if (candidate.crcValid || candidateScore > bestRefinedScore) {
+              bestRefined = candidate
+              bestRefinedScore = candidateScore
+            }
+          }
+
           const baseScore = scoreCandidate(result)
-          if (refined.crcValid || refinedScore > baseScore) {
-            result = refined
+          if (bestRefined.crcValid || bestRefinedScore > baseScore) {
+            result = bestRefined
           }
         }
 
