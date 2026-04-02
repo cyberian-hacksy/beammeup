@@ -215,14 +215,20 @@ function getBatchingProfile(mode) {
   switch (mode) {
     case HDMI_MODE.COMPAT_4:
       // 4x4 mode can carry more packets per frame, but very large per-packet
-      // payloads make inner CRC success collapse on noisy captures.
-      return { maxPacketsPerFrame: 8, targetFrameFill: 0.90, maxBlockSize: 1024 }
+      // payloads make inner CRC success collapse on noisy captures. Stay between
+      // the proven-good 6.2 KB/frame point and the failing 8.3 KB/frame point.
+      return {
+        maxPacketsPerFrame: 6,
+        targetFrameFill: 0.70,
+        maxBlockSize: 1280,
+        maxUsedBytes: 7168
+      }
     case HDMI_MODE.COMPAT_8:
-      return { maxPacketsPerFrame: 4, targetFrameFill: 0.90, maxBlockSize: MAX_BLOCK_SIZE }
+      return { maxPacketsPerFrame: 4, targetFrameFill: 0.90, maxBlockSize: MAX_BLOCK_SIZE, maxUsedBytes: null }
     case HDMI_MODE.COMPAT_16:
-      return { maxPacketsPerFrame: 2, targetFrameFill: 0.85, maxBlockSize: MAX_BLOCK_SIZE }
+      return { maxPacketsPerFrame: 2, targetFrameFill: 0.85, maxBlockSize: MAX_BLOCK_SIZE, maxUsedBytes: null }
     default:
-      return { maxPacketsPerFrame: 4, targetFrameFill: 0.90, maxBlockSize: MAX_BLOCK_SIZE }
+      return { maxPacketsPerFrame: 4, targetFrameFill: 0.90, maxBlockSize: MAX_BLOCK_SIZE, maxUsedBytes: null }
   }
 }
 
@@ -358,7 +364,12 @@ async function startSending() {
     const { metrics, capacity } = measureAndApplyCanvasSize()
     const canvasWidth = metrics.width
     const canvasHeight = metrics.height
-    const { maxPacketsPerFrame, targetFrameFill, maxBlockSize: profileMaxBlockSize } = getBatchingProfile(state.mode)
+    const {
+      maxPacketsPerFrame,
+      targetFrameFill,
+      maxBlockSize: profileMaxBlockSize,
+      maxUsedBytes
+    } = getBatchingProfile(state.mode)
 
     // Size payloads from the actual frame capacity instead of pinning them to
     // 256 bytes. This keeps small files snappy and makes larger transfers practical
@@ -375,7 +386,7 @@ async function startSending() {
     let bestUsedBytes = bestPacketsPerFrame * (blockSize + PACKET_HEADER_SIZE)
     let bestPayloadPerFrame = bestPacketsPerFrame * blockSize
 
-    if (bestUsedBytes / capacity > targetFrameFill) {
+    if (bestUsedBytes / capacity > targetFrameFill || (maxUsedBytes && bestUsedBytes > maxUsedBytes)) {
       bestPacketsPerFrame = 1
       bestUsedBytes = blockSize + PACKET_HEADER_SIZE
       bestPayloadPerFrame = blockSize
@@ -390,6 +401,7 @@ async function startSending() {
 
       const usedBytes = packetsPerFrame * (candidate + PACKET_HEADER_SIZE)
       if (usedBytes / capacity > targetFrameFill) continue
+      if (maxUsedBytes && usedBytes > maxUsedBytes) continue
 
       const payloadPerFrame = packetsPerFrame * candidate
       if (
@@ -408,7 +420,8 @@ async function startSending() {
     debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
     debugLog(
       `Batch profile: maxPackets=${maxPacketsPerFrame}, ` +
-      `targetFill=${(targetFrameFill * 100).toFixed(0)}%, maxBlockSize=${maxBlockSize}`
+      `targetFill=${(targetFrameFill * 100).toFixed(0)}%, maxBlockSize=${maxBlockSize}, ` +
+      `maxUsedBytes=${maxUsedBytes ?? 'none'}`
     )
     debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)}), blockSize: ${blockSize}`)
 
