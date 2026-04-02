@@ -112,12 +112,13 @@ function updateActionButton() {
 // of the available bandwidth. Let fountain redundancy absorb frame loss.
 const FRAMES_PER_SYMBOL = 1
 const METADATA_BURST_FRAMES = 6
+const METADATA_INTERVAL_FRAMES = METADATA_INTERVAL * 2
 const MIN_BLOCK_SIZE = 512
-const MAX_BLOCK_SIZE = 1024
+const MAX_BLOCK_SIZE = 1536
 const TARGET_SOURCE_BLOCKS = 128
 
 function shouldSendMetadata(frameNumber) {
-  return frameNumber <= METADATA_BURST_FRAMES || frameNumber % METADATA_INTERVAL === 0
+  return frameNumber <= METADATA_BURST_FRAMES || frameNumber % METADATA_INTERVAL_FRAMES === 0
 }
 
 function renderFrame() {

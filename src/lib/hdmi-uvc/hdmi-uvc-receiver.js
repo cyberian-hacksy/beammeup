@@ -7,21 +7,31 @@ import { detectAnchors, dataRegionFromAnchors, decodeDataRegion } from './hdmi-u
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
+const MAX_DEBUG_LINES = 500
+const debugLines = []
+
+function renderDebugLog() {
+  const el = document.getElementById('hdmi-uvc-receiver-debug-log')
+  if (!el) return
+  el.textContent = debugLines.join('\n')
+  el.scrollTop = el.scrollHeight
+}
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
 
-  const el = document.getElementById('hdmi-uvc-receiver-debug-log')
-  if (el) {
-    const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })
-    el.textContent += timestamp + ' ' + text + '\n'
-    // Keep only last 500 lines
-    const lines = el.textContent.split('\n')
-    if (lines.length > 500) {
-      el.textContent = lines.slice(-500).join('\n')
-    }
-    el.scrollTop = el.scrollHeight
+  const timestamp = new Date().toLocaleTimeString('en-US', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    fractionalSecondDigits: 3
+  })
+  debugLines.push(timestamp + ' ' + text)
+  if (debugLines.length > MAX_DEBUG_LINES) {
+    debugLines.splice(0, debugLines.length - MAX_DEBUG_LINES)
   }
+  renderDebugLog()
   console.log('[HDMI-RX]', text)
 }
 
@@ -46,7 +56,8 @@ const state = {
   detectedResolution: null,
   completedFile: null,
   anchorBounds: null,  // Cached data region from detected anchors
-  decodeFailCount: 0   // Consecutive decode failures (triggers relock when too many)
+  decodeFailCount: 0,  // Consecutive decode failures (triggers relock when too many)
+  activeCaptureMethod: null
 }
 
 // Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
@@ -216,8 +227,13 @@ async function processFrame(now, metadata) {
   let imageData
   let captureMethod = 'video'
 
-  // Try ImageCapture API first (works best with UVC devices)
-  if (imageCapture) {
+  // ImageCapture is useful for initial acquisition, but it is noticeably
+  // slower than drawing the video element directly. Once we have anchor lock,
+  // prioritize raw video frames for throughput.
+  const useImageCapture = imageCapture && !state.anchorBounds
+
+  // Try ImageCapture API first while scanning for initial lock
+  if (useImageCapture) {
     try {
       const bitmap = await imageCapture.grabFrame()
       state.ctx.drawImage(bitmap, 0, 0)
@@ -246,6 +262,11 @@ async function processFrame(now, metadata) {
   if (!imageData) {
     state.ctx.drawImage(video, 0, 0)
     imageData = state.ctx.getImageData(0, 0, width, height)
+  }
+
+  if (captureMethod !== state.activeCaptureMethod) {
+    state.activeCaptureMethod = captureMethod
+    debugLog(`Capture path: ${captureMethod}`)
   }
 
   state.frameCount++
@@ -586,6 +607,7 @@ function resetReceiver() {
   state.completedFile = null
   state.anchorBounds = null
   state.decodeFailCount = 0
+  state.activeCaptureMethod = null
 
   elements.statFrames.textContent = '0 frames'
   elements.statusScanning.classList.remove('hidden')
@@ -676,10 +698,9 @@ export function initHdmiUvcReceiver(errorHandler) {
   const copyBtn = document.getElementById('btn-hdmi-uvc-receiver-copy-log')
   if (copyBtn) {
     copyBtn.onclick = async () => {
-      const log = document.getElementById('hdmi-uvc-receiver-debug-log')
-      if (log) {
+      if (debugLines.length > 0) {
         try {
-          await navigator.clipboard.writeText(log.textContent)
+          await navigator.clipboard.writeText(debugLines.join('\n'))
           copyBtn.textContent = 'Copied!'
           setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
         } catch (e) {
@@ -691,8 +712,8 @@ export function initHdmiUvcReceiver(errorHandler) {
   const clearBtn = document.getElementById('btn-hdmi-uvc-receiver-clear-log')
   if (clearBtn) {
     clearBtn.onclick = () => {
-      const log = document.getElementById('hdmi-uvc-receiver-debug-log')
-      if (log) log.textContent = ''
+      debugLines.length = 0
+      renderDebugLog()
       debugLog('=== LOG CLEARED ===')
       debugLog(`Frame count at clear: ${state.frameCount}`)
     }
