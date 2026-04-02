@@ -199,6 +199,8 @@ const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 1536
 const TARGET_SOURCE_BLOCKS = 128
 const PACKET_HEADER_SIZE = 16
+const MAX_PACKETS_PER_FRAME = 2
+const TARGET_FRAME_FILL = 0.85
 
 function shouldSendMetadata(frameNumber) {
   return frameNumber <= METADATA_BURST_FRAMES || frameNumber % METADATA_INTERVAL_FRAMES === 0
@@ -341,15 +343,38 @@ async function startSending() {
     const maxBlockSize = Math.min(frameBlockSize, MAX_BLOCK_SIZE)
     const minBlockSize = Math.min(MIN_BLOCK_SIZE, maxBlockSize)
     let blockSize = Math.min(maxBlockSize, Math.max(preferredBlockSize, minBlockSize))
-    let bestPayloadPerFrame = Math.floor(capacity / (blockSize + PACKET_HEADER_SIZE)) * blockSize
+    let bestPacketsPerFrame = Math.min(
+      MAX_PACKETS_PER_FRAME,
+      Math.max(1, Math.floor(capacity / (blockSize + PACKET_HEADER_SIZE)))
+    )
+    let bestUsedBytes = bestPacketsPerFrame * (blockSize + PACKET_HEADER_SIZE)
+    let bestPayloadPerFrame = bestPacketsPerFrame * blockSize
+
+    if (bestUsedBytes / capacity > TARGET_FRAME_FILL) {
+      bestPacketsPerFrame = 1
+      bestUsedBytes = blockSize + PACKET_HEADER_SIZE
+      bestPayloadPerFrame = blockSize
+    }
 
     for (let candidate = minBlockSize; candidate <= maxBlockSize; candidate += 4) {
-      const packetsPerFrame = Math.floor(capacity / (candidate + PACKET_HEADER_SIZE))
+      const packetsPerFrame = Math.min(
+        MAX_PACKETS_PER_FRAME,
+        Math.floor(capacity / (candidate + PACKET_HEADER_SIZE))
+      )
       if (packetsPerFrame < 1) continue
 
+      const usedBytes = packetsPerFrame * (candidate + PACKET_HEADER_SIZE)
+      if (usedBytes / capacity > TARGET_FRAME_FILL) continue
+
       const payloadPerFrame = packetsPerFrame * candidate
-      if (payloadPerFrame > bestPayloadPerFrame || (payloadPerFrame === bestPayloadPerFrame && candidate > blockSize)) {
+      if (
+        payloadPerFrame > bestPayloadPerFrame ||
+        (payloadPerFrame === bestPayloadPerFrame && packetsPerFrame > bestPacketsPerFrame) ||
+        (payloadPerFrame === bestPayloadPerFrame && packetsPerFrame === bestPacketsPerFrame && candidate > blockSize)
+      ) {
         blockSize = candidate
+        bestPacketsPerFrame = packetsPerFrame
+        bestUsedBytes = usedBytes
         bestPayloadPerFrame = payloadPerFrame
       }
     }
@@ -361,8 +386,8 @@ async function startSending() {
       state.fileData, state.fileName, 'application/octet-stream', state.fileHash, blockSize
     )
     state.packetSize = blockSize + PACKET_HEADER_SIZE
-    state.packetsPerFrame = Math.max(1, Math.floor(capacity / state.packetSize))
-    const batchedBytes = state.packetSize * state.packetsPerFrame
+    state.packetsPerFrame = bestPacketsPerFrame
+    const batchedBytes = bestUsedBytes
     const utilization = ((batchedBytes / capacity) * 100).toFixed(1)
 
     debugLog(`Encoder: K=${state.encoder.K}, K'=${state.encoder.K_prime}`)
