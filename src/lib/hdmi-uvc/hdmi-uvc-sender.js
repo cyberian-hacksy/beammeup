@@ -9,7 +9,7 @@ import {
   FPS_PRESETS,
   DEFAULT_FPS_PRESET
 } from './hdmi-uvc-constants.js'
-import { buildFrame, getPayloadCapacity } from './hdmi-uvc-frame.js'
+import { buildFrame, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.js'
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
@@ -43,6 +43,8 @@ const state = {
   fileName: null,
   fileSize: 0,
   fileHash: null,
+  packetSize: 0,
+  packetsPerFrame: 1,
   timerId: null,
   isSending: false,
   isPaused: false,
@@ -56,6 +58,7 @@ let showError = (msg) => console.error(msg)
 
 function resetCanvasStyles() {
   if (!elements?.canvas) return
+  elements.container?.classList.remove('fullscreen')
   elements.canvas.style.display = 'none'
   elements.canvas.style.position = ''
   elements.canvas.style.top = ''
@@ -65,6 +68,85 @@ function resetCanvasStyles() {
   elements.canvas.style.zIndex = ''
   elements.canvas.style.imageRendering = ''
   elements.canvas.style.background = ''
+}
+
+function waitForLayoutFrames(count = 2) {
+  return new Promise((resolve) => {
+    const step = () => {
+      if (count <= 0) {
+        resolve()
+        return
+      }
+      count--
+      requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
+  })
+}
+
+function getCanvasViewportMetrics() {
+  const presentationEl = document.fullscreenElement || elements.container || elements.canvas
+  const rect = presentationEl.getBoundingClientRect()
+  const visual = window.visualViewport
+
+  const rectWidth = Math.round(rect.width)
+  const rectHeight = Math.round(rect.height)
+  const visualWidth = visual ? Math.round(visual.width) : 0
+  const visualHeight = visual ? Math.round(visual.height) : 0
+  const innerWidth = Math.round(window.innerWidth)
+  const innerHeight = Math.round(window.innerHeight)
+  const screenWidth = Math.round(window.screen.width || 0)
+  const screenHeight = Math.round(window.screen.height || 0)
+
+  let width = rectWidth
+  let height = rectHeight
+  let source = document.fullscreenElement ? 'fullscreenRect' : 'containerRect'
+
+  if (!width || !height) {
+    width = visualWidth || innerWidth
+    height = visualHeight || innerHeight
+    source = visualWidth && visualHeight ? 'visualViewport' : 'window.inner'
+  }
+
+  return {
+    width,
+    height,
+    source,
+    rectWidth,
+    rectHeight,
+    visualWidth,
+    visualHeight,
+    innerWidth,
+    innerHeight,
+    screenWidth,
+    screenHeight,
+    devicePixelRatio: window.devicePixelRatio || 1
+  }
+}
+
+function measureAndApplyCanvasSize() {
+  const metrics = getCanvasViewportMetrics()
+
+  elements.canvas.width = metrics.width
+  elements.canvas.height = metrics.height
+
+  const capacity = getPayloadCapacity(metrics.width, metrics.height)
+  const dataRegion = getDataRegion(metrics.width, metrics.height)
+  const dataWidth = dataRegion.w
+  const dataHeight = dataRegion.h
+  const dataUtil = metrics.width > 0 && metrics.height > 0
+    ? ((dataWidth * dataHeight) / (metrics.width * metrics.height) * 100).toFixed(1)
+    : '0.0'
+
+  debugLog(
+    `Viewport: rect=${metrics.rectWidth}x${metrics.rectHeight}, ` +
+    `visual=${metrics.visualWidth}x${metrics.visualHeight}, ` +
+    `inner=${metrics.innerWidth}x${metrics.innerHeight}, ` +
+    `screen=${metrics.screenWidth}x${metrics.screenHeight}, dpr=${metrics.devicePixelRatio}`
+  )
+  debugLog(`Canvas: ${metrics.width}x${metrics.height} (${metrics.source}), data region ${dataWidth}x${dataHeight} (${dataUtil}% of frame)`)
+
+  return { metrics, capacity }
 }
 
 function formatBytes(bytes) {
@@ -116,9 +198,53 @@ const METADATA_INTERVAL_FRAMES = METADATA_INTERVAL * 2
 const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 1536
 const TARGET_SOURCE_BLOCKS = 128
+const PACKET_HEADER_SIZE = 16
 
 function shouldSendMetadata(frameNumber) {
   return frameNumber <= METADATA_BURST_FRAMES || frameNumber % METADATA_INTERVAL_FRAMES === 0
+}
+
+function buildFramePacketBatch(frameNumber) {
+  const sendMetadata = shouldSendMetadata(frameNumber)
+  const packets = []
+  const symbolIds = []
+  const slots = Math.max(1, state.packetsPerFrame)
+
+  if (sendMetadata) {
+    packets.push(state.encoder.generateSymbol(0))
+    symbolIds.push(0)
+  }
+
+  while (packets.length < slots) {
+    const symbolId = state.symbolId
+    packets.push(state.encoder.generateSymbol(symbolId))
+    symbolIds.push(symbolId)
+
+    if (frameNumber % FRAMES_PER_SYMBOL === 0) {
+      state.symbolId++
+      if (state.symbolId > state.encoder.K_prime) {
+        state.symbolId = 1
+        debugLog(`Looped back to symbol 1 after ${frameNumber} frames`)
+      }
+    }
+  }
+
+  let totalLength = 0
+  for (const packet of packets) totalLength += packet.length
+
+  const payload = new Uint8Array(totalLength)
+  let offset = 0
+  for (const packet of packets) {
+    payload.set(packet, offset)
+    offset += packet.length
+  }
+
+  return {
+    payload,
+    symbolIds,
+    outerSymbolId: symbolIds[0] ?? 0,
+    sendMetadata
+  }
 }
 
 function renderFrame() {
@@ -130,11 +256,9 @@ function renderFrame() {
 
   try {
     const nextFrameNumber = state.frameCount + 1
-    const sendMetadata = shouldSendMetadata(nextFrameNumber)
-    const symbolId = sendMetadata ? 0 : state.symbolId
-    const packet = state.encoder.generateSymbol(symbolId)
+    const batch = buildFramePacketBatch(nextFrameNumber)
 
-    const frameData = buildFrame(packet, HDMI_MODE.COMPAT_4, cw, ch, fps.fps, symbolId)
+    const frameData = buildFrame(batch.payload, HDMI_MODE.COMPAT_4, cw, ch, fps.fps, batch.outerSymbolId)
 
     const ctx = elements.canvas.getContext('2d')
     ctx.putImageData(new ImageData(new Uint8ClampedArray(frameData), cw, ch), 0, 0)
@@ -144,21 +268,19 @@ function renderFrame() {
 
     const progress = Math.min(100, Math.round((state.symbolId / state.encoder.K_prime) * 100))
     elements.progressDisplay.textContent = progress + '%'
+    const dataSymbols = batch.symbolIds.filter(id => id !== 0)
+    const firstData = dataSymbols[0]
+    const lastData = dataSymbols[dataSymbols.length - 1]
+    const symbolLabel = dataSymbols.length === 0
+      ? 'META'
+      : firstData === lastData
+        ? `sym=${firstData}/${state.encoder.K_prime}`
+        : `sym=${firstData}-${lastData}/${state.encoder.K_prime}`
     debugCurrent(
-      sendMetadata
-        ? `#${state.frameCount} META ${progress}%`
-        : `#${state.frameCount} sym=${state.symbolId}/${state.encoder.K_prime} ${progress}%`
+      batch.sendMetadata
+        ? `#${state.frameCount} META + ${symbolLabel} ${progress}%`
+        : `#${state.frameCount} ${symbolLabel} ${progress}%`
     )
-
-    // Advance data symbol only on non-metadata frames, repeating each symbol
-    // across several frames to give the capture pipeline multiple chances.
-    if (!sendMetadata && state.frameCount % FRAMES_PER_SYMBOL === 0) {
-      state.symbolId++
-      if (state.symbolId > state.encoder.K_prime) {
-        state.symbolId = 1
-        debugLog(`Looped back to symbol 1 after ${state.frameCount} frames`)
-      }
-    }
 
     state.timerId = setTimeout(renderFrame, fps.interval)
 
@@ -176,7 +298,11 @@ async function startSending() {
 
     // Go fullscreen to eliminate browser chrome from the HDMI output.
     // This ensures anchors are at the true corners with no toolbar artifacts.
+    elements.container.classList.add('fullscreen')
     elements.canvas.style.display = 'block'
+    elements.canvas.style.position = 'absolute'
+    elements.canvas.style.top = '0'
+    elements.canvas.style.left = '0'
     elements.canvas.style.imageRendering = 'pixelated'
     elements.canvas.style.background = '#000'
     elements.canvas.style.width = '100%'
@@ -184,39 +310,49 @@ async function startSending() {
     elements.placeholder.style.display = 'none'
 
     try {
-      await elements.canvas.requestFullscreen()
+      await elements.container.requestFullscreen({ navigationUI: 'hide' })
       debugLog('Fullscreen: OK')
     } catch (e) {
-      debugLog(`Fullscreen failed: ${e.message}, falling back to overlay`)
-      elements.canvas.style.position = 'fixed'
-      elements.canvas.style.top = '0'
-      elements.canvas.style.left = '0'
-      elements.canvas.style.width = '100vw'
-      elements.canvas.style.height = '100vh'
-      elements.canvas.style.zIndex = '999999'
+      if (elements.container.requestFullscreen) {
+        try {
+          await elements.container.requestFullscreen()
+          debugLog('Fullscreen: OK (default navigation UI)')
+        } catch (fallbackErr) {
+          debugLog(`Fullscreen failed: ${fallbackErr.message}, falling back to fixed overlay`)
+        }
+      } else {
+        debugLog(`Fullscreen failed: ${e.message}, falling back to fixed overlay`)
+      }
     }
 
-    // Wait a frame for fullscreen to settle, then measure actual dimensions
-    await new Promise(r => setTimeout(r, 100))
+    // Fullscreen layout can settle a frame or two after the promise resolves.
+    // Measure the actual fullscreen element box instead of trusting window.inner*.
+    await waitForLayoutFrames(3)
 
-    const canvasWidth = window.innerWidth
-    const canvasHeight = window.innerHeight
-    elements.canvas.width = canvasWidth
-    elements.canvas.height = canvasHeight
-
-    debugLog(`Canvas: ${canvasWidth}x${canvasHeight}, dpr: ${window.devicePixelRatio}`)
+    const { metrics, capacity } = measureAndApplyCanvasSize()
+    const canvasWidth = metrics.width
+    const canvasHeight = metrics.height
 
     // Size payloads from the actual frame capacity instead of pinning them to
     // 256 bytes. This keeps small files snappy and makes larger transfers practical
     // without exceeding what the current frame geometry can carry.
-    const capacity = getPayloadCapacity(canvasWidth, canvasHeight)
-    const frameBlockSize = Math.max(200, capacity - 16)
+    const frameBlockSize = Math.max(200, capacity - PACKET_HEADER_SIZE)
     const preferredBlockSize = Math.ceil(state.fileSize / TARGET_SOURCE_BLOCKS)
-    const blockSize = Math.min(
-      frameBlockSize,
-      MAX_BLOCK_SIZE,
-      Math.max(preferredBlockSize, MIN_BLOCK_SIZE)
-    )
+    const maxBlockSize = Math.min(frameBlockSize, MAX_BLOCK_SIZE)
+    const minBlockSize = Math.min(MIN_BLOCK_SIZE, maxBlockSize)
+    let blockSize = Math.min(maxBlockSize, Math.max(preferredBlockSize, minBlockSize))
+    let bestPayloadPerFrame = Math.floor(capacity / (blockSize + PACKET_HEADER_SIZE)) * blockSize
+
+    for (let candidate = minBlockSize; candidate <= maxBlockSize; candidate += 4) {
+      const packetsPerFrame = Math.floor(capacity / (candidate + PACKET_HEADER_SIZE))
+      if (packetsPerFrame < 1) continue
+
+      const payloadPerFrame = packetsPerFrame * candidate
+      if (payloadPerFrame > bestPayloadPerFrame || (payloadPerFrame === bestPayloadPerFrame && candidate > blockSize)) {
+        blockSize = candidate
+        bestPayloadPerFrame = payloadPerFrame
+      }
+    }
 
     debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
     debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)}), blockSize: ${blockSize}`)
@@ -224,8 +360,13 @@ async function startSending() {
     state.encoder = createEncoder(
       state.fileData, state.fileName, 'application/octet-stream', state.fileHash, blockSize
     )
+    state.packetSize = blockSize + PACKET_HEADER_SIZE
+    state.packetsPerFrame = Math.max(1, Math.floor(capacity / state.packetSize))
+    const batchedBytes = state.packetSize * state.packetsPerFrame
+    const utilization = ((batchedBytes / capacity) * 100).toFixed(1)
 
     debugLog(`Encoder: K=${state.encoder.K}, K'=${state.encoder.K_prime}`)
+    debugLog(`Batching: ${state.packetsPerFrame} packet(s)/frame, packetSize=${state.packetSize}, used=${batchedBytes}/${capacity} bytes (${utilization}%)`)
 
     state.isSending = true
     state.isPaused = false
@@ -263,21 +404,33 @@ function pauseSending() {
 async function resumeSending() {
   state.isPaused = false
 
+  elements.container.classList.add('fullscreen')
   elements.canvas.style.display = 'block'
+  elements.canvas.style.position = 'absolute'
+  elements.canvas.style.top = '0'
+  elements.canvas.style.left = '0'
   elements.canvas.style.imageRendering = 'pixelated'
   elements.canvas.style.background = '#000'
+  elements.canvas.style.width = '100%'
+  elements.canvas.style.height = '100%'
   elements.placeholder.style.display = 'none'
 
   try {
-    await elements.canvas.requestFullscreen()
+    await elements.container.requestFullscreen({ navigationUI: 'hide' })
   } catch (e) {
-    elements.canvas.style.position = 'fixed'
-    elements.canvas.style.top = '0'
-    elements.canvas.style.left = '0'
-    elements.canvas.style.width = '100vw'
-    elements.canvas.style.height = '100vh'
-    elements.canvas.style.zIndex = '999999'
+    if (elements.container.requestFullscreen) {
+      try {
+        await elements.container.requestFullscreen()
+      } catch (fallbackErr) {
+        debugLog(`Resume fullscreen failed: ${fallbackErr.message}, falling back to fixed overlay`)
+      }
+    } else {
+      debugLog(`Resume fullscreen failed: ${e.message}, falling back to fixed overlay`)
+    }
   }
+
+  await waitForLayoutFrames(3)
+  measureAndApplyCanvasSize()
 
   elements.fpsSlider.disabled = true
   updateActionButton()
@@ -295,6 +448,8 @@ function stopSending() {
   state.fileName = null
   state.fileSize = 0
   state.fileHash = null
+  state.packetSize = 0
+  state.packetsPerFrame = 1
   state.isSending = false
   state.isPaused = false
   state.symbolId = 1

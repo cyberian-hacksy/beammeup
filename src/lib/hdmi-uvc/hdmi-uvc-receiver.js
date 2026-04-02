@@ -1,5 +1,6 @@
 // HDMI-UVC Receiver module - captures from UVC device and decodes frames
 
+import { PROTOCOL_VERSION } from '../constants.js'
 import { createDecoder } from '../decoder.js'
 import { parsePacket } from '../packet.js'
 import { DEVICE_STORAGE_KEY, HDMI_MODE_NAMES, HEADER_SIZE } from './hdmi-uvc-constants.js'
@@ -8,6 +9,7 @@ import { detectAnchors, dataRegionFromAnchors, decodeDataRegion } from './hdmi-u
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
 const MAX_DEBUG_LINES = 500
+const PACKET_HEADER_SIZE = 16
 const debugLines = []
 
 function renderDebugLog() {
@@ -39,6 +41,40 @@ function debugCurrent(text) {
   if (!DEBUG_MODE) return
   const el = document.getElementById('hdmi-uvc-receiver-debug-current')
   if (el) el.textContent = text
+}
+
+function extractFramePackets(framePayload) {
+  const packets = []
+  let offset = 0
+
+  while (offset + PACKET_HEADER_SIZE <= framePayload.length) {
+    if (framePayload[offset] !== PROTOCOL_VERSION) {
+      return []
+    }
+
+    const remaining = framePayload.length - offset
+    const view = new DataView(
+      framePayload.buffer,
+      framePayload.byteOffset + offset,
+      remaining
+    )
+    const blockSize = view.getUint16(13, false)
+    const packetLength = PACKET_HEADER_SIZE + blockSize
+
+    if (packetLength <= PACKET_HEADER_SIZE || offset + packetLength > framePayload.length) {
+      return []
+    }
+
+    const packet = framePayload.slice(offset, offset + packetLength)
+    if (!parsePacket(packet)) {
+      return []
+    }
+
+    packets.push(packet)
+    offset += packetLength
+  }
+
+  return offset === framePayload.length ? packets : []
 }
 
 const state = {
@@ -403,10 +439,9 @@ async function processFrame(now, metadata) {
       debugLog(`Mode: ${HDMI_MODE_NAMES[result.header.mode]}, ${result.header.width}x${result.header.height}`)
     }
 
-    const packet = result.payload
-    const parsed = parsePacket(packet)
+    const packets = extractFramePackets(result.payload)
 
-    if (parsed) {
+    if (packets.length > 0) {
       if (!state.decoder) {
         state.decoder = createDecoder()
         state.startTime = Date.now()
@@ -414,17 +449,27 @@ async function processFrame(now, metadata) {
         debugLog(`Decoder created`)
       }
 
-      state.decoder.receive(packet)
+      let lastParsed = null
+      for (const packet of packets) {
+        const parsed = parsePacket(packet)
+        if (!parsed) continue
+        lastParsed = parsed
+        state.decoder.receive(packet)
+      }
 
       if (state.validFrames % 10 === 0) {
         debugLog(
           `Progress: ${Math.round(state.decoder.progress * 100)}% ` +
           `solved=${state.decoder.solved}/${state.decoder.K || '?'} ` +
-          `unique=${state.decoder.uniqueSymbols} sym=${parsed.symbolId}`
+          `unique=${state.decoder.uniqueSymbols} ` +
+          `sym=${lastParsed?.symbolId ?? result.header.symbolId} pkts=${packets.length}`
         )
       }
 
-      debugCurrent(`#${state.validFrames} sym=${parsed.symbolId} ${Math.round((state.decoder.progress || 0) * 100)}%`)
+      debugCurrent(
+        `#${state.validFrames} sym=${lastParsed?.symbolId ?? result.header.symbolId} ` +
+        `${Math.round((state.decoder.progress || 0) * 100)}% x${packets.length}`
+      )
       updateProgress()
 
       if (state.decoder.isComplete()) {
