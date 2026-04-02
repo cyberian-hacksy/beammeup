@@ -36,7 +36,7 @@ export const HDMI_MODE = {
 }
 
 export const HDMI_MODE_NAMES = {
-  [HDMI_MODE.RAW_RGB]: 'RGB',
+  [HDMI_MODE.RAW_RGB]: 'RGB3',
   [HDMI_MODE.RAW_GRAY]: 'Gray2',
   [HDMI_MODE.COMPAT_4]: '4x4',
   [HDMI_MODE.COMPAT_8]: '8x8',
@@ -45,6 +45,7 @@ export const HDMI_MODE_NAMES = {
 
 export function getModeDataBlockSize(mode) {
   switch (mode) {
+    case HDMI_MODE.RAW_RGB:
     case HDMI_MODE.RAW_GRAY:
       return 4
     case HDMI_MODE.COMPAT_4:
@@ -60,6 +61,8 @@ export function getModeDataBlockSize(mode) {
 
 export function getModeBitsPerBlock(mode) {
   switch (mode) {
+    case HDMI_MODE.RAW_RGB:
+      return 3
     case HDMI_MODE.RAW_GRAY:
       return 2
     case HDMI_MODE.COMPAT_4:

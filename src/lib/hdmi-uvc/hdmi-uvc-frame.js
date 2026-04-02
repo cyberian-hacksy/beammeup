@@ -51,6 +51,55 @@ function decodeGray2(sample, blackLevel = 0, whiteLevel = 255) {
   return 3
 }
 
+function encodeRgb3(symbol) {
+  return [
+    (symbol & 0x4) ? 255 : 0,
+    (symbol & 0x2) ? 255 : 0,
+    (symbol & 0x1) ? 255 : 0
+  ]
+}
+
+function decodeRgb3(sample, blackLevels = [0, 0, 0], whiteLevels = [255, 255, 255]) {
+  let symbol = 0
+  for (let channel = 0; channel < 3; channel++) {
+    const minLevel = Math.max(0, Math.min(blackLevels[channel], whiteLevels[channel]))
+    const maxLevel = Math.min(255, Math.max(blackLevels[channel], whiteLevels[channel]))
+    const span = Math.max(64, maxLevel - minLevel)
+    const threshold = minLevel + span * 0.5
+    if (sample[channel] >= threshold) {
+      symbol |= (1 << (2 - channel))
+    }
+  }
+  return symbol
+}
+
+function extractBits(data, bitPos, count) {
+  let value = 0
+  for (let i = 0; i < count; i++) {
+    const absoluteBit = bitPos + i
+    const byteIdx = Math.floor(absoluteBit / BITS_PER_BYTE)
+    const bitIdx = absoluteBit % BITS_PER_BYTE
+    const bit = byteIdx < data.length ? ((data[byteIdx] >> (7 - bitIdx)) & 1) : 0
+    value = (value << 1) | bit
+  }
+  return value
+}
+
+function appendSymbolBits(payload, state, symbol, bitsPerBlock) {
+  state.bitBuffer = (state.bitBuffer << bitsPerBlock) | symbol
+  state.bitCount += bitsPerBlock
+
+  while (state.bitCount >= BITS_PER_BYTE && state.index < payload.length) {
+    payload[state.index++] = (state.bitBuffer >> (state.bitCount - BITS_PER_BYTE)) & 0xFF
+    state.bitCount -= BITS_PER_BYTE
+    if (state.bitCount > 0) {
+      state.bitBuffer &= (1 << state.bitCount) - 1
+    } else {
+      state.bitBuffer = 0
+    }
+  }
+}
+
 // --- Anchor rendering ---
 
 // Draw a 32×32 anchor pattern at (originX, originY) into RGBA imageData
@@ -176,35 +225,39 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
   const blocksY = Math.floor(dr.h / dataBlockSize)
   let headerByteIdx = 0
   let headerBitIdx = 0
-  let payloadByteIdx = 0
-  let payloadBitIdx = 0
+  let payloadBitPos = 0
+  const payloadBitLength = payload.length * BITS_PER_BYTE
   let blockIdx = 0
 
   for (let by = 0; by < blocksY; by++) {
     for (let bx = 0; bx < blocksX; bx++) {
-      let val = 0
+      let r = 0
+      let g = 0
+      let b = 0
       if (blockIdx < HEADER_BLOCKS) {
+        let val = 0
         if (headerByteIdx < headerBytes.length) {
           val = (headerBytes[headerByteIdx] >> (7 - headerBitIdx)) & 1 ? 255 : 0
         }
+        r = val
+        g = val
+        b = val
         headerBitIdx++
         if (headerBitIdx >= 8) {
           headerBitIdx = 0
           headerByteIdx++
         }
-      } else if (payloadByteIdx < payload.length) {
-        if (bitsPerBlock === 2) {
-          const symbol = (payload[payloadByteIdx] >> (6 - payloadBitIdx)) & 0x3
-          val = encodeGray2(symbol)
-          payloadBitIdx += 2
-        } else {
-          val = (payload[payloadByteIdx] >> (7 - payloadBitIdx)) & 1 ? 255 : 0
-          payloadBitIdx++
-        }
+      } else if (payloadBitPos < payloadBitLength) {
+        const symbol = extractBits(payload, payloadBitPos, bitsPerBlock)
+        payloadBitPos += bitsPerBlock
 
-        if (payloadBitIdx >= 8) {
-          payloadBitIdx = 0
-          payloadByteIdx++
+        if (bitsPerBlock === 3) {
+          [r, g, b] = encodeRgb3(symbol)
+        } else {
+          const val = bitsPerBlock === 2 ? encodeGray2(symbol) : (symbol ? 255 : 0)
+          r = val
+          g = val
+          b = val
         }
       }
 
@@ -214,9 +267,9 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
       for (let dy = 0; dy < dataBlockSize; dy++) {
         for (let dx = 0; dx < dataBlockSize; dx++) {
           const i = ((startY + dy) * width + (startX + dx)) * 4
-          imageData[i] = val
-          imageData[i + 1] = val
-          imageData[i + 2] = val
+          imageData[i] = r
+          imageData[i + 1] = g
+          imageData[i + 2] = b
         }
       }
       blockIdx++
@@ -245,6 +298,21 @@ function sampleBlockAt(imageData, width, px, py, bs) {
     }
   }
   return sum / 4
+}
+
+function sampleBlockRgbAt(imageData, width, px, py, bs) {
+  const cx = Math.round(px + bs / 2) - 1
+  const cy = Math.round(py + bs / 2) - 1
+  const sums = [0, 0, 0]
+  for (let dy = 0; dy < 2; dy++) {
+    for (let dx = 0; dx < 2; dx++) {
+      const i = ((cy + dy) * width + (cx + dx)) * 4
+      sums[0] += imageData[i]
+      sums[1] += imageData[i + 1]
+      sums[2] += imageData[i + 2]
+    }
+  }
+  return [sums[0] / 4, sums[1] / 4, sums[2] / 4]
 }
 
 // Check if an 8×8 block grid at (originX, originY) matches the anchor pattern
@@ -540,12 +608,13 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
   const bitsPerBlock = getModeBitsPerBlock(header.mode) || 1
   const levels = bitsPerBlock === 2
     ? estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
-    : null
+    : bitsPerBlock === 3
+      ? estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
+      : null
   const payload = new Uint8Array(header.payloadLength)
   let payloadIdx = 0
   let blockIdx = 0
-  let currentByte = 0
-  let bitIdx = 0
+  const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
   const height = imageData.length / (width * 4)
 
   for (let by = 0; by < blocksY && payloadIdx < header.payloadLength; by++) {
@@ -553,23 +622,22 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
       if (blockIdx >= HEADER_BLOCKS) {
         const px = rx + Math.round(bx * stepX)
         const py = ry + Math.round(by * stepY)
-        let val = 0
+        let symbol = 0
         if (px >= 0 && px < width && py >= 0 && py < height) {
-          val = sampleBlockAt(imageData, width, px, py, bs)
-        }
-        if (bitsPerBlock === 2) {
-          const symbol = decodeGray2(val, levels?.blackLevel, levels?.whiteLevel)
-          currentByte |= (symbol << (6 - bitIdx))
-          bitIdx += 2
+          if (bitsPerBlock === 3) {
+            const rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
+            symbol = decodeRgb3(rgb, levels?.blackLevels, levels?.whiteLevels)
+          } else {
+            const val = sampleBlockAt(imageData, width, px, py, bs)
+            symbol = bitsPerBlock === 2
+              ? decodeGray2(val, levels?.blackLevel, levels?.whiteLevel)
+              : (val > 128 ? 1 : 0)
+          }
         } else {
-          if (val > 128) currentByte |= (1 << (7 - bitIdx))
-          bitIdx++
+          symbol = 0
         }
-        if (bitIdx >= 8) {
-          payload[payloadIdx++] = currentByte
-          currentByte = 0
-          bitIdx = 0
-        }
+        appendSymbolBits(payload, decodeState, symbol, bitsPerBlock)
+        payloadIdx = decodeState.index
       }
       blockIdx++
     }
@@ -595,8 +663,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
   const payload = new Uint8Array(payloadLength)
   let payloadIdx = 0
   let blockIdx = 0
-  let currentByte = 0
-  let bitIdx = 0
+  const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
   const height = imageData.length / (width * 4)
 
   for (let by = 0; by < blocksY && payloadIdx < payloadLength; by++) {
@@ -604,23 +671,22 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
       if (blockIdx >= HEADER_BLOCKS) {
         const px = rx + Math.round(bx * layout.stepX)
         const py = ry + Math.round(by * layout.stepY)
-        let val = 0
+        let symbol = 0
         if (px >= 0 && px < width && py >= 0 && py < height) {
-          val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
-        }
-        if (bitsPerBlock === 2) {
-          const symbol = decodeGray2(val, layout.blackLevel, layout.whiteLevel)
-          currentByte |= (symbol << (6 - bitIdx))
-          bitIdx += 2
+          if (bitsPerBlock === 3) {
+            const rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
+            symbol = decodeRgb3(rgb, layout.blackLevels, layout.whiteLevels)
+          } else {
+            const val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
+            symbol = bitsPerBlock === 2
+              ? decodeGray2(val, layout.blackLevel, layout.whiteLevel)
+              : (val > 128 ? 1 : 0)
+          }
         } else {
-          if (val > 128) currentByte |= (1 << (7 - bitIdx))
-          bitIdx++
+          symbol = 0
         }
-        if (bitIdx >= 8) {
-          payload[payloadIdx++] = currentByte
-          currentByte = 0
-          bitIdx = 0
-        }
+        appendSymbolBits(payload, decodeState, symbol, bitsPerBlock)
+        payloadIdx = decodeState.index
       }
       blockIdx++
     }
@@ -719,6 +785,61 @@ function estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX
   }
 }
 
+function estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, expectedBlocksY = null) {
+  const headerBytes = buildHeader(
+    header.mode,
+    header.width,
+    header.height,
+    header.fps,
+    header.symbolId,
+    header.payloadLength,
+    header.payloadCrc
+  )
+  let byteIdx = 0
+  let bitIdx = 0
+  const imgHeight = imageData.length / (width * 4)
+  const blocksY = expectedBlocksY ?? Math.floor(region.h / stepY)
+  const blackSums = [0, 0, 0]
+  const whiteSums = [0, 0, 0]
+  let blackCount = 0
+  let whiteCount = 0
+
+  for (let by = 0; by < blocksY && byteIdx < HEADER_SIZE; by++) {
+    for (let bx = 0; bx < blocksX && byteIdx < HEADER_SIZE; bx++) {
+      const px = rx + Math.round(bx * stepX)
+      const py = ry + Math.round(by * stepY)
+      let rgb = [0, 0, 0]
+      if (px >= 0 && px < width && py >= 0 && py < imgHeight) {
+        rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
+      }
+
+      const expectedBit = (headerBytes[byteIdx] >> (7 - bitIdx)) & 1
+      if (expectedBit) {
+        whiteSums[0] += rgb[0]
+        whiteSums[1] += rgb[1]
+        whiteSums[2] += rgb[2]
+        whiteCount++
+      } else {
+        blackSums[0] += rgb[0]
+        blackSums[1] += rgb[1]
+        blackSums[2] += rgb[2]
+        blackCount++
+      }
+
+      bitIdx++
+      if (bitIdx >= 8) {
+        bitIdx = 0
+        byteIdx++
+      }
+    }
+  }
+
+  return {
+    blackLevels: blackCount > 0 ? blackSums.map((sum) => sum / blackCount) : [0, 0, 0],
+    whiteLevels: whiteCount > 0 ? whiteSums.map((sum) => sum / whiteCount) : [255, 255, 255]
+  }
+}
+
 // Once a plausible header is found, derive a more precise capture scale from the
 // measured frame span. This reduces horizontal drift across later header fields.
 function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hypothesis = 'base') {
@@ -776,7 +897,9 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
         scaleX: region.frameW / refinedHeader.width,
         scaleY: region.frameH / refinedHeader.height,
         blackLevel: result.levels?.blackLevel,
-        whiteLevel: result.levels?.whiteLevel
+        whiteLevel: result.levels?.whiteLevel,
+        blackLevels: result.levels?.blackLevels,
+        whiteLevels: result.levels?.whiteLevels
       }
 
       if (result.crcValid) return result
@@ -841,7 +964,7 @@ export function decodeDataRegion(imageData, width, region) {
   const baseBs = region.blockSize || BLOCK_SIZE
   const yOffsets = [0, -1, 1, -2, 2]
   const bsAdjustments = [0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.5, -0.5]
-  const candidateModes = [HDMI_MODE.RAW_GRAY, HDMI_MODE.COMPAT_4, HDMI_MODE.COMPAT_8, HDMI_MODE.COMPAT_16]
+  const candidateModes = [HDMI_MODE.RAW_RGB, HDMI_MODE.RAW_GRAY, HDMI_MODE.COMPAT_4, HDMI_MODE.COMPAT_8, HDMI_MODE.COMPAT_16]
 
   let bestResult = null
   let bestScore = -1
@@ -905,7 +1028,9 @@ export function decodeDataRegion(imageData, width, region) {
             bsAdj,
             payloadCapacity,
             blackLevel: result.levels?.blackLevel,
-            whiteLevel: result.levels?.whiteLevel
+            whiteLevel: result.levels?.whiteLevel,
+            blackLevels: result.levels?.blackLevels,
+            whiteLevels: result.levels?.whiteLevels
           }
 
           const refinements = getHeaderRefinementHypotheses(header, region)
@@ -1053,6 +1178,36 @@ export function testGray2FrameRoundtrip() {
     result.payload.every((v, i) => v === payload[i])
 
   console.log('Gray2 frame roundtrip test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testRgb3FrameRoundtrip() {
+  const payload = new Uint8Array(401)
+  for (let i = 0; i < payload.length; i++) payload[i] = (i * 53) & 0xFF
+
+  const width = 640
+  const height = 480
+  const frame = buildFrame(payload, HDMI_MODE.RAW_RGB, width, height, 30, 42)
+  const anchors = detectAnchors(frame, width, height)
+  if (anchors.length < 2) {
+    console.log('RGB3 frame roundtrip test: FAIL (anchors)')
+    return false
+  }
+
+  const region = dataRegionFromAnchors(anchors)
+  if (!region) {
+    console.log('RGB3 frame roundtrip test: FAIL (no region)')
+    return false
+  }
+
+  const result = decodeDataRegion(frame, width, region)
+  const pass = result !== null &&
+    result.crcValid &&
+    result.header.mode === HDMI_MODE.RAW_RGB &&
+    result.payload.length === payload.length &&
+    result.payload.every((v, i) => v === payload[i])
+
+  console.log('RGB3 frame roundtrip test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 
