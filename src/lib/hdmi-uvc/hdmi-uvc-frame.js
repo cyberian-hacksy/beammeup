@@ -151,6 +151,41 @@ export function getPayloadCapacity(width, height, mode = HDMI_MODE.COMPAT_4) {
   return Math.max(0, Math.floor((payloadBlocks * bitsPerBlock) / BITS_PER_BYTE))
 }
 
+function gcd(a, b) {
+  let x = Math.abs(a)
+  let y = Math.abs(b)
+  while (y !== 0) {
+    const t = x % y
+    x = y
+    y = t
+  }
+  return x || 1
+}
+
+function getPayloadBlockStride(totalPayloadBlocks) {
+  if (totalPayloadBlocks <= 1) return 1
+  let stride = Math.max(1, Math.floor(totalPayloadBlocks * 0.61803398875))
+  while (stride < totalPayloadBlocks && gcd(stride, totalPayloadBlocks) !== 1) {
+    stride++
+  }
+  if (stride >= totalPayloadBlocks) {
+    stride = totalPayloadBlocks - 1
+    while (stride > 1 && gcd(stride, totalPayloadBlocks) !== 1) {
+      stride--
+    }
+  }
+  return Math.max(1, stride)
+}
+
+function getPayloadBlockCoords(symbolBlockIdx, blocksX, totalPayloadBlocks, stride) {
+  const mappedIdx = (symbolBlockIdx * stride) % totalPayloadBlocks
+  const physicalIdx = HEADER_BLOCKS + mappedIdx
+  return {
+    bx: physicalIdx % blocksX,
+    by: Math.floor(physicalIdx / blocksX)
+  }
+}
+
 // --- Header serialization ---
 
 export function buildHeader(mode, width, height, fps, symbolId, payloadLength, payloadCrc) {
@@ -223,42 +258,31 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
   const dr = getDataRegion(width, height)
   const blocksX = Math.floor(dr.w / dataBlockSize)
   const blocksY = Math.floor(dr.h / dataBlockSize)
+  const totalPayloadBlocks = Math.max(0, blocksX * blocksY - HEADER_BLOCKS)
+  const payloadStride = getPayloadBlockStride(totalPayloadBlocks)
   let headerByteIdx = 0
   let headerBitIdx = 0
   let payloadBitPos = 0
   const payloadBitLength = payload.length * BITS_PER_BYTE
-  let blockIdx = 0
 
+  let blockIdx = 0
   for (let by = 0; by < blocksY; by++) {
     for (let bx = 0; bx < blocksX; bx++) {
+      if (blockIdx >= HEADER_BLOCKS) break
       let r = 0
       let g = 0
       let b = 0
-      if (blockIdx < HEADER_BLOCKS) {
-        let val = 0
-        if (headerByteIdx < headerBytes.length) {
-          val = (headerBytes[headerByteIdx] >> (7 - headerBitIdx)) & 1 ? 255 : 0
-        }
-        r = val
-        g = val
-        b = val
-        headerBitIdx++
-        if (headerBitIdx >= 8) {
-          headerBitIdx = 0
-          headerByteIdx++
-        }
-      } else if (payloadBitPos < payloadBitLength) {
-        const symbol = extractBits(payload, payloadBitPos, bitsPerBlock)
-        payloadBitPos += bitsPerBlock
-
-        if (bitsPerBlock === 3) {
-          [r, g, b] = encodeRgb3(symbol)
-        } else {
-          const val = bitsPerBlock === 2 ? encodeGray2(symbol) : (symbol ? 255 : 0)
-          r = val
-          g = val
-          b = val
-        }
+      let val = 0
+      if (headerByteIdx < headerBytes.length) {
+        val = (headerBytes[headerByteIdx] >> (7 - headerBitIdx)) & 1 ? 255 : 0
+      }
+      r = val
+      g = val
+      b = val
+      headerBitIdx++
+      if (headerBitIdx >= 8) {
+        headerBitIdx = 0
+        headerByteIdx++
       }
 
       // Fill the mode-specific data block.
@@ -273,6 +297,36 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
         }
       }
       blockIdx++
+    }
+  }
+
+  const payloadSymbolBlocks = Math.min(totalPayloadBlocks, Math.ceil(payloadBitLength / bitsPerBlock))
+  for (let symbolBlockIdx = 0; symbolBlockIdx < payloadSymbolBlocks; symbolBlockIdx++) {
+    const symbol = extractBits(payload, payloadBitPos, bitsPerBlock)
+    payloadBitPos += bitsPerBlock
+
+    let r = 0
+    let g = 0
+    let b = 0
+    if (bitsPerBlock === 3) {
+      [r, g, b] = encodeRgb3(symbol)
+    } else {
+      const val = bitsPerBlock === 2 ? encodeGray2(symbol) : (symbol ? 255 : 0)
+      r = val
+      g = val
+      b = val
+    }
+
+    const { bx, by } = getPayloadBlockCoords(symbolBlockIdx, blocksX, totalPayloadBlocks, payloadStride)
+    const startX = dr.x + bx * dataBlockSize
+    const startY = dr.y + by * dataBlockSize
+    for (let dy = 0; dy < dataBlockSize; dy++) {
+      for (let dx = 0; dx < dataBlockSize; dx++) {
+        const i = ((startY + dy) * width + (startX + dx)) * 4
+        imageData[i] = r
+        imageData[i + 1] = g
+        imageData[i + 2] = b
+      }
     }
   }
 
@@ -605,6 +659,8 @@ export function dataRegionFromAnchors(anchors) {
 // Read payload using binary modulation (8 blocks per byte, threshold at 128).
 function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, expectedBlocksY = null) {
   const blocksY = expectedBlocksY ?? Math.floor(region.h / stepY)
+  const totalPayloadBlocks = Math.max(0, blocksX * blocksY - HEADER_BLOCKS)
+  const payloadStride = getPayloadBlockStride(totalPayloadBlocks)
   const bitsPerBlock = getModeBitsPerBlock(header.mode) || 1
   const levels = bitsPerBlock === 2
     ? estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
@@ -612,35 +668,29 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
       ? estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
       : null
   const payload = new Uint8Array(header.payloadLength)
-  let payloadIdx = 0
-  let blockIdx = 0
   const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
   const height = imageData.length / (width * 4)
+  const payloadSymbolBlocks = Math.min(totalPayloadBlocks, Math.ceil((header.payloadLength * BITS_PER_BYTE) / bitsPerBlock))
 
-  for (let by = 0; by < blocksY && payloadIdx < header.payloadLength; by++) {
-    for (let bx = 0; bx < blocksX && payloadIdx < header.payloadLength; bx++) {
-      if (blockIdx >= HEADER_BLOCKS) {
-        const px = rx + Math.round(bx * stepX)
-        const py = ry + Math.round(by * stepY)
-        let symbol = 0
-        if (px >= 0 && px < width && py >= 0 && py < height) {
-          if (bitsPerBlock === 3) {
-            const rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
-            symbol = decodeRgb3(rgb, levels?.blackLevels, levels?.whiteLevels)
-          } else {
-            const val = sampleBlockAt(imageData, width, px, py, bs)
-            symbol = bitsPerBlock === 2
-              ? decodeGray2(val, levels?.blackLevel, levels?.whiteLevel)
-              : (val > 128 ? 1 : 0)
-          }
-        } else {
-          symbol = 0
-        }
-        appendSymbolBits(payload, decodeState, symbol, bitsPerBlock)
-        payloadIdx = decodeState.index
+  for (let symbolBlockIdx = 0; symbolBlockIdx < payloadSymbolBlocks && decodeState.index < header.payloadLength; symbolBlockIdx++) {
+    const { bx, by } = getPayloadBlockCoords(symbolBlockIdx, blocksX, totalPayloadBlocks, payloadStride)
+    const px = rx + Math.round(bx * stepX)
+    const py = ry + Math.round(by * stepY)
+    let symbol = 0
+    if (px >= 0 && px < width && py >= 0 && py < height) {
+      if (bitsPerBlock === 3) {
+        const rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
+        symbol = decodeRgb3(rgb, levels?.blackLevels, levels?.whiteLevels)
+      } else {
+        const val = sampleBlockAt(imageData, width, px, py, bs)
+        symbol = bitsPerBlock === 2
+          ? decodeGray2(val, levels?.blackLevel, levels?.whiteLevel)
+          : (val > 128 ? 1 : 0)
       }
-      blockIdx++
+    } else {
+      symbol = 0
     }
+    appendSymbolBits(payload, decodeState, symbol, bitsPerBlock)
   }
 
   const actualCrc = crc32(payload)
@@ -655,44 +705,40 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
 
   const blocksX = layout.blocksX
   const blocksY = layout.blocksY ?? Math.floor(region.h / layout.stepY)
+  const totalPayloadBlocks = Math.max(0, blocksX * blocksY - HEADER_BLOCKS)
+  const payloadStride = getPayloadBlockStride(totalPayloadBlocks)
   if (!blocksX || !blocksY) return null
 
   const rx = region.x + (layout.xOff || 0)
   const ry = region.y + (layout.yOff || 0)
   const bitsPerBlock = layout.bitsPerBlock || 1
   const payload = new Uint8Array(payloadLength)
-  let payloadIdx = 0
-  let blockIdx = 0
   const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
   const height = imageData.length / (width * 4)
 
-  for (let by = 0; by < blocksY && payloadIdx < payloadLength; by++) {
-    for (let bx = 0; bx < blocksX && payloadIdx < payloadLength; bx++) {
-      if (blockIdx >= HEADER_BLOCKS) {
-        const px = rx + Math.round(bx * layout.stepX)
-        const py = ry + Math.round(by * layout.stepY)
-        let symbol = 0
-        if (px >= 0 && px < width && py >= 0 && py < height) {
-          if (bitsPerBlock === 3) {
-            const rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
-            symbol = decodeRgb3(rgb, layout.blackLevels, layout.whiteLevels)
-          } else {
-            const val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
-            symbol = bitsPerBlock === 2
-              ? decodeGray2(val, layout.blackLevel, layout.whiteLevel)
-              : (val > 128 ? 1 : 0)
-          }
-        } else {
-          symbol = 0
-        }
-        appendSymbolBits(payload, decodeState, symbol, bitsPerBlock)
-        payloadIdx = decodeState.index
+  const payloadSymbolBlocks = Math.min(totalPayloadBlocks, Math.ceil((payloadLength * BITS_PER_BYTE) / bitsPerBlock))
+  for (let symbolBlockIdx = 0; symbolBlockIdx < payloadSymbolBlocks && decodeState.index < payloadLength; symbolBlockIdx++) {
+    const { bx, by } = getPayloadBlockCoords(symbolBlockIdx, blocksX, totalPayloadBlocks, payloadStride)
+    const px = rx + Math.round(bx * layout.stepX)
+    const py = ry + Math.round(by * layout.stepY)
+    let symbol = 0
+    if (px >= 0 && px < width && py >= 0 && py < height) {
+      if (bitsPerBlock === 3) {
+        const rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
+        symbol = decodeRgb3(rgb, layout.blackLevels, layout.whiteLevels)
+      } else {
+        const val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
+        symbol = bitsPerBlock === 2
+          ? decodeGray2(val, layout.blackLevel, layout.whiteLevel)
+          : (val > 128 ? 1 : 0)
       }
-      blockIdx++
+    } else {
+      symbol = 0
     }
+    appendSymbolBits(payload, decodeState, symbol, bitsPerBlock)
   }
 
-  return payloadIdx === payloadLength ? payload : null
+  return decodeState.index === payloadLength ? payload : null
 }
 
 // Score a candidate header: higher = better. CRC-valid candidates always win.
