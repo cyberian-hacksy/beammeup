@@ -4,7 +4,7 @@ import { PROTOCOL_VERSION } from '../constants.js'
 import { createDecoder } from '../decoder.js'
 import { PACKET_HEADER_SIZE, parsePacket } from '../packet.js'
 import { DEVICE_STORAGE_KEY, HDMI_MODE_NAMES, HEADER_SIZE } from './hdmi-uvc-constants.js'
-import { detectAnchors, dataRegionFromAnchors, decodeDataRegion } from './hdmi-uvc-frame.js'
+import { detectAnchors, dataRegionFromAnchors, decodeDataRegion, readPayloadWithLayout } from './hdmi-uvc-frame.js'
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
@@ -98,6 +98,21 @@ function ensureDecoder() {
   }
 }
 
+function getExpectedPacketSize() {
+  return state.decoder ? state.decoder.blockSize + PACKET_HEADER_SIZE : null
+}
+
+function tryFixedLayoutPackets(imageData, width, region) {
+  const expectedPacketSize = getExpectedPacketSize()
+  if (!expectedPacketSize || !state.fixedLayout || state.expectedPacketCount < 1) return []
+
+  const payloadLength = expectedPacketSize * state.expectedPacketCount
+  const payload = readPayloadWithLayout(imageData, width, region, state.fixedLayout, payloadLength)
+  if (!payload) return []
+
+  return extractFramePackets(payload, expectedPacketSize)
+}
+
 function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true) {
   if (packets.length === 0) return false
 
@@ -118,6 +133,8 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true) {
     state.decodeFailCount = 0
     elements.statFrames.textContent = state.validFrames + ' valid frames'
   }
+
+  state.expectedPacketCount = packets.length
 
   if (state.validFrames % 10 === 0) {
     debugLog(
@@ -158,7 +175,9 @@ const state = {
   completedFile: null,
   anchorBounds: null,  // Cached data region from detected anchors
   decodeFailCount: 0,  // Consecutive decode failures (triggers relock when too many)
-  activeCaptureMethod: null
+  activeCaptureMethod: null,
+  fixedLayout: null,
+  expectedPacketCount: 0
 }
 
 // Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
@@ -500,17 +519,27 @@ async function processFrame(now, metadata) {
       debugLog(`Mode: ${HDMI_MODE_NAMES[result.header.mode]}, ${result.header.width}x${result.header.height}`)
     }
 
-    const expectedPacketSize = state.decoder ? state.decoder.blockSize + PACKET_HEADER_SIZE : null
+    const expectedPacketSize = getExpectedPacketSize()
     const packets = extractFramePackets(result.payload, expectedPacketSize)
 
     if (acceptPackets(packets, result.header.symbolId)) {
+      if (result._diag) state.fixedLayout = { ...result._diag }
       if (state.decoder?.isComplete()) return
     }
   } else if (result && !result.crcValid) {
-    const expectedPacketSize = state.decoder ? state.decoder.blockSize + PACKET_HEADER_SIZE : null
+    const expectedPacketSize = getExpectedPacketSize()
     const salvagedPackets = extractFramePackets(result.payload, expectedPacketSize)
     if (acceptPackets(salvagedPackets, result.header.symbolId)) {
+      if (result._diag) state.fixedLayout = { ...result._diag }
       debugLog(`Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) from CRC-fail frame`)
+      if (state.decoder?.isComplete()) return
+      scheduleNextFrame()
+      return
+    }
+
+    const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
+    if (acceptPackets(fixedPackets, result.header.symbolId)) {
+      debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) via fixed layout`)
       if (state.decoder?.isComplete()) return
       scheduleNextFrame()
       return
@@ -527,6 +556,14 @@ async function processFrame(now, metadata) {
     }
     debugCurrent(`#${state.frameCount} CRC fail`)
   } else {
+    const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
+    if (acceptPackets(fixedPackets, state.frameCount)) {
+      debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) without outer header`)
+      if (state.decoder?.isComplete()) return
+      scheduleNextFrame()
+      return
+    }
+
     state.decodeFailCount++
     if (isDiagFrame) {
       debugLog(`Frame ${state.frameCount}: decode failed`)
@@ -690,6 +727,8 @@ function resetReceiver() {
   state.anchorBounds = null
   state.decodeFailCount = 0
   state.activeCaptureMethod = null
+  state.fixedLayout = null
+  state.expectedPacketCount = 0
 
   elements.statFrames.textContent = '0 frames'
   elements.statusScanning.classList.remove('hidden')

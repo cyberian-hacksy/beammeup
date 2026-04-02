@@ -528,6 +528,49 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
   return { header, payload, crcValid: actualCrc === header.payloadCrc }
 }
 
+// Read a fixed payload length from a known-good grid layout without relying on a
+// newly decoded HDMI header. Used after session lock, where inner packet CRCs can
+// validate individual packets even if the outer frame header is damaged.
+export function readPayloadWithLayout(imageData, width, region, layout, payloadLength) {
+  if (!layout || !payloadLength || payloadLength <= 0) return null
+
+  const blocksX = layout.blocksX
+  const blocksY = layout.blocksY ?? Math.floor(region.h / layout.stepY)
+  if (!blocksX || !blocksY) return null
+
+  const rx = region.x + (layout.xOff || 0)
+  const ry = region.y + (layout.yOff || 0)
+  const payload = new Uint8Array(payloadLength)
+  let payloadIdx = 0
+  let blockIdx = 0
+  let currentByte = 0
+  let bitIdx = 0
+  const height = imageData.length / (width * 4)
+
+  for (let by = 0; by < blocksY && payloadIdx < payloadLength; by++) {
+    for (let bx = 0; bx < blocksX && payloadIdx < payloadLength; bx++) {
+      if (blockIdx >= HEADER_BLOCKS) {
+        const px = rx + Math.round(bx * layout.stepX)
+        const py = ry + Math.round(by * layout.stepY)
+        let val = 0
+        if (px >= 0 && px < width && py >= 0 && py < height) {
+          val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
+        }
+        if (val > 128) currentByte |= (1 << (7 - bitIdx))
+        bitIdx++
+        if (bitIdx >= 8) {
+          payload[payloadIdx++] = currentByte
+          currentByte = 0
+          bitIdx = 0
+        }
+      }
+      blockIdx++
+    }
+  }
+
+  return payloadIdx === payloadLength ? payload : null
+}
+
 // Score a candidate header: higher = better. CRC-valid candidates always win.
 function scoreCandidate(result) {
   if (result.crcValid) return 10000
