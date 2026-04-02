@@ -10,7 +10,7 @@ export const FRAME_MAGIC = 0xFF00FF00
 export const ANCHOR_SIZE = 32    // Anchor pattern: 32×32 pixels (8×8 grid of 4×4 blocks)
 export const MARGIN_SIZE = 32    // Black margin on all sides
 export const BLOCK_SIZE = 4      // Anchor block: 4×4 pixels
-export const DATA_BLOCK_SIZE = 8 // Data block: 8×8 pixels (matches MJPEG DCT block for reliable binary)
+export const DATA_BLOCK_SIZE = 8 // Legacy/default data block size for binary compatibility mode
 export const HEADER_SIZE = 22    // Frame header: 22 bytes
 
 // Anchor pattern as 8×8 block grid (1=white, 0=black)
@@ -41,6 +41,19 @@ export const HDMI_MODE_NAMES = {
   [HDMI_MODE.COMPAT_4]: '4x4',
   [HDMI_MODE.COMPAT_8]: '8x8',
   [HDMI_MODE.COMPAT_16]: '16x16'
+}
+
+export function getModeDataBlockSize(mode) {
+  switch (mode) {
+    case HDMI_MODE.COMPAT_4:
+      return 4
+    case HDMI_MODE.COMPAT_8:
+      return 8
+    case HDMI_MODE.COMPAT_16:
+      return 16
+    default:
+      return null
+  }
 }
 
 // Frame rate presets

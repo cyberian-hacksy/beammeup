@@ -131,7 +131,7 @@ function measureAndApplyCanvasSize() {
   elements.canvas.width = metrics.width
   elements.canvas.height = metrics.height
 
-  const capacity = getPayloadCapacity(metrics.width, metrics.height)
+  const capacity = getPayloadCapacity(metrics.width, metrics.height, state.mode)
   const dataRegion = getDataRegion(metrics.width, metrics.height)
   const dataWidth = dataRegion.w
   const dataHeight = dataRegion.h
@@ -191,6 +191,17 @@ function updateActionButton() {
   elements.btnStop.disabled = !state.fileData
 }
 
+function updateModeSelector() {
+  const buttons = elements.modeButtons || []
+  const disabled = state.isSending || state.isPaused
+
+  for (const button of buttons) {
+    const mode = parseInt(button.dataset.mode, 10)
+    button.classList.toggle('active', mode === state.mode)
+    button.disabled = disabled
+  }
+}
+
 // Once the HDMI-UVC decode path is stable, repeating every symbol wastes most
 // of the available bandwidth. Let fountain redundancy absorb frame loss.
 const FRAMES_PER_SYMBOL = 1
@@ -199,7 +210,7 @@ const METADATA_INTERVAL_FRAMES = METADATA_INTERVAL * 2
 const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 1536
 const TARGET_SOURCE_BLOCKS = 128
-const MAX_PACKETS_PER_FRAME = 2
+const MAX_PACKETS_PER_FRAME = 4
 const TARGET_FRAME_FILL = 0.85
 
 function shouldSendMetadata(frameNumber) {
@@ -260,7 +271,7 @@ function renderFrame() {
     const nextFrameNumber = state.frameCount + 1
     const batch = buildFramePacketBatch(nextFrameNumber)
 
-    const frameData = buildFrame(batch.payload, HDMI_MODE.COMPAT_4, cw, ch, fps.fps, batch.outerSymbolId)
+    const frameData = buildFrame(batch.payload, state.mode, cw, ch, fps.fps, batch.outerSymbolId)
 
     const ctx = elements.canvas.getContext('2d')
     ctx.putImageData(new ImageData(new Uint8ClampedArray(frameData), cw, ch), 0, 0)
@@ -379,6 +390,7 @@ async function startSending() {
       }
     }
 
+    debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
     debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
     debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)}), blockSize: ${blockSize}`)
 
@@ -400,6 +412,7 @@ async function startSending() {
 
     elements.fpsSlider.disabled = true
     updateActionButton()
+    updateModeSelector()
     renderFrame()
 
   } catch (err) {
@@ -424,6 +437,7 @@ function pauseSending() {
 
   elements.fpsSlider.disabled = false
   updateActionButton()
+  updateModeSelector()
 }
 
 async function resumeSending() {
@@ -459,6 +473,7 @@ async function resumeSending() {
 
   elements.fpsSlider.disabled = true
   updateActionButton()
+  updateModeSelector()
   renderFrame()
 }
 
@@ -494,6 +509,7 @@ function stopSending() {
 
   updateDropZoneState()
   updateActionButton()
+  updateModeSelector()
 }
 
 function handleActionClick() {
@@ -584,6 +600,17 @@ function handleFpsChange() {
   elements.fpsDisplay.textContent = preset.name
 }
 
+function handleModeChange(e) {
+  const button = e.currentTarget
+  const newMode = parseInt(button.dataset.mode, 10)
+  if (!Number.isFinite(newMode) || newMode === state.mode) return
+  if (state.isSending || state.isPaused) return
+
+  state.mode = newMode
+  updateModeSelector()
+  debugLog(`Compat mode selected: ${HDMI_MODE_NAMES[state.mode]}`)
+}
+
 function handleKeydown(e) {
   if (e.key === 'Escape' && state.isSending) {
     stopSending()
@@ -614,6 +641,7 @@ export function initHdmiUvcSender(errorHandler) {
     overlay: document.getElementById('hdmi-uvc-overlay'),
     frameCount: document.getElementById('hdmi-uvc-frame-count'),
     progressDisplay: document.getElementById('hdmi-uvc-progress'),
+    modeSelector: document.getElementById('hdmi-uvc-mode-selector'),
     fpsSlider: document.getElementById('hdmi-uvc-fps-slider'),
     fpsDisplay: document.getElementById('hdmi-uvc-fps-display'),
     fileInfo: document.getElementById('hdmi-uvc-file-info'),
@@ -621,15 +649,20 @@ export function initHdmiUvcSender(errorHandler) {
     btnAction: document.getElementById('btn-hdmi-uvc-action'),
     btnStop: document.getElementById('btn-hdmi-uvc-stop')
   }
+  elements.modeButtons = Array.from(elements.modeSelector?.querySelectorAll('.mode-btn') || [])
 
   elements.fpsSlider.value = DEFAULT_FPS_PRESET
 
   updateDropZoneState()
   updateActionButton()
   handleFpsChange()
+  updateModeSelector()
 
   elements.fileInput.onchange = handleFileSelect
   elements.fpsSlider.oninput = handleFpsChange
+  elements.modeButtons.forEach(button => {
+    button.onclick = handleModeChange
+  })
   elements.btnAction.onclick = handleActionClick
   elements.btnStop.onclick = stopSending
 

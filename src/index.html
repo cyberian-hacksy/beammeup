@@ -264,6 +264,14 @@
 
       <div class="sender-controls" id="hdmi-uvc-sender-controls">
         <div class="slider-group">
+          <label>Compat Mode</label>
+          <div class="mode-selector" id="hdmi-uvc-mode-selector">
+            <button class="mode-btn active" data-mode="2">4x4</button>
+            <button class="mode-btn" data-mode="3">8x8</button>
+            <button class="mode-btn" data-mode="4">16x16</button>
+          </div>
+        </div>
+        <div class="slider-group">
           <label for="hdmi-uvc-fps-slider">Frame Rate</label>
           <input type="range" id="hdmi-uvc-fps-slider" min="0" max="1" value="0" step="1">
           <span id="hdmi-uvc-fps-display">30 fps</span>
