@@ -411,64 +411,80 @@ export function detectAnchors(imageData, width, height) {
   if (bl) { bl.blockSize = refineAnchorScale(imageData, width, height, bl); anchors.push(bl) }
   if (br) { br.blockSize = refineAnchorScale(imageData, width, height, br); anchors.push(br) }
 
-  // Phase 2: Top anchors — search BELOW chromeBottom, near known x positions
-  const topSearchStart = Math.max(chromeBottom, 0)
-  if (bl) {
-    const tl = findCornerAnchor(imageData, width, height,
-      Math.max(0, bl.x - 20), Math.min(width, bl.x + 50), topSearchStart, bl.y - 50, 1, 'TL')
-    if (tl) { tl.blockSize = refineAnchorScale(imageData, width, height, tl); anchors.push(tl) }
-  }
-  if (br) {
-    const tr = findCornerAnchor(imageData, width, height,
-      Math.max(0, br.x - 20), Math.min(width, br.x + 50), topSearchStart, br.y - 50, 1, 'TR')
-    if (tr) { tr.blockSize = refineAnchorScale(imageData, width, height, tr); anchors.push(tr) }
-  }
+  // Phase 2: Top anchors — constrain search to a narrow band based on
+  // expected canvas geometry (aspect ratio 0.45-0.75 of horizontal span).
+  if (bl && br) {
+    const hSpan = br.x - bl.x
+    // Expected vertical span: between 45% and 75% of horizontal span
+    const minVSpan = Math.round(hSpan * 0.40)
+    const maxVSpan = Math.round(hSpan * 0.80)
+    const topSearchLo = Math.max(chromeBottom, bl.y - maxVSpan - 50)
+    const topSearchHi = Math.max(chromeBottom, bl.y - minVSpan + 50)
 
-  // Geometry sanity: TL/TR should be at similar y, BL/BR at similar y
-  const tl = anchors.find(a => a.corner === 'TL')
-  const tr = anchors.find(a => a.corner === 'TR')
-  if (tl && tr && Math.abs(tl.y - tr.y) > 20) {
-    // Mismatched top anchors — drop the worse one
-    const keep = tl.y > tr.y ? tl : tr // keep the lower one (further from chrome)
-    const drop = tl.y > tr.y ? tr : tl
-    anchors.splice(anchors.indexOf(drop), 1)
+    const tl = findCornerAnchor(imageData, width, height,
+      Math.max(0, bl.x - 20), Math.min(width, bl.x + 50), topSearchLo, topSearchHi, 1, 'TL')
+    const tr = findCornerAnchor(imageData, width, height,
+      Math.max(0, br.x - 20), Math.min(width, br.x + 50), topSearchLo, topSearchHi, 1, 'TR')
+
+    // Only accept top anchors if BOTH are found at matching y (±15px)
+    if (tl && tr && Math.abs(tl.y - tr.y) <= 15) {
+      tl.blockSize = refineAnchorScale(imageData, width, height, tl)
+      tr.blockSize = refineAnchorScale(imageData, width, height, tr)
+      anchors.push(tl)
+      anchors.push(tr)
+    }
+    // If top anchors aren't found or don't match, we'll estimate from bottom pair
   }
 
   return anchors
 }
 
 // Derive data region from detected anchor positions.
-// Uses the detected block size to calculate actual anchor/margin sizes in capture.
+// Handles both 4-anchor (full geometry) and 2-anchor (BL+BR only, estimate top) cases.
 export function dataRegionFromAnchors(anchors) {
   if (anchors.length < 2) return null
 
-  const bs = anchors[0].blockSize || BLOCK_SIZE
-  const actualAnchorSize = Math.ceil(8 * bs)
+  const bl = anchors.find(a => a.corner === 'BL')
+  const br = anchors.find(a => a.corner === 'BR')
+  const tl = anchors.find(a => a.corner === 'TL')
+  const tr = anchors.find(a => a.corner === 'TR')
 
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-  for (const a of anchors) {
-    if (a.x < minX) minX = a.x
-    if (a.y < minY) minY = a.y
-    if (a.x + actualAnchorSize > maxX) maxX = a.x + actualAnchorSize
-    if (a.y + actualAnchorSize > maxY) maxY = a.y + actualAnchorSize
+  // Need at least BL+BR (bottom pair is most reliable)
+  if (!bl || !br) return null
+
+  // Use average of the two most reliable anchors (bottom pair) for block size
+  const avgBs = (bl.blockSize + br.blockSize) / 2
+  const actualAnchorSize = Math.ceil(8 * avgBs)
+
+  // Horizontal bounds from bottom anchors
+  const dataLeft = bl.x + actualAnchorSize
+  const dataRight = br.x
+  const dataBottom = Math.min(bl.y, br.y)
+  const w = dataRight - dataLeft
+
+  // Vertical bounds: use top anchors if available, otherwise estimate
+  let dataTop
+  if (tl && tr) {
+    dataTop = Math.max(tl.y, tr.y) + actualAnchorSize
+  } else {
+    // Estimate top from horizontal span and typical display aspect ratio (~0.53)
+    const hSpan = br.x + actualAnchorSize - bl.x
+    const estimatedVSpan = Math.round(hSpan * 0.53)
+    dataTop = dataBottom + actualAnchorSize - estimatedVSpan
+    if (dataTop < 0) dataTop = 0
   }
 
-  const w = maxX - minX - 2 * actualAnchorSize
-  const h = maxY - minY - 2 * actualAnchorSize
+  const h = dataBottom - dataTop
   if (w < 100 || h < 100) return null
 
-  // Compute step from average detected anchor block size.
-  // Assume uniform scaling (stepX = stepY). The DATA_BLOCK_SIZE multiplier
-  // is applied in decodeDataRegion.
-  const avgBs = anchors.reduce((sum, a) => sum + a.blockSize, 0) / anchors.length
   const stepX = avgBs
   const stepY = avgBs
 
   return {
-    x: minX + actualAnchorSize,
-    y: minY + actualAnchorSize,
+    x: dataLeft,
+    y: dataTop,
     w, h,
-    blockSize: bs,
+    blockSize: avgBs,
     stepX,
     stepY
   }
