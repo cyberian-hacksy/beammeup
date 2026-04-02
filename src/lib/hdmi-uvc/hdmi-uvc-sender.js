@@ -156,26 +156,31 @@ async function startSending() {
   try {
     debugLog(`=== START SENDING ===`)
 
-    // Set up canvas overlay (no fullscreen — avoids macOS Spaces issue)
+    // Go fullscreen to eliminate browser chrome from the HDMI output.
+    // This ensures anchors are at the true corners with no toolbar artifacts.
     elements.canvas.style.display = 'block'
-    elements.canvas.style.position = 'fixed'
-    elements.canvas.style.top = '0'
-    elements.canvas.style.left = '0'
-    elements.canvas.style.width = '100vw'
-    elements.canvas.style.height = '100vh'
-    elements.canvas.style.zIndex = '999999'
     elements.canvas.style.imageRendering = 'pixelated'
     elements.canvas.style.background = '#000'
+    elements.canvas.style.width = '100%'
+    elements.canvas.style.height = '100%'
     elements.placeholder.style.display = 'none'
 
-    window.moveTo(0, 0)
-    window.resizeTo(screen.availWidth, screen.availHeight)
+    try {
+      await elements.canvas.requestFullscreen()
+      debugLog('Fullscreen: OK')
+    } catch (e) {
+      debugLog(`Fullscreen failed: ${e.message}, falling back to overlay`)
+      elements.canvas.style.position = 'fixed'
+      elements.canvas.style.top = '0'
+      elements.canvas.style.left = '0'
+      elements.canvas.style.width = '100vw'
+      elements.canvas.style.height = '100vh'
+      elements.canvas.style.zIndex = '999999'
+    }
 
-    // Canvas bitmap = CSS viewport dimensions for ~1:1 capture pixel mapping.
-    // With CSS 100vw/100vh, a viewport-sized bitmap needs no CSS scaling.
-    // Through the HDMI pipeline (dpr upscale × HDMI downscale), the net
-    // scale is approximately viewport_capture_width / viewport_css_width ≈ 0.98,
-    // close enough to 1:1 for the 4px block detection to work.
+    // Wait a frame for fullscreen to settle, then measure actual dimensions
+    await new Promise(r => setTimeout(r, 100))
+
     const canvasWidth = window.innerWidth
     const canvasHeight = window.innerHeight
     elements.canvas.width = canvasWidth
@@ -218,6 +223,7 @@ function pauseSending() {
     state.timerId = null
   }
 
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
   resetCanvasStyles()
   elements.overlay.classList.add('hidden')
   elements.placeholder.style.display = 'flex'
@@ -228,19 +234,24 @@ function pauseSending() {
   updateActionButton()
 }
 
-function resumeSending() {
+async function resumeSending() {
   state.isPaused = false
 
   elements.canvas.style.display = 'block'
-  elements.canvas.style.position = 'fixed'
-  elements.canvas.style.top = '0'
-  elements.canvas.style.left = '0'
-  elements.canvas.style.width = '100vw'
-  elements.canvas.style.height = '100vh'
-  elements.canvas.style.zIndex = '999999'
   elements.canvas.style.imageRendering = 'pixelated'
   elements.canvas.style.background = '#000'
   elements.placeholder.style.display = 'none'
+
+  try {
+    await elements.canvas.requestFullscreen()
+  } catch (e) {
+    elements.canvas.style.position = 'fixed'
+    elements.canvas.style.top = '0'
+    elements.canvas.style.left = '0'
+    elements.canvas.style.width = '100vw'
+    elements.canvas.style.height = '100vh'
+    elements.canvas.style.zIndex = '999999'
+  }
 
   elements.fpsSlider.disabled = true
   updateActionButton()
@@ -263,6 +274,7 @@ function stopSending() {
   state.symbolId = 1
   state.frameCount = 0
 
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
   elements.fpsSlider.disabled = false
 
   resetCanvasStyles()
