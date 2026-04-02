@@ -214,15 +214,15 @@ const TARGET_SOURCE_BLOCKS = 128
 function getBatchingProfile(mode) {
   switch (mode) {
     case HDMI_MODE.COMPAT_4:
-      // 4x4 mode has enough spatial redundancy now that it can use near-full
-      // frames. Inner packet CRCs and fixed-layout recovery absorb partial loss.
-      return { maxPacketsPerFrame: 8, targetFrameFill: 0.99 }
+      // 4x4 mode can carry more packets per frame, but very large per-packet
+      // payloads make inner CRC success collapse on noisy captures.
+      return { maxPacketsPerFrame: 8, targetFrameFill: 0.90, maxBlockSize: 1024 }
     case HDMI_MODE.COMPAT_8:
-      return { maxPacketsPerFrame: 4, targetFrameFill: 0.90 }
+      return { maxPacketsPerFrame: 4, targetFrameFill: 0.90, maxBlockSize: MAX_BLOCK_SIZE }
     case HDMI_MODE.COMPAT_16:
-      return { maxPacketsPerFrame: 2, targetFrameFill: 0.85 }
+      return { maxPacketsPerFrame: 2, targetFrameFill: 0.85, maxBlockSize: MAX_BLOCK_SIZE }
     default:
-      return { maxPacketsPerFrame: 4, targetFrameFill: 0.90 }
+      return { maxPacketsPerFrame: 4, targetFrameFill: 0.90, maxBlockSize: MAX_BLOCK_SIZE }
   }
 }
 
@@ -358,14 +358,14 @@ async function startSending() {
     const { metrics, capacity } = measureAndApplyCanvasSize()
     const canvasWidth = metrics.width
     const canvasHeight = metrics.height
-    const { maxPacketsPerFrame, targetFrameFill } = getBatchingProfile(state.mode)
+    const { maxPacketsPerFrame, targetFrameFill, maxBlockSize: profileMaxBlockSize } = getBatchingProfile(state.mode)
 
     // Size payloads from the actual frame capacity instead of pinning them to
     // 256 bytes. This keeps small files snappy and makes larger transfers practical
     // without exceeding what the current frame geometry can carry.
     const frameBlockSize = Math.max(200, capacity - PACKET_HEADER_SIZE)
     const preferredBlockSize = Math.ceil(state.fileSize / TARGET_SOURCE_BLOCKS)
-    const maxBlockSize = Math.min(frameBlockSize, MAX_BLOCK_SIZE)
+    const maxBlockSize = Math.min(frameBlockSize, profileMaxBlockSize ?? MAX_BLOCK_SIZE, MAX_BLOCK_SIZE)
     const minBlockSize = Math.min(MIN_BLOCK_SIZE, maxBlockSize)
     let blockSize = Math.min(maxBlockSize, Math.max(preferredBlockSize, minBlockSize))
     let bestPacketsPerFrame = Math.min(
@@ -406,7 +406,10 @@ async function startSending() {
 
     debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
     debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
-    debugLog(`Batch profile: maxPackets=${maxPacketsPerFrame}, targetFill=${(targetFrameFill * 100).toFixed(0)}%`)
+    debugLog(
+      `Batch profile: maxPackets=${maxPacketsPerFrame}, ` +
+      `targetFill=${(targetFrameFill * 100).toFixed(0)}%, maxBlockSize=${maxBlockSize}`
+    )
     debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)}), blockSize: ${blockSize}`)
 
     state.encoder = createEncoder(
