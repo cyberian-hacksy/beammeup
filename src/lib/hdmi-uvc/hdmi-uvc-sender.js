@@ -2,6 +2,7 @@
 
 import { createEncoder } from '../encoder.js'
 import { METADATA_INTERVAL } from '../constants.js'
+import { PACKET_HEADER_SIZE } from '../packet.js'
 import {
   HDMI_UVC_MAX_FILE_SIZE,
   HDMI_MODE,
@@ -198,7 +199,6 @@ const METADATA_INTERVAL_FRAMES = METADATA_INTERVAL * 2
 const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 1536
 const TARGET_SOURCE_BLOCKS = 128
-const PACKET_HEADER_SIZE = 16
 const MAX_PACKETS_PER_FRAME = 2
 const TARGET_FRAME_FILL = 0.85
 

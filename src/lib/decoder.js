@@ -136,6 +136,7 @@ export function createDecoder() {
     get K() { return K },        // Source block count
     get K_prime() { return K_prime },  // Intermediate block count
     get metadata() { return metadata },
+    get blockSize() { return blockSize },
     get solved() { return solvedSource },  // Report source blocks solved
     get solvedTotal() { return solved },   // All intermediate blocks solved
     get uniqueSymbols() { return receivedSymbols.size },

@@ -532,7 +532,7 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
 function scoreCandidate(result) {
   if (result.crcValid) return 10000
   let score = 0
-  // Strongly prefer exact expected payload length (256 blockSize + 16 packet header)
+  // Strongly prefer the original small-packet diagnostic shape (256 blockSize + packet header)
   if (result.header.payloadLength === 272) score += 1000
   else if (result.header.payloadLength > 0 && result.header.payloadLength <= 4096) score += 10
   return score

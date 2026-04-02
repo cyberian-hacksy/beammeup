@@ -2,14 +2,13 @@
 
 import { PROTOCOL_VERSION } from '../constants.js'
 import { createDecoder } from '../decoder.js'
-import { parsePacket } from '../packet.js'
+import { PACKET_HEADER_SIZE, parsePacket } from '../packet.js'
 import { DEVICE_STORAGE_KEY, HDMI_MODE_NAMES, HEADER_SIZE } from './hdmi-uvc-constants.js'
 import { detectAnchors, dataRegionFromAnchors, decodeDataRegion } from './hdmi-uvc-frame.js'
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
 const MAX_DEBUG_LINES = 500
-const PACKET_HEADER_SIZE = 16
 const debugLines = []
 
 function renderDebugLog() {
@@ -43,7 +42,20 @@ function debugCurrent(text) {
   if (el) el.textContent = text
 }
 
-function extractFramePackets(framePayload) {
+function extractFramePackets(framePayload, expectedPacketSize = null) {
+  if (expectedPacketSize && expectedPacketSize >= PACKET_HEADER_SIZE) {
+    if (framePayload.length % expectedPacketSize !== 0) return []
+
+    const packets = []
+    for (let offset = 0; offset < framePayload.length; offset += expectedPacketSize) {
+      const packet = framePayload.slice(offset, offset + expectedPacketSize)
+      if (parsePacket(packet)) {
+        packets.push(packet)
+      }
+    }
+    return packets
+  }
+
   const packets = []
   let offset = 0
 
@@ -75,6 +87,59 @@ function extractFramePackets(framePayload) {
   }
 
   return offset === framePayload.length ? packets : []
+}
+
+function ensureDecoder() {
+  if (!state.decoder) {
+    state.decoder = createDecoder()
+    state.startTime = Date.now()
+    showReceivingStatus()
+    debugLog('Decoder created')
+  }
+}
+
+function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true) {
+  if (packets.length === 0) return false
+
+  ensureDecoder()
+
+  let lastParsed = null
+  for (const packet of packets) {
+    const parsed = parsePacket(packet)
+    if (!parsed) continue
+    lastParsed = parsed
+    state.decoder.receive(packet)
+  }
+
+  if (!lastParsed) return false
+
+  if (countAsValidFrame) {
+    state.validFrames++
+    state.decodeFailCount = 0
+    elements.statFrames.textContent = state.validFrames + ' valid frames'
+  }
+
+  if (state.validFrames % 10 === 0) {
+    debugLog(
+      `Progress: ${Math.round(state.decoder.progress * 100)}% ` +
+      `solved=${state.decoder.solved}/${state.decoder.K || '?'} ` +
+      `unique=${state.decoder.uniqueSymbols} ` +
+      `sym=${lastParsed.symbolId ?? fallbackSymbolId} pkts=${packets.length}`
+    )
+  }
+
+  debugCurrent(
+    `#${state.validFrames} sym=${lastParsed.symbolId ?? fallbackSymbolId} ` +
+    `${Math.round((state.decoder.progress || 0) * 100)}% x${packets.length}`
+  )
+  updateProgress()
+
+  if (state.decoder.isComplete()) {
+    debugLog('=== TRANSFER COMPLETE ===')
+    handleComplete()
+  }
+
+  return true
 }
 
 const state = {
@@ -427,10 +492,6 @@ async function processFrame(now, metadata) {
   const result = decodeDataRegion(imageData.data, width, region)
 
   if (result && result.crcValid) {
-    state.validFrames++
-    state.decodeFailCount = 0
-    elements.statFrames.textContent = state.validFrames + ' valid frames'
-
     if (!state.detectedMode) {
       state.detectedMode = result.header.mode
       state.detectedResolution = { width: result.header.width, height: result.header.height }
@@ -439,46 +500,22 @@ async function processFrame(now, metadata) {
       debugLog(`Mode: ${HDMI_MODE_NAMES[result.header.mode]}, ${result.header.width}x${result.header.height}`)
     }
 
-    const packets = extractFramePackets(result.payload)
+    const expectedPacketSize = state.decoder ? state.decoder.blockSize + PACKET_HEADER_SIZE : null
+    const packets = extractFramePackets(result.payload, expectedPacketSize)
 
-    if (packets.length > 0) {
-      if (!state.decoder) {
-        state.decoder = createDecoder()
-        state.startTime = Date.now()
-        showReceivingStatus()
-        debugLog(`Decoder created`)
-      }
-
-      let lastParsed = null
-      for (const packet of packets) {
-        const parsed = parsePacket(packet)
-        if (!parsed) continue
-        lastParsed = parsed
-        state.decoder.receive(packet)
-      }
-
-      if (state.validFrames % 10 === 0) {
-        debugLog(
-          `Progress: ${Math.round(state.decoder.progress * 100)}% ` +
-          `solved=${state.decoder.solved}/${state.decoder.K || '?'} ` +
-          `unique=${state.decoder.uniqueSymbols} ` +
-          `sym=${lastParsed?.symbolId ?? result.header.symbolId} pkts=${packets.length}`
-        )
-      }
-
-      debugCurrent(
-        `#${state.validFrames} sym=${lastParsed?.symbolId ?? result.header.symbolId} ` +
-        `${Math.round((state.decoder.progress || 0) * 100)}% x${packets.length}`
-      )
-      updateProgress()
-
-      if (state.decoder.isComplete()) {
-        debugLog(`=== TRANSFER COMPLETE ===`)
-        handleComplete()
-        return
-      }
+    if (acceptPackets(packets, result.header.symbolId)) {
+      if (state.decoder?.isComplete()) return
     }
   } else if (result && !result.crcValid) {
+    const expectedPacketSize = state.decoder ? state.decoder.blockSize + PACKET_HEADER_SIZE : null
+    const salvagedPackets = extractFramePackets(result.payload, expectedPacketSize)
+    if (acceptPackets(salvagedPackets, result.header.symbolId)) {
+      debugLog(`Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) from CRC-fail frame`)
+      if (state.decoder?.isComplete()) return
+      scheduleNextFrame()
+      return
+    }
+
     state.decodeFailCount++
     if (isDiagFrame) {
       // Dump full header for diagnosis
