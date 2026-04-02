@@ -482,6 +482,9 @@ export function dataRegionFromAnchors(anchors) {
     x: minX + actualAnchorSize,
     y: minY + actualAnchorSize,
     w, h,
+    frameW: maxX - minX,
+    frameH: maxY - minY,
+    anchorSize: actualAnchorSize,
     blockSize: avgBs,
     stepX: avgBs,
     stepY: avgBs
@@ -491,8 +494,8 @@ export function dataRegionFromAnchors(anchors) {
 // --- Data region decoding (receiver) ---
 
 // Read payload using binary modulation (8 blocks per byte, threshold at 128).
-function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header) {
-  const blocksY = Math.floor(region.h / stepY)
+function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, expectedBlocksY = null) {
+  const blocksY = expectedBlocksY ?? Math.floor(region.h / stepY)
   const payload = new Uint8Array(header.payloadLength)
   let payloadIdx = 0
   let blockIdx = 0
@@ -537,11 +540,11 @@ function scoreCandidate(result) {
 
 // Read header bytes using binary modulation at given alignment.
 // Returns parsed header or null. Reads HEADER_BLOCKS blocks, decodes 8 per byte.
-function probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX) {
+function probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, expectedBlocksY = null) {
   const headerBytes = new Uint8Array(HEADER_SIZE)
   let byteIdx = 0, bitIdx = 0, currentByte = 0
   const imgHeight = imageData.length / (width * 4)
-  const blocksY = Math.floor(region.h / stepY)
+  const blocksY = expectedBlocksY ?? Math.floor(region.h / stepY)
 
   for (let by = 0; by < blocksY && byteIdx < HEADER_SIZE; by++) {
     for (let bx = 0; bx < blocksX && byteIdx < HEADER_SIZE; bx++) {
@@ -562,6 +565,70 @@ function probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, bs, b
   }
 
   return parseHeader(headerBytes)
+}
+
+// Once a plausible header is found, derive a more precise capture scale from the
+// measured frame span. This reduces horizontal drift across later header fields.
+function refineCandidateFromHeader(imageData, width, region, header, rx, ry) {
+  if (!region.frameW || !region.frameH) return null
+  if (header.width < 100 || header.height < 100) return null
+
+  const blocksX = Math.floor((header.width - 2 * MARGIN_SIZE) / DATA_BLOCK_SIZE)
+  const blocksY = Math.floor((header.height - 2 * MARGIN_SIZE) / DATA_BLOCK_SIZE)
+  if (blocksX * blocksY < HEADER_BLOCKS + BITS_PER_BYTE) return null
+
+  const stepX = (region.frameW / header.width) * DATA_BLOCK_SIZE
+  const stepY = (region.frameH / header.height) * DATA_BLOCK_SIZE
+  const dataBs = Math.min(stepX, stepY)
+
+  if (stepX < 6 || stepX > 10 || stepY < 6 || stepY > 10) return null
+
+  const yOffsets = [0, -1, 1, -2, 2]
+  let bestResult = null
+  let bestScore = -1
+
+  for (let xAdjust = -2; xAdjust <= 2; xAdjust++) {
+    for (const yAdjust of yOffsets) {
+      const refinedRx = rx + xAdjust
+      const refinedRy = ry + yAdjust
+
+      const refinedHeader = probeHeaderBinary(
+        imageData, width, region, refinedRx, refinedRy, stepX, stepY, dataBs, blocksX, blocksY
+      )
+      if (!refinedHeader) continue
+
+      const payloadBlocks = blocksX * blocksY - HEADER_BLOCKS
+      const payloadCapacity = Math.floor(payloadBlocks / BITS_PER_BYTE)
+      if (payloadCapacity < refinedHeader.payloadLength) continue
+
+      const result = readPayloadAt(
+        imageData, width, region, refinedRx, refinedRy, stepX, stepY, dataBs, blocksX, refinedHeader, blocksY
+      )
+      result._diag = {
+        dataBs,
+        stepX,
+        stepY,
+        blocksX,
+        blocksY,
+        xOff: refinedRx - region.x,
+        yOff: refinedRy - region.y,
+        refined: true,
+        payloadCapacity,
+        scaleX: region.frameW / refinedHeader.width,
+        scaleY: region.frameH / refinedHeader.height
+      }
+
+      if (result.crcValid) return result
+
+      const score = scoreCandidate(result)
+      if (score > bestScore) {
+        bestScore = score
+        bestResult = result
+      }
+    }
+  }
+
+  return bestResult
 }
 
 // Decode data blocks from a data region using binary modulation with 8×8 blocks.
@@ -618,8 +685,18 @@ export function decodeDataRegion(imageData, width, region) {
         if (payloadCapacity < header.payloadLength) continue
 
         // Read and score this candidate
-        const result = readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, dataBs, blocksX, header)
+        let result = readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, dataBs, blocksX, header)
         result._diag = { dataBs, stepX, stepY, blocksX, blocksY, xOff, yOff, bsAdj, payloadCapacity }
+
+        const refined = refineCandidateFromHeader(imageData, width, region, header, rx, ry)
+        if (refined) {
+          const refinedScore = scoreCandidate(refined)
+          const baseScore = scoreCandidate(result)
+          if (refined.crcValid || refinedScore > baseScore) {
+            result = refined
+          }
+        }
+
         const score = scoreCandidate(result)
 
         if (!region._logged) {

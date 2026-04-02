@@ -416,7 +416,7 @@ async function processFrame(now, metadata) {
       const hBytes = `magic=${h.magic.toString(16)} mode=${h.mode} ${h.width}x${h.height} fps=${h.fps} sym=${h.symbolId} len=${h.payloadLength} crc=${h.payloadCrc.toString(16)}`
       const diag = result._diag || {}
       debugLog(`Frame ${state.frameCount}: CRC fail — ${hBytes}`)
-      debugLog(`  Grid: dataBs=${diag.dataBs?.toFixed(2)} step=${diag.stepX?.toFixed(2)}/${diag.stepY?.toFixed(2)} off=(${diag.xOff},${diag.yOff}) bsAdj=${diag.bsAdj}`)
+      debugLog(`  Grid${diag.refined ? ' refined' : ''}: dataBs=${diag.dataBs?.toFixed(2)} step=${diag.stepX?.toFixed(2)}/${diag.stepY?.toFixed(2)} blocks=${diag.blocksX}x${diag.blocksY} off=(${diag.xOff},${diag.yOff}) bsAdj=${diag.bsAdj ?? 'n/a'}`)
     }
     debugCurrent(`#${state.frameCount} CRC fail`)
   } else {
@@ -456,7 +456,7 @@ async function processFrame(now, metadata) {
         }
         decodedBytes.push(byte)
       }
-      debugLog(`Decoded bytes: [${decodedBytes.join(',')}] (expect magic: 254,1,254,1)`)
+      debugLog(`Decoded bytes: [${decodedBytes.join(',')}] (expect magic: 255,0,255,0)`)
     }
     debugCurrent(`#${state.frameCount} no data`)
   }
