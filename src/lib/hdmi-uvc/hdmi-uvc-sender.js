@@ -108,10 +108,13 @@ function updateActionButton() {
   elements.btnStop.disabled = !state.fileData
 }
 
-// Repeat each symbol for FRAMES_PER_SYMBOL frames to give the capture
-// pipeline multiple chances at the same data before advancing.
-const FRAMES_PER_SYMBOL = 3
+// Once the HDMI-UVC decode path is stable, repeating every symbol wastes most
+// of the available bandwidth. Let fountain redundancy absorb frame loss.
+const FRAMES_PER_SYMBOL = 1
 const METADATA_BURST_FRAMES = 6
+const MIN_BLOCK_SIZE = 512
+const MAX_BLOCK_SIZE = 2048
+const TARGET_SOURCE_BLOCKS = 128
 
 function shouldSendMetadata(frameNumber) {
   return frameNumber <= METADATA_BURST_FRAMES || frameNumber % METADATA_INTERVAL === 0
@@ -202,10 +205,19 @@ async function startSending() {
 
     debugLog(`Canvas: ${canvasWidth}x${canvasHeight}, dpr: ${window.devicePixelRatio}`)
 
-    // Small fixed block size for MJPEG reliability.
-    // Start small to get first CRC-valid frames, then increase.
-    const blockSize = 256
+    // Size payloads from the actual frame capacity instead of pinning them to
+    // 256 bytes. This keeps small files snappy and makes larger transfers practical
+    // without exceeding what the current frame geometry can carry.
+    const capacity = getPayloadCapacity(canvasWidth, canvasHeight)
+    const frameBlockSize = Math.max(200, capacity - 16)
+    const preferredBlockSize = Math.ceil(state.fileSize / TARGET_SOURCE_BLOCKS)
+    const blockSize = Math.min(
+      frameBlockSize,
+      MAX_BLOCK_SIZE,
+      Math.max(preferredBlockSize, MIN_BLOCK_SIZE)
+    )
 
+    debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
     debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)}), blockSize: ${blockSize}`)
 
     state.encoder = createEncoder(

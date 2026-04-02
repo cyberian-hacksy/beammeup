@@ -396,7 +396,11 @@ async function processFrame(now, metadata) {
       state.decoder.receive(packet)
 
       if (state.validFrames % 10 === 0) {
-        debugLog(`Progress: ${Math.round(state.decoder.progress * 100)}%, sym=${parsed.symbolId}`)
+        debugLog(
+          `Progress: ${Math.round(state.decoder.progress * 100)}% ` +
+          `solved=${state.decoder.solved}/${state.decoder.K || '?'} ` +
+          `unique=${state.decoder.uniqueSymbols} sym=${parsed.symbolId}`
+        )
       }
 
       debugCurrent(`#${state.validFrames} sym=${parsed.symbolId} ${Math.round((state.decoder.progress || 0) * 100)}%`)
