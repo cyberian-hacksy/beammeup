@@ -14,8 +14,11 @@ const BITS_PER_BYTE = 8
 const HEADER_BLOCKS = HEADER_SIZE * BITS_PER_BYTE // 22 bytes × 8 bits = 176 blocks
 const GRAY2_LEVEL_FRACTIONS = [0.08, 0.36, 0.64, 0.92]
 const GRAY2_THRESHOLD_FRACTIONS = [0.22, 0.50, 0.78]
+const ENABLE_BINARY_PILOTS = false
+const ENABLE_PAYLOAD_INTERLEAVING = true
 const BINARY_PILOT_SPACING = 16
 const BINARY_PILOT_OFFSET = 8
+const payloadCellOrderCache = new Map()
 
 // Encode a byte into 8 binary block values (returned as array of 0/255)
 function encodeBits(byte) {
@@ -153,7 +156,7 @@ export function getPayloadCapacity(width, height, mode = HDMI_MODE.COMPAT_4) {
 }
 
 function getBinaryPilotConfig(mode) {
-  if (mode !== HDMI_MODE.COMPAT_4) return null
+  if (!ENABLE_BINARY_PILOTS || mode !== HDMI_MODE.COMPAT_4) return null
   return {
     spacing: BINARY_PILOT_SPACING,
     offsetX: BINARY_PILOT_OFFSET,
@@ -193,6 +196,58 @@ function getUsablePayloadBlocks(mode, blocksX, blocksY) {
   const totalBlocks = blocksX * blocksY
   const payloadBlocks = Math.max(0, totalBlocks - HEADER_BLOCKS)
   return Math.max(0, payloadBlocks - countPilotBlocks(mode, blocksX, blocksY))
+}
+
+function gcd(a, b) {
+  let x = Math.abs(a)
+  let y = Math.abs(b)
+  while (y !== 0) {
+    const next = x % y
+    x = y
+    y = next
+  }
+  return x || 1
+}
+
+function choosePayloadInterleaveStride(count) {
+  if (count < 2) return 1
+
+  let stride = Math.max(1, Math.floor(count * 0.61803398875))
+  while (stride > 1 && gcd(stride, count) !== 1) {
+    stride--
+  }
+  return Math.max(1, stride)
+}
+
+function getPayloadCellOrder(mode, blocksX, blocksY) {
+  const cacheKey = `${mode}:${blocksX}x${blocksY}:${ENABLE_PAYLOAD_INTERLEAVING ? 1 : 0}`
+  const cached = payloadCellOrderCache.get(cacheKey)
+  if (cached) return cached
+
+  const cells = []
+  let blockIdx = 0
+  for (let by = 0; by < blocksY; by++) {
+    for (let bx = 0; bx < blocksX; bx++) {
+      if (blockIdx >= HEADER_BLOCKS && !isPilotBlock(mode, bx, by, blockIdx)) {
+        cells.push({ bx, by })
+      }
+      blockIdx++
+    }
+  }
+
+  if (!ENABLE_PAYLOAD_INTERLEAVING || mode !== HDMI_MODE.COMPAT_4 || cells.length < 2) {
+    payloadCellOrderCache.set(cacheKey, cells)
+    return cells
+  }
+
+  const stride = choosePayloadInterleaveStride(cells.length)
+  const interleaved = new Array(cells.length)
+  for (let logicalIdx = 0; logicalIdx < cells.length; logicalIdx++) {
+    interleaved[logicalIdx] = cells[(logicalIdx * stride) % cells.length]
+  }
+
+  payloadCellOrderCache.set(cacheKey, interleaved)
+  return interleaved
 }
 
 // --- Header serialization ---
@@ -267,6 +322,7 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
   const dr = getDataRegion(width, height)
   const blocksX = Math.floor(dr.w / dataBlockSize)
   const blocksY = Math.floor(dr.h / dataBlockSize)
+  const payloadCells = getPayloadCellOrder(mode, blocksX, blocksY)
   let headerByteIdx = 0
   let headerBitIdx = 0
   let payloadBitPos = 0
@@ -296,18 +352,6 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
         r = val
         g = val
         b = val
-      } else if (payloadBitPos < payloadBitLength) {
-        const symbol = extractBits(payload, payloadBitPos, bitsPerBlock)
-        payloadBitPos += bitsPerBlock
-
-        if (bitsPerBlock === 3) {
-          [r, g, b] = encodeRgb3(symbol)
-        } else {
-          const val = bitsPerBlock === 2 ? encodeGray2(symbol) : (symbol ? 255 : 0)
-          r = val
-          g = val
-          b = val
-        }
       }
 
       // Fill the mode-specific data block.
@@ -322,6 +366,35 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
         }
       }
       blockIdx++
+    }
+  }
+
+  for (let cellIdx = 0; cellIdx < payloadCells.length && payloadBitPos < payloadBitLength; cellIdx++) {
+    const { bx, by } = payloadCells[cellIdx]
+    const symbol = extractBits(payload, payloadBitPos, bitsPerBlock)
+    payloadBitPos += bitsPerBlock
+
+    let r = 0
+    let g = 0
+    let b = 0
+    if (bitsPerBlock === 3) {
+      [r, g, b] = encodeRgb3(symbol)
+    } else {
+      const val = bitsPerBlock === 2 ? encodeGray2(symbol) : (symbol ? 255 : 0)
+      r = val
+      g = val
+      b = val
+    }
+
+    const startX = dr.x + bx * dataBlockSize
+    const startY = dr.y + by * dataBlockSize
+    for (let dy = 0; dy < dataBlockSize; dy++) {
+      for (let dx = 0; dx < dataBlockSize; dx++) {
+        const i = ((startY + dy) * width + (startX + dx)) * 4
+        imageData[i] = r
+        imageData[i + 1] = g
+        imageData[i + 2] = b
+      }
     }
   }
 
@@ -742,6 +815,7 @@ export function dataRegionFromAnchors(anchors) {
 function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, expectedBlocksY = null) {
   const blocksY = expectedBlocksY ?? Math.floor(region.h / stepY)
   const bitsPerBlock = getModeBitsPerBlock(header.mode) || 1
+  const payloadCells = getPayloadCellOrder(header.mode, blocksX, blocksY)
   const levels = bitsPerBlock === 3
     ? estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
     : estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
@@ -749,36 +823,31 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
     ? sampleBinaryPilotField(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, blocksY, header.mode)
     : null
   const payload = new Uint8Array(header.payloadLength)
-  let blockIdx = 0
   const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
   const height = imageData.length / (width * 4)
 
-  for (let by = 0; by < blocksY && decodeState.index < header.payloadLength; by++) {
-    for (let bx = 0; bx < blocksX && decodeState.index < header.payloadLength; bx++) {
-      if (blockIdx >= HEADER_BLOCKS && !isPilotBlock(header.mode, bx, by, blockIdx)) {
-        const px = rx + Math.round(bx * stepX)
-        const py = ry + Math.round(by * stepY)
-        let symbol = 0
-        if (px >= 0 && px < width && py >= 0 && py < height) {
-          if (bitsPerBlock === 3) {
-            const rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
-            symbol = decodeRgb3(rgb, levels?.blackLevels, levels?.whiteLevels)
-          } else if (bitsPerBlock === 2) {
-            const val = sampleBlockAt(imageData, width, px, py, bs)
-            symbol = decodeGray2(val, levels?.blackLevel, levels?.whiteLevel)
-          } else {
-            const val = sampleBlockAt(imageData, width, px, py, bs)
-            const localLevels = pilotField
-              ? estimateBinaryPilotLevelsAt(pilotField, bx, by, levels?.blackLevel, levels?.whiteLevel)
-              : levels
-            const threshold = ((localLevels?.blackLevel ?? 0) + (localLevels?.whiteLevel ?? 255)) * 0.5
-            symbol = val >= threshold ? 1 : 0
-          }
-        }
-        appendSymbolBits(payload, decodeState, symbol, bitsPerBlock)
+  for (let cellIdx = 0; cellIdx < payloadCells.length && decodeState.index < header.payloadLength; cellIdx++) {
+    const { bx, by } = payloadCells[cellIdx]
+    const px = rx + Math.round(bx * stepX)
+    const py = ry + Math.round(by * stepY)
+    let symbol = 0
+    if (px >= 0 && px < width && py >= 0 && py < height) {
+      if (bitsPerBlock === 3) {
+        const rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
+        symbol = decodeRgb3(rgb, levels?.blackLevels, levels?.whiteLevels)
+      } else if (bitsPerBlock === 2) {
+        const val = sampleBlockAt(imageData, width, px, py, bs)
+        symbol = decodeGray2(val, levels?.blackLevel, levels?.whiteLevel)
+      } else {
+        const val = sampleBlockAt(imageData, width, px, py, bs)
+        const localLevels = pilotField
+          ? estimateBinaryPilotLevelsAt(pilotField, bx, by, levels?.blackLevel, levels?.whiteLevel)
+          : levels
+        const threshold = ((localLevels?.blackLevel ?? 0) + (localLevels?.whiteLevel ?? 255)) * 0.5
+        symbol = val >= threshold ? 1 : 0
       }
-      blockIdx++
     }
+    appendSymbolBits(payload, decodeState, symbol, bitsPerBlock)
   }
 
   const actualCrc = crc32(payload)
@@ -799,6 +868,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
   const rx = region.x + (layout.xOff || 0)
   const ry = region.y + (layout.yOff || 0)
   const bitsPerBlock = layout.bitsPerBlock || 1
+  const payloadCells = getPayloadCellOrder(frameMode, blocksX, blocksY)
   const pilotField = bitsPerBlock === 1
     ? sampleBinaryPilotField(
       imageData,
@@ -815,36 +885,31 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
     )
     : null
   const payload = new Uint8Array(payloadLength)
-  let blockIdx = 0
   const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
   const height = imageData.length / (width * 4)
 
-  for (let by = 0; by < blocksY && decodeState.index < payloadLength; by++) {
-    for (let bx = 0; bx < blocksX && decodeState.index < payloadLength; bx++) {
-      if (blockIdx >= HEADER_BLOCKS && !isPilotBlock(frameMode, bx, by, blockIdx)) {
-        const px = rx + Math.round(bx * layout.stepX)
-        const py = ry + Math.round(by * layout.stepY)
-        let symbol = 0
-        if (px >= 0 && px < width && py >= 0 && py < height) {
-          if (bitsPerBlock === 3) {
-            const rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
-            symbol = decodeRgb3(rgb, layout.blackLevels, layout.whiteLevels)
-          } else if (bitsPerBlock === 2) {
-            const val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
-            symbol = decodeGray2(val, layout.blackLevel, layout.whiteLevel)
-          } else {
-            const val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
-            const localLevels = pilotField
-              ? estimateBinaryPilotLevelsAt(pilotField, bx, by, layout.blackLevel, layout.whiteLevel)
-              : layout
-            const threshold = ((localLevels?.blackLevel ?? 0) + (localLevels?.whiteLevel ?? 255)) * 0.5
-            symbol = val >= threshold ? 1 : 0
-          }
-        }
-        appendSymbolBits(payload, decodeState, symbol, bitsPerBlock)
+  for (let cellIdx = 0; cellIdx < payloadCells.length && decodeState.index < payloadLength; cellIdx++) {
+    const { bx, by } = payloadCells[cellIdx]
+    const px = rx + Math.round(bx * layout.stepX)
+    const py = ry + Math.round(by * layout.stepY)
+    let symbol = 0
+    if (px >= 0 && px < width && py >= 0 && py < height) {
+      if (bitsPerBlock === 3) {
+        const rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
+        symbol = decodeRgb3(rgb, layout.blackLevels, layout.whiteLevels)
+      } else if (bitsPerBlock === 2) {
+        const val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
+        symbol = decodeGray2(val, layout.blackLevel, layout.whiteLevel)
+      } else {
+        const val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
+        const localLevels = pilotField
+          ? estimateBinaryPilotLevelsAt(pilotField, bx, by, layout.blackLevel, layout.whiteLevel)
+          : layout
+        const threshold = ((localLevels?.blackLevel ?? 0) + (localLevels?.whiteLevel ?? 255)) * 0.5
+        symbol = val >= threshold ? 1 : 0
       }
-      blockIdx++
     }
+    appendSymbolBits(payload, decodeState, symbol, bitsPerBlock)
   }
 
   return decodeState.index === payloadLength ? payload : null
