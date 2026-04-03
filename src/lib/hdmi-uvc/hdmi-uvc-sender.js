@@ -50,6 +50,8 @@ const state = {
   isSending: false,
   isPaused: false,
   symbolId: 1,
+  systematicPass: 1,
+  fountainSymbolId: 1,
   frameCount: 0,
   mode: HDMI_MODE.COMPAT_4,
   fountainPhaseLogged: false
@@ -214,6 +216,7 @@ function updateModeSelector() {
 // Once the HDMI-UVC decode path is stable, repeating every symbol wastes most
 // of the available bandwidth. Let fountain redundancy absorb frame loss.
 const FRAMES_PER_SYMBOL = 1
+const SYSTEMATIC_PASSES_BEFORE_FOUNTAIN = 2
 const METADATA_BURST_FRAMES = 6
 const METADATA_INTERVAL_FRAMES = METADATA_INTERVAL * 2
 const MIN_BLOCK_SIZE = 512
@@ -285,6 +288,38 @@ function shouldSendMetadata(frameNumber) {
   return frameNumber <= METADATA_BURST_FRAMES || frameNumber % METADATA_INTERVAL_FRAMES === 0
 }
 
+function nextDataSymbolId(frameNumber) {
+  if (state.systematicPass <= SYSTEMATIC_PASSES_BEFORE_FOUNTAIN) {
+    const symbolId = state.symbolId
+
+    if (frameNumber % FRAMES_PER_SYMBOL === 0) {
+      state.symbolId++
+      if (state.symbolId > state.encoder.K_prime) {
+        state.systematicPass++
+        if (state.systematicPass <= SYSTEMATIC_PASSES_BEFORE_FOUNTAIN) {
+          state.symbolId = 1
+          debugLog(
+            `Starting systematic replay pass ${state.systematicPass}/${SYSTEMATIC_PASSES_BEFORE_FOUNTAIN} ` +
+            `at frame ${frameNumber + 1}`
+          )
+        }
+      }
+    }
+
+    return symbolId
+  }
+
+  const symbolId = state.fountainSymbolId
+  if (!state.fountainPhaseLogged) {
+    state.fountainPhaseLogged = true
+    debugLog(`Entered fountain phase at frame ${frameNumber} (symbol ${symbolId})`)
+  }
+  if (frameNumber % FRAMES_PER_SYMBOL === 0) {
+    state.fountainSymbolId++
+  }
+  return symbolId
+}
+
 function buildFramePacketBatch(frameNumber) {
   const sendMetadata = shouldSendMetadata(frameNumber)
   const packets = []
@@ -297,17 +332,9 @@ function buildFramePacketBatch(frameNumber) {
   }
 
   while (packets.length < slots) {
-    const symbolId = state.symbolId
-    if (!state.fountainPhaseLogged && symbolId > state.encoder.K_prime) {
-      state.fountainPhaseLogged = true
-      debugLog(`Entered fountain phase at frame ${frameNumber} (symbol ${symbolId})`)
-    }
+    const symbolId = nextDataSymbolId(frameNumber)
     packets.push(state.encoder.generateSymbol(symbolId))
     symbolIds.push(symbolId)
-
-    if (frameNumber % FRAMES_PER_SYMBOL === 0) {
-      state.symbolId++
-    }
   }
 
   let totalLength = 0
@@ -496,6 +523,8 @@ async function startSending() {
     state.isSending = true
     state.isPaused = false
     state.symbolId = 1
+    state.systematicPass = 1
+    state.fountainSymbolId = state.encoder.K_prime + 1
     state.fountainPhaseLogged = false
     state.frameCount = 0
     setSignalLive(true)
@@ -585,6 +614,8 @@ function stopSending() {
   state.isSending = false
   state.isPaused = false
   state.symbolId = 1
+  state.systematicPass = 1
+  state.fountainSymbolId = 1
   state.fountainPhaseLogged = false
   state.frameCount = 0
   setSignalLive(false)
