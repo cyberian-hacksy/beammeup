@@ -654,6 +654,13 @@ select {
   height: 100%;
 }
 
+.hdmi-container.signal-live,
+.hdmi-container.signal-live *,
+body.hdmi-uvc-signal-live,
+body.hdmi-uvc-signal-live * {
+  cursor: none !important;
+}
+
 .hdmi-overlay {
   position: absolute;
   top: 8px;

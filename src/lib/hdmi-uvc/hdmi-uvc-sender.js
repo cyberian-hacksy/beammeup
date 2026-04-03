@@ -60,6 +60,8 @@ let showError = (msg) => console.error(msg)
 function resetCanvasStyles() {
   if (!elements?.canvas) return
   elements.container?.classList.remove('fullscreen')
+  elements.container?.classList.remove('signal-live')
+  document.body?.classList.remove('hdmi-uvc-signal-live')
   elements.canvas.style.display = 'none'
   elements.canvas.style.position = ''
   elements.canvas.style.top = ''
@@ -69,6 +71,12 @@ function resetCanvasStyles() {
   elements.canvas.style.zIndex = ''
   elements.canvas.style.imageRendering = ''
   elements.canvas.style.background = ''
+}
+
+function setSignalLive(isLive) {
+  if (!elements?.container) return
+  elements.container.classList.toggle('signal-live', isLive)
+  document.body?.classList.toggle('hdmi-uvc-signal-live', isLive)
 }
 
 function waitForLayoutFrames(count = 2) {
@@ -459,6 +467,7 @@ async function startSending() {
     state.isPaused = false
     state.symbolId = 1
     state.frameCount = 0
+    setSignalLive(true)
 
     elements.fpsSlider.disabled = true
     updateActionButton()
@@ -473,6 +482,7 @@ async function startSending() {
 
 function pauseSending() {
   state.isPaused = true
+  setSignalLive(false)
   if (state.timerId) {
     clearTimeout(state.timerId)
     state.timerId = null
@@ -492,6 +502,7 @@ function pauseSending() {
 
 async function resumeSending() {
   state.isPaused = false
+  setSignalLive(true)
 
   elements.container.classList.add('fullscreen')
   elements.canvas.style.display = 'block'
@@ -544,6 +555,7 @@ function stopSending() {
   state.isPaused = false
   state.symbolId = 1
   state.frameCount = 0
+  setSignalLive(false)
 
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
   elements.fpsSlider.disabled = false

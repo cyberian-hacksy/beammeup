@@ -14,6 +14,8 @@ const BITS_PER_BYTE = 8
 const HEADER_BLOCKS = HEADER_SIZE * BITS_PER_BYTE // 22 bytes × 8 bits = 176 blocks
 const GRAY2_LEVEL_FRACTIONS = [0.08, 0.36, 0.64, 0.92]
 const GRAY2_THRESHOLD_FRACTIONS = [0.22, 0.50, 0.78]
+const BINARY_PILOT_SPACING = 16
+const BINARY_PILOT_OFFSET = 8
 
 // Encode a byte into 8 binary block values (returned as array of 0/255)
 function encodeBits(byte) {
@@ -146,9 +148,51 @@ export function getPayloadCapacity(width, height, mode = HDMI_MODE.COMPAT_4) {
   const dr = getDataRegion(width, height)
   const blocksX = Math.floor(dr.w / dataBlockSize)
   const blocksY = Math.floor(dr.h / dataBlockSize)
+  const payloadBlocks = getUsablePayloadBlocks(mode, blocksX, blocksY)
+  return Math.max(0, Math.floor((payloadBlocks * bitsPerBlock) / BITS_PER_BYTE))
+}
+
+function getBinaryPilotConfig(mode) {
+  if (mode !== HDMI_MODE.COMPAT_4) return null
+  return {
+    spacing: BINARY_PILOT_SPACING,
+    offsetX: BINARY_PILOT_OFFSET,
+    offsetY: BINARY_PILOT_OFFSET
+  }
+}
+
+function getPilotBit(config, bx, by) {
+  const gx = Math.floor((bx - config.offsetX) / config.spacing)
+  const gy = Math.floor((by - config.offsetY) / config.spacing)
+  return (gx + gy) & 1
+}
+
+function isPilotBlock(mode, bx, by, blockIdx) {
+  const config = getBinaryPilotConfig(mode)
+  if (!config || blockIdx < HEADER_BLOCKS) return false
+  if (bx < config.offsetX || by < config.offsetY) return false
+  return ((bx - config.offsetX) % config.spacing === 0) &&
+    ((by - config.offsetY) % config.spacing === 0)
+}
+
+function countPilotBlocks(mode, blocksX, blocksY) {
+  const config = getBinaryPilotConfig(mode)
+  if (!config) return 0
+
+  let count = 0
+  for (let by = config.offsetY; by < blocksY; by += config.spacing) {
+    for (let bx = config.offsetX; bx < blocksX; bx += config.spacing) {
+      const blockIdx = by * blocksX + bx
+      if (blockIdx >= HEADER_BLOCKS) count++
+    }
+  }
+  return count
+}
+
+function getUsablePayloadBlocks(mode, blocksX, blocksY) {
   const totalBlocks = blocksX * blocksY
   const payloadBlocks = Math.max(0, totalBlocks - HEADER_BLOCKS)
-  return Math.max(0, Math.floor((payloadBlocks * bitsPerBlock) / BITS_PER_BYTE))
+  return Math.max(0, payloadBlocks - countPilotBlocks(mode, blocksX, blocksY))
 }
 
 // --- Header serialization ---
@@ -247,6 +291,11 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
           headerBitIdx = 0
           headerByteIdx++
         }
+      } else if (isPilotBlock(mode, bx, by, blockIdx)) {
+        const val = getPilotBit(getBinaryPilotConfig(mode), bx, by) ? 255 : 0
+        r = val
+        g = val
+        b = val
       } else if (payloadBitPos < payloadBitLength) {
         const symbol = extractBits(payload, payloadBitPos, bitsPerBlock)
         payloadBitPos += bitsPerBlock
@@ -313,6 +362,93 @@ function sampleBlockRgbAt(imageData, width, px, py, bs) {
     }
   }
   return [sums[0] / 4, sums[1] / 4, sums[2] / 4]
+}
+
+function sampleBinaryPilotField(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, blocksY, mode) {
+  const config = getBinaryPilotConfig(mode)
+  if (!config) return null
+
+  const imgHeight = imageData.length / (width * 4)
+  const rows = []
+  let blackSum = 0
+  let whiteSum = 0
+  let blackCount = 0
+  let whiteCount = 0
+
+  for (let by = config.offsetY; by < blocksY; by += config.spacing) {
+    const row = []
+    for (let bx = config.offsetX; bx < blocksX; bx += config.spacing) {
+      const blockIdx = by * blocksX + bx
+      if (blockIdx < HEADER_BLOCKS) {
+        row.push(null)
+        continue
+      }
+
+      const px = rx + Math.round(bx * stepX)
+      const py = ry + Math.round(by * stepY)
+      let sample = 0
+      if (px >= 0 && px < width && py >= 0 && py < imgHeight) {
+        sample = sampleBlockAt(imageData, width, px, py, bs)
+      }
+
+      const bit = getPilotBit(config, bx, by)
+      row.push({ bit, sample })
+      if (bit) {
+        whiteSum += sample
+        whiteCount++
+      } else {
+        blackSum += sample
+        blackCount++
+      }
+    }
+    rows.push(row)
+  }
+
+  return {
+    config,
+    rows,
+    cols: rows[0]?.length || 0,
+    rowCount: rows.length,
+    globalBlackLevel: blackCount > 0 ? blackSum / blackCount : 0,
+    globalWhiteLevel: whiteCount > 0 ? whiteSum / whiteCount : 255
+  }
+}
+
+function estimateBinaryPilotLevelsAt(field, bx, by, fallbackBlack = 0, fallbackWhite = 255) {
+  if (!field || field.rowCount === 0 || field.cols === 0) {
+    return { blackLevel: fallbackBlack, whiteLevel: fallbackWhite }
+  }
+
+  const { config, rows, cols, rowCount } = field
+  const gx = (bx - config.offsetX) / config.spacing
+  const gy = (by - config.offsetY) / config.spacing
+  const centerX = Math.round(gx)
+  const centerY = Math.round(gy)
+  let blackSum = 0
+  let whiteSum = 0
+  let blackWeight = 0
+  let whiteWeight = 0
+
+  for (let py = Math.max(0, centerY - 1); py <= Math.min(rowCount - 1, centerY + 1); py++) {
+    for (let px = Math.max(0, centerX - 1); px <= Math.min(cols - 1, centerX + 1); px++) {
+      const sample = rows[py]?.[px]
+      if (!sample) continue
+
+      const weight = 1 / (1 + Math.abs(px - gx) + Math.abs(py - gy))
+      if (sample.bit) {
+        whiteSum += sample.sample * weight
+        whiteWeight += weight
+      } else {
+        blackSum += sample.sample * weight
+        blackWeight += weight
+      }
+    }
+  }
+
+  return {
+    blackLevel: blackWeight > 0 ? blackSum / blackWeight : (field.globalBlackLevel ?? fallbackBlack),
+    whiteLevel: whiteWeight > 0 ? whiteSum / whiteWeight : (field.globalWhiteLevel ?? fallbackWhite)
+  }
 }
 
 // Check if an 8×8 block grid at (originX, originY) matches the anchor pattern
@@ -606,11 +742,12 @@ export function dataRegionFromAnchors(anchors) {
 function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, expectedBlocksY = null) {
   const blocksY = expectedBlocksY ?? Math.floor(region.h / stepY)
   const bitsPerBlock = getModeBitsPerBlock(header.mode) || 1
-  const levels = bitsPerBlock === 2
-    ? estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
-    : bitsPerBlock === 3
-      ? estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
-      : null
+  const levels = bitsPerBlock === 3
+    ? estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
+    : estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
+  const pilotField = bitsPerBlock === 1
+    ? sampleBinaryPilotField(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, blocksY, header.mode)
+    : null
   const payload = new Uint8Array(header.payloadLength)
   let blockIdx = 0
   const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
@@ -618,7 +755,7 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
 
   for (let by = 0; by < blocksY && decodeState.index < header.payloadLength; by++) {
     for (let bx = 0; bx < blocksX && decodeState.index < header.payloadLength; bx++) {
-      if (blockIdx >= HEADER_BLOCKS) {
+      if (blockIdx >= HEADER_BLOCKS && !isPilotBlock(header.mode, bx, by, blockIdx)) {
         const px = rx + Math.round(bx * stepX)
         const py = ry + Math.round(by * stepY)
         let symbol = 0
@@ -626,11 +763,16 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
           if (bitsPerBlock === 3) {
             const rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
             symbol = decodeRgb3(rgb, levels?.blackLevels, levels?.whiteLevels)
+          } else if (bitsPerBlock === 2) {
+            const val = sampleBlockAt(imageData, width, px, py, bs)
+            symbol = decodeGray2(val, levels?.blackLevel, levels?.whiteLevel)
           } else {
             const val = sampleBlockAt(imageData, width, px, py, bs)
-            symbol = bitsPerBlock === 2
-              ? decodeGray2(val, levels?.blackLevel, levels?.whiteLevel)
-              : (val > 128 ? 1 : 0)
+            const localLevels = pilotField
+              ? estimateBinaryPilotLevelsAt(pilotField, bx, by, levels?.blackLevel, levels?.whiteLevel)
+              : levels
+            const threshold = ((localLevels?.blackLevel ?? 0) + (localLevels?.whiteLevel ?? 255)) * 0.5
+            symbol = val >= threshold ? 1 : 0
           }
         }
         appendSymbolBits(payload, decodeState, symbol, bitsPerBlock)
@@ -651,11 +793,27 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
 
   const blocksX = layout.blocksX
   const blocksY = layout.blocksY ?? Math.floor(region.h / layout.stepY)
+  const frameMode = layout.frameMode ?? HDMI_MODE.COMPAT_4
   if (!blocksX || !blocksY) return null
 
   const rx = region.x + (layout.xOff || 0)
   const ry = region.y + (layout.yOff || 0)
   const bitsPerBlock = layout.bitsPerBlock || 1
+  const pilotField = bitsPerBlock === 1
+    ? sampleBinaryPilotField(
+      imageData,
+      width,
+      region,
+      rx,
+      ry,
+      layout.stepX,
+      layout.stepY,
+      layout.dataBs,
+      blocksX,
+      blocksY,
+      frameMode
+    )
+    : null
   const payload = new Uint8Array(payloadLength)
   let blockIdx = 0
   const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
@@ -663,7 +821,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
 
   for (let by = 0; by < blocksY && decodeState.index < payloadLength; by++) {
     for (let bx = 0; bx < blocksX && decodeState.index < payloadLength; bx++) {
-      if (blockIdx >= HEADER_BLOCKS) {
+      if (blockIdx >= HEADER_BLOCKS && !isPilotBlock(frameMode, bx, by, blockIdx)) {
         const px = rx + Math.round(bx * layout.stepX)
         const py = ry + Math.round(by * layout.stepY)
         let symbol = 0
@@ -671,11 +829,16 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
           if (bitsPerBlock === 3) {
             const rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
             symbol = decodeRgb3(rgb, layout.blackLevels, layout.whiteLevels)
+          } else if (bitsPerBlock === 2) {
+            const val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
+            symbol = decodeGray2(val, layout.blackLevel, layout.whiteLevel)
           } else {
             const val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
-            symbol = bitsPerBlock === 2
-              ? decodeGray2(val, layout.blackLevel, layout.whiteLevel)
-              : (val > 128 ? 1 : 0)
+            const localLevels = pilotField
+              ? estimateBinaryPilotLevelsAt(pilotField, bx, by, layout.blackLevel, layout.whiteLevel)
+              : layout
+            const threshold = ((localLevels?.blackLevel ?? 0) + (localLevels?.whiteLevel ?? 255)) * 0.5
+            symbol = val >= threshold ? 1 : 0
           }
         }
         appendSymbolBits(payload, decodeState, symbol, bitsPerBlock)
@@ -866,7 +1029,7 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
       )
       if (!refinedHeader) continue
 
-      const payloadBlocks = blocksX * blocksY - HEADER_BLOCKS
+      const payloadBlocks = getUsablePayloadBlocks(refinedHeader.mode, blocksX, blocksY)
       const payloadCapacity = Math.floor((payloadBlocks * bitsPerBlock) / BITS_PER_BYTE)
       if (payloadCapacity < refinedHeader.payloadLength) continue
 
@@ -881,6 +1044,7 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
         stepY,
         blocksX,
         blocksY,
+        frameMode: refinedHeader.mode,
         xOff: refinedRx - region.x,
         yOff: refinedRy - region.y,
         refined: true,
@@ -1001,7 +1165,7 @@ export function decodeDataRegion(imageData, width, region) {
 
           const payloadBitsPerBlock = getModeBitsPerBlock(header.mode) || bitsPerBlock
           const blocksY = Math.floor(region.h / stepY)
-          const payloadBlocks = blocksX * blocksY - HEADER_BLOCKS
+          const payloadBlocks = getUsablePayloadBlocks(header.mode, blocksX, blocksY)
           const payloadCapacity = Math.floor((payloadBlocks * payloadBitsPerBlock) / BITS_PER_BYTE)
           if (payloadCapacity < header.payloadLength) continue
 
@@ -1015,6 +1179,7 @@ export function decodeDataRegion(imageData, width, region) {
             stepY,
             blocksX,
             blocksY,
+            frameMode: header.mode,
             xOff,
             yOff,
             bsAdj,
