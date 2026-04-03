@@ -249,7 +249,7 @@ function getBatchingProfile(mode) {
       return {
         maxPacketsPerFrame: 9,
         targetFrameFill: 0.74,
-        maxBlockSize: 1024,
+        maxBlockSize: 888,
         maxUsedBytes: 8192
       }
     case HDMI_MODE.CODEBOOK_3:
