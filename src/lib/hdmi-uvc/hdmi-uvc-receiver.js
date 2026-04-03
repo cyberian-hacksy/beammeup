@@ -42,6 +42,52 @@ function debugCurrent(text) {
   if (el) el.textContent = text
 }
 
+function formatMaybeNumber(value, digits = 2) {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : 'n/a'
+}
+
+function formatMaybeInt(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? String(Math.round(value)) : 'n/a'
+}
+
+function formatDecisionCandidate(candidate) {
+  if (!candidate) return 'n/a'
+  const name = `${candidate.hypothesis}${candidate.refined ? '*' : ''}`
+  return (
+    `${name}(score=${formatMaybeInt(candidate.score)} crc=${candidate.crcValid ? 1 : 0} ` +
+    `${candidate.width}x${candidate.height}@${candidate.fps} len=${candidate.payloadLength} ` +
+    `off=(${formatMaybeInt(candidate.xOff)},${formatMaybeInt(candidate.yOff)}) ` +
+    `step=${formatMaybeNumber(candidate.stepX)}/${formatMaybeNumber(candidate.stepY)} ` +
+    `grid=${formatMaybeInt(candidate.blocksX)}x${formatMaybeInt(candidate.blocksY)})`
+  )
+}
+
+function formatDecisionScale(diag) {
+  if (!diag) return null
+  return (
+    `Scale: measured=${formatMaybeInt(diag.measuredFrameW)}x${formatMaybeInt(diag.measuredFrameH)} ` +
+    `decoded=${formatMaybeInt(diag.decodedFrameW)}x${formatMaybeInt(diag.decodedFrameH)} ` +
+    `ratio=${formatMaybeNumber(diag.decodedToMeasuredX)}/${formatMaybeNumber(diag.decodedToMeasuredY)} ` +
+    `geom=${diag.geometryClass || 'n/a'} winner=${diag.decision?.winner?.hypothesis || diag.hypothesis || 'base'}${diag.decision?.winner?.refined ? '*' : ''} ` +
+    `score=${formatMaybeInt(diag.decision?.winner?.score ?? diag.score)} ` +
+    `reason=${diag.decision?.reason || 'n/a'}`
+  )
+}
+
+function formatDecisionCandidates(diag) {
+  const candidates = diag?.decision?.candidates || []
+  if (candidates.length === 0) return null
+  return `Tried: ${candidates.map(formatDecisionCandidate).join('; ')}`
+}
+
+function formatRecoveryState(expectedPacketSize, totalFramePackets, salvagedCount, fixedCount) {
+  return (
+    `Recovery: expectedPkt=${formatMaybeInt(expectedPacketSize)} ` +
+    `slots=${formatMaybeInt(totalFramePackets)} salvage=${formatMaybeInt(salvagedCount)} ` +
+    `fixed=${formatMaybeInt(fixedCount)} expectedSlots=${formatMaybeInt(state.expectedPacketCount)}`
+  )
+}
+
 function extractFramePackets(framePayload, expectedPacketSize = null) {
   if (expectedPacketSize && expectedPacketSize >= PACKET_HEADER_SIZE) {
     if (framePayload.length % expectedPacketSize !== 0) return []
@@ -537,6 +583,7 @@ async function processFrame(now, metadata) {
     const expectedPacketSize = getExpectedPacketSize()
     const totalFramePackets = getFramePacketSlotCount(result.payload, expectedPacketSize)
     const salvagedPackets = extractFramePackets(result.payload, expectedPacketSize)
+    const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
     if (acceptPackets(salvagedPackets, result.header.symbolId, true, totalFramePackets)) {
       if (result._diag) state.fixedLayout = { ...result._diag }
       debugLog(`Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) from CRC-fail frame`)
@@ -544,8 +591,6 @@ async function processFrame(now, metadata) {
       scheduleNextFrame()
       return
     }
-
-    const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
     if (acceptPackets(fixedPackets, result.header.symbolId, true, state.expectedPacketCount)) {
       debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) via fixed layout`)
       if (state.decoder?.isComplete()) return
@@ -560,7 +605,11 @@ async function processFrame(now, metadata) {
       const hBytes = `magic=${h.magic.toString(16)} mode=${h.mode} ${h.width}x${h.height} fps=${h.fps} sym=${h.symbolId} len=${h.payloadLength} crc=${h.payloadCrc.toString(16)}`
       const diag = result._diag || {}
       debugLog(`Frame ${state.frameCount}: CRC fail — ${hBytes}`)
-      debugLog(`  Grid${diag.refined ? ' refined' : ''}${diag.hypothesis ? `/${diag.hypothesis}` : ''}: dataBs=${diag.dataBs?.toFixed(2)} step=${diag.stepX?.toFixed(2)}/${diag.stepY?.toFixed(2)} blocks=${diag.blocksX}x${diag.blocksY} off=(${diag.xOff},${diag.yOff}) bsAdj=${diag.bsAdj ?? 'n/a'}`)
+      const scaleLine = formatDecisionScale(diag)
+      if (scaleLine) debugLog(`  ${scaleLine}`)
+      const triedLine = formatDecisionCandidates(diag)
+      if (triedLine) debugLog(`  ${triedLine}`)
+      debugLog(`  ${formatRecoveryState(expectedPacketSize, totalFramePackets, salvagedPackets.length, fixedPackets.length)}`)
     }
     debugCurrent(`#${state.frameCount} CRC fail`)
   } else {
@@ -575,6 +624,11 @@ async function processFrame(now, metadata) {
     state.decodeFailCount++
     if (isDiagFrame) {
       debugLog(`Frame ${state.frameCount}: decode failed`)
+      debugLog(
+        `  Recovery: expectedPkt=${formatMaybeInt(getExpectedPacketSize())} ` +
+        `fixedLayout=${state.fixedLayout ? 'yes' : 'no'} ` +
+        `expectedSlots=${formatMaybeInt(state.expectedPacketCount)} fixed=${fixedPackets.length}`
+      )
       // Sample first data block values for diagnosis (8×8 data blocks = 2× anchor blocks)
       const bs = (region.blockSize || 4) * 2 // data block size = 2× anchor block
       const stepX = (region.stepX || region.blockSize || 4) * 2

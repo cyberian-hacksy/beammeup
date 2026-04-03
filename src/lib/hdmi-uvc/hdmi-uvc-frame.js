@@ -1209,6 +1209,56 @@ function scoreCandidate(result) {
   return score
 }
 
+function getHeaderSpanMetrics(header, region) {
+  const measuredFrameW = region.frameW || null
+  const measuredFrameH = region.frameH || null
+  return {
+    measuredFrameW,
+    measuredFrameH,
+    decodedFrameW: header.width,
+    decodedFrameH: header.height,
+    decodedToMeasuredX: measuredFrameW ? header.width / measuredFrameW : null,
+    decodedToMeasuredY: measuredFrameH ? header.height / measuredFrameH : null,
+    measuredToDecodedX: measuredFrameW ? measuredFrameW / header.width : null,
+    measuredToDecodedY: measuredFrameH ? measuredFrameH / header.height : null,
+    geometryClass: classifyHeaderGeometry(header, region)
+  }
+}
+
+function summarizeDecisionCandidate(result, region) {
+  if (!result) return null
+  const diag = result._diag || {}
+  const metrics = getHeaderSpanMetrics(result.header, region)
+  return {
+    hypothesis: diag.hypothesis || 'base',
+    refined: !!diag.refined,
+    crcValid: !!result.crcValid,
+    score: diag.score ?? scoreCandidate(result),
+    mode: result.header.mode,
+    width: result.header.width,
+    height: result.header.height,
+    fps: result.header.fps,
+    symbolId: result.header.symbolId,
+    payloadLength: result.header.payloadLength,
+    xOff: diag.xOff,
+    yOff: diag.yOff,
+    dataBs: diag.dataBs,
+    stepX: diag.stepX,
+    stepY: diag.stepY,
+    blocksX: diag.blocksX,
+    blocksY: diag.blocksY,
+    ...metrics
+  }
+}
+
+function attachDecisionTrace(result, decision, region) {
+  if (!result) return
+  if (!result._diag) result._diag = {}
+  result._diag.score ??= scoreCandidate(result)
+  Object.assign(result._diag, getHeaderSpanMetrics(result.header, region))
+  result._diag.decision = decision
+}
+
 // Read header bytes using binary modulation at given alignment.
 // Returns parsed header or null. Reads HEADER_BLOCKS blocks, decodes 8 per byte.
 function probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, expectedBlocksY = null) {
@@ -1404,7 +1454,9 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
         blackLevel: result.levels?.blackLevel,
         whiteLevel: result.levels?.whiteLevel,
         blackLevels: result.levels?.blackLevels,
-        whiteLevels: result.levels?.whiteLevels
+        whiteLevels: result.levels?.whiteLevels,
+        score: scoreCandidate(result),
+        ...getHeaderSpanMetrics(refinedHeader, region)
       }
 
       if (result.crcValid) return result
@@ -1420,8 +1472,22 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
   return bestResult
 }
 
+function classifyHeaderGeometry(header, region) {
+  const tooSmall =
+    header.width < region.frameW * 0.75 ||
+    header.height < region.frameH * 0.75
+  const tooLarge =
+    header.width > region.frameW * 1.5 ||
+    header.height > region.frameH * 1.5
+
+  if (tooSmall && !tooLarge) return 'small'
+  if (tooLarge && !tooSmall) return 'large'
+  return 'normal'
+}
+
 function getHeaderRefinementHypotheses(header, region) {
-  const hypotheses = [{ header, name: 'base' }]
+  const hypotheses = []
+  const geometry = classifyHeaderGeometry(header, region)
 
   if (
     header.width * 2 <= 8000 &&
@@ -1459,6 +1525,13 @@ function getHeaderRefinementHypotheses(header, region) {
     })
   }
 
+  if (geometry === 'large') {
+    hypotheses.sort((a, b) => (a.name === 'half' ? -1 : 0) - (b.name === 'half' ? -1 : 0))
+  } else if (geometry === 'small') {
+    hypotheses.sort((a, b) => (a.name === 'double' ? -1 : 0) - (b.name === 'double' ? -1 : 0))
+  }
+
+  hypotheses.push({ header, name: 'base' })
   return hypotheses
 }
 
@@ -1526,8 +1599,8 @@ export function decodeDataRegion(imageData, width, region) {
           const payloadCapacity = Math.floor((payloadBlocks * payloadBitsPerBlock) / BITS_PER_BYTE)
           if (payloadCapacity < header.payloadLength) continue
 
-          let result = readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, dataBs, blocksX, header)
-          result._diag = {
+          const baseResult = readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, dataBs, blocksX, header)
+          baseResult._diag = {
             modeProbe: mode,
             dataBlockSize,
             bitsPerBlock: payloadBitsPerBlock,
@@ -1541,17 +1614,24 @@ export function decodeDataRegion(imageData, width, region) {
             yOff,
             bsAdj,
             payloadCapacity,
-            blackLevel: result.levels?.blackLevel,
-            whiteLevel: result.levels?.whiteLevel,
-            blackLevels: result.levels?.blackLevels,
-            whiteLevels: result.levels?.whiteLevels
+            blackLevel: baseResult.levels?.blackLevel,
+            whiteLevel: baseResult.levels?.whiteLevel,
+            blackLevels: baseResult.levels?.blackLevels,
+            whiteLevels: baseResult.levels?.whiteLevels,
+            hypothesis: 'base',
+            refined: false,
+            score: scoreCandidate(baseResult),
+            ...getHeaderSpanMetrics(header, region)
           }
+          let result = baseResult
 
           const refinements = getHeaderRefinementHypotheses(header, region)
             .map(({ header: hypothesisHeader, name }) =>
               refineCandidateFromHeader(imageData, width, region, hypothesisHeader, rx, ry, name)
             )
             .filter(Boolean)
+
+          let decisionReason = refinements.length > 0 ? 'base_kept' : 'base_only'
 
           if (refinements.length > 0) {
             let bestRefined = refinements[0]
@@ -1566,10 +1646,44 @@ export function decodeDataRegion(imageData, width, region) {
             }
 
             const baseScore = scoreCandidate(result)
-            if (bestRefined.crcValid || bestRefinedScore > baseScore) {
+            const geometry = classifyHeaderGeometry(header, region)
+            const refinedHypothesis = bestRefined._diag?.hypothesis
+            const shouldPreferRefined =
+              bestRefined.crcValid ||
+              bestRefinedScore > baseScore ||
+              (
+                geometry !== 'normal' &&
+                refinedHypothesis &&
+                refinedHypothesis !== 'base' &&
+                bestRefinedScore >= baseScore
+              )
+
+            if (shouldPreferRefined) {
+              if (bestRefined.crcValid) {
+                decisionReason = 'refined_crc'
+              } else if (bestRefinedScore > baseScore) {
+                decisionReason = 'refined_score'
+              } else {
+                decisionReason = 'geometry_override'
+              }
               result = bestRefined
             }
           }
+
+          const decision = {
+            winner: {
+              hypothesis: result._diag?.hypothesis || 'base',
+              refined: !!result._diag?.refined,
+              score: result._diag?.score ?? scoreCandidate(result),
+              crcValid: !!result.crcValid
+            },
+            reason: decisionReason,
+            candidates: [
+              summarizeDecisionCandidate(baseResult, region),
+              ...refinements.map((candidate) => summarizeDecisionCandidate(candidate, region))
+            ].filter(Boolean)
+          }
+          attachDecisionTrace(result, decision, region)
 
           const score = scoreCandidate(result)
 
