@@ -250,6 +250,16 @@ function getBatchingProfile(mode) {
         maxBlockSize: 1280,
         maxUsedBytes: 7424
       }
+    case HDMI_MODE.CODEBOOK_3:
+      // Binary quadrant glyphs keep the payload alphabet black/white while
+      // increasing density over plain 4x4. Start conservatively until live
+      // testing shows how much of the extra density survives the channel.
+      return {
+        maxPacketsPerFrame: 10,
+        targetFrameFill: 0.32,
+        maxBlockSize: 960,
+        maxUsedBytes: 10240
+      }
     case HDMI_MODE.COMPAT_8:
       return { maxPacketsPerFrame: 4, targetFrameFill: 0.90, maxBlockSize: MAX_BLOCK_SIZE, maxUsedBytes: null }
     case HDMI_MODE.COMPAT_16:

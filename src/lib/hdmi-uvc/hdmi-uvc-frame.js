@@ -19,6 +19,16 @@ const ENABLE_PAYLOAD_INTERLEAVING = false
 const BINARY_PILOT_SPACING = 16
 const BINARY_PILOT_OFFSET = 8
 const payloadCellOrderCache = new Map()
+const CODEBOOK3_PATTERNS = [
+  [0, 0, 0, 0],
+  [1, 1, 1, 1],
+  [1, 1, 0, 0],
+  [0, 0, 1, 1],
+  [1, 0, 1, 0],
+  [0, 1, 0, 1],
+  [1, 0, 0, 1],
+  [0, 1, 1, 0]
+]
 
 // Encode a byte into 8 binary block values (returned as array of 0/255)
 function encodeBits(byte) {
@@ -76,6 +86,70 @@ function decodeRgb3(sample, blackLevels = [0, 0, 0], whiteLevels = [255, 255, 25
     }
   }
   return symbol
+}
+
+function normalizeBinarySample(sample, blackLevel = 0, whiteLevel = 255) {
+  const span = Math.max(48, Math.abs(whiteLevel - blackLevel))
+  const polarity = whiteLevel >= blackLevel ? 1 : -1
+  const normalized = (polarity * (sample - blackLevel)) / span
+  return Math.max(0, Math.min(1, normalized))
+}
+
+function decodeCodebook3(samples, blackLevel = 0, whiteLevel = 255) {
+  const normalized = samples.map((sample) => normalizeBinarySample(sample, blackLevel, whiteLevel))
+  let bestSymbol = 0
+  let bestError = Infinity
+
+  for (let symbol = 0; symbol < CODEBOOK3_PATTERNS.length; symbol++) {
+    const pattern = CODEBOOK3_PATTERNS[symbol]
+    let error = 0
+    for (let i = 0; i < 4; i++) {
+      const delta = normalized[i] - pattern[i]
+      error += delta * delta
+    }
+    if (error < bestError) {
+      bestError = error
+      bestSymbol = symbol
+    }
+  }
+
+  return bestSymbol
+}
+
+function fillBlockSolid(imageData, width, startX, startY, size, r, g, b) {
+  for (let dy = 0; dy < size; dy++) {
+    for (let dx = 0; dx < size; dx++) {
+      const i = ((startY + dy) * width + (startX + dx)) * 4
+      imageData[i] = r
+      imageData[i + 1] = g
+      imageData[i + 2] = b
+    }
+  }
+}
+
+function renderCodebook3Block(imageData, width, startX, startY, size, symbol) {
+  const pattern = CODEBOOK3_PATTERNS[symbol & 0x7]
+  const xMid = Math.max(startX + 1, Math.min(startX + size - 1, startX + Math.round(size / 2)))
+  const yMid = Math.max(startY + 1, Math.min(startY + size - 1, startY + Math.round(size / 2)))
+  const quadrants = [
+    [startX, startY, xMid, yMid],
+    [xMid, startY, startX + size, yMid],
+    [startX, yMid, xMid, startY + size],
+    [xMid, yMid, startX + size, startY + size]
+  ]
+
+  for (let q = 0; q < quadrants.length; q++) {
+    const [x0, y0, x1, y1] = quadrants[q]
+    const val = pattern[q] ? 255 : 0
+    for (let py = y0; py < y1; py++) {
+      for (let px = x0; px < x1; px++) {
+        const i = (py * width + px) * 4
+        imageData[i] = val
+        imageData[i + 1] = val
+        imageData[i + 2] = val
+      }
+    }
+  }
 }
 
 function extractBits(data, bitPos, count) {
@@ -357,14 +431,7 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
       // Fill the mode-specific data block.
       const startX = dr.x + bx * dataBlockSize
       const startY = dr.y + by * dataBlockSize
-      for (let dy = 0; dy < dataBlockSize; dy++) {
-        for (let dx = 0; dx < dataBlockSize; dx++) {
-          const i = ((startY + dy) * width + (startX + dx)) * 4
-          imageData[i] = r
-          imageData[i + 1] = g
-          imageData[i + 2] = b
-        }
-      }
+      fillBlockSolid(imageData, width, startX, startY, dataBlockSize, r, g, b)
       blockIdx++
     }
   }
@@ -373,12 +440,20 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
     const { bx, by } = payloadCells[cellIdx]
     const symbol = extractBits(payload, payloadBitPos, bitsPerBlock)
     payloadBitPos += bitsPerBlock
+    const startX = dr.x + bx * dataBlockSize
+    const startY = dr.y + by * dataBlockSize
 
     let r = 0
     let g = 0
     let b = 0
-    if (bitsPerBlock === 3) {
+    if (mode === HDMI_MODE.RAW_RGB) {
       [r, g, b] = encodeRgb3(symbol)
+      fillBlockSolid(imageData, width, startX, startY, dataBlockSize, r, g, b)
+      continue
+    }
+    if (mode === HDMI_MODE.CODEBOOK_3) {
+      renderCodebook3Block(imageData, width, startX, startY, dataBlockSize, symbol)
+      continue
     } else {
       const val = bitsPerBlock === 2 ? encodeGray2(symbol) : (symbol ? 255 : 0)
       r = val
@@ -386,16 +461,7 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
       b = val
     }
 
-    const startX = dr.x + bx * dataBlockSize
-    const startY = dr.y + by * dataBlockSize
-    for (let dy = 0; dy < dataBlockSize; dy++) {
-      for (let dx = 0; dx < dataBlockSize; dx++) {
-        const i = ((startY + dy) * width + (startX + dx)) * 4
-        imageData[i] = r
-        imageData[i + 1] = g
-        imageData[i + 2] = b
-      }
-    }
+    fillBlockSolid(imageData, width, startX, startY, dataBlockSize, r, g, b)
   }
 
   return imageData
@@ -435,6 +501,33 @@ function sampleBlockRgbAt(imageData, width, px, py, bs) {
     }
   }
   return [sums[0] / 4, sums[1] / 4, sums[2] / 4]
+}
+
+function sampleCodebook3At(imageData, width, px, py, bs) {
+  const xMid = px + bs / 2
+  const yMid = py + bs / 2
+  const quadrants = [
+    [px, py, xMid, yMid],
+    [xMid, py, px + bs, yMid],
+    [px, yMid, xMid, py + bs],
+    [xMid, yMid, px + bs, py + bs]
+  ]
+
+  return quadrants.map(([x0f, y0f, x1f, y1f]) => {
+    const x0 = Math.max(0, Math.round(x0f))
+    const y0 = Math.max(0, Math.round(y0f))
+    const x1 = Math.min(width, Math.max(x0 + 1, Math.round(x1f)))
+    const y1 = Math.min(imageData.length / (width * 4), Math.max(y0 + 1, Math.round(y1f)))
+    let sum = 0
+    let count = 0
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        sum += imageData[(y * width + x) * 4]
+        count++
+      }
+    }
+    return count > 0 ? sum / count : 0
+  })
 }
 
 function sampleBinaryPilotField(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, blocksY, mode) {
@@ -816,7 +909,7 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
   const blocksY = expectedBlocksY ?? Math.floor(region.h / stepY)
   const bitsPerBlock = getModeBitsPerBlock(header.mode) || 1
   const payloadCells = getPayloadCellOrder(header.mode, blocksX, blocksY)
-  const levels = bitsPerBlock === 3
+  const levels = header.mode === HDMI_MODE.RAW_RGB
     ? estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
     : estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
   const pilotField = bitsPerBlock === 1
@@ -832,9 +925,12 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
     const py = ry + Math.round(by * stepY)
     let symbol = 0
     if (px >= 0 && px < width && py >= 0 && py < height) {
-      if (bitsPerBlock === 3) {
+      if (header.mode === HDMI_MODE.RAW_RGB) {
         const rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
         symbol = decodeRgb3(rgb, levels?.blackLevels, levels?.whiteLevels)
+      } else if (header.mode === HDMI_MODE.CODEBOOK_3) {
+        const samples = sampleCodebook3At(imageData, width, px, py, bs)
+        symbol = decodeCodebook3(samples, levels?.blackLevel, levels?.whiteLevel)
       } else if (bitsPerBlock === 2) {
         const val = sampleBlockAt(imageData, width, px, py, bs)
         symbol = decodeGray2(val, levels?.blackLevel, levels?.whiteLevel)
@@ -894,9 +990,12 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
     const py = ry + Math.round(by * layout.stepY)
     let symbol = 0
     if (px >= 0 && px < width && py >= 0 && py < height) {
-      if (bitsPerBlock === 3) {
+      if (frameMode === HDMI_MODE.RAW_RGB) {
         const rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
         symbol = decodeRgb3(rgb, layout.blackLevels, layout.whiteLevels)
+      } else if (frameMode === HDMI_MODE.CODEBOOK_3) {
+        const samples = sampleCodebook3At(imageData, width, px, py, layout.dataBs)
+        symbol = decodeCodebook3(samples, layout.blackLevel, layout.whiteLevel)
       } else if (bitsPerBlock === 2) {
         const val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
         symbol = decodeGray2(val, layout.blackLevel, layout.whiteLevel)
@@ -1185,7 +1284,14 @@ export function decodeDataRegion(imageData, width, region) {
   const baseBs = region.blockSize || BLOCK_SIZE
   const yOffsets = [0, -1, 1, -2, 2]
   const bsAdjustments = [0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.5, -0.5]
-  const candidateModes = [HDMI_MODE.RAW_RGB, HDMI_MODE.RAW_GRAY, HDMI_MODE.COMPAT_4, HDMI_MODE.COMPAT_8, HDMI_MODE.COMPAT_16]
+  const candidateModes = [
+    HDMI_MODE.RAW_RGB,
+    HDMI_MODE.RAW_GRAY,
+    HDMI_MODE.CODEBOOK_3,
+    HDMI_MODE.COMPAT_4,
+    HDMI_MODE.COMPAT_8,
+    HDMI_MODE.COMPAT_16
+  ]
 
   let bestResult = null
   let bestScore = -1
@@ -1430,6 +1536,36 @@ export function testRgb3FrameRoundtrip() {
     result.payload.every((v, i) => v === payload[i])
 
   console.log('RGB3 frame roundtrip test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testCodebook3FrameRoundtrip() {
+  const payload = new Uint8Array(401)
+  for (let i = 0; i < payload.length; i++) payload[i] = (i * 29) & 0xFF
+
+  const width = 640
+  const height = 480
+  const frame = buildFrame(payload, HDMI_MODE.CODEBOOK_3, width, height, 30, 42)
+  const anchors = detectAnchors(frame, width, height)
+  if (anchors.length < 2) {
+    console.log('Tile3 frame roundtrip test: FAIL (anchors)')
+    return false
+  }
+
+  const region = dataRegionFromAnchors(anchors)
+  if (!region) {
+    console.log('Tile3 frame roundtrip test: FAIL (no region)')
+    return false
+  }
+
+  const result = decodeDataRegion(frame, width, region)
+  const pass = result !== null &&
+    result.crcValid &&
+    result.header.mode === HDMI_MODE.CODEBOOK_3 &&
+    result.payload.length === payload.length &&
+    result.payload.every((v, i) => v === payload[i])
+
+  console.log('Tile3 frame roundtrip test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 
