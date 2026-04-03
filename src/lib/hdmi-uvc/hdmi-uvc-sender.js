@@ -427,42 +427,46 @@ async function startSending() {
     const maxBlockSize = Math.min(frameBlockSize, profileMaxBlockSize ?? MAX_BLOCK_SIZE, MAX_BLOCK_SIZE)
     const minBlockSize = Math.min(MIN_BLOCK_SIZE, maxBlockSize)
     let blockSize = Math.min(maxBlockSize, Math.max(preferredBlockSize, minBlockSize))
-    let bestPacketsPerFrame = Math.min(
-      maxPacketsPerFrame,
-      Math.max(1, Math.floor(capacity / (blockSize + PACKET_HEADER_SIZE)))
-    )
-    let bestUsedBytes = bestPacketsPerFrame * (blockSize + PACKET_HEADER_SIZE)
-    let bestPayloadPerFrame = bestPacketsPerFrame * blockSize
-
-    if (bestUsedBytes / capacity > targetFrameFill || (maxUsedBytes && bestUsedBytes > maxUsedBytes)) {
-      bestPacketsPerFrame = 1
-      bestUsedBytes = blockSize + PACKET_HEADER_SIZE
-      bestPayloadPerFrame = blockSize
-    }
+    let bestBlockSize = blockSize
+    let bestPacketsPerFrame = 1
+    let bestUsedBytes = blockSize + PACKET_HEADER_SIZE
+    let bestPayloadPerFrame = blockSize
+    let foundTargetFit = false
 
     for (let candidate = minBlockSize; candidate <= maxBlockSize; candidate += 4) {
-      const packetsPerFrame = Math.min(
+      const maxPacketsThatFit = Math.min(
         maxPacketsPerFrame,
         Math.floor(capacity / (candidate + PACKET_HEADER_SIZE))
       )
-      if (packetsPerFrame < 1) continue
+      if (maxPacketsThatFit < 1) continue
 
-      const usedBytes = packetsPerFrame * (candidate + PACKET_HEADER_SIZE)
-      if (usedBytes / capacity > targetFrameFill) continue
-      if (maxUsedBytes && usedBytes > maxUsedBytes) continue
+      for (let packetsPerFrame = 1; packetsPerFrame <= maxPacketsThatFit; packetsPerFrame++) {
+        const usedBytes = packetsPerFrame * (candidate + PACKET_HEADER_SIZE)
+        if (maxUsedBytes && usedBytes > maxUsedBytes) continue
 
-      const payloadPerFrame = packetsPerFrame * candidate
-      if (
-        payloadPerFrame > bestPayloadPerFrame ||
-        (payloadPerFrame === bestPayloadPerFrame && packetsPerFrame > bestPacketsPerFrame) ||
-        (payloadPerFrame === bestPayloadPerFrame && packetsPerFrame === bestPacketsPerFrame && candidate > blockSize)
-      ) {
-        blockSize = candidate
-        bestPacketsPerFrame = packetsPerFrame
-        bestUsedBytes = usedBytes
-        bestPayloadPerFrame = payloadPerFrame
+        const fitsTarget = usedBytes / capacity <= targetFrameFill
+        if (foundTargetFit && !fitsTarget) continue
+
+        const payloadPerFrame = packetsPerFrame * candidate
+        const shouldSelect =
+          (!foundTargetFit && fitsTarget) ||
+          (fitsTarget === foundTargetFit && (
+            payloadPerFrame > bestPayloadPerFrame ||
+            (payloadPerFrame === bestPayloadPerFrame && packetsPerFrame > bestPacketsPerFrame) ||
+            (payloadPerFrame === bestPayloadPerFrame && packetsPerFrame === bestPacketsPerFrame && candidate > bestBlockSize)
+          ))
+
+        if (shouldSelect) {
+          bestBlockSize = candidate
+          bestPacketsPerFrame = packetsPerFrame
+          bestUsedBytes = usedBytes
+          bestPayloadPerFrame = payloadPerFrame
+          foundTargetFit = fitsTarget
+        }
       }
     }
+
+    blockSize = bestBlockSize
 
     debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
     debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
