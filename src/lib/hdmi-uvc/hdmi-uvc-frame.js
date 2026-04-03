@@ -1622,7 +1622,7 @@ function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout) 
 // the 4×4 anchor grid without prior header knowledge.
 export function decodeDataRegion(imageData, width, region) {
   const baseBs = region.blockSize || BLOCK_SIZE
-  const yOffsets = [0, -1, 1, -2, 2]
+  const yOffsets = [0, -1, 1, -2, 2, -3, 3, -4, 4]
   const bsAdjustments = [0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.5, -0.5]
   const candidateBlockSizes = [4, 8, 16]
 
