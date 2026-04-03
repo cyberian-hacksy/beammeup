@@ -243,13 +243,14 @@ function getBatchingProfile(mode) {
         maxUsedBytes: 8192
       }
     case HDMI_MODE.COMPAT_4:
-      // 4x4 mode is the most robust live path. Stay close to the proven-good
-      // 7.15 KB/frame point and nudge packet payload slightly upward.
+      // 4x4 mode is the most robust live path. Push one notch above the
+      // proven 7.4 KB/frame point, but stay below the 8.35 KB/frame cliff
+      // that previously collapsed live decode.
       return {
-        maxPacketsPerFrame: 6,
-        targetFrameFill: 0.70,
+        maxPacketsPerFrame: 7,
+        targetFrameFill: 0.72,
         maxBlockSize: 1280,
-        maxUsedBytes: 7424
+        maxUsedBytes: 8064
       }
     case HDMI_MODE.CODEBOOK_3:
       // Binary quadrant glyphs keep the payload alphabet black/white while
