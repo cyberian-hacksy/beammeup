@@ -89,6 +89,45 @@ function formatRecoveryState(expectedPacketSize, totalFramePackets, salvagedCoun
   )
 }
 
+function getProgressBytes() {
+  if (!state.decoder?.metadata) return null
+  return state.decoder.progress * state.decoder.metadata.fileSize
+}
+
+function recordProgressSample() {
+  const bytes = getProgressBytes()
+  if (bytes === null) return
+
+  const now = Date.now()
+  state.progressSamples.push({ time: now, bytes })
+
+  const cutoff = now - 10000
+  while (state.progressSamples.length > 0 && state.progressSamples[0].time < cutoff) {
+    state.progressSamples.shift()
+  }
+}
+
+function getThroughputStats() {
+  const bytes = getProgressBytes()
+  if (bytes === null || !state.startTime) return null
+
+  const now = Date.now()
+  const elapsed = (now - state.startTime) / 1000
+  const average = elapsed > 0 ? bytes / elapsed : 0
+
+  let recent = null
+  if (state.progressSamples.length >= 2) {
+    const first = state.progressSamples[0]
+    const last = state.progressSamples[state.progressSamples.length - 1]
+    const recentElapsed = (last.time - first.time) / 1000
+    if (recentElapsed > 0) {
+      recent = (last.bytes - first.bytes) / recentElapsed
+    }
+  }
+
+  return { average, recent }
+}
+
 function tryVariableFramePackets(framePayload) {
   const packets = []
   let offset = 0
@@ -252,13 +291,19 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
   }
 
   state.expectedPacketCount = Math.max(packets.length, expectedFramePacketCount || 0)
+  recordProgressSample()
 
   if (state.validFrames % 10 === 0) {
+    const throughput = getThroughputStats()
+    const rateSuffix = throughput
+      ? ` rate=${formatBytes(throughput.average)}/s recent=${formatBytes(throughput.recent ?? throughput.average)}/s`
+      : ''
     debugLog(
       `Progress: ${Math.round(state.decoder.progress * 100)}% ` +
       `solved=${state.decoder.solved}/${state.decoder.K || '?'} ` +
       `unique=${state.decoder.uniqueSymbols} ` +
-      `sym=${lastParsed.symbolId ?? fallbackSymbolId} pkts=${packets.length}`
+      `sym=${lastParsed.symbolId ?? fallbackSymbolId} pkts=${packets.length}` +
+      rateSuffix
     )
   }
 
@@ -295,7 +340,8 @@ const state = {
   activeCaptureMethod: null,
   fixedLayout: null,
   expectedPacketCount: 0,
-  preferredLayout: null
+  preferredLayout: null,
+  progressSamples: []
 }
 
 // Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
@@ -816,6 +862,7 @@ async function handleComplete() {
 
   elements.completeName.textContent = meta.filename + ' (' + formatBytes(fileData.byteLength) + ')'
   elements.completeRate.textContent = formatBytes(rate) + '/s'
+  debugLog(`Complete: ${formatBytes(fileData.byteLength)} in ${elapsed.toFixed(1)}s (${formatBytes(rate)}/s)`)
 
   showCompleteStatus()
 }
@@ -863,6 +910,7 @@ function resetReceiver() {
   state.fixedLayout = null
   state.preferredLayout = null
   state.expectedPacketCount = 0
+  state.progressSamples = []
 
   elements.statFrames.textContent = '0 frames'
   elements.statusScanning.classList.remove('hidden')
