@@ -51,7 +51,8 @@ const state = {
   isPaused: false,
   symbolId: 1,
   frameCount: 0,
-  mode: HDMI_MODE.COMPAT_4
+  mode: HDMI_MODE.COMPAT_4,
+  fountainPhaseLogged: false
 }
 
 let elements = null
@@ -297,15 +298,15 @@ function buildFramePacketBatch(frameNumber) {
 
   while (packets.length < slots) {
     const symbolId = state.symbolId
+    if (!state.fountainPhaseLogged && symbolId > state.encoder.K_prime) {
+      state.fountainPhaseLogged = true
+      debugLog(`Entered fountain phase at frame ${frameNumber} (symbol ${symbolId})`)
+    }
     packets.push(state.encoder.generateSymbol(symbolId))
     symbolIds.push(symbolId)
 
     if (frameNumber % FRAMES_PER_SYMBOL === 0) {
       state.symbolId++
-      if (state.symbolId > state.encoder.K_prime) {
-        state.symbolId = 1
-        debugLog(`Looped back to symbol 1 after ${frameNumber} frames`)
-      }
     }
   }
 
@@ -351,11 +352,15 @@ function renderFrame() {
     const dataSymbols = batch.symbolIds.filter(id => id !== 0)
     const firstData = dataSymbols[0]
     const lastData = dataSymbols[dataSymbols.length - 1]
+    const formatSymbolRef = (id) => {
+      if (id <= state.encoder.K_prime) return `${id}/${state.encoder.K_prime}`
+      return `F${id - state.encoder.K_prime}`
+    }
     const symbolLabel = dataSymbols.length === 0
       ? 'META'
       : firstData === lastData
-        ? `sym=${firstData}/${state.encoder.K_prime}`
-        : `sym=${firstData}-${lastData}/${state.encoder.K_prime}`
+        ? `sym=${formatSymbolRef(firstData)}`
+        : `sym=${formatSymbolRef(firstData)}-${formatSymbolRef(lastData)}`
     debugCurrent(
       batch.sendMetadata
         ? `#${state.frameCount} META + ${symbolLabel} ${progress}%`
@@ -491,6 +496,7 @@ async function startSending() {
     state.isSending = true
     state.isPaused = false
     state.symbolId = 1
+    state.fountainPhaseLogged = false
     state.frameCount = 0
     setSignalLive(true)
 
@@ -579,6 +585,7 @@ function stopSending() {
   state.isSending = false
   state.isPaused = false
   state.symbolId = 1
+  state.fountainPhaseLogged = false
   state.frameCount = 0
   setSignalLive(false)
 
