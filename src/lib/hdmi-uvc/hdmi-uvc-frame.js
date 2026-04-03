@@ -29,6 +29,114 @@ const CODEBOOK3_PATTERNS = [
   [1, 0, 0, 1],
   [0, 1, 1, 0]
 ]
+const GLYPH5_GRID_SIZE = 4
+const GLYPH5_SYMBOL_COUNT = 32
+const GLYPH5_CODEBOOK = buildGlyph5Codebook()
+
+function popcount16(mask) {
+  let value = mask
+  let count = 0
+  while (value) {
+    value &= value - 1
+    count++
+  }
+  return count
+}
+
+function hammingDistance16(a, b) {
+  return popcount16(a ^ b)
+}
+
+function buildGlyph5Pattern(mask) {
+  const pattern = new Array(GLYPH5_GRID_SIZE * GLYPH5_GRID_SIZE)
+  for (let i = 0; i < pattern.length; i++) {
+    pattern[i] = (mask >> (pattern.length - 1 - i)) & 1
+  }
+  return pattern
+}
+
+function glyph5TransitionScore(mask) {
+  let score = 0
+  for (let row = 0; row < GLYPH5_GRID_SIZE; row++) {
+    for (let col = 0; col < GLYPH5_GRID_SIZE; col++) {
+      const idx = row * GLYPH5_GRID_SIZE + col
+      const bit = (mask >> (15 - idx)) & 1
+      if (col + 1 < GLYPH5_GRID_SIZE) {
+        const right = (mask >> (15 - (idx + 1))) & 1
+        if (bit !== right) score++
+      }
+      if (row + 1 < GLYPH5_GRID_SIZE) {
+        const down = (mask >> (15 - (idx + GLYPH5_GRID_SIZE))) & 1
+        if (bit !== down) score++
+      }
+    }
+  }
+  return score
+}
+
+function buildGlyph5Candidates() {
+  const candidates = []
+  for (let mask = 0; mask < 0x10000; mask++) {
+    if (popcount16(mask) !== 8) continue
+
+    let valid = true
+    for (let row = 0; row < GLYPH5_GRID_SIZE; row++) {
+      let rowCount = 0
+      for (let col = 0; col < GLYPH5_GRID_SIZE; col++) {
+        rowCount += (mask >> (15 - (row * GLYPH5_GRID_SIZE + col))) & 1
+      }
+      if (rowCount < 1 || rowCount > 3) {
+        valid = false
+        break
+      }
+    }
+    if (!valid) continue
+
+    for (let col = 0; col < GLYPH5_GRID_SIZE; col++) {
+      let colCount = 0
+      for (let row = 0; row < GLYPH5_GRID_SIZE; row++) {
+        colCount += (mask >> (15 - (row * GLYPH5_GRID_SIZE + col))) & 1
+      }
+      if (colCount < 1 || colCount > 3) {
+        valid = false
+        break
+      }
+    }
+    if (!valid) continue
+
+    candidates.push({
+      mask,
+      pattern: buildGlyph5Pattern(mask),
+      score: glyph5TransitionScore(mask)
+    })
+  }
+
+  candidates.sort((a, b) => b.score - a.score || a.mask - b.mask)
+  return candidates
+}
+
+function buildGlyph5Codebook() {
+  const candidates = buildGlyph5Candidates()
+  const selected = []
+  const usedMasks = new Set()
+
+  for (let minDistance = 8; minDistance >= 4 && selected.length < GLYPH5_SYMBOL_COUNT; minDistance--) {
+    for (const candidate of candidates) {
+      if (usedMasks.has(candidate.mask)) continue
+      const ok = selected.every((entry) => hammingDistance16(entry.mask, candidate.mask) >= minDistance)
+      if (!ok) continue
+      selected.push(candidate)
+      usedMasks.add(candidate.mask)
+      if (selected.length >= GLYPH5_SYMBOL_COUNT) break
+    }
+  }
+
+  if (selected.length < GLYPH5_SYMBOL_COUNT) {
+    throw new Error(`Failed to build Glyph5 codebook (${selected.length}/${GLYPH5_SYMBOL_COUNT})`)
+  }
+
+  return selected.slice(0, GLYPH5_SYMBOL_COUNT).map((entry) => entry.pattern)
+}
 
 // Encode a byte into 8 binary block values (returned as array of 0/255)
 function encodeBits(byte) {
@@ -116,6 +224,27 @@ function decodeCodebook3(samples, blackLevel = 0, whiteLevel = 255) {
   return bestSymbol
 }
 
+function decodeGlyph5(samples, blackLevel = 0, whiteLevel = 255) {
+  const normalized = samples.map((sample) => normalizeBinarySample(sample, blackLevel, whiteLevel))
+  let bestSymbol = 0
+  let bestError = Infinity
+
+  for (let symbol = 0; symbol < GLYPH5_CODEBOOK.length; symbol++) {
+    const pattern = GLYPH5_CODEBOOK[symbol]
+    let error = 0
+    for (let i = 0; i < pattern.length; i++) {
+      const delta = normalized[i] - pattern[i]
+      error += delta * delta
+    }
+    if (error < bestError) {
+      bestError = error
+      bestSymbol = symbol
+    }
+  }
+
+  return bestSymbol
+}
+
 function fillBlockSolid(imageData, width, startX, startY, size, r, g, b) {
   for (let dy = 0; dy < size; dy++) {
     for (let dx = 0; dx < size; dx++) {
@@ -147,6 +276,27 @@ function renderCodebook3Block(imageData, width, startX, startY, size, symbol) {
         imageData[i] = val
         imageData[i + 1] = val
         imageData[i + 2] = val
+      }
+    }
+  }
+}
+
+function renderGlyph5Block(imageData, width, startX, startY, size, symbol) {
+  const pattern = GLYPH5_CODEBOOK[symbol & 0x1F]
+  for (let row = 0; row < GLYPH5_GRID_SIZE; row++) {
+    const y0 = startY + Math.floor((row * size) / GLYPH5_GRID_SIZE)
+    const y1 = startY + Math.floor(((row + 1) * size) / GLYPH5_GRID_SIZE)
+    for (let col = 0; col < GLYPH5_GRID_SIZE; col++) {
+      const x0 = startX + Math.floor((col * size) / GLYPH5_GRID_SIZE)
+      const x1 = startX + Math.floor(((col + 1) * size) / GLYPH5_GRID_SIZE)
+      const val = pattern[row * GLYPH5_GRID_SIZE + col] ? 255 : 0
+      for (let py = y0; py < y1; py++) {
+        for (let px = x0; px < x1; px++) {
+          const i = (py * width + px) * 4
+          imageData[i] = val
+          imageData[i + 1] = val
+          imageData[i + 2] = val
+        }
       }
     }
   }
@@ -451,6 +601,10 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
       fillBlockSolid(imageData, width, startX, startY, dataBlockSize, r, g, b)
       continue
     }
+    if (mode === HDMI_MODE.GLYPH_5) {
+      renderGlyph5Block(imageData, width, startX, startY, dataBlockSize, symbol)
+      continue
+    }
     if (mode === HDMI_MODE.CODEBOOK_3) {
       renderCodebook3Block(imageData, width, startX, startY, dataBlockSize, symbol)
       continue
@@ -528,6 +682,31 @@ function sampleCodebook3At(imageData, width, px, py, bs) {
     }
     return count > 0 ? sum / count : 0
   })
+}
+
+function sampleGlyph5At(imageData, width, px, py, bs) {
+  const imgHeight = imageData.length / (width * 4)
+  const samples = new Array(GLYPH5_GRID_SIZE * GLYPH5_GRID_SIZE)
+
+  for (let row = 0; row < GLYPH5_GRID_SIZE; row++) {
+    const y0 = Math.max(0, Math.round(py + (row * bs) / GLYPH5_GRID_SIZE))
+    const y1 = Math.min(imgHeight, Math.max(y0 + 1, Math.round(py + ((row + 1) * bs) / GLYPH5_GRID_SIZE)))
+    for (let col = 0; col < GLYPH5_GRID_SIZE; col++) {
+      const x0 = Math.max(0, Math.round(px + (col * bs) / GLYPH5_GRID_SIZE))
+      const x1 = Math.min(width, Math.max(x0 + 1, Math.round(px + ((col + 1) * bs) / GLYPH5_GRID_SIZE)))
+      let sum = 0
+      let count = 0
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          sum += imageData[(y * width + x) * 4]
+          count++
+        }
+      }
+      samples[row * GLYPH5_GRID_SIZE + col] = count > 0 ? sum / count : 0
+    }
+  }
+
+  return samples
 }
 
 function sampleBinaryPilotField(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, blocksY, mode) {
@@ -928,6 +1107,9 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
       if (header.mode === HDMI_MODE.RAW_RGB) {
         const rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
         symbol = decodeRgb3(rgb, levels?.blackLevels, levels?.whiteLevels)
+      } else if (header.mode === HDMI_MODE.GLYPH_5) {
+        const samples = sampleGlyph5At(imageData, width, px, py, bs)
+        symbol = decodeGlyph5(samples, levels?.blackLevel, levels?.whiteLevel)
       } else if (header.mode === HDMI_MODE.CODEBOOK_3) {
         const samples = sampleCodebook3At(imageData, width, px, py, bs)
         symbol = decodeCodebook3(samples, levels?.blackLevel, levels?.whiteLevel)
@@ -993,6 +1175,9 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
       if (frameMode === HDMI_MODE.RAW_RGB) {
         const rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
         symbol = decodeRgb3(rgb, layout.blackLevels, layout.whiteLevels)
+      } else if (frameMode === HDMI_MODE.GLYPH_5) {
+        const samples = sampleGlyph5At(imageData, width, px, py, layout.dataBs)
+        symbol = decodeGlyph5(samples, layout.blackLevel, layout.whiteLevel)
       } else if (frameMode === HDMI_MODE.CODEBOOK_3) {
         const samples = sampleCodebook3At(imageData, width, px, py, layout.dataBs)
         symbol = decodeCodebook3(samples, layout.blackLevel, layout.whiteLevel)
@@ -1288,6 +1473,7 @@ export function decodeDataRegion(imageData, width, region) {
     HDMI_MODE.RAW_RGB,
     HDMI_MODE.RAW_GRAY,
     HDMI_MODE.CODEBOOK_3,
+    HDMI_MODE.GLYPH_5,
     HDMI_MODE.COMPAT_4,
     HDMI_MODE.COMPAT_8,
     HDMI_MODE.COMPAT_16
@@ -1566,6 +1752,36 @@ export function testCodebook3FrameRoundtrip() {
     result.payload.every((v, i) => v === payload[i])
 
   console.log('Tile3 frame roundtrip test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testGlyph5FrameRoundtrip() {
+  const payload = new Uint8Array(402)
+  for (let i = 0; i < payload.length; i++) payload[i] = (i * 41) & 0xFF
+
+  const width = 640
+  const height = 480
+  const frame = buildFrame(payload, HDMI_MODE.GLYPH_5, width, height, 30, 42)
+  const anchors = detectAnchors(frame, width, height)
+  if (anchors.length < 2) {
+    console.log('Glyph5 frame roundtrip test: FAIL (anchors)')
+    return false
+  }
+
+  const region = dataRegionFromAnchors(anchors)
+  if (!region) {
+    console.log('Glyph5 frame roundtrip test: FAIL (no region)')
+    return false
+  }
+
+  const result = decodeDataRegion(frame, width, region)
+  const pass = result !== null &&
+    result.crcValid &&
+    result.header.mode === HDMI_MODE.GLYPH_5 &&
+    result.payload.length === payload.length &&
+    result.payload.every((v, i) => v === payload[i])
+
+  console.log('Glyph5 frame roundtrip test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

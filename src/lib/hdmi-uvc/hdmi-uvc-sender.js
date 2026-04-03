@@ -261,6 +261,16 @@ function getBatchingProfile(mode) {
         maxBlockSize: 768,
         maxUsedBytes: 8400
       }
+    case HDMI_MODE.GLYPH_5:
+      // Larger 8x8 glyph tiles with nearest-match decoding. Start near the
+      // proven 4x4 byte budget so the first live run isolates symbol quality
+      // instead of immediately hitting the batching cliff.
+      return {
+        maxPacketsPerFrame: 10,
+        targetFrameFill: 0.28,
+        maxBlockSize: 768,
+        maxUsedBytes: 8192
+      }
     case HDMI_MODE.COMPAT_8:
       return { maxPacketsPerFrame: 4, targetFrameFill: 0.90, maxBlockSize: MAX_BLOCK_SIZE, maxUsedBytes: null }
     case HDMI_MODE.COMPAT_16:
