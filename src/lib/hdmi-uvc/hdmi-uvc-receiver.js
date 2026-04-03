@@ -294,7 +294,8 @@ const state = {
   decodeFailCount: 0,  // Consecutive decode failures (triggers relock when too many)
   activeCaptureMethod: null,
   fixedLayout: null,
-  expectedPacketCount: 0
+  expectedPacketCount: 0,
+  preferredLayout: null
 }
 
 // Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
@@ -625,6 +626,7 @@ async function processFrame(now, metadata) {
   }
 
   // === DECODE DATA REGION ===
+  region.preferredLayout = state.preferredLayout
   const result = decodeDataRegion(imageData.data, width, region)
 
   if (result && result.crcValid) {
@@ -642,9 +644,11 @@ async function processFrame(now, metadata) {
 
     if (acceptPackets(packets, result.header.symbolId, true, totalFramePackets)) {
       if (result._diag) state.fixedLayout = { ...result._diag }
+      if (result._diag) state.preferredLayout = { ...result._diag }
       if (state.decoder?.isComplete()) return
     }
   } else if (result && !result.crcValid) {
+    if (result._diag) state.preferredLayout = { ...result._diag }
     const expectedPacketSize = getExpectedPacketSize()
     const salvageProbe = probeFramePackets(result.payload, expectedPacketSize)
     const totalFramePackets = salvageProbe.slotCount
@@ -737,6 +741,7 @@ async function processFrame(now, metadata) {
   if (state.decodeFailCount > 30) {
     debugLog(`Relock: ${state.decodeFailCount} consecutive failures`)
     state.anchorBounds = null
+    state.preferredLayout = null
     state.decodeFailCount = 0
   }
 
@@ -856,6 +861,7 @@ function resetReceiver() {
   state.decodeFailCount = 0
   state.activeCaptureMethod = null
   state.fixedLayout = null
+  state.preferredLayout = null
   state.expectedPacketCount = 0
 
   elements.statFrames.textContent = '0 frames'

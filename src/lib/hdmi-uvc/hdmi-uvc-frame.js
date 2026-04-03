@@ -1535,6 +1535,88 @@ function getHeaderRefinementHypotheses(header, region) {
   return hypotheses
 }
 
+function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout) {
+  if (!layout || (layout.frameMode ?? HDMI_MODE.COMPAT_4) < HDMI_MODE.CODEBOOK_3) return null
+
+  const frameMode = layout.frameMode
+  const dataBlockSize = getModeDataBlockSize(frameMode)
+  const bitsPerBlock = getModeBitsPerBlock(frameMode)
+  const blocksX = layout.blocksX
+  const blocksY = layout.blocksY ?? Math.floor(region.h / layout.stepY)
+  if (!dataBlockSize || !bitsPerBlock || !blocksX || !blocksY) return null
+
+  const xAdjustments = [0, -1, 1, -2, 2]
+  const yAdjustments = [0, -1, 1, -2, 2]
+  let bestResult = null
+  let bestScore = -1
+
+  for (const xAdjust of xAdjustments) {
+    for (const yAdjust of yAdjustments) {
+      const rx = region.x + (layout.xOff || 0) + xAdjust
+      const ry = region.y + (layout.yOff || 0) + yAdjust
+      const header = probeHeaderBinary(
+        imageData,
+        width,
+        region,
+        rx,
+        ry,
+        layout.stepX,
+        layout.stepY,
+        layout.dataBs,
+        blocksX,
+        blocksY
+      )
+      if (!header) continue
+      if (header.mode !== frameMode) continue
+
+      const payloadBitsPerBlock = getModeBitsPerBlock(header.mode) || bitsPerBlock
+      const payloadBlocks = getUsablePayloadBlocks(header.mode, blocksX, blocksY)
+      const payloadCapacity = Math.floor((payloadBlocks * payloadBitsPerBlock) / BITS_PER_BYTE)
+      if (payloadCapacity < header.payloadLength) continue
+
+      const result = readPayloadAt(
+        imageData, width, region, rx, ry,
+        layout.stepX, layout.stepY, layout.dataBs, blocksX, header, blocksY
+      )
+      result._diag = {
+        ...layout,
+        modeProbe: frameMode,
+        probeDataBlockSize: dataBlockSize,
+        dataBlockSize,
+        bitsPerBlock: payloadBitsPerBlock,
+        payloadCapacity,
+        xOff: (layout.xOff || 0) + xAdjust,
+        yOff: (layout.yOff || 0) + yAdjust,
+        preferred: true,
+        refined: false,
+        hypothesis: 'preferred',
+        score: scoreCandidate(result),
+        ...getHeaderSpanMetrics(header, region)
+      }
+      attachDecisionTrace(result, {
+        winner: {
+          hypothesis: 'preferred',
+          refined: false,
+          score: result._diag.score,
+          crcValid: !!result.crcValid
+        },
+        reason: 'preferred_layout',
+        candidates: [summarizeDecisionCandidate(result, region)]
+      }, region)
+
+      if (result.crcValid) return result
+
+      const score = scoreCandidate(result)
+      if (score > bestScore) {
+        bestScore = score
+        bestResult = result
+      }
+    }
+  }
+
+  return bestResult
+}
+
 // Decode data blocks from a data region using binary modulation.
 // Search the declared compat data modes so the payload grid size can differ from
 // the 4×4 anchor grid without prior header knowledge.
@@ -1546,6 +1628,9 @@ export function decodeDataRegion(imageData, width, region) {
 
   let bestResult = null
   let bestScore = -1
+
+  const preferredResult = tryPreferredExperimentalLayoutDecode(imageData, width, region, region.preferredLayout)
+  if (preferredResult) return preferredResult
 
   for (const dataBlockSize of candidateBlockSizes) {
     const dataScale = dataBlockSize / BLOCK_SIZE
