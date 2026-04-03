@@ -80,28 +80,16 @@ function formatDecisionCandidates(diag) {
   return `Tried: ${candidates.map(formatDecisionCandidate).join('; ')}`
 }
 
-function formatRecoveryState(expectedPacketSize, totalFramePackets, salvagedCount, fixedCount) {
+function formatRecoveryState(expectedPacketSize, totalFramePackets, salvagedCount, fixedCount, salvageStrategy = null, salvagePacketSize = null) {
   return (
     `Recovery: expectedPkt=${formatMaybeInt(expectedPacketSize)} ` +
     `slots=${formatMaybeInt(totalFramePackets)} salvage=${formatMaybeInt(salvagedCount)} ` +
-    `fixed=${formatMaybeInt(fixedCount)} expectedSlots=${formatMaybeInt(state.expectedPacketCount)}`
+    `fixed=${formatMaybeInt(fixedCount)} expectedSlots=${formatMaybeInt(state.expectedPacketCount)} ` +
+    `salvageMode=${salvageStrategy || 'n/a'}@${formatMaybeInt(salvagePacketSize)}`
   )
 }
 
-function extractFramePackets(framePayload, expectedPacketSize = null) {
-  if (expectedPacketSize && expectedPacketSize >= PACKET_HEADER_SIZE) {
-    if (framePayload.length % expectedPacketSize !== 0) return []
-
-    const packets = []
-    for (let offset = 0; offset < framePayload.length; offset += expectedPacketSize) {
-      const packet = framePayload.slice(offset, offset + expectedPacketSize)
-      if (parsePacket(packet)) {
-        packets.push(packet)
-      }
-    }
-    return packets
-  }
-
+function tryVariableFramePackets(framePayload) {
   const packets = []
   let offset = 0
 
@@ -135,10 +123,87 @@ function extractFramePackets(framePayload, expectedPacketSize = null) {
   return offset === framePayload.length ? packets : []
 }
 
+function tryEqualChunkFramePackets(framePayload, maxPackets = 16) {
+  let best = null
+
+  for (let slotCount = 2; slotCount <= maxPackets; slotCount++) {
+    if (framePayload.length % slotCount !== 0) continue
+
+    const packetSize = framePayload.length / slotCount
+    if (packetSize < PACKET_HEADER_SIZE) continue
+
+    const packets = []
+    for (let offset = 0; offset < framePayload.length; offset += packetSize) {
+      const packet = framePayload.slice(offset, offset + packetSize)
+      if (parsePacket(packet)) packets.push(packet)
+    }
+
+    if (packets.length === 0) continue
+
+    const validBytes = packets.length * packetSize
+    if (
+      !best ||
+      packets.length > best.packets.length ||
+      (packets.length === best.packets.length && validBytes > best.validBytes) ||
+      (packets.length === best.packets.length && validBytes === best.validBytes && slotCount > best.slotCount)
+    ) {
+      best = { packets, slotCount, packetSize, validBytes }
+    }
+  }
+
+  return best
+}
+
+function probeFramePackets(framePayload, expectedPacketSize = null) {
+  if (expectedPacketSize && expectedPacketSize >= PACKET_HEADER_SIZE) {
+    if (framePayload.length % expectedPacketSize !== 0) {
+      return { packets: [], slotCount: null, packetSize: expectedPacketSize, strategy: 'expected' }
+    }
+
+    const packets = []
+    for (let offset = 0; offset < framePayload.length; offset += expectedPacketSize) {
+      const packet = framePayload.slice(offset, offset + expectedPacketSize)
+      if (parsePacket(packet)) {
+        packets.push(packet)
+      }
+    }
+    return {
+      packets,
+      slotCount: Math.floor(framePayload.length / expectedPacketSize),
+      packetSize: expectedPacketSize,
+      strategy: 'expected'
+    }
+  }
+
+  const variablePackets = tryVariableFramePackets(framePayload)
+  if (variablePackets.length > 0) {
+    return {
+      packets: variablePackets,
+      slotCount: variablePackets.length,
+      packetSize: variablePackets[0]?.length ?? null,
+      strategy: 'variable'
+    }
+  }
+
+  const equalChunk = tryEqualChunkFramePackets(framePayload)
+  if (equalChunk) {
+    return {
+      packets: equalChunk.packets,
+      slotCount: equalChunk.slotCount,
+      packetSize: equalChunk.packetSize,
+      strategy: 'equal'
+    }
+  }
+
+  return { packets: [], slotCount: null, packetSize: expectedPacketSize, strategy: 'none' }
+}
+
+function extractFramePackets(framePayload, expectedPacketSize = null) {
+  return probeFramePackets(framePayload, expectedPacketSize).packets
+}
+
 function getFramePacketSlotCount(framePayload, expectedPacketSize = null) {
-  if (!expectedPacketSize || expectedPacketSize < PACKET_HEADER_SIZE) return null
-  if (framePayload.length % expectedPacketSize !== 0) return null
-  return Math.floor(framePayload.length / expectedPacketSize)
+  return probeFramePackets(framePayload, expectedPacketSize).slotCount
 }
 
 function ensureDecoder() {
@@ -581,8 +646,9 @@ async function processFrame(now, metadata) {
     }
   } else if (result && !result.crcValid) {
     const expectedPacketSize = getExpectedPacketSize()
-    const totalFramePackets = getFramePacketSlotCount(result.payload, expectedPacketSize)
-    const salvagedPackets = extractFramePackets(result.payload, expectedPacketSize)
+    const salvageProbe = probeFramePackets(result.payload, expectedPacketSize)
+    const totalFramePackets = salvageProbe.slotCount
+    const salvagedPackets = salvageProbe.packets
     const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
     if (acceptPackets(salvagedPackets, result.header.symbolId, true, totalFramePackets)) {
       if (result._diag) state.fixedLayout = { ...result._diag }
@@ -609,7 +675,7 @@ async function processFrame(now, metadata) {
       if (scaleLine) debugLog(`  ${scaleLine}`)
       const triedLine = formatDecisionCandidates(diag)
       if (triedLine) debugLog(`  ${triedLine}`)
-      debugLog(`  ${formatRecoveryState(expectedPacketSize, totalFramePackets, salvagedPackets.length, fixedPackets.length)}`)
+      debugLog(`  ${formatRecoveryState(expectedPacketSize, totalFramePackets, salvagedPackets.length, fixedPackets.length, salvageProbe.strategy, salvageProbe.packetSize)}`)
     }
     debugCurrent(`#${state.frameCount} CRC fail`)
   } else {
