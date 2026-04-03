@@ -1536,7 +1536,7 @@ function getHeaderRefinementHypotheses(header, region) {
 }
 
 function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout) {
-  if (!layout || (layout.frameMode ?? HDMI_MODE.COMPAT_4) < HDMI_MODE.CODEBOOK_3) return null
+  if (!layout) return null
 
   const frameMode = layout.frameMode
   const dataBlockSize = getModeDataBlockSize(frameMode)
