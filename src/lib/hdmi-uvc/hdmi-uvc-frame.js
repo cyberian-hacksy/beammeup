@@ -1542,24 +1542,12 @@ export function decodeDataRegion(imageData, width, region) {
   const baseBs = region.blockSize || BLOCK_SIZE
   const yOffsets = [0, -1, 1, -2, 2]
   const bsAdjustments = [0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.5, -0.5]
-  const candidateModes = [
-    HDMI_MODE.RAW_RGB,
-    HDMI_MODE.RAW_GRAY,
-    HDMI_MODE.CODEBOOK_3,
-    HDMI_MODE.GLYPH_5,
-    HDMI_MODE.COMPAT_4,
-    HDMI_MODE.COMPAT_8,
-    HDMI_MODE.COMPAT_16
-  ]
+  const candidateBlockSizes = [4, 8, 16]
 
   let bestResult = null
   let bestScore = -1
 
-  for (const mode of candidateModes) {
-    const dataBlockSize = getModeDataBlockSize(mode)
-    const bitsPerBlock = getModeBitsPerBlock(mode)
-    if (!dataBlockSize || !bitsPerBlock) continue
-
+  for (const dataBlockSize of candidateBlockSizes) {
     const dataScale = dataBlockSize / BLOCK_SIZE
     const baseStepX = (region.stepX || baseBs) * dataScale
     const baseStepY = (region.stepY || baseBs) * dataScale
@@ -1601,7 +1589,8 @@ export function decodeDataRegion(imageData, width, region) {
 
           const baseResult = readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, dataBs, blocksX, header)
           baseResult._diag = {
-            modeProbe: mode,
+            modeProbe: header.mode,
+            probeDataBlockSize: dataBlockSize,
             dataBlockSize,
             bitsPerBlock: payloadBitsPerBlock,
             dataBs,
@@ -1689,7 +1678,7 @@ export function decodeDataRegion(imageData, width, region) {
 
           if (!region._logged) {
             region._logged = true
-            console.log(`[HDMI-RX] Header: mode=${mode} dataBs=${dataBs.toFixed(2)} step=${stepX.toFixed(2)}/${stepY.toFixed(2)} grid=${blocksX}x${blocksY} len=${header.payloadLength} cap=${payloadCapacity} off=(${xOff},${yOff}) crc=${result.crcValid}`)
+            console.log(`[HDMI-RX] Header: probeBs=${dataBlockSize} mode=${header.mode} dataBs=${dataBs.toFixed(2)} step=${stepX.toFixed(2)}/${stepY.toFixed(2)} grid=${blocksX}x${blocksY} len=${header.payloadLength} cap=${payloadCapacity} off=(${xOff},${yOff}) crc=${result.crcValid}`)
           }
 
           if (result.crcValid) return result
