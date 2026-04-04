@@ -7,10 +7,10 @@ export const HDMI_UVC_MAX_FILE_SIZE = 1024 * 1024 * 1024 // 1GB
 export const FRAME_MAGIC = 0xFF00FF00
 
 // Frame layout constants
-// Payload cells remain 4x4 for COMPAT_4. Only anchors/margins are reduced to
-// reclaim frame area while preserving the same 8x8 concentric anchor pattern.
-export const BLOCK_SIZE = 2      // Anchor block: 2×2 pixels
-export const ANCHOR_SIZE = BLOCK_SIZE * 8 // Anchor pattern: 16×16 pixels (8×8 grid)
+// Payload cells remain 4x4 for COMPAT_4. Anchors/margins are trimmed from the
+// original 32px layout, but 24px is the smallest robust size found so far.
+export const BLOCK_SIZE = 3      // Anchor block: 3×3 pixels
+export const ANCHOR_SIZE = BLOCK_SIZE * 8 // Anchor pattern: 24×24 pixels (8×8 grid)
 export const MARGIN_SIZE = ANCHOR_SIZE    // Black margin on all sides
 export const DATA_BLOCK_SIZE = 8 // Legacy/default data block size for binary compatibility mode
 export const HEADER_SIZE = 22    // Frame header: 22 bytes

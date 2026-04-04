@@ -11,11 +11,7 @@ import { crc32 } from './crc32.js'
 // Receiver thresholds at 128. MJPEG corrupts values by ±20 but binary has 108+ margin.
 
 const BITS_PER_BYTE = 8
-const HEADER_MAGIC_BYTES = 4
-const HEADER_MAGIC_BITS = HEADER_MAGIC_BYTES * BITS_PER_BYTE
-const HEADER_MAGIC_REPEAT = 2
-const HEADER_ENCODED_BITS = (HEADER_MAGIC_BITS * HEADER_MAGIC_REPEAT) + ((HEADER_SIZE * BITS_PER_BYTE) - HEADER_MAGIC_BITS)
-const HEADER_BLOCKS = HEADER_ENCODED_BITS
+const HEADER_BLOCKS = HEADER_SIZE * BITS_PER_BYTE // 22 bytes × 8 bits = 176 blocks
 const GRAY2_LEVEL_FRACTIONS = [0.08, 0.36, 0.64, 0.92]
 const GRAY2_THRESHOLD_FRACTIONS = [0.22, 0.50, 0.78]
 const ENABLE_BINARY_PILOTS = false
@@ -318,31 +314,6 @@ function extractBits(data, bitPos, count) {
   return value
 }
 
-function getHeaderSourceBit(headerBytes, sourceBitIdx) {
-  const byteIdx = Math.floor(sourceBitIdx / BITS_PER_BYTE)
-  const bitIdx = sourceBitIdx % BITS_PER_BYTE
-  return (headerBytes[byteIdx] >> (7 - bitIdx)) & 1
-}
-
-function getHeaderSourceBitIndex(encodedBitIdx) {
-  if (encodedBitIdx < HEADER_MAGIC_BITS * HEADER_MAGIC_REPEAT) {
-    return Math.floor(encodedBitIdx / HEADER_MAGIC_REPEAT)
-  }
-  return encodedBitIdx - (HEADER_MAGIC_BITS * HEADER_MAGIC_REPEAT) + HEADER_MAGIC_BITS
-}
-
-function decodeHeaderBits(bitVotes) {
-  const headerBytes = new Uint8Array(HEADER_SIZE)
-  for (let sourceBitIdx = 0; sourceBitIdx < HEADER_SIZE * BITS_PER_BYTE; sourceBitIdx++) {
-    if ((bitVotes[sourceBitIdx] ?? 0) > 0) {
-      const byteIdx = Math.floor(sourceBitIdx / BITS_PER_BYTE)
-      const bitIdx = sourceBitIdx % BITS_PER_BYTE
-      headerBytes[byteIdx] |= (1 << (7 - bitIdx))
-    }
-  }
-  return headerBytes
-}
-
 function appendSymbolBits(payload, state, symbol, bitsPerBlock) {
   state.bitBuffer = (state.bitBuffer << bitsPerBlock) | symbol
   state.bitCount += bitsPerBlock
@@ -576,7 +547,8 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
   const blocksX = Math.floor(dr.w / dataBlockSize)
   const blocksY = Math.floor(dr.h / dataBlockSize)
   const payloadCells = getPayloadCellOrder(mode, blocksX, blocksY)
-  let headerEncodedBitIdx = 0
+  let headerByteIdx = 0
+  let headerBitIdx = 0
   let payloadBitPos = 0
   const payloadBitLength = payload.length * BITS_PER_BYTE
 
@@ -588,14 +560,17 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
       let b = 0
       if (blockIdx < HEADER_BLOCKS) {
         let val = 0
-        if (headerEncodedBitIdx < HEADER_ENCODED_BITS) {
-          const sourceBitIdx = getHeaderSourceBitIndex(headerEncodedBitIdx)
-          val = getHeaderSourceBit(headerBytes, sourceBitIdx) ? 255 : 0
+        if (headerByteIdx < headerBytes.length) {
+          val = (headerBytes[headerByteIdx] >> (7 - headerBitIdx)) & 1 ? 255 : 0
         }
         r = val
         g = val
         b = val
-        headerEncodedBitIdx++
+        headerBitIdx++
+        if (headerBitIdx >= 8) {
+          headerBitIdx = 0
+          headerByteIdx++
+        }
       } else if (isPilotBlock(mode, bx, by, blockIdx)) {
         const val = getPilotBit(getBinaryPilotConfig(mode), bx, by) ? 255 : 0
         r = val
@@ -894,9 +869,9 @@ function verifyAnchorContext(imageData, width, height, originX, originY, bs) {
 // Try to verify an anchor at (originX, originY) across multiple block sizes.
 // Returns the matching block size, or 0 if no match.
 function verifyAnchorAt(imageData, width, height, originX, originY) {
-  // Try block sizes starting from sender's native 2.0, spiraling outward.
+  // Try block sizes starting from sender's native 3.0, spiraling outward.
   // This ensures exact match at 1:1 scale and finds scaled anchors efficiently.
-  const blockSizes = [2.0, 1.75, 2.25, 1.5, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0]
+  const blockSizes = [3.0, 2.75, 3.25, 2.5, 3.5, 2.25, 3.75, 2.0, 4.0, 4.25, 4.5, 4.75, 5.0]
   for (const bs of blockSizes) {
     if (verifyAnchorWithBlockSize(imageData, width, height, originX, originY, bs) &&
         verifyAnchorContext(imageData, width, height, originX, originY, bs)) {
@@ -910,7 +885,6 @@ function verifyAnchorAt(imageData, width, height, originX, originY) {
 // with a lightweight 2-point check (black ring + white center).
 function findCornerAnchor(imageData, width, height, xStart, xEnd, yStart, yEnd, yDir, corner) {
   // Scan row by row in yDir direction for a horizontal bright run.
-  // Lower bound tracks the smaller anchor sizes now in use.
   for (let y = yStart; y !== yEnd; y += yDir) {
     if (y < 0 || y >= height) continue
     let runStart = -1, runLen = 0
@@ -919,7 +893,7 @@ function findCornerAnchor(imageData, width, height, xStart, xEnd, yStart, yEnd, 
         if (runStart < 0) runStart = x
         runLen++
       } else {
-        if (runLen >= 12 && runLen <= 50) {
+        if (runLen >= 15 && runLen <= 50) {
           const anchor = verifyBrightRun(imageData, width, height, runStart, y, runLen, yDir, corner)
           if (anchor) return anchor
         }
@@ -927,7 +901,7 @@ function findCornerAnchor(imageData, width, height, xStart, xEnd, yStart, yEnd, 
         runLen = 0
       }
     }
-    if (runLen >= 12 && runLen <= 50) {
+    if (runLen >= 15 && runLen <= 50) {
       const anchor = verifyBrightRun(imageData, width, height, runStart, y, runLen, yDir, corner)
       if (anchor) return anchor
     }
@@ -938,7 +912,7 @@ function findCornerAnchor(imageData, width, height, xStart, xEnd, yStart, yEnd, 
 // Verify a bright run is an anchor edge and derive anchor position/block size
 function verifyBrightRun(imageData, width, height, runX, runY, runLen, yDir, corner) {
   const bs = runLen / 8
-  if (bs < 1.5 || bs > 6) return null
+  if (bs < 2 || bs > 6) return null
 
   // The bright run is an all-white row of the anchor.
   // If scanning from bottom (yDir=-1), this is the last row → origin is above.
@@ -1000,7 +974,7 @@ function refineAnchorScale(imageData, width, height, anchor) {
   // The transition from white border to black ring occurs at 2 * BLOCK_SIZE sender pixels
   const captureDistance = transitionX - anchor.x
   const refinedBs = captureDistance / 2
-  if (refinedBs >= 1.5 && refinedBs <= 6) return refinedBs
+  if (refinedBs >= 2.5 && refinedBs <= 6) return refinedBs
   return approxBs
 }
 
@@ -1291,29 +1265,31 @@ function attachDecisionTrace(result, decision, region) {
 }
 
 // Read header bytes using binary modulation at given alignment.
-// Returns parsed header or null. Reads HEADER_BLOCKS blocks and majority-decodes
-// the duplicated magic bits before parsing.
+// Returns parsed header or null. Reads HEADER_BLOCKS blocks, decodes 8 per byte.
 function probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, expectedBlocksY = null) {
-  const bitVotes = new Int16Array(HEADER_SIZE * BITS_PER_BYTE)
-  let encodedBitIdx = 0
+  const headerBytes = new Uint8Array(HEADER_SIZE)
+  let byteIdx = 0, bitIdx = 0, currentByte = 0
   const imgHeight = imageData.length / (width * 4)
   const blocksY = expectedBlocksY ?? Math.floor(region.h / stepY)
 
-  for (let by = 0; by < blocksY && encodedBitIdx < HEADER_ENCODED_BITS; by++) {
-    for (let bx = 0; bx < blocksX && encodedBitIdx < HEADER_ENCODED_BITS; bx++) {
+  for (let by = 0; by < blocksY && byteIdx < HEADER_SIZE; by++) {
+    for (let bx = 0; bx < blocksX && byteIdx < HEADER_SIZE; bx++) {
       const px = rx + Math.round(bx * stepX)
       const py = ry + Math.round(by * stepY)
       let val = 0
       if (px >= 0 && px < width && py >= 0 && py < imgHeight) {
         val = sampleBlockAt(imageData, width, px, py, bs)
       }
-      const sourceBitIdx = getHeaderSourceBitIndex(encodedBitIdx)
-      bitVotes[sourceBitIdx] += val > 128 ? 1 : -1
-      encodedBitIdx++
+      if (val > 128) currentByte |= (1 << (7 - bitIdx))
+      bitIdx++
+      if (bitIdx >= 8) {
+        headerBytes[byteIdx++] = currentByte
+        currentByte = 0
+        bitIdx = 0
+      }
     }
   }
 
-  const headerBytes = decodeHeaderBits(bitVotes)
   return parseHeader(headerBytes)
 }
 
@@ -1327,7 +1303,8 @@ function estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX
     header.payloadLength,
     header.payloadCrc
   )
-  let encodedBitIdx = 0
+  let byteIdx = 0
+  let bitIdx = 0
   const imgHeight = imageData.length / (width * 4)
   const blocksY = expectedBlocksY ?? Math.floor(region.h / stepY)
   let blackSum = 0
@@ -1335,8 +1312,8 @@ function estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX
   let blackCount = 0
   let whiteCount = 0
 
-  for (let by = 0; by < blocksY && encodedBitIdx < HEADER_ENCODED_BITS; by++) {
-    for (let bx = 0; bx < blocksX && encodedBitIdx < HEADER_ENCODED_BITS; bx++) {
+  for (let by = 0; by < blocksY && byteIdx < HEADER_SIZE; by++) {
+    for (let bx = 0; bx < blocksX && byteIdx < HEADER_SIZE; bx++) {
       const px = rx + Math.round(bx * stepX)
       const py = ry + Math.round(by * stepY)
       let val = 0
@@ -1344,7 +1321,7 @@ function estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX
         val = sampleBlockAt(imageData, width, px, py, bs)
       }
 
-      const expectedBit = getHeaderSourceBit(headerBytes, getHeaderSourceBitIndex(encodedBitIdx))
+      const expectedBit = (headerBytes[byteIdx] >> (7 - bitIdx)) & 1
       if (expectedBit) {
         whiteSum += val
         whiteCount++
@@ -1353,7 +1330,11 @@ function estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX
         blackCount++
       }
 
-      encodedBitIdx++
+      bitIdx++
+      if (bitIdx >= 8) {
+        bitIdx = 0
+        byteIdx++
+      }
     }
   }
 
@@ -1373,7 +1354,8 @@ function estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, st
     header.payloadLength,
     header.payloadCrc
   )
-  let encodedBitIdx = 0
+  let byteIdx = 0
+  let bitIdx = 0
   const imgHeight = imageData.length / (width * 4)
   const blocksY = expectedBlocksY ?? Math.floor(region.h / stepY)
   const blackSums = [0, 0, 0]
@@ -1381,8 +1363,8 @@ function estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, st
   let blackCount = 0
   let whiteCount = 0
 
-  for (let by = 0; by < blocksY && encodedBitIdx < HEADER_ENCODED_BITS; by++) {
-    for (let bx = 0; bx < blocksX && encodedBitIdx < HEADER_ENCODED_BITS; bx++) {
+  for (let by = 0; by < blocksY && byteIdx < HEADER_SIZE; by++) {
+    for (let bx = 0; bx < blocksX && byteIdx < HEADER_SIZE; bx++) {
       const px = rx + Math.round(bx * stepX)
       const py = ry + Math.round(by * stepY)
       let rgb = [0, 0, 0]
@@ -1390,7 +1372,7 @@ function estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, st
         rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
       }
 
-      const expectedBit = getHeaderSourceBit(headerBytes, getHeaderSourceBitIndex(encodedBitIdx))
+      const expectedBit = (headerBytes[byteIdx] >> (7 - bitIdx)) & 1
       if (expectedBit) {
         whiteSums[0] += rgb[0]
         whiteSums[1] += rgb[1]
@@ -1403,7 +1385,11 @@ function estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, st
         blackCount++
       }
 
-      encodedBitIdx++
+      bitIdx++
+      if (bitIdx >= 8) {
+        bitIdx = 0
+        byteIdx++
+      }
     }
   }
 
