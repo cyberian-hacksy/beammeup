@@ -219,7 +219,7 @@ const METADATA_BURST_FRAMES = 4
 const MIN_METADATA_INTERVAL_FRAMES = 90
 const MAX_METADATA_INTERVAL_FRAMES = 180
 const MIN_BLOCK_SIZE = 512
-const MAX_BLOCK_SIZE = 1600
+const MAX_BLOCK_SIZE = 1792
 const TARGET_SOURCE_BLOCKS = 128
 
 function computeMetadataIntervalFrames() {
@@ -255,12 +255,12 @@ function getBatchingProfile(mode) {
         maxUsedBytes: 8192
       }
     case HDMI_MODE.COMPAT_4:
-      // 4x4 mode is the most robust live path. Keep the stronger 8-shard shape
-      // and let the scheduler fill the frame as tightly as the measured live
-      // geometry allows.
+      // 4x4 mode is the most robust live path. Recent live runs showed that
+      // fewer, larger shards outperform the stricter 8-packet family once the
+      // reduced 24px anchor geometry reclaimed enough frame area.
       return {
-        fixedPacketsPerFrame: 8,
-        maxPacketsPerFrame: 8,
+        fixedPacketsPerFrame: 7,
+        maxPacketsPerFrame: 7,
         targetFrameFill: 0.99,
         maxBlockSize: MAX_BLOCK_SIZE,
         maxUsedBytes: null
