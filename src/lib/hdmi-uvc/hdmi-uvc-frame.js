@@ -864,9 +864,9 @@ function verifyAnchorContext(imageData, width, height, originX, originY, bs) {
 // Try to verify an anchor at (originX, originY) across multiple block sizes.
 // Returns the matching block size, or 0 if no match.
 function verifyAnchorAt(imageData, width, height, originX, originY) {
-  // Try block sizes starting from sender's native 4.0, spiraling outward.
+  // Try block sizes starting from sender's native 3.0, spiraling outward.
   // This ensures exact match at 1:1 scale and finds scaled anchors efficiently.
-  const blockSizes = [4.0, 3.75, 4.25, 3.5, 4.5, 3.25, 4.75, 3.0, 5.0, 2.75, 5.25, 2.5, 5.5]
+  const blockSizes = [3.0, 2.75, 3.25, 2.5, 3.5, 2.25, 3.75, 2.0, 4.0, 4.25, 4.5, 4.75, 5.0]
   for (const bs of blockSizes) {
     if (verifyAnchorWithBlockSize(imageData, width, height, originX, originY, bs) &&
         verifyAnchorContext(imageData, width, height, originX, originY, bs)) {
