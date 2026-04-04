@@ -52,7 +52,8 @@ const state = {
   symbolId: 1,
   frameCount: 0,
   mode: HDMI_MODE.COMPAT_4,
-  systematicPass: 1
+  systematicPass: 1,
+  metadataIntervalFrames: METADATA_INTERVAL * 2
 }
 
 let elements = null
@@ -214,11 +215,22 @@ function updateModeSelector() {
 // Once the HDMI-UVC decode path is stable, repeating every symbol wastes most
 // of the available bandwidth. Let fountain redundancy absorb frame loss.
 const FRAMES_PER_SYMBOL = 1
-const METADATA_BURST_FRAMES = 6
-const METADATA_INTERVAL_FRAMES = METADATA_INTERVAL * 2
+const METADATA_BURST_FRAMES = 4
+const MIN_METADATA_INTERVAL_FRAMES = 90
+const MAX_METADATA_INTERVAL_FRAMES = 180
 const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 1536
 const TARGET_SOURCE_BLOCKS = 128
+
+function computeMetadataIntervalFrames() {
+  if (!state.encoder || !state.packetsPerFrame) return MIN_METADATA_INTERVAL_FRAMES
+  const cycleFrames = Math.ceil(state.encoder.K_prime / state.packetsPerFrame)
+  const targetInterval = Math.ceil(cycleFrames / 2)
+  return Math.max(
+    MIN_METADATA_INTERVAL_FRAMES,
+    Math.min(MAX_METADATA_INTERVAL_FRAMES, targetInterval)
+  )
+}
 
 function getBatchingProfile(mode) {
   switch (mode) {
@@ -283,7 +295,8 @@ function getBatchingProfile(mode) {
 }
 
 function shouldSendMetadata(frameNumber) {
-  return frameNumber <= METADATA_BURST_FRAMES || frameNumber % METADATA_INTERVAL_FRAMES === 0
+  return frameNumber <= METADATA_BURST_FRAMES ||
+    frameNumber % state.metadataIntervalFrames === 0
 }
 
 function nextDataSymbolId(frameNumber) {
@@ -493,10 +506,15 @@ async function startSending() {
     )
     state.packetSize = blockSize + PACKET_HEADER_SIZE
     state.packetsPerFrame = bestPacketsPerFrame
+    state.metadataIntervalFrames = computeMetadataIntervalFrames()
     const batchedBytes = bestUsedBytes
     const utilization = ((batchedBytes / capacity) * 100).toFixed(1)
 
     debugLog(`Encoder: K=${state.encoder.K}, K'=${state.encoder.K_prime}`)
+    debugLog(
+      `Metadata schedule: burst=${METADATA_BURST_FRAMES} frame(s), ` +
+      `interval=${state.metadataIntervalFrames} frame(s)`
+    )
     debugLog(`Batching: ${state.packetsPerFrame} packet(s)/frame, packetSize=${state.packetSize}, used=${batchedBytes}/${capacity} bytes (${utilization}%)`)
 
     state.isSending = true
@@ -592,6 +610,7 @@ function stopSending() {
   state.isPaused = false
   state.symbolId = 1
   state.systematicPass = 1
+  state.metadataIntervalFrames = METADATA_INTERVAL * 2
   state.frameCount = 0
   setSignalLive(false)
 
