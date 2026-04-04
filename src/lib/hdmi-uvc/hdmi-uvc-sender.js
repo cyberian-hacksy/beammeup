@@ -219,7 +219,7 @@ const METADATA_BURST_FRAMES = 4
 const MIN_METADATA_INTERVAL_FRAMES = 90
 const MAX_METADATA_INTERVAL_FRAMES = 180
 const MIN_BLOCK_SIZE = 512
-const MAX_BLOCK_SIZE = 2048
+const MAX_BLOCK_SIZE = 3072
 const TARGET_SOURCE_BLOCKS = 128
 
 function computeMetadataIntervalFrames() {
@@ -259,6 +259,7 @@ function getBatchingProfile(mode) {
       // the best throughput now comes from the 6-7 packet family with larger
       // shards, not from forcing a single packet count ahead of time.
       return {
+        minPacketsPerFrame: 5,
         maxPacketsPerFrame: 7,
         targetFrameFill: 0.99,
         maxBlockSize: MAX_BLOCK_SIZE,
@@ -437,6 +438,7 @@ async function startSending() {
     const canvasWidth = metrics.width
     const canvasHeight = metrics.height
     const {
+      minPacketsPerFrame,
       fixedPacketsPerFrame,
       maxPacketsPerFrame,
       targetFrameFill,
@@ -467,7 +469,7 @@ async function startSending() {
 
       const minPackets = fixedPacketsPerFrame
         ? Math.min(fixedPacketsPerFrame, maxPacketsThatFit)
-        : 1
+        : Math.min(minPacketsPerFrame ?? 1, maxPacketsThatFit)
       const maxPackets = fixedPacketsPerFrame
         ? Math.min(fixedPacketsPerFrame, maxPacketsThatFit)
         : maxPacketsThatFit
