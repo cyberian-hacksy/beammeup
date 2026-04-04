@@ -217,7 +217,7 @@ const FRAMES_PER_SYMBOL = 1
 const METADATA_BURST_FRAMES = 6
 const METADATA_INTERVAL_FRAMES = METADATA_INTERVAL * 2
 const MIN_BLOCK_SIZE = 512
-const MAX_BLOCK_SIZE = 1536
+const MAX_BLOCK_SIZE = 2048
 const TARGET_SOURCE_BLOCKS = 128
 
 function getBatchingProfile(mode) {
@@ -243,11 +243,10 @@ function getBatchingProfile(mode) {
         maxUsedBytes: 8192
       }
     case HDMI_MODE.COMPAT_4:
-      // 4x4 mode is the most robust live path. Keep the stronger 8-shard shape
-      // and let the scheduler fill the frame as tightly as the measured live
-      // geometry allows.
+      // 4x4 mode is the most robust live path. Use fewer, larger full-fill
+      // shards so the higher block-size ceiling can actually matter.
       return {
-        maxPacketsPerFrame: 8,
+        maxPacketsPerFrame: 7,
         targetFrameFill: 0.99,
         maxBlockSize: MAX_BLOCK_SIZE,
         maxUsedBytes: null
