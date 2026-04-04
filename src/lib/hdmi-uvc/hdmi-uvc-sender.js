@@ -259,6 +259,7 @@ function getBatchingProfile(mode) {
       // and let the scheduler fill the frame as tightly as the measured live
       // geometry allows.
       return {
+        fixedPacketsPerFrame: 8,
         maxPacketsPerFrame: 8,
         targetFrameFill: 0.99,
         maxBlockSize: MAX_BLOCK_SIZE,
@@ -437,6 +438,7 @@ async function startSending() {
     const canvasWidth = metrics.width
     const canvasHeight = metrics.height
     const {
+      fixedPacketsPerFrame,
       maxPacketsPerFrame,
       targetFrameFill,
       maxBlockSize: profileMaxBlockSize,
@@ -464,7 +466,14 @@ async function startSending() {
       )
       if (maxPacketsThatFit < 1) continue
 
-      for (let packetsPerFrame = 1; packetsPerFrame <= maxPacketsThatFit; packetsPerFrame++) {
+      const minPackets = fixedPacketsPerFrame
+        ? Math.min(fixedPacketsPerFrame, maxPacketsThatFit)
+        : 1
+      const maxPackets = fixedPacketsPerFrame
+        ? Math.min(fixedPacketsPerFrame, maxPacketsThatFit)
+        : maxPacketsThatFit
+
+      for (let packetsPerFrame = minPackets; packetsPerFrame <= maxPackets; packetsPerFrame++) {
         const usedBytes = packetsPerFrame * (candidate + PACKET_HEADER_SIZE)
         if (maxUsedBytes && usedBytes > maxUsedBytes) continue
 
