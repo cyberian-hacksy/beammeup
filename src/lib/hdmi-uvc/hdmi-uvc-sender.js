@@ -257,9 +257,10 @@ function getBatchingProfile(mode) {
     case HDMI_MODE.COMPAT_4:
       // 4x4 mode is the most robust live path. Recent live runs showed that
       // the best throughput now comes from the 6-7 packet family with larger
-      // shards, not from forcing a single packet count ahead of time.
+      // shards, not from letting the search fall all the way down to tiny
+      // packet counts with oversized blocks.
       return {
-        minPacketsPerFrame: 5,
+        minPacketsPerFrame: 6,
         maxPacketsPerFrame: 7,
         targetFrameFill: 0.99,
         maxBlockSize: MAX_BLOCK_SIZE,
@@ -467,9 +468,13 @@ async function startSending() {
       )
       if (maxPacketsThatFit < 1) continue
 
+      if (!fixedPacketsPerFrame && minPacketsPerFrame && maxPacketsThatFit < minPacketsPerFrame) {
+        continue
+      }
+
       const minPackets = fixedPacketsPerFrame
         ? Math.min(fixedPacketsPerFrame, maxPacketsThatFit)
-        : Math.min(minPacketsPerFrame ?? 1, maxPacketsThatFit)
+        : (minPacketsPerFrame ?? 1)
       const maxPackets = fixedPacketsPerFrame
         ? Math.min(fixedPacketsPerFrame, maxPacketsThatFit)
         : maxPacketsThatFit
