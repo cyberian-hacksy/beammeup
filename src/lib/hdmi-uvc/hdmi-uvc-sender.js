@@ -51,6 +51,8 @@ const state = {
   isPaused: false,
   systematicIndex: 0,
   systematicStride: 1,
+  fountainSymbolId: 0,
+  dataPacketCount: 0,
   frameCount: 0,
   mode: HDMI_MODE.COMPAT_4,
   systematicPass: 1,
@@ -222,6 +224,7 @@ const MAX_METADATA_INTERVAL_FRAMES = 180
 const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 3072
 const TARGET_SOURCE_BLOCKS = 128
+const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
 
 function computeMetadataIntervalFrames() {
   if (!state.encoder || !state.packetsPerFrame) return MIN_METADATA_INTERVAL_FRAMES
@@ -328,19 +331,35 @@ function shouldSendMetadata(frameNumber) {
 }
 
 function nextDataSymbolId(frameNumber) {
-  const span = state.encoder.K_prime
-  const symbolId = ((state.systematicIndex * state.systematicStride) % span) + 1
-  if (frameNumber % FRAMES_PER_SYMBOL === 0) {
-    state.systematicIndex++
-    if (state.systematicIndex >= span) {
-      state.systematicPass++
-      state.systematicIndex = 0
-      debugLog(
-        `Starting systematic replay pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
-        `(stride=${state.systematicStride}/${span})`
-      )
+  const sourceSpan = state.encoder.K
+  const shouldSendFountain =
+    state.systematicPass > 1 &&
+    state.fountainSymbolId > state.encoder.K_prime &&
+    state.dataPacketCount > 0 &&
+    state.dataPacketCount % HYBRID_FOUNTAIN_PACKET_INTERVAL === 0
+
+  let symbolId
+  if (shouldSendFountain) {
+    symbolId = state.fountainSymbolId++
+  } else {
+    symbolId = ((state.systematicIndex * state.systematicStride) % sourceSpan) + 1
+    if (frameNumber % FRAMES_PER_SYMBOL === 0) {
+      state.systematicIndex++
+      if (state.systematicIndex >= sourceSpan) {
+        state.systematicPass++
+        state.systematicIndex = 0
+        debugLog(
+          `Starting source replay pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
+          `(stride=${state.systematicStride}/${sourceSpan})`
+        )
+      }
     }
   }
+
+  if (frameNumber % FRAMES_PER_SYMBOL === 0) {
+    state.dataPacketCount++
+  }
+
   return symbolId
 }
 
@@ -565,10 +584,13 @@ async function startSending() {
     state.isSending = true
     state.isPaused = false
     state.systematicIndex = 0
-    state.systematicStride = chooseSystematicStride(state.encoder.K_prime)
+    state.systematicStride = chooseSystematicStride(state.encoder.K)
+    state.fountainSymbolId = state.encoder.K_prime + 1
+    state.dataPacketCount = 0
     state.systematicPass = 1
     state.frameCount = 0
-    debugLog(`Systematic order: permuted stride=${state.systematicStride}/${state.encoder.K_prime}`)
+    debugLog(`Systematic order: source stride=${state.systematicStride}/${state.encoder.K}`)
+    debugLog(`Hybrid schedule: source-only pass 1, then 1 fountain every ${HYBRID_FOUNTAIN_PACKET_INTERVAL} data packets`)
     setSignalLive(true)
 
     elements.fpsSlider.disabled = true
@@ -657,6 +679,8 @@ function stopSending() {
   state.isPaused = false
   state.systematicIndex = 0
   state.systematicStride = 1
+  state.fountainSymbolId = 0
+  state.dataPacketCount = 0
   state.systematicPass = 1
   state.metadataIntervalFrames = METADATA_INTERVAL * 2
   state.frameCount = 0
