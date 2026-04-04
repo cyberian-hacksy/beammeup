@@ -1,35 +1,53 @@
 // Packet serialization for QR code transfer protocol
-// Packet structure: 20-byte header + payload
-// Offset 0:    Version (1 byte)
-// Offset 1-4:  File ID (4 bytes)
-// Offset 5-8:  K total blocks (4 bytes)
-// Offset 9-12: Symbol ID (4 bytes)
-// Offset 13-14: Block size (2 bytes)
-// Offset 15:   Flags (1 byte)
+// Packet structure: 15-byte header + payload
+// Offset 0:    Version/flags (1 byte)
 //              - bit 0: hasMetadata
 //              - bits 1-2: mode (00=BW, 01=PCCC, 10=Palette)
-//              - bits 3-7: reserved
-// Offset 16-19: CRC32 of payload (4 bytes)
+//              - bits 3-7: protocol version
+// Offset 1-4:  File ID (4 bytes)
+// Offset 5-7:  K' total intermediate blocks (24-bit big-endian)
+// Offset 8-10: Symbol ID (24-bit big-endian)
+// Offset 11-14: CRC32 of payload (4 bytes)
+//
+// Block size is inferred from packet.length - PACKET_HEADER_SIZE, which removes
+// redundant per-packet bytes without affecting fixed-size HDMI-UVC batching.
 
 import { PROTOCOL_VERSION, QR_MODE } from './constants.js'
 import { crc32 } from './hdmi-uvc/crc32.js'
 
-export const PACKET_HEADER_SIZE = 20
+export const PACKET_HEADER_SIZE = 15
+
+function writeUint24(view, offset, value) {
+  view.setUint8(offset, (value >>> 16) & 0xFF)
+  view.setUint8(offset + 1, (value >>> 8) & 0xFF)
+  view.setUint8(offset + 2, value & 0xFF)
+}
+
+function readUint24(view, offset) {
+  return (
+    (view.getUint8(offset) << 16) |
+    (view.getUint8(offset + 1) << 8) |
+    view.getUint8(offset + 2)
+  ) >>> 0
+}
 
 export function createPacket(fileId, k, symbolId, payload, isMetadata = false, blockSize = 200, mode = QR_MODE.BW) {
+  if (payload.length !== blockSize) {
+    throw new Error(`Packet payload length ${payload.length} does not match block size ${blockSize}`)
+  }
+  if (k > 0xFFFFFF || symbolId > 0xFFFFFF) {
+    throw new Error(`Packet fields exceed compact header capacity (k=${k}, symbolId=${symbolId})`)
+  }
+
   const header = new ArrayBuffer(PACKET_HEADER_SIZE)
   const view = new DataView(header)
 
-  view.setUint8(0, PROTOCOL_VERSION)
+  const versionAndFlags = ((PROTOCOL_VERSION & 0x1F) << 3) | (isMetadata ? 1 : 0) | ((mode & 0x03) << 1)
+  view.setUint8(0, versionAndFlags)
   view.setUint32(1, fileId, false) // big-endian
-  view.setUint32(5, k, false)
-  view.setUint32(9, symbolId, false)
-  view.setUint16(13, blockSize, false)
-
-  // Flags: bit 0 = isMetadata, bits 1-2 = mode
-  const flags = (isMetadata ? 1 : 0) | ((mode & 0x03) << 1)
-  view.setUint8(15, flags)
-  view.setUint32(16, crc32(payload), false)
+  writeUint24(view, 5, k)
+  writeUint24(view, 8, symbolId)
+  view.setUint32(11, crc32(payload), false)
 
   // Combine header and payload
   const packet = new Uint8Array(PACKET_HEADER_SIZE + payload.length)
@@ -43,24 +61,25 @@ export function parsePacket(data) {
   if (data.length < PACKET_HEADER_SIZE) return null
 
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-  const version = view.getUint8(0)
+  const versionAndFlags = view.getUint8(0)
+  const version = versionAndFlags >> 3
 
   if (version !== PROTOCOL_VERSION) {
     return null
   }
 
-  const flags = view.getUint8(15)
-  const blockSize = view.getUint16(13, false)
+  const flags = versionAndFlags & 0x07
   const payload = data.slice(PACKET_HEADER_SIZE)
-  if (payload.length !== blockSize) return null
+  const blockSize = payload.length
+  if (blockSize < 1) return null
 
-  const payloadCrc = view.getUint32(16, false)
+  const payloadCrc = view.getUint32(11, false)
   if (crc32(payload) !== payloadCrc) return null
 
   return {
     fileId: view.getUint32(1, false),
-    k: view.getUint32(5, false),
-    symbolId: view.getUint32(9, false),
+    k: readUint24(view, 5),
+    symbolId: readUint24(view, 8),
     blockSize,
     isMetadata: (flags & 1) === 1,
     mode: (flags >> 1) & 0x03,

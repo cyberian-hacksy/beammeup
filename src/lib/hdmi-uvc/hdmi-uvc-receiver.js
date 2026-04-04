@@ -1,6 +1,5 @@
 // HDMI-UVC Receiver module - captures from UVC device and decodes frames
 
-import { PROTOCOL_VERSION } from '../constants.js'
 import { createDecoder } from '../decoder.js'
 import { PACKET_HEADER_SIZE, parsePacket } from '../packet.js'
 import { DEVICE_STORAGE_KEY, HDMI_MODE_NAMES, HEADER_SIZE } from './hdmi-uvc-constants.js'
@@ -129,37 +128,10 @@ function getThroughputStats() {
 }
 
 function tryVariableFramePackets(framePayload) {
-  const packets = []
-  let offset = 0
-
-  while (offset + PACKET_HEADER_SIZE <= framePayload.length) {
-    if (framePayload[offset] !== PROTOCOL_VERSION) {
-      return []
-    }
-
-    const remaining = framePayload.length - offset
-    const view = new DataView(
-      framePayload.buffer,
-      framePayload.byteOffset + offset,
-      remaining
-    )
-    const blockSize = view.getUint16(13, false)
-    const packetLength = PACKET_HEADER_SIZE + blockSize
-
-    if (packetLength <= PACKET_HEADER_SIZE || offset + packetLength > framePayload.length) {
-      return []
-    }
-
-    const packet = framePayload.slice(offset, offset + packetLength)
-    if (!parsePacket(packet)) {
-      return []
-    }
-
-    packets.push(packet)
-    offset += packetLength
-  }
-
-  return offset === framePayload.length ? packets : []
+  // HDMI-UVC batching uses equal-sized packets inside each frame payload.
+  // Keep the variable-path disabled so bootstrap salvage relies on the more
+  // reliable equal-chunk probe instead of stale block-size header offsets.
+  return []
 }
 
 function tryEqualChunkFramePackets(framePayload, maxPackets = 16) {
