@@ -331,7 +331,7 @@ function appendSymbolBits(payload, state, symbol, bitsPerBlock) {
 
 // --- Anchor rendering ---
 
-// Draw a 32×32 anchor pattern at (originX, originY) into RGBA imageData
+// Draw an anchor pattern at (originX, originY) into RGBA imageData
 export function renderAnchor(imageData, width, originX, originY) {
   for (let by = 0; by < 8; by++) {
     for (let bx = 0; bx < 8; bx++) {
@@ -833,10 +833,15 @@ function verifyAnchorContext(imageData, width, height, originX, originY, bs) {
     return imageData[(y * width + x) * 4] < 50
   }
 
-  // For each of 4 directions, check 3 points at 8/14/20px from anchor edge.
+  // For each of 4 directions, check 3 points at distances proportional to the
+  // detected anchor size so smaller anchors are not over-penalized.
   // Direction counts as "dark" if majority (2+) of points are dark.
   let darkDirs = 0
-  const distances = [8, 14, 20]
+  const distances = Array.from(new Set([
+    Math.max(4, Math.round(bs * 2)),
+    Math.max(6, Math.round(bs * 3.5)),
+    Math.max(8, Math.round(bs * 5))
+  ]))
 
   // Above
   let dk = 0
@@ -864,9 +869,9 @@ function verifyAnchorContext(imageData, width, height, originX, originY, bs) {
 // Try to verify an anchor at (originX, originY) across multiple block sizes.
 // Returns the matching block size, or 0 if no match.
 function verifyAnchorAt(imageData, width, height, originX, originY) {
-  // Try block sizes starting from sender's native 3.0, spiraling outward.
+  // Try block sizes starting from sender's native 2.0, spiraling outward.
   // This ensures exact match at 1:1 scale and finds scaled anchors efficiently.
-  const blockSizes = [3.0, 2.75, 3.25, 2.5, 3.5, 2.25, 3.75, 2.0, 4.0, 4.25, 4.5, 4.75, 5.0]
+  const blockSizes = [2.0, 1.75, 2.25, 1.5, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0]
   for (const bs of blockSizes) {
     if (verifyAnchorWithBlockSize(imageData, width, height, originX, originY, bs) &&
         verifyAnchorContext(imageData, width, height, originX, originY, bs)) {
@@ -879,7 +884,8 @@ function verifyAnchorAt(imageData, width, height, originX, originY) {
 // Find an anchor by scanning a corner for a bright rectangle, then verifying
 // with a lightweight 2-point check (black ring + white center).
 function findCornerAnchor(imageData, width, height, xStart, xEnd, yStart, yEnd, yDir, corner) {
-  // Scan row by row in yDir direction for a horizontal bright run (15-50px)
+  // Scan row by row in yDir direction for a horizontal bright run.
+  // Lower bound tracks the smaller anchor sizes now in use.
   for (let y = yStart; y !== yEnd; y += yDir) {
     if (y < 0 || y >= height) continue
     let runStart = -1, runLen = 0
@@ -888,7 +894,7 @@ function findCornerAnchor(imageData, width, height, xStart, xEnd, yStart, yEnd, 
         if (runStart < 0) runStart = x
         runLen++
       } else {
-        if (runLen >= 15 && runLen <= 50) {
+        if (runLen >= 12 && runLen <= 50) {
           const anchor = verifyBrightRun(imageData, width, height, runStart, y, runLen, yDir, corner)
           if (anchor) return anchor
         }
@@ -896,7 +902,7 @@ function findCornerAnchor(imageData, width, height, xStart, xEnd, yStart, yEnd, 
         runLen = 0
       }
     }
-    if (runLen >= 15 && runLen <= 50) {
+    if (runLen >= 12 && runLen <= 50) {
       const anchor = verifyBrightRun(imageData, width, height, runStart, y, runLen, yDir, corner)
       if (anchor) return anchor
     }
@@ -907,7 +913,7 @@ function findCornerAnchor(imageData, width, height, xStart, xEnd, yStart, yEnd, 
 // Verify a bright run is an anchor edge and derive anchor position/block size
 function verifyBrightRun(imageData, width, height, runX, runY, runLen, yDir, corner) {
   const bs = runLen / 8
-  if (bs < 2 || bs > 6) return null
+  if (bs < 1.5 || bs > 6) return null
 
   // The bright run is an all-white row of the anchor.
   // If scanning from bottom (yDir=-1), this is the last row → origin is above.
@@ -969,7 +975,7 @@ function refineAnchorScale(imageData, width, height, anchor) {
   // The transition from white border to black ring occurs at 2 * BLOCK_SIZE sender pixels
   const captureDistance = transitionX - anchor.x
   const refinedBs = captureDistance / 2
-  if (refinedBs >= 2.5 && refinedBs <= 6) return refinedBs
+  if (refinedBs >= 1.5 && refinedBs <= 6) return refinedBs
   return approxBs
 }
 
