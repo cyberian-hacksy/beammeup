@@ -3,6 +3,7 @@
 import { createEncoder } from '../encoder.js'
 import { METADATA_INTERVAL } from '../constants.js'
 import { PACKET_HEADER_SIZE } from '../packet.js'
+import { loadCimbarWasm, getModule as getCimbarModule } from '../cimbar/cimbar-loader.js'
 import {
   HDMI_UVC_MAX_FILE_SIZE,
   HDMI_MODE,
@@ -14,6 +15,7 @@ import { buildFrame, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
+const CIMBAR_MAX_FILE_SIZE = 33 * 1024 * 1024
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -56,7 +58,8 @@ const state = {
   frameCount: 0,
   mode: HDMI_MODE.COMPAT_4,
   systematicPass: 1,
-  metadataIntervalFrames: METADATA_INTERVAL * 2
+  metadataIntervalFrames: METADATA_INTERVAL * 2,
+  cimbarIdealRatio: 1
 }
 
 let elements = null
@@ -76,6 +79,7 @@ function resetCanvasStyles() {
   elements.canvas.style.zIndex = ''
   elements.canvas.style.imageRendering = ''
   elements.canvas.style.background = ''
+  elements.canvas.style.transform = ''
 }
 
 function setSignalLive(isLive) {
@@ -136,6 +140,39 @@ function getCanvasViewportMetrics() {
     screenHeight,
     devicePixelRatio: window.devicePixelRatio || 1
   }
+}
+
+function isCimbarMode() {
+  return state.mode === HDMI_MODE.CIMBAR
+}
+
+function copyToWasmHeap(Module, data) {
+  const ptr = Module._malloc(data.length)
+  const wasmData = new Uint8Array(Module.HEAPU8.buffer, ptr, data.length)
+  wasmData.set(data)
+  return { ptr, view: wasmData }
+}
+
+function scaleCimbarCanvasToViewport() {
+  const metrics = getCanvasViewportMetrics()
+  const ratio = state.cimbarIdealRatio || 1
+
+  let width = metrics.width
+  let height = Math.floor(width / ratio)
+  if (height > metrics.height) {
+    height = metrics.height
+    width = Math.floor(height * ratio)
+  }
+
+  elements.canvas.style.width = `${width}px`
+  elements.canvas.style.height = `${height}px`
+  elements.canvas.style.position = 'absolute'
+  elements.canvas.style.top = '50%'
+  elements.canvas.style.left = '50%'
+  elements.canvas.style.transform = 'translate(-50%, -50%)'
+
+  debugLog(`Viewport: rect=${metrics.rectWidth}x${metrics.rectHeight}, visual=${metrics.visualWidth}x${metrics.visualHeight}, inner=${metrics.innerWidth}x${metrics.innerHeight}, screen=${metrics.screenWidth}x${metrics.screenHeight}, dpr=${metrics.devicePixelRatio}`)
+  debugLog(`Canvas: CIMBAR viewport ${width}x${height} (ratio=${ratio.toFixed(3)})`)
 }
 
 function measureAndApplyCanvasSize() {
@@ -399,7 +436,31 @@ function buildFramePacketBatch(frameNumber) {
 }
 
 function renderFrame() {
-  if (!state.isSending || state.isPaused || !state.encoder) return
+  if (!state.isSending || state.isPaused) return
+
+  if (isCimbarMode()) {
+    const Module = getCimbarModule()
+    if (!Module) return
+
+    try {
+      Module._cimbare_render()
+      Module._cimbare_next_frame(false)
+
+      state.frameCount++
+      elements.frameCount.textContent = state.frameCount
+      elements.progressDisplay.textContent = 'CIMBAR'
+      debugCurrent(`#${state.frameCount} CIMBAR`)
+
+      const fps = getFps()
+      state.timerId = setTimeout(renderFrame, fps.interval)
+    } catch (err) {
+      debugLog(`ERROR: ${err.message}`)
+      showError('CIMBAR render error: ' + err.message)
+    }
+    return
+  }
+
+  if (!state.encoder) return
 
   const fps = getFps()
   const cw = elements.canvas.width
@@ -483,6 +544,55 @@ async function startSending() {
     // Fullscreen layout can settle a frame or two after the promise resolves.
     // Measure the actual fullscreen element box instead of trusting window.inner*.
     await waitForLayoutFrames(3)
+
+    if (isCimbarMode()) {
+      if (state.fileSize > CIMBAR_MAX_FILE_SIZE) {
+        throw new Error(`File too large for CIMBAR mode (${formatBytes(CIMBAR_MAX_FILE_SIZE)} max)`)
+      }
+
+      await loadCimbarWasm()
+      const Module = getCimbarModule()
+      if (!Module) throw new Error('CIMBAR WASM not loaded')
+
+      Module.canvas = elements.canvas
+      Module._cimbare_configure(68, -1)
+      state.cimbarIdealRatio = Module._cimbare_get_aspect_ratio()
+      scaleCimbarCanvasToViewport()
+
+      const fnBytes = new TextEncoder().encode(state.fileName)
+      const fnAlloc = copyToWasmHeap(Module, fnBytes)
+      Module._cimbare_init_encode(fnAlloc.ptr, fnBytes.length, -1)
+      Module._free(fnAlloc.ptr)
+
+      const chunkSize = Module._cimbare_encode_bufsize()
+      const fileBytes = new Uint8Array(state.fileData)
+      for (let offset = 0; offset < fileBytes.length; offset += chunkSize) {
+        const end = Math.min(offset + chunkSize, fileBytes.length)
+        const chunk = fileBytes.subarray(offset, end)
+        const chunkAlloc = copyToWasmHeap(Module, chunk)
+        Module._cimbare_encode(chunkAlloc.ptr, chunk.length)
+        Module._free(chunkAlloc.ptr)
+      }
+
+      const emptyAlloc = copyToWasmHeap(Module, new Uint8Array(0))
+      Module._cimbare_encode(emptyAlloc.ptr, 0)
+      Module._free(emptyAlloc.ptr)
+
+      debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
+      debugLog(`CIMBAR sender configured: aspect=${state.cimbarIdealRatio.toFixed(3)}`)
+      debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)})`)
+
+      state.isSending = true
+      state.isPaused = false
+      state.frameCount = 0
+      setSignalLive(true)
+
+      elements.fpsSlider.disabled = true
+      updateActionButton()
+      updateModeSelector()
+      renderFrame()
+      return
+    }
 
     const { metrics, capacity } = measureAndApplyCanvasSize()
     const canvasWidth = metrics.width
@@ -654,7 +764,11 @@ async function resumeSending() {
   }
 
   await waitForLayoutFrames(3)
-  measureAndApplyCanvasSize()
+  if (isCimbarMode()) {
+    scaleCimbarCanvasToViewport()
+  } else {
+    measureAndApplyCanvasSize()
+  }
 
   elements.fpsSlider.disabled = true
   updateActionButton()
@@ -684,6 +798,7 @@ function stopSending() {
   state.systematicPass = 1
   state.metadataIntervalFrames = METADATA_INTERVAL * 2
   state.frameCount = 0
+  state.cimbarIdealRatio = 1
   setSignalLive(false)
 
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {})

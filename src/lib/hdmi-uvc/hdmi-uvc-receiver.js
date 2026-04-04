@@ -2,6 +2,7 @@
 
 import { createDecoder } from '../decoder.js'
 import { PACKET_HEADER_SIZE, parsePacket } from '../packet.js'
+import { loadCimbarWasm, getModule as getCimbarModule } from '../cimbar/cimbar-loader.js'
 import {
   BLOCK_SIZE,
   DEVICE_STORAGE_KEY,
@@ -302,6 +303,13 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
 
 const state = {
   decoder: null,
+  cimbarCurrentMode: 0,
+  cimbarLoaded: false,
+  cimbarRecentDecode: -1,
+  cimbarRecentExtract: -1,
+  cimbarImgBuff: null,
+  cimbarFountainBuff: null,
+  cimbarReportBuff: null,
   stream: null,
   canvas: null,
   ctx: null,
@@ -322,6 +330,8 @@ const state = {
   preferredLayout: null,
   progressSamples: []
 }
+
+const CIMBAR_MODE_VALUES = [67, 68, 4]
 
 // Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
 const hasVideoFrameCallback = typeof HTMLVideoElement !== 'undefined' &&
@@ -358,6 +368,173 @@ function loadDevicePreference() {
   } catch (e) {
     return null
   }
+}
+
+function ensureCimbarBuffers(Module, imgSize) {
+  if (!state.cimbarImgBuff || state.cimbarImgBuff.length < imgSize) {
+    if (state.cimbarImgBuff) Module._free(state.cimbarImgBuff.byteOffset)
+    const imgPtr = Module._malloc(imgSize)
+    state.cimbarImgBuff = new Uint8Array(Module.HEAPU8.buffer, imgPtr, imgSize)
+  }
+
+  const bufSize = Module._cimbard_get_bufsize()
+  if (!state.cimbarFountainBuff || state.cimbarFountainBuff.length < bufSize) {
+    if (state.cimbarFountainBuff) Module._free(state.cimbarFountainBuff.byteOffset)
+    const ptr = Module._malloc(bufSize)
+    state.cimbarFountainBuff = new Uint8Array(Module.HEAPU8.buffer, ptr, bufSize)
+  }
+
+  if (!state.cimbarReportBuff) {
+    const ptr = Module._malloc(1024)
+    state.cimbarReportBuff = new Uint8Array(Module.HEAPU8.buffer, ptr, 1024)
+  }
+}
+
+function getCimbarReport(Module) {
+  if (!state.cimbarReportBuff) return null
+  const reportLen = Module._cimbard_get_report(state.cimbarReportBuff.byteOffset, 1024)
+  if (reportLen <= 0) return null
+
+  const reportView = new Uint8Array(Module.HEAPU8.buffer, state.cimbarReportBuff.byteOffset, reportLen)
+  const text = new TextDecoder().decode(reportView)
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
+}
+
+function resetCimbarSink() {
+  const Module = getCimbarModule()
+  if (!Module) return
+  Module._cimbard_configure_decode(4)
+  Module._cimbard_configure_decode(68)
+  state.cimbarCurrentMode = 0
+  state.cimbarRecentDecode = -1
+  state.cimbarRecentExtract = -1
+}
+
+async function ensureCimbarLoaded() {
+  if (state.cimbarLoaded) return true
+  try {
+    await loadCimbarWasm()
+    state.cimbarLoaded = true
+    resetCimbarSink()
+    debugLog('CIMBAR decoder ready')
+    return true
+  } catch (err) {
+    debugLog(`CIMBAR load failed: ${err.message}`)
+    return false
+  }
+}
+
+async function handleCimbarComplete(fileId) {
+  const Module = getCimbarModule()
+  if (!Module) return false
+
+  state.isScanning = false
+  cancelNextFrame()
+
+  const fileSize = Module._cimbard_get_filesize(fileId)
+  const fnLen = Module._cimbard_get_filename(fileId, state.cimbarReportBuff.byteOffset, 1024)
+  const fileName = fnLen > 0
+    ? new TextDecoder().decode(new Uint8Array(Module.HEAPU8.buffer, state.cimbarReportBuff.byteOffset, fnLen))
+    : 'download'
+
+  const bufSize = Module._cimbard_get_decompress_bufsize()
+  const decompBuff = Module._malloc(bufSize)
+  const chunks = []
+  let bytesRead
+  do {
+    bytesRead = Module._cimbard_decompress_read(fileId, decompBuff, bufSize)
+    if (bytesRead > 0) {
+      chunks.push(new Uint8Array(Module.HEAPU8.buffer, decompBuff, bytesRead).slice())
+    }
+  } while (bytesRead > 0)
+  Module._free(decompBuff)
+
+  const fileData = new Blob(chunks, { type: 'application/octet-stream' })
+  const arrayBuffer = await fileData.arrayBuffer()
+  const elapsed = (Date.now() - state.startTime) / 1000
+  const rate = fileSize / Math.max(elapsed, 0.001)
+
+  state.completedFile = {
+    data: arrayBuffer,
+    name: fileName,
+    type: 'application/octet-stream'
+  }
+  elements.completeName.textContent = `${fileName} (${formatBytes(fileSize)})`
+  elements.completeRate.textContent = `${formatBytes(rate)}/s`
+  debugLog('=== TRANSFER COMPLETE ===')
+  debugLog(`Complete: ${formatBytes(fileSize)} in ${elapsed.toFixed(1)}s (${formatBytes(rate)}/s)`)
+  showCompleteStatus()
+  return true
+}
+
+async function tryCimbarDecode(imageData, width, height) {
+  if (!(await ensureCimbarLoaded())) return false
+
+  const Module = getCimbarModule()
+  if (!Module) return false
+
+  ensureCimbarBuffers(Module, imageData.data.length)
+  state.cimbarImgBuff.set(imageData.data)
+
+  let mode = state.cimbarCurrentMode
+  if (mode === 0) {
+    mode = CIMBAR_MODE_VALUES[state.frameCount % CIMBAR_MODE_VALUES.length]
+  }
+  Module._cimbard_configure_decode(mode)
+
+  const len = Module._cimbard_scan_extract_decode(
+    state.cimbarImgBuff.byteOffset,
+    width,
+    height,
+    4,
+    state.cimbarFountainBuff.byteOffset,
+    state.cimbarFountainBuff.length
+  )
+
+  if (len > 0) {
+    state.cimbarRecentDecode = state.frameCount
+    if (state.cimbarCurrentMode === 0) state.cimbarCurrentMode = mode
+    if (state.detectedMode !== HDMI_MODE.CIMBAR) {
+      state.detectedMode = HDMI_MODE.CIMBAR
+      elements.signalStatus.textContent = 'Detected: CIMBAR'
+      debugLog('=== SIGNAL DETECTED ===')
+      debugLog(`Mode: ${HDMI_MODE_NAMES[HDMI_MODE.CIMBAR]}`)
+    }
+
+    const res = Module._cimbard_fountain_decode(state.cimbarFountainBuff.byteOffset, len)
+    const report = getCimbarReport(Module)
+    if (Array.isArray(report)) {
+      if (!state.startTime) {
+        state.startTime = Date.now()
+        showReceivingStatus()
+      }
+      const pct = Math.round(report[0] * 100)
+      elements.fileName.textContent = 'CIMBAR transfer'
+      elements.statProgress.textContent = `${pct}%`
+      elements.progressFill.style.width = `${pct}%`
+      elements.statRate.textContent = '-'
+      if (state.frameCount % 10 === 0) {
+        debugLog(`CIMBAR Progress: ${pct}% len=${len} mode=${mode}`)
+      }
+    }
+
+    if (res > 0) {
+      const fileId = Number(res & BigInt(0xFFFFFFFF))
+      await handleCimbarComplete(fileId)
+    } else {
+      debugCurrent(`#${state.frameCount} CIMBAR len=${len}`)
+    }
+    return true
+  }
+
+  if (len === 0) {
+    state.cimbarRecentExtract = state.frameCount
+  }
+  return false
 }
 
 async function enumerateDevices() {
@@ -534,6 +711,20 @@ async function processFrame(now, metadata) {
 
   state.frameCount++
   const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
+
+  if (state.detectedMode === HDMI_MODE.CIMBAR) {
+    await tryCimbarDecode(imageData, width, height)
+    if (state.isScanning) scheduleNextFrame()
+    return
+  }
+
+  if (!state.anchorBounds) {
+    const cimbarDetected = await tryCimbarDecode(imageData, width, height)
+    if (cimbarDetected) {
+      if (state.isScanning) scheduleNextFrame()
+      return
+    }
+  }
 
   // Diagnostic: find canvas bounds and scan for anchors
   if (!state.anchorBounds && isDiagFrame) {
@@ -881,6 +1072,9 @@ function resetReceiver() {
   cancelNextFrame()
 
   state.decoder = null
+  state.cimbarCurrentMode = 0
+  state.cimbarRecentDecode = -1
+  state.cimbarRecentExtract = -1
   state.frameCount = 0
   state.validFrames = 0
   state.startTime = null
@@ -894,6 +1088,7 @@ function resetReceiver() {
   state.preferredLayout = null
   state.expectedPacketCount = 0
   state.progressSamples = []
+  resetCimbarSink()
 
   elements.statFrames.textContent = '0 frames'
   elements.statusScanning.classList.remove('hidden')
@@ -926,6 +1121,7 @@ function handleReceiveAnother() {
 }
 
 export async function autoStartHdmiUvcReceiver() {
+  void ensureCimbarLoaded()
   await enumerateDevices()
 
   const savedDevice = loadDevicePreference()

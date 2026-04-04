@@ -36,7 +36,8 @@ export const HDMI_MODE = {
   COMPAT_8: 3,
   COMPAT_16: 4,
   CODEBOOK_3: 5,
-  GLYPH_5: 6
+  GLYPH_5: 6,
+  CIMBAR: 7
 }
 
 export const HDMI_MODE_NAMES = {
@@ -46,7 +47,8 @@ export const HDMI_MODE_NAMES = {
   [HDMI_MODE.COMPAT_8]: '8x8',
   [HDMI_MODE.COMPAT_16]: '16x16',
   [HDMI_MODE.CODEBOOK_3]: 'Tile3',
-  [HDMI_MODE.GLYPH_5]: 'Glyph5'
+  [HDMI_MODE.GLYPH_5]: 'Glyph5',
+  [HDMI_MODE.CIMBAR]: 'CIMBAR'
 }
 
 export function getModeDataBlockSize(mode) {
