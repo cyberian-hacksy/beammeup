@@ -49,7 +49,8 @@ const state = {
   timerId: null,
   isSending: false,
   isPaused: false,
-  symbolId: 1,
+  systematicIndex: 0,
+  systematicStride: 1,
   frameCount: 0,
   mode: HDMI_MODE.COMPAT_4,
   systematicPass: 1,
@@ -232,6 +233,32 @@ function computeMetadataIntervalFrames() {
   )
 }
 
+function gcd(a, b) {
+  let x = Math.abs(a)
+  let y = Math.abs(b)
+  while (y !== 0) {
+    const t = x % y
+    x = y
+    y = t
+  }
+  return x || 1
+}
+
+function chooseSystematicStride(span) {
+  if (span <= 2) return 1
+
+  // Use a large coprime stride so any contiguous receive window sees symbols
+  // spread across the whole systematic space instead of waiting for wrap.
+  let stride = Math.max(2, Math.floor(span * 0.61803398875))
+  if (stride >= span) stride = span - 1
+
+  while (stride > 1 && gcd(stride, span) !== 1) {
+    stride--
+  }
+
+  return Math.max(1, stride)
+}
+
 function getBatchingProfile(mode) {
   switch (mode) {
     case HDMI_MODE.RAW_RGB:
@@ -301,13 +328,17 @@ function shouldSendMetadata(frameNumber) {
 }
 
 function nextDataSymbolId(frameNumber) {
-  const symbolId = state.symbolId
+  const span = state.encoder.K_prime
+  const symbolId = ((state.systematicIndex * state.systematicStride) % span) + 1
   if (frameNumber % FRAMES_PER_SYMBOL === 0) {
-    state.symbolId++
-    if (state.symbolId > state.encoder.K_prime) {
+    state.systematicIndex++
+    if (state.systematicIndex >= span) {
       state.systematicPass++
-      state.symbolId = 1
-      debugLog(`Starting systematic replay pass ${state.systematicPass} at frame ${frameNumber + 1}`)
+      state.systematicIndex = 0
+      debugLog(
+        `Starting systematic replay pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
+        `(stride=${state.systematicStride}/${span})`
+      )
     }
   }
   return symbolId
@@ -367,7 +398,7 @@ function renderFrame() {
     state.frameCount = nextFrameNumber
     elements.frameCount.textContent = state.frameCount
 
-    const progress = Math.min(100, Math.round((state.symbolId / state.encoder.K_prime) * 100))
+    const progress = Math.min(100, Math.round((state.systematicIndex / state.encoder.K_prime) * 100))
     elements.progressDisplay.textContent = progress + '%'
     const dataSymbols = batch.symbolIds.filter(id => id !== 0)
     const firstData = dataSymbols[0]
@@ -533,9 +564,11 @@ async function startSending() {
 
     state.isSending = true
     state.isPaused = false
-    state.symbolId = 1
+    state.systematicIndex = 0
+    state.systematicStride = chooseSystematicStride(state.encoder.K_prime)
     state.systematicPass = 1
     state.frameCount = 0
+    debugLog(`Systematic order: permuted stride=${state.systematicStride}/${state.encoder.K_prime}`)
     setSignalLive(true)
 
     elements.fpsSlider.disabled = true
@@ -622,7 +655,8 @@ function stopSending() {
   state.packetsPerFrame = 1
   state.isSending = false
   state.isPaused = false
-  state.symbolId = 1
+  state.systematicIndex = 0
+  state.systematicStride = 1
   state.systematicPass = 1
   state.metadataIntervalFrames = METADATA_INTERVAL * 2
   state.frameCount = 0
