@@ -307,6 +307,11 @@ const state = {
   cimbarLoaded: false,
   cimbarRecentDecode: -1,
   cimbarRecentExtract: -1,
+  cimbarFileSize: 0,
+  cimbarRawBytes: 0,
+  cimbarProgressSamples: [],
+  cimbarRoi: null,
+  cimbarRoiMisses: 0,
   cimbarImgBuff: null,
   cimbarFountainBuff: null,
   cimbarReportBuff: null,
@@ -404,6 +409,71 @@ function getCimbarReport(Module) {
   }
 }
 
+function getCimbarProgressFraction(report) {
+  if (Array.isArray(report) && typeof report[0] === 'number' && Number.isFinite(report[0])) {
+    return Math.max(0, Math.min(1, report[0]))
+  }
+  if (report && typeof report === 'object') {
+    const value = report.progress ?? report.pct ?? report.percent
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value > 1 ? Math.max(0, Math.min(1, value / 100)) : Math.max(0, Math.min(1, value))
+    }
+  }
+  return null
+}
+
+function getCimbarReportedFileSize(report) {
+  if (Array.isArray(report)) {
+    for (let i = 1; i < report.length; i++) {
+      const value = report[i]
+      if (typeof value === 'number' && Number.isFinite(value) && value > 1024) {
+        return Math.round(value)
+      }
+    }
+  }
+  if (report && typeof report === 'object') {
+    const value = report.fileSize ?? report.filesize ?? report.totalBytes ?? report.bytesTotal ?? report.size
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return Math.round(value)
+    }
+  }
+  return 0
+}
+
+function recordCimbarProgressSample(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return
+
+  const now = Date.now()
+  state.cimbarProgressSamples.push({ time: now, bytes })
+
+  const cutoff = now - 10000
+  while (state.cimbarProgressSamples.length > 0 && state.cimbarProgressSamples[0].time < cutoff) {
+    state.cimbarProgressSamples.shift()
+  }
+}
+
+function getCimbarThroughputStats(currentBytes) {
+  if (!state.startTime || !Number.isFinite(currentBytes)) return null
+
+  recordCimbarProgressSample(currentBytes)
+
+  const now = Date.now()
+  const elapsed = (now - state.startTime) / 1000
+  const average = elapsed > 0 ? currentBytes / elapsed : 0
+
+  let recent = average
+  if (state.cimbarProgressSamples.length >= 2) {
+    const first = state.cimbarProgressSamples[0]
+    const last = state.cimbarProgressSamples[state.cimbarProgressSamples.length - 1]
+    const recentElapsed = (last.time - first.time) / 1000
+    if (recentElapsed > 0) {
+      recent = (last.bytes - first.bytes) / recentElapsed
+    }
+  }
+
+  return { average, recent }
+}
+
 function resetCimbarSink() {
   const Module = getCimbarModule()
   if (!Module) return
@@ -412,6 +482,11 @@ function resetCimbarSink() {
   state.cimbarCurrentMode = 0
   state.cimbarRecentDecode = -1
   state.cimbarRecentExtract = -1
+  state.cimbarFileSize = 0
+  state.cimbarRawBytes = 0
+  state.cimbarProgressSamples = []
+  state.cimbarRoi = null
+  state.cimbarRoiMisses = 0
 }
 
 async function ensureCimbarLoaded() {
@@ -471,33 +546,102 @@ async function handleCimbarComplete(fileId) {
   return true
 }
 
+function buildCimbarRoi(width, height) {
+  // HDMI CIMBAR is currently rendered as a centered square. Keep the ROI
+  // conservative so it survives minor fullscreen/layout shifts.
+  const side = Math.max(256, Math.floor(Math.min(width, height) * 0.96))
+  return {
+    x: Math.max(0, Math.floor((width - side) / 2)),
+    y: Math.max(0, Math.floor((height - side) / 2)),
+    w: Math.min(side, width),
+    h: Math.min(side, height)
+  }
+}
+
+function copyCimbarImageRect(Module, imageData, imageWidth, rect) {
+  const rgbaSize = rect.w * rect.h * 4
+  ensureCimbarBuffers(Module, rgbaSize)
+
+  const src = imageData.data
+  const rowBytes = rect.w * 4
+  let dstOffset = 0
+  let srcOffset = ((rect.y * imageWidth) + rect.x) * 4
+
+  for (let y = 0; y < rect.h; y++) {
+    state.cimbarImgBuff.set(src.subarray(srcOffset, srcOffset + rowBytes), dstOffset)
+    dstOffset += rowBytes
+    srcOffset += imageWidth * 4
+  }
+}
+
+function scanCimbarFrame(Module, imageData, width, height, mode, rect = null) {
+  let scanWidth = width
+  let scanHeight = height
+
+  if (rect) {
+    copyCimbarImageRect(Module, imageData, width, rect)
+    scanWidth = rect.w
+    scanHeight = rect.h
+  } else {
+    ensureCimbarBuffers(Module, imageData.data.length)
+    state.cimbarImgBuff.set(imageData.data)
+  }
+
+  Module._cimbard_configure_decode(mode)
+  return Module._cimbard_scan_extract_decode(
+    state.cimbarImgBuff.byteOffset,
+    scanWidth,
+    scanHeight,
+    4,
+    state.cimbarFountainBuff.byteOffset,
+    state.cimbarFountainBuff.length
+  )
+}
+
 async function tryCimbarDecode(imageData, width, height) {
   if (!(await ensureCimbarLoaded())) return false
 
   const Module = getCimbarModule()
   if (!Module) return false
 
-  ensureCimbarBuffers(Module, imageData.data.length)
-  state.cimbarImgBuff.set(imageData.data)
-
   let mode = state.cimbarCurrentMode
   if (mode === 0) {
     mode = CIMBAR_MODE_VALUES[state.frameCount % CIMBAR_MODE_VALUES.length]
   }
-  Module._cimbard_configure_decode(mode)
+  ensureCimbarBuffers(Module, imageData.data.length)
 
-  const len = Module._cimbard_scan_extract_decode(
-    state.cimbarImgBuff.byteOffset,
-    width,
-    height,
-    4,
-    state.cimbarFountainBuff.byteOffset,
-    state.cimbarFountainBuff.length
-  )
+  let len = 0
+  let usedRoi = false
+  if (state.cimbarRoi) {
+    len = scanCimbarFrame(Module, imageData, width, height, mode, state.cimbarRoi)
+    usedRoi = len > 0
+    if (len <= 0) {
+      state.cimbarRoiMisses++
+      if (state.cimbarRoiMisses === 3) {
+        debugLog(
+          `CIMBAR ROI reset after misses: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ` +
+          `${state.cimbarRoi.w}x${state.cimbarRoi.h}`
+        )
+        state.cimbarRoi = null
+        state.cimbarRoiMisses = 0
+      }
+    }
+  }
+
+  if (len <= 0) {
+    len = scanCimbarFrame(Module, imageData, width, height, mode)
+    usedRoi = false
+  }
 
   if (len > 0) {
     state.cimbarRecentDecode = state.frameCount
+    state.cimbarRawBytes += len
     if (state.cimbarCurrentMode === 0) state.cimbarCurrentMode = mode
+    if (!state.cimbarRoi) {
+      state.cimbarRoi = buildCimbarRoi(width, height)
+      debugLog(`CIMBAR ROI locked: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ${state.cimbarRoi.w}x${state.cimbarRoi.h}`)
+    }
+    state.cimbarRoiMisses = 0
     if (state.detectedMode !== HDMI_MODE.CIMBAR) {
       state.detectedMode = HDMI_MODE.CIMBAR
       elements.signalStatus.textContent = 'Detected: CIMBAR'
@@ -507,18 +651,36 @@ async function tryCimbarDecode(imageData, width, height) {
 
     const res = Module._cimbard_fountain_decode(state.cimbarFountainBuff.byteOffset, len)
     const report = getCimbarReport(Module)
-    if (Array.isArray(report)) {
+    const progress = getCimbarProgressFraction(report)
+    const reportedFileSize = getCimbarReportedFileSize(report)
+    if (reportedFileSize > 0) {
+      state.cimbarFileSize = reportedFileSize
+    }
+
+    if (progress !== null) {
       if (!state.startTime) {
         state.startTime = Date.now()
         showReceivingStatus()
       }
-      const pct = Math.round(report[0] * 100)
+      const pct = Math.round(progress * 100)
       elements.fileName.textContent = 'CIMBAR transfer'
       elements.statProgress.textContent = `${pct}%`
       elements.progressFill.style.width = `${pct}%`
-      elements.statRate.textContent = '-'
+      const currentBytes = state.cimbarFileSize > 0
+        ? state.cimbarFileSize * progress
+        : state.cimbarRawBytes
+      const throughput = getCimbarThroughputStats(currentBytes)
+      if (throughput) {
+        const rawSuffix = state.cimbarFileSize > 0 ? '' : ' raw'
+        elements.statRate.textContent = `${formatBytes(throughput.average)}/s${rawSuffix}`
+      } else {
+        elements.statRate.textContent = '-'
+      }
       if (state.frameCount % 10 === 0) {
-        debugLog(`CIMBAR Progress: ${pct}% len=${len} mode=${mode}`)
+        const rateSuffix = throughput
+          ? ` rate=${formatBytes(throughput.average)}/s recent=${formatBytes(throughput.recent)}/s${state.cimbarFileSize > 0 ? '' : ' raw'}`
+          : ''
+        debugLog(`CIMBAR Progress: ${pct}% len=${len} mode=${mode}${usedRoi ? ' roi=1' : ' roi=0'}${rateSuffix}`)
       }
     }
 
@@ -1075,6 +1237,9 @@ function resetReceiver() {
   state.cimbarCurrentMode = 0
   state.cimbarRecentDecode = -1
   state.cimbarRecentExtract = -1
+  state.cimbarFileSize = 0
+  state.cimbarRawBytes = 0
+  state.cimbarProgressSamples = []
   state.frameCount = 0
   state.validFrames = 0
   state.startTime = null
