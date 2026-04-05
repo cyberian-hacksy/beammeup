@@ -16,6 +16,10 @@ import { buildFrame, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
 const CIMBAR_MAX_FILE_SIZE = 33 * 1024 * 1024
+const CIMBAR_CANVAS_PAD_TOP_PX = 16
+const CIMBAR_CANVAS_PAD_RIGHT_PX = 16
+const CIMBAR_CANVAS_PAD_BOTTOM_PX = 0
+const CIMBAR_CANVAS_PAD_LEFT_PX = 0
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -69,17 +73,25 @@ function resetCanvasStyles() {
   if (!elements?.canvas) return
   elements.container?.classList.remove('fullscreen')
   elements.container?.classList.remove('signal-live')
+  if (elements.container) {
+    elements.container.style.justifyContent = ''
+    elements.container.style.alignItems = ''
+  }
   document.body?.classList.remove('hdmi-uvc-signal-live')
   elements.canvas.style.display = 'none'
   elements.canvas.style.position = ''
   elements.canvas.style.top = ''
   elements.canvas.style.left = ''
-  elements.canvas.style.width = ''
-  elements.canvas.style.height = ''
+  elements.canvas.style.removeProperty('width')
+  elements.canvas.style.removeProperty('height')
   elements.canvas.style.zIndex = ''
   elements.canvas.style.imageRendering = ''
   elements.canvas.style.background = ''
   elements.canvas.style.transform = ''
+  elements.canvas.style.padding = ''
+  elements.canvas.style.boxSizing = ''
+  elements.canvas.style.removeProperty('max-width')
+  elements.canvas.style.removeProperty('max-height')
 }
 
 function setSignalLive(isLive) {
@@ -153,10 +165,7 @@ function copyToWasmHeap(Module, data) {
   return { ptr, view: wasmData }
 }
 
-function scaleCimbarCanvasToViewport() {
-  const metrics = getCanvasViewportMetrics()
-  const ratio = state.cimbarIdealRatio || 1
-
+function fitCimbarToViewport(metrics, ratio) {
   let width = metrics.width
   let height = Math.floor(width / ratio)
   if (height > metrics.height) {
@@ -164,15 +173,72 @@ function scaleCimbarCanvasToViewport() {
     width = Math.floor(height * ratio)
   }
 
-  elements.canvas.style.width = `${width}px`
-  elements.canvas.style.height = `${height}px`
-  elements.canvas.style.position = 'absolute'
-  elements.canvas.style.top = '50%'
-  elements.canvas.style.left = '50%'
-  elements.canvas.style.transform = 'translate(-50%, -50%)'
+  return {
+    width: Math.max(1, width),
+    height: Math.max(1, height)
+  }
+}
+
+function prepareCimbarCanvasForConfigure() {
+  const metrics = getCanvasViewportMetrics()
+  const side = Math.max(1, Math.min(metrics.width, metrics.height))
+
+  elements.canvas.style.position = 'static'
+  elements.canvas.style.top = ''
+  elements.canvas.style.left = ''
+  elements.canvas.style.transform = ''
+  elements.canvas.style.setProperty('width', `${side}px`, 'important')
+  elements.canvas.style.setProperty('height', `${side}px`, 'important')
+  elements.canvas.style.setProperty('max-width', 'none', 'important')
+  elements.canvas.style.setProperty('max-height', 'none', 'important')
+  elements.canvas.style.padding = ''
+  elements.canvas.style.boxSizing = ''
+  if (elements.container) {
+    elements.container.style.justifyContent = 'center'
+    elements.container.style.alignItems = 'center'
+  }
+
+  debugLog(`Canvas: CIMBAR provisional ${side}x${side} before configure`)
+}
+
+function scaleCimbarCanvasToViewport() {
+  const Module = getCimbarModule()
+  const metrics = getCanvasViewportMetrics()
+  const landscapeViewport = metrics.width >= metrics.height
+
+  if (Module?._cimbare_rotate_window) {
+    Module._cimbare_rotate_window(landscapeViewport ? 1 : 0)
+  }
+
+  const ratio = Module?._cimbare_get_aspect_ratio?.() || state.cimbarIdealRatio || 1
+  state.cimbarIdealRatio = ratio
+  const { width, height } = fitCimbarToViewport(metrics, ratio)
+
+  if (typeof Module?.setCanvasSize === 'function') {
+    Module.setCanvasSize(width, height)
+  } else {
+    elements.canvas.width = width
+    elements.canvas.height = height
+  }
+
+  elements.canvas.style.setProperty('width', `${width}px`, 'important')
+  elements.canvas.style.setProperty('height', `${height}px`, 'important')
+  elements.canvas.style.position = 'static'
+  elements.canvas.style.top = ''
+  elements.canvas.style.left = ''
+  elements.canvas.style.transform = ''
+  elements.canvas.style.padding = `${CIMBAR_CANVAS_PAD_TOP_PX}px ${CIMBAR_CANVAS_PAD_RIGHT_PX}px ${CIMBAR_CANVAS_PAD_BOTTOM_PX}px ${CIMBAR_CANVAS_PAD_LEFT_PX}px`
+  elements.canvas.style.boxSizing = 'border-box'
+  elements.canvas.style.setProperty('max-width', 'none', 'important')
+  elements.canvas.style.setProperty('max-height', 'none', 'important')
+  if (elements.container) {
+    elements.container.style.justifyContent = 'center'
+    elements.container.style.alignItems = 'center'
+  }
 
   debugLog(`Viewport: rect=${metrics.rectWidth}x${metrics.rectHeight}, visual=${metrics.visualWidth}x${metrics.visualHeight}, inner=${metrics.innerWidth}x${metrics.innerHeight}, screen=${metrics.screenWidth}x${metrics.screenHeight}, dpr=${metrics.devicePixelRatio}`)
-  debugLog(`Canvas: CIMBAR viewport ${width}x${height} (ratio=${ratio.toFixed(3)})`)
+  debugLog(`Canvas: CIMBAR viewport ${width}x${height} (pad t=${CIMBAR_CANVAS_PAD_TOP_PX}, r=${CIMBAR_CANVAS_PAD_RIGHT_PX}, b=${CIMBAR_CANVAS_PAD_BOTTOM_PX}, l=${CIMBAR_CANVAS_PAD_LEFT_PX}, ratio=${ratio.toFixed(3)}, landscape=${landscapeViewport})`)
+  debugLog(`Canvas internal: ${elements.canvas.width}x${elements.canvas.height}`)
 }
 
 function measureAndApplyCanvasSize() {
@@ -550,13 +616,14 @@ async function startSending() {
         throw new Error(`File too large for CIMBAR mode (${formatBytes(CIMBAR_MAX_FILE_SIZE)} max)`)
       }
 
+      prepareCimbarCanvasForConfigure()
+
       await loadCimbarWasm()
       const Module = getCimbarModule()
       if (!Module) throw new Error('CIMBAR WASM not loaded')
 
       Module.canvas = elements.canvas
       Module._cimbare_configure(68, -1)
-      state.cimbarIdealRatio = Module._cimbare_get_aspect_ratio()
       scaleCimbarCanvasToViewport()
 
       const fnBytes = new TextEncoder().encode(state.fileName)
