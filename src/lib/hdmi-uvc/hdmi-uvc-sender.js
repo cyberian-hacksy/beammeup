@@ -65,7 +65,11 @@ const state = {
   systematicPass: 1,
   metadataIntervalFrames: METADATA_INTERVAL * 2,
   cimbarIdealRatio: 1,
-  cimbarVariant: 68
+  cimbarVariant: 68,
+  cimbarBoundsLogged: false,
+  cimbarRenderCanvas: null,
+  cimbarUseWrapper: false,
+  cimbarDisplayPadding: null
 }
 
 let elements = null
@@ -167,6 +171,53 @@ function copyToWasmHeap(Module, data) {
   return { ptr, view: wasmData }
 }
 
+function logCimbarContentBounds(canvas = elements?.canvas, label = 'CIMBAR content bounds') {
+  if (!canvas) return
+
+  const srcWidth = canvas.width
+  const srcHeight = canvas.height
+  if (!srcWidth || !srcHeight) return
+
+  const probeCanvas = document.createElement('canvas')
+  probeCanvas.width = srcWidth
+  probeCanvas.height = srcHeight
+  const probeCtx = probeCanvas.getContext('2d', { willReadFrequently: true })
+  if (!probeCtx) return
+
+  probeCtx.drawImage(canvas, 0, 0, srcWidth, srcHeight)
+  const pixels = probeCtx.getImageData(0, 0, srcWidth, srcHeight).data
+
+  let minX = srcWidth
+  let minY = srcHeight
+  let maxX = -1
+  let maxY = -1
+
+  for (let y = 0; y < srcHeight; y++) {
+    for (let x = 0; x < srcWidth; x++) {
+      const idx = (y * srcWidth + x) * 4
+      const r = pixels[idx]
+      const g = pixels[idx + 1]
+      const b = pixels[idx + 2]
+      const a = pixels[idx + 3]
+      if (a > 0 && (r > 12 || g > 12 || b > 12)) {
+        if (x < minX) minX = x
+        if (y < minY) minY = y
+        if (x > maxX) maxX = x
+        if (y > maxY) maxY = y
+      }
+    }
+  }
+
+  if (maxX >= minX && maxY >= minY) {
+    debugLog(
+      `${label}: (${minX},${minY})..(${maxX},${maxY}) ` +
+      `size=${maxX - minX + 1}x${maxY - minY + 1} within ${srcWidth}x${srcHeight}`
+    )
+  } else {
+    debugLog(`${label}: no non-black pixels within ${srcWidth}x${srcHeight}`)
+  }
+}
+
 function fitCimbarToViewport(viewportWidth, viewportHeight, ratio) {
   let width = viewportWidth
   let height = Math.floor(width / ratio)
@@ -188,29 +239,44 @@ function getCimbarLayoutConfig(variant, landscapeViewport) {
   switch (variant) {
     case 4:
       return {
-        padding: { top: 16, right: 16, bottom: 16, left: 16 },
+        padding: { top: 24, right: 24, bottom: 24, left: 24 },
         rotateFlag: 0,
-        contentScale: 0.88
+        contentScale: 1,
+        wrapper: true
       }
     case 67:
       return {
         padding: { top: 16, right: 16, bottom: 0, left: 0 },
         rotateFlag: 0,
-        contentScale: 1
+        contentScale: 1,
+        wrapper: false
       }
     case 68:
     default:
       return {
         padding: { top: 16, right: 16, bottom: 0, left: 0 },
         rotateFlag: landscapeViewport ? 1 : 0,
-        contentScale: 1
+        contentScale: 1,
+        wrapper: false
       }
   }
+}
+
+function ensureCimbarRenderCanvas(width, height) {
+  if (!state.cimbarRenderCanvas) {
+    state.cimbarRenderCanvas = document.createElement('canvas')
+  }
+  if (width && height) {
+    state.cimbarRenderCanvas.width = width
+    state.cimbarRenderCanvas.height = height
+  }
+  return state.cimbarRenderCanvas
 }
 
 function prepareCimbarCanvasForConfigure() {
   const metrics = getCanvasViewportMetrics()
   const side = Math.max(1, Math.min(metrics.width, metrics.height))
+  const layout = getCimbarLayoutConfig(state.cimbarVariant, metrics.width >= metrics.height)
 
   elements.canvas.style.position = 'static'
   elements.canvas.style.top = ''
@@ -226,8 +292,26 @@ function prepareCimbarCanvasForConfigure() {
     elements.container.style.justifyContent = 'center'
     elements.container.style.alignItems = 'center'
   }
+  if (layout.wrapper) {
+    ensureCimbarRenderCanvas(side, side)
+  }
 
   debugLog(`Canvas: CIMBAR provisional ${side}x${side} before configure`)
+}
+
+function blitCimbarToDisplay() {
+  if (!state.cimbarUseWrapper || !state.cimbarRenderCanvas || !state.cimbarDisplayPadding) return
+
+  const ctx = elements.canvas.getContext('2d')
+  if (!ctx) return
+
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, elements.canvas.width, elements.canvas.height)
+  ctx.drawImage(
+    state.cimbarRenderCanvas,
+    state.cimbarDisplayPadding.left,
+    state.cimbarDisplayPadding.top
+  )
 }
 
 function scaleCimbarCanvasToViewport() {
@@ -251,12 +335,30 @@ function scaleCimbarCanvasToViewport() {
   const contentHeight = Math.max(1, Math.floor(fitted.height * layout.contentScale))
   const outerWidth = contentWidth + padding.left + padding.right
   const outerHeight = contentHeight + padding.top + padding.bottom
+  const useWrapper = !!layout.wrapper
 
-  if (typeof Module?.setCanvasSize === 'function') {
-    Module.setCanvasSize(contentWidth, contentHeight)
+  state.cimbarUseWrapper = useWrapper
+  state.cimbarDisplayPadding = padding
+
+  if (useWrapper) {
+    const renderCanvas = ensureCimbarRenderCanvas(contentWidth, contentHeight)
+    Module.canvas = renderCanvas
+    if (typeof Module?.setCanvasSize === 'function') {
+      Module.setCanvasSize(contentWidth, contentHeight)
+    } else {
+      renderCanvas.width = contentWidth
+      renderCanvas.height = contentHeight
+    }
+    elements.canvas.width = outerWidth
+    elements.canvas.height = outerHeight
   } else {
-    elements.canvas.width = contentWidth
-    elements.canvas.height = contentHeight
+    Module.canvas = elements.canvas
+    if (typeof Module?.setCanvasSize === 'function') {
+      Module.setCanvasSize(contentWidth, contentHeight)
+    } else {
+      elements.canvas.width = contentWidth
+      elements.canvas.height = contentHeight
+    }
   }
 
   elements.canvas.style.setProperty('width', `${outerWidth}px`, 'important')
@@ -265,13 +367,16 @@ function scaleCimbarCanvasToViewport() {
   elements.canvas.style.top = ''
   elements.canvas.style.left = ''
   elements.canvas.style.transform = ''
-  elements.canvas.style.padding = `${padding.top}px ${padding.right}px ${padding.bottom}px ${padding.left}px`
-  elements.canvas.style.boxSizing = 'border-box'
+  elements.canvas.style.padding = useWrapper ? '' : `${padding.top}px ${padding.right}px ${padding.bottom}px ${padding.left}px`
+  elements.canvas.style.boxSizing = useWrapper ? '' : 'border-box'
   elements.canvas.style.setProperty('max-width', 'none', 'important')
   elements.canvas.style.setProperty('max-height', 'none', 'important')
   if (elements.container) {
     elements.container.style.justifyContent = 'center'
     elements.container.style.alignItems = 'center'
+  }
+  if (useWrapper) {
+    blitCimbarToDisplay()
   }
 
   debugLog(`Viewport: rect=${metrics.rectWidth}x${metrics.rectHeight}, visual=${metrics.visualWidth}x${metrics.visualHeight}, inner=${metrics.innerWidth}x${metrics.innerHeight}, screen=${metrics.screenWidth}x${metrics.screenHeight}, dpr=${metrics.devicePixelRatio}`)
@@ -282,7 +387,7 @@ function scaleCimbarCanvasToViewport() {
     `b=${padding.bottom}, l=${padding.left}, ` +
     `ratio=${ratio.toFixed(3)}, landscape=${landscapeViewport}, rotate=${rotateFlag}, scale=${layout.contentScale.toFixed(2)})`
   )
-  debugLog(`Canvas internal: ${elements.canvas.width}x${elements.canvas.height}`)
+  debugLog(`Canvas internal: ${elements.canvas.width}x${elements.canvas.height}${useWrapper ? ` (render=${state.cimbarRenderCanvas.width}x${state.cimbarRenderCanvas.height})` : ''}`)
 }
 
 function measureAndApplyCanvasSize() {
@@ -563,8 +668,16 @@ function renderFrame() {
     try {
       Module._cimbare_render()
       Module._cimbare_next_frame(false)
+      blitCimbarToDisplay()
 
       state.frameCount++
+      if (!state.cimbarBoundsLogged && state.frameCount >= 2) {
+        if (state.cimbarUseWrapper && state.cimbarRenderCanvas) {
+          logCimbarContentBounds(state.cimbarRenderCanvas, 'CIMBAR render bounds')
+        }
+        logCimbarContentBounds(elements.canvas, 'CIMBAR content bounds')
+        state.cimbarBoundsLogged = true
+      }
       elements.frameCount.textContent = state.frameCount
       elements.progressDisplay.textContent = 'CIMBAR'
       debugCurrent(`#${state.frameCount} CIMBAR`)
@@ -674,7 +787,9 @@ async function startSending() {
       const Module = getCimbarModule()
       if (!Module) throw new Error('CIMBAR WASM not loaded')
 
-      Module.canvas = elements.canvas
+      Module.canvas = state.cimbarVariant === 4
+        ? ensureCimbarRenderCanvas(elements.canvas.width || 1024, elements.canvas.height || 1024)
+        : elements.canvas
       Module._cimbare_configure(state.cimbarVariant, -1)
       scaleCimbarCanvasToViewport()
 
@@ -707,6 +822,7 @@ async function startSending() {
       state.isSending = true
       state.isPaused = false
       state.frameCount = 0
+      state.cimbarBoundsLogged = false
       setSignalLive(true)
 
       elements.fpsSlider.disabled = true
@@ -921,6 +1037,9 @@ function stopSending() {
   state.metadataIntervalFrames = METADATA_INTERVAL * 2
   state.frameCount = 0
   state.cimbarIdealRatio = 1
+  state.cimbarBoundsLogged = false
+  state.cimbarUseWrapper = false
+  state.cimbarDisplayPadding = null
   setSignalLive(false)
 
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {})

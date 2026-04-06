@@ -633,10 +633,7 @@ async function tryCimbarDecode(imageData, width, height) {
   const Module = getCimbarModule()
   if (!Module) return false
 
-  let mode = state.cimbarPreferredMode || state.cimbarCurrentMode
-  if (mode === 0) {
-    mode = CIMBAR_MODE_VALUES[state.frameCount % CIMBAR_MODE_VALUES.length]
-  }
+  const mode = state.cimbarPreferredMode || state.cimbarCurrentMode || 0
   ensureCimbarBuffers(Module, imageData.data.length)
 
   let len = 0
@@ -665,7 +662,7 @@ async function tryCimbarDecode(imageData, width, height) {
   if (len > 0) {
     state.cimbarRecentDecode = state.frameCount
     state.cimbarRawBytes += len
-    if (state.cimbarCurrentMode === 0 || state.cimbarPreferredMode !== 0) state.cimbarCurrentMode = mode
+    if (state.cimbarPreferredMode === 0) state.cimbarCurrentMode = mode
     if (!state.cimbarRoi) {
       state.cimbarRoi = buildCimbarRoi(width, height, mode)
       debugLog(`CIMBAR ROI locked: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ${state.cimbarRoi.w}x${state.cimbarRoi.h}`)
