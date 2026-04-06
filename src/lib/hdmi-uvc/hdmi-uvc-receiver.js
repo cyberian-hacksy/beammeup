@@ -305,6 +305,7 @@ const state = {
   decoder: null,
   cimbarCurrentMode: 0,
   cimbarPreferredMode: 0,
+  cimbarAutoProbeIndex: 0,
   cimbarLoaded: false,
   cimbarRecentDecode: -1,
   cimbarRecentExtract: -1,
@@ -490,6 +491,7 @@ function resetCimbarSink() {
   Module._cimbard_configure_decode(4)
   Module._cimbard_configure_decode(68)
   state.cimbarCurrentMode = 0
+  state.cimbarAutoProbeIndex = 0
   state.cimbarRecentDecode = -1
   state.cimbarRecentExtract = -1
   state.cimbarFileSize = 0
@@ -637,8 +639,10 @@ async function tryCimbarDecode(imageData, width, height) {
   const Module = getCimbarModule()
   if (!Module) return false
 
-  const mode = normalizeHdmiCimbarMode(state.cimbarPreferredMode || state.cimbarCurrentMode || 0)
-  let effectiveMode = mode
+  const lockedMode = normalizeHdmiCimbarMode(state.cimbarPreferredMode || state.cimbarCurrentMode || 0)
+  const isAutoMode = lockedMode === 0
+  const autoMode = HDMI_CIMBAR_MODES[state.cimbarAutoProbeIndex % HDMI_CIMBAR_MODES.length]
+  let effectiveMode = isAutoMode ? autoMode : lockedMode
   ensureCimbarBuffers(Module, imageData.data.length)
 
   // Forced-mode HDMI CIMBAR runs benefit from an early centered ROI instead of
@@ -650,7 +654,7 @@ async function tryCimbarDecode(imageData, width, height) {
     state.cimbarRecentDecode < 0 &&
     state.frameCount <= 30
   ) {
-    state.cimbarRoi = buildCimbarRoi(width, height, mode)
+    state.cimbarRoi = buildCimbarRoi(width, height, effectiveMode)
     state.cimbarRoiMisses = 0
     debugLog(`CIMBAR ROI preset: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ${state.cimbarRoi.w}x${state.cimbarRoi.h}`)
   }
@@ -658,7 +662,7 @@ async function tryCimbarDecode(imageData, width, height) {
   let len = 0
   let usedRoi = false
   if (state.cimbarRoi) {
-    len = scanCimbarFrame(Module, imageData, width, height, mode, state.cimbarRoi)
+    len = scanCimbarFrame(Module, imageData, width, height, effectiveMode, state.cimbarRoi)
     usedRoi = len > 0
     if (len <= 0) {
       state.cimbarRoiMisses++
@@ -674,18 +678,22 @@ async function tryCimbarDecode(imageData, width, height) {
   }
 
   if (len <= 0) {
-    len = scanCimbarFrame(Module, imageData, width, height, mode)
+    len = scanCimbarFrame(Module, imageData, width, height, effectiveMode)
     usedRoi = false
   }
 
   if (
     len <= 0 &&
-    state.cimbarPreferredMode === 0 &&
+    isAutoMode &&
     !state.cimbarRoi &&
     state.cimbarRecentDecode < 0 &&
     state.frameCount <= 30
   ) {
-    for (const candidateMode of HDMI_CIMBAR_MODES) {
+    const candidateModes = [
+      effectiveMode,
+      ...HDMI_CIMBAR_MODES.filter(candidateMode => candidateMode !== effectiveMode)
+    ]
+    for (const candidateMode of candidateModes) {
       const candidateRoi = buildCimbarRoi(width, height, candidateMode)
       const candidateLen = scanCimbarFrame(Module, imageData, width, height, candidateMode, candidateRoi)
       if (candidateLen > 0) {
@@ -703,7 +711,13 @@ async function tryCimbarDecode(imageData, width, height) {
   if (len > 0) {
     state.cimbarRecentDecode = state.frameCount
     state.cimbarRawBytes += len
-    if (state.cimbarPreferredMode === 0) state.cimbarCurrentMode = effectiveMode
+    if (isAutoMode) {
+      if (state.cimbarCurrentMode !== effectiveMode) {
+        debugLog(`CIMBAR mode pinned: ${CIMBAR_MODE_LABELS[effectiveMode] || effectiveMode} (${effectiveMode})`)
+      }
+      state.cimbarCurrentMode = effectiveMode
+      state.cimbarAutoProbeIndex = 0
+    }
     if (!state.cimbarRoi) {
       state.cimbarRoi = buildCimbarRoi(width, height, effectiveMode)
       debugLog(`CIMBAR ROI locked: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ${state.cimbarRoi.w}x${state.cimbarRoi.h}`)
@@ -758,6 +772,10 @@ async function tryCimbarDecode(imageData, width, height) {
       debugCurrent(`#${state.frameCount} CIMBAR len=${len}`)
     }
     return true
+  }
+
+  if (isAutoMode) {
+    state.cimbarAutoProbeIndex = (state.cimbarAutoProbeIndex + 1) % HDMI_CIMBAR_MODES.length
   }
 
   if (len === 0) {
@@ -1311,6 +1329,7 @@ function resetReceiver() {
 
   state.decoder = null
   state.cimbarCurrentMode = 0
+  state.cimbarAutoProbeIndex = 0
   state.cimbarRecentDecode = -1
   state.cimbarRecentExtract = -1
   state.cimbarFileSize = 0
