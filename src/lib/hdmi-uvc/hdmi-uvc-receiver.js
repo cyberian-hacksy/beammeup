@@ -897,9 +897,12 @@ async function processFrame(now, metadata) {
   let captureMethod = 'video'
 
   // ImageCapture is useful for initial acquisition, but it is noticeably
-  // slower than drawing the video element directly. Once we have anchor lock,
-  // prioritize raw video frames for throughput.
-  const useImageCapture = imageCapture && !state.anchorBounds
+  // slower than drawing the video element directly. Once we have either HDMI
+  // anchor lock or a CIMBAR ROI / signal lock, prioritize raw video frames.
+  const useImageCapture = imageCapture &&
+    !state.anchorBounds &&
+    !state.cimbarRoi &&
+    state.detectedMode !== HDMI_MODE.CIMBAR
 
   // Try ImageCapture API first while scanning for initial lock
   if (useImageCapture) {

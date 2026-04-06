@@ -238,8 +238,9 @@ function fitCimbarToViewport(viewportWidth, viewportHeight, ratio) {
 
 function getCimbarLayoutConfig(variant, landscapeViewport) {
   // HDMI CIMBAR variants do not share the same usable window geometry.
-  // 4C needs a deliberately smaller inner render box instead of more outer
-  // padding, otherwise it still clips even when the CSS box looks correct.
+  // The CIMBAR renderer itself tends to draw flush to the top/right edge of
+  // its bitmap, so active HDMI variants use a real wrapper canvas to create
+  // pixel padding instead of relying on CSS box padding.
   switch (variant) {
     case 4:
       return {
@@ -251,20 +252,20 @@ function getCimbarLayoutConfig(variant, landscapeViewport) {
       }
     case 67:
       return {
-        padding: { top: 16, right: 16, bottom: 0, left: 0 },
+        padding: { top: 20, right: 20, bottom: 10, left: 10 },
         viewportInset: { top: 0, right: 0, bottom: 0, left: 0 },
         rotateFlag: 0,
         contentScale: 1,
-        wrapper: false
+        wrapper: true
       }
     case 68:
     default:
       return {
-        padding: { top: 16, right: 16, bottom: 0, left: 0 },
+        padding: { top: 20, right: 20, bottom: 10, left: 10 },
         viewportInset: { top: 0, right: 0, bottom: 0, left: 0 },
         rotateFlag: landscapeViewport ? 1 : 0,
         contentScale: 1,
-        wrapper: false
+        wrapper: true
       }
   }
 }
@@ -806,7 +807,11 @@ async function startSending() {
       const Module = getCimbarModule()
       if (!Module) throw new Error('CIMBAR WASM not loaded')
 
-      Module.canvas = state.cimbarVariant === 4
+      const cimbarLayout = getCimbarLayoutConfig(
+        state.cimbarVariant,
+        getCanvasViewportMetrics().width >= getCanvasViewportMetrics().height
+      )
+      Module.canvas = cimbarLayout.wrapper
         ? ensureCimbarRenderCanvas(elements.canvas.width || 1024, elements.canvas.height || 1024)
         : elements.canvas
       Module._cimbare_configure(state.cimbarVariant, -1)
