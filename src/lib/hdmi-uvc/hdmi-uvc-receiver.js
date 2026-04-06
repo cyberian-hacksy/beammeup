@@ -337,10 +337,9 @@ const state = {
   progressSamples: []
 }
 
-const CIMBAR_MODE_VALUES = [67, 68, 4]
+const HDMI_CIMBAR_MODES = [68, 67]
 const CIMBAR_MODE_LABELS = {
   0: 'Auto',
-  4: '4C',
   67: 'Bm',
   68: 'B'
 }
@@ -358,6 +357,10 @@ const hasImageCapture = typeof ImageCapture !== 'undefined'
 let elements = null
 let imageCapture = null
 let showError = (msg) => console.error(msg)
+
+function normalizeHdmiCimbarMode(value) {
+  return value === 0 || HDMI_CIMBAR_MODES.includes(value) ? value : 0
+}
 
 function formatBytes(bytes) {
   if (bytes < 1024) return bytes + ' B'
@@ -634,7 +637,7 @@ async function tryCimbarDecode(imageData, width, height) {
   const Module = getCimbarModule()
   if (!Module) return false
 
-  const mode = state.cimbarPreferredMode || state.cimbarCurrentMode || 0
+  const mode = normalizeHdmiCimbarMode(state.cimbarPreferredMode || state.cimbarCurrentMode || 0)
   let effectiveMode = mode
   ensureCimbarBuffers(Module, imageData.data.length)
 
@@ -682,7 +685,7 @@ async function tryCimbarDecode(imageData, width, height) {
     state.cimbarRecentDecode < 0 &&
     state.frameCount <= 30
   ) {
-    for (const candidateMode of [68, 67, 4]) {
+    for (const candidateMode of HDMI_CIMBAR_MODES) {
       const candidateRoi = buildCimbarRoi(width, height, candidateMode)
       const candidateLen = scanCimbarFrame(Module, imageData, width, height, candidateMode, candidateRoi)
       if (candidateLen > 0) {
@@ -1351,7 +1354,7 @@ async function handleDeviceChange() {
 }
 
 function handleCimbarModeChange(e) {
-  const value = parseInt(e.target.value, 10)
+  const value = normalizeHdmiCimbarMode(parseInt(e.target.value, 10))
   if (!Number.isFinite(value) || value === state.cimbarPreferredMode) return
 
   state.cimbarPreferredMode = value
@@ -1421,6 +1424,7 @@ export function initHdmiUvcReceiver(errorHandler) {
 
   elements.deviceDropdown.onchange = handleDeviceChange
   if (elements.cimbarModeSelect) {
+    state.cimbarPreferredMode = normalizeHdmiCimbarMode(state.cimbarPreferredMode)
     elements.cimbarModeSelect.value = String(state.cimbarPreferredMode)
     elements.cimbarModeSelect.onchange = handleCimbarModeChange
   }

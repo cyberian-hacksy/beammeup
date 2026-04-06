@@ -16,10 +16,10 @@ import { buildFrame, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
 const CIMBAR_MAX_FILE_SIZE = 33 * 1024 * 1024
+const HDMI_CIMBAR_VARIANTS = [68, 67]
 const CIMBAR_VARIANT_NAMES = {
   67: 'Bm',
-  68: 'B',
-  4: '4C'
+  68: 'B'
 }
 
 function debugLog(text) {
@@ -164,6 +164,10 @@ function isCimbarMode() {
   return state.mode === HDMI_MODE.CIMBAR
 }
 
+function normalizeHdmiCimbarVariant(value) {
+  return HDMI_CIMBAR_VARIANTS.includes(value) ? value : 68
+}
+
 function copyToWasmHeap(Module, data) {
   const ptr = Module._malloc(data.length)
   const wasmData = new Uint8Array(Module.HEAPU8.buffer, ptr, data.length)
@@ -240,6 +244,7 @@ function getCimbarLayoutConfig(variant, landscapeViewport) {
     case 4:
       return {
         padding: { top: 32, right: 32, bottom: 24, left: 24 },
+        viewportInset: { top: 24, right: 24, bottom: 24, left: 24 },
         rotateFlag: 0,
         contentScale: 1,
         wrapper: true
@@ -247,6 +252,7 @@ function getCimbarLayoutConfig(variant, landscapeViewport) {
     case 67:
       return {
         padding: { top: 16, right: 16, bottom: 0, left: 0 },
+        viewportInset: { top: 0, right: 0, bottom: 0, left: 0 },
         rotateFlag: 0,
         contentScale: 1,
         wrapper: false
@@ -255,6 +261,7 @@ function getCimbarLayoutConfig(variant, landscapeViewport) {
     default:
       return {
         padding: { top: 16, right: 16, bottom: 0, left: 0 },
+        viewportInset: { top: 0, right: 0, bottom: 0, left: 0 },
         rotateFlag: landscapeViewport ? 1 : 0,
         contentScale: 1,
         wrapper: false
@@ -320,6 +327,7 @@ function scaleCimbarCanvasToViewport() {
   const landscapeViewport = metrics.width >= metrics.height
   const layout = getCimbarLayoutConfig(state.cimbarVariant, landscapeViewport)
   const padding = layout.padding
+  const viewportInset = layout.viewportInset || { top: 0, right: 0, bottom: 0, left: 0 }
   const rotateFlag = layout.rotateFlag
 
   if (Module?._cimbare_rotate_window) {
@@ -328,8 +336,14 @@ function scaleCimbarCanvasToViewport() {
 
   const ratio = Module?._cimbare_get_aspect_ratio?.() || state.cimbarIdealRatio || 1
   state.cimbarIdealRatio = ratio
-  const availableWidth = Math.max(1, metrics.width - padding.left - padding.right)
-  const availableHeight = Math.max(1, metrics.height - padding.top - padding.bottom)
+  const availableWidth = Math.max(
+    1,
+    metrics.width - padding.left - padding.right - viewportInset.left - viewportInset.right
+  )
+  const availableHeight = Math.max(
+    1,
+    metrics.height - padding.top - padding.bottom - viewportInset.top - viewportInset.bottom
+  )
   const fitted = fitCimbarToViewport(availableWidth, availableHeight, ratio)
   const contentWidth = Math.max(1, Math.floor(fitted.width * layout.contentScale))
   const contentHeight = Math.max(1, Math.floor(fitted.height * layout.contentScale))
@@ -385,6 +399,8 @@ function scaleCimbarCanvasToViewport() {
     `(content=${contentWidth}x${contentHeight}, ` +
     `pad t=${padding.top}, r=${padding.right}, ` +
     `b=${padding.bottom}, l=${padding.left}, ` +
+    `inset t=${viewportInset.top}, r=${viewportInset.right}, ` +
+    `b=${viewportInset.bottom}, l=${viewportInset.left}, ` +
     `ratio=${ratio.toFixed(3)}, landscape=${landscapeViewport}, rotate=${rotateFlag}, scale=${layout.contentScale.toFixed(2)})`
   )
   debugLog(`Canvas internal: ${elements.canvas.width}x${elements.canvas.height}${useWrapper ? ` (render=${state.cimbarRenderCanvas.width}x${state.cimbarRenderCanvas.height})` : ''}`)
@@ -470,6 +486,7 @@ function updateModeSelector() {
     elements.cimbarModeGroup.style.display = state.mode === HDMI_MODE.CIMBAR ? '' : 'none'
   }
   if (elements.cimbarModeSelect) {
+    state.cimbarVariant = normalizeHdmiCimbarVariant(state.cimbarVariant)
     elements.cimbarModeSelect.disabled = disabled || state.mode !== HDMI_MODE.CIMBAR
     elements.cimbarModeSelect.value = String(state.cimbarVariant)
   }
@@ -780,6 +797,8 @@ async function startSending() {
       if (state.fileSize > CIMBAR_MAX_FILE_SIZE) {
         throw new Error(`File too large for CIMBAR mode (${formatBytes(CIMBAR_MAX_FILE_SIZE)} max)`)
       }
+
+      state.cimbarVariant = normalizeHdmiCimbarVariant(state.cimbarVariant)
 
       prepareCimbarCanvasForConfigure()
 
@@ -1159,7 +1178,7 @@ function handleModeChange(e) {
 }
 
 function handleCimbarVariantChange(e) {
-  const value = parseInt(e.target.value, 10)
+  const value = normalizeHdmiCimbarVariant(parseInt(e.target.value, 10))
   if (!Number.isFinite(value) || value === state.cimbarVariant) return
   if (state.isSending || state.isPaused) return
 
