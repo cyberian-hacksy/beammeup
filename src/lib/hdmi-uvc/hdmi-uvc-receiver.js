@@ -635,6 +635,7 @@ async function tryCimbarDecode(imageData, width, height) {
   if (!Module) return false
 
   const mode = state.cimbarPreferredMode || state.cimbarCurrentMode || 0
+  let effectiveMode = mode
   ensureCimbarBuffers(Module, imageData.data.length)
 
   // Forced-mode HDMI CIMBAR runs benefit from an early centered ROI instead of
@@ -674,12 +675,34 @@ async function tryCimbarDecode(imageData, width, height) {
     usedRoi = false
   }
 
+  if (
+    len <= 0 &&
+    state.cimbarPreferredMode === 0 &&
+    !state.cimbarRoi &&
+    state.cimbarRecentDecode < 0 &&
+    state.frameCount <= 30
+  ) {
+    for (const candidateMode of [68, 67, 4]) {
+      const candidateRoi = buildCimbarRoi(width, height, candidateMode)
+      const candidateLen = scanCimbarFrame(Module, imageData, width, height, candidateMode, candidateRoi)
+      if (candidateLen > 0) {
+        len = candidateLen
+        effectiveMode = candidateMode
+        usedRoi = true
+        state.cimbarRoi = candidateRoi
+        state.cimbarRoiMisses = 0
+        debugLog(`CIMBAR ROI locked: (${candidateRoi.x},${candidateRoi.y}) ${candidateRoi.w}x${candidateRoi.h}`)
+        break
+      }
+    }
+  }
+
   if (len > 0) {
     state.cimbarRecentDecode = state.frameCount
     state.cimbarRawBytes += len
-    if (state.cimbarPreferredMode === 0) state.cimbarCurrentMode = mode
+    if (state.cimbarPreferredMode === 0) state.cimbarCurrentMode = effectiveMode
     if (!state.cimbarRoi) {
-      state.cimbarRoi = buildCimbarRoi(width, height, mode)
+      state.cimbarRoi = buildCimbarRoi(width, height, effectiveMode)
       debugLog(`CIMBAR ROI locked: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ${state.cimbarRoi.w}x${state.cimbarRoi.h}`)
     }
     state.cimbarRoiMisses = 0
@@ -721,7 +744,7 @@ async function tryCimbarDecode(imageData, width, height) {
         const rateSuffix = throughput
           ? ` rate=${formatBytes(throughput.average)}/s recent=${formatBytes(throughput.recent)}/s${state.cimbarFileSize > 0 ? '' : ' raw'}`
           : ''
-        debugLog(`CIMBAR Progress: ${pct}% len=${len} mode=${mode}${usedRoi ? ' roi=1' : ' roi=0'}${rateSuffix}`)
+        debugLog(`CIMBAR Progress: ${pct}% len=${len} mode=${effectiveMode}${usedRoi ? ' roi=1' : ' roi=0'}${rateSuffix}`)
       }
     }
 
@@ -914,6 +937,12 @@ async function processFrame(now, metadata) {
 
   state.frameCount++
   const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
+
+  if (state.cimbarPreferredMode !== 0) {
+    await tryCimbarDecode(imageData, width, height)
+    if (state.isScanning) scheduleNextFrame()
+    return
+  }
 
   if (state.detectedMode === HDMI_MODE.CIMBAR) {
     await tryCimbarDecode(imageData, width, height)
