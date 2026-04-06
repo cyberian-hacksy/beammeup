@@ -16,9 +16,8 @@ import { buildFrame, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
 const CIMBAR_MAX_FILE_SIZE = 33 * 1024 * 1024
-const HDMI_CIMBAR_VARIANTS = [68, 67]
+const HDMI_CIMBAR_VARIANTS = [68]
 const CIMBAR_VARIANT_NAMES = {
-  67: 'Bm',
   68: 'B'
 }
 
@@ -281,14 +280,6 @@ function getCimbarLayoutConfig(variant, landscapeViewport) {
         contentScale: 1,
         wrapper: true
       }
-    case 67:
-      return {
-        padding: { top: 20, right: 20, bottom: 10, left: 10 },
-        viewportInset: { top: 0, right: 0, bottom: 0, left: 0 },
-        rotateFlag: 0,
-        contentScale: 1,
-        wrapper: true
-      }
     case 68:
     default:
       return {
@@ -511,14 +502,7 @@ function updateModeSelector() {
     button.disabled = disabled
   }
 
-  if (elements.cimbarModeGroup) {
-    elements.cimbarModeGroup.style.display = state.mode === HDMI_MODE.CIMBAR ? '' : 'none'
-  }
-  if (elements.cimbarModeSelect) {
-    state.cimbarVariant = normalizeHdmiCimbarVariant(state.cimbarVariant)
-    elements.cimbarModeSelect.disabled = disabled || state.mode !== HDMI_MODE.CIMBAR
-    elements.cimbarModeSelect.value = String(state.cimbarVariant)
-  }
+  state.cimbarVariant = 68
 }
 
 // Once the HDMI-UVC decode path is stable, repeating every symbol wastes most
@@ -1210,16 +1194,6 @@ function handleModeChange(e) {
   debugLog(`HDMI mode selected: ${HDMI_MODE_NAMES[state.mode]}`)
 }
 
-function handleCimbarVariantChange(e) {
-  const value = normalizeHdmiCimbarVariant(parseInt(e.target.value, 10))
-  if (!Number.isFinite(value) || value === state.cimbarVariant) return
-  if (state.isSending || state.isPaused) return
-
-  state.cimbarVariant = value
-  updateModeSelector()
-  debugLog(`CIMBAR variant selected: ${CIMBAR_VARIANT_NAMES[state.cimbarVariant] || state.cimbarVariant} (${state.cimbarVariant})`)
-}
-
 function handleKeydown(e) {
   if (e.key === 'Escape' && state.isSending) {
     stopSending()
@@ -1251,8 +1225,6 @@ export function initHdmiUvcSender(errorHandler) {
     frameCount: document.getElementById('hdmi-uvc-frame-count'),
     progressDisplay: document.getElementById('hdmi-uvc-progress'),
     modeSelector: document.getElementById('hdmi-uvc-mode-selector'),
-    cimbarModeGroup: document.getElementById('hdmi-uvc-cimbar-mode-group'),
-    cimbarModeSelect: document.getElementById('hdmi-uvc-cimbar-mode-select'),
     fpsSlider: document.getElementById('hdmi-uvc-fps-slider'),
     fpsDisplay: document.getElementById('hdmi-uvc-fps-display'),
     fileInfo: document.getElementById('hdmi-uvc-file-info'),
@@ -1271,9 +1243,6 @@ export function initHdmiUvcSender(errorHandler) {
 
   elements.fileInput.onchange = handleFileSelect
   elements.fpsSlider.oninput = handleFpsChange
-  if (elements.cimbarModeSelect) {
-    elements.cimbarModeSelect.onchange = handleCimbarVariantChange
-  }
   elements.modeButtons.forEach(button => {
     button.onclick = handleModeChange
   })

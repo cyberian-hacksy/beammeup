@@ -304,8 +304,6 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
 const state = {
   decoder: null,
   cimbarCurrentMode: 0,
-  cimbarPreferredMode: 0,
-  cimbarAutoProbeIndex: 0,
   cimbarLoaded: false,
   cimbarRecentDecode: -1,
   cimbarRecentExtract: -1,
@@ -338,10 +336,7 @@ const state = {
   progressSamples: []
 }
 
-const HDMI_CIMBAR_MODES = [68, 67]
 const CIMBAR_MODE_LABELS = {
-  0: 'Auto',
-  67: 'Bm',
   68: 'B'
 }
 
@@ -358,10 +353,6 @@ const hasImageCapture = typeof ImageCapture !== 'undefined'
 let elements = null
 let imageCapture = null
 let showError = (msg) => console.error(msg)
-
-function normalizeHdmiCimbarMode(value) {
-  return value === 0 || HDMI_CIMBAR_MODES.includes(value) ? value : 0
-}
 
 function formatBytes(bytes) {
   if (bytes < 1024) return bytes + ' B'
@@ -491,7 +482,6 @@ function resetCimbarSink() {
   Module._cimbard_configure_decode(4)
   Module._cimbard_configure_decode(68)
   state.cimbarCurrentMode = 0
-  state.cimbarAutoProbeIndex = 0
   state.cimbarRecentDecode = -1
   state.cimbarRecentExtract = -1
   state.cimbarFileSize = 0
@@ -572,16 +562,14 @@ function fitAspectRect(maxWidth, maxHeight, ratio) {
 }
 
 function getCimbarModeAspect(mode) {
-  return mode === 67 ? 1.413 : 1
+  return 1
 }
 
 function buildCimbarRoi(width, height, mode = 68) {
-  // Match the sender-side aspect so Bm does not lose its horizontal extent
-  // once ROI tracking activates.
   const ratio = getCimbarModeAspect(mode)
   // HDMI CIMBAR B currently renders nearly full-height on the sender. Use a
   // full-height ROI so we avoid intermittent fallbacks to full-frame scans.
-  const fill = mode === 68 ? 1.0 : (mode === 4 ? 0.94 : 0.96)
+  const fill = 1.0
   const fitted = fitAspectRect(
     Math.max(256, Math.floor(width * fill)),
     Math.max(256, Math.floor(height * fill)),
@@ -641,17 +629,10 @@ async function tryCimbarDecode(imageData, width, height) {
   const Module = getCimbarModule()
   if (!Module) return false
 
-  const lockedMode = normalizeHdmiCimbarMode(state.cimbarPreferredMode || state.cimbarCurrentMode || 0)
-  const isAutoMode = lockedMode === 0
-  const autoMode = HDMI_CIMBAR_MODES[state.cimbarAutoProbeIndex % HDMI_CIMBAR_MODES.length]
-  let effectiveMode = isAutoMode ? autoMode : lockedMode
+  const effectiveMode = 68
   ensureCimbarBuffers(Module, imageData.data.length)
 
-  // Forced-mode HDMI CIMBAR runs benefit from an early centered ROI instead of
-  // waiting for a first full-frame success, but keep the preset limited to the
-  // acquisition window so we still fall back to full-frame scans if it fails.
   if (
-    state.cimbarPreferredMode !== 0 &&
     !state.cimbarRoi &&
     state.cimbarRecentDecode < 0 &&
     state.frameCount <= 30
@@ -684,42 +665,13 @@ async function tryCimbarDecode(imageData, width, height) {
     usedRoi = false
   }
 
-  if (
-    len <= 0 &&
-    isAutoMode &&
-    !state.cimbarRoi &&
-    state.cimbarRecentDecode < 0 &&
-    state.frameCount <= 30
-  ) {
-    const candidateModes = [
-      effectiveMode,
-      ...HDMI_CIMBAR_MODES.filter(candidateMode => candidateMode !== effectiveMode)
-    ]
-    for (const candidateMode of candidateModes) {
-      const candidateRoi = buildCimbarRoi(width, height, candidateMode)
-      const candidateLen = scanCimbarFrame(Module, imageData, width, height, candidateMode, candidateRoi)
-      if (candidateLen > 0) {
-        len = candidateLen
-        effectiveMode = candidateMode
-        usedRoi = true
-        state.cimbarRoi = candidateRoi
-        state.cimbarRoiMisses = 0
-        debugLog(`CIMBAR ROI locked: (${candidateRoi.x},${candidateRoi.y}) ${candidateRoi.w}x${candidateRoi.h}`)
-        break
-      }
-    }
-  }
-
   if (len > 0) {
     state.cimbarRecentDecode = state.frameCount
     state.cimbarRawBytes += len
-    if (isAutoMode) {
-      if (state.cimbarCurrentMode !== effectiveMode) {
-        debugLog(`CIMBAR mode pinned: ${CIMBAR_MODE_LABELS[effectiveMode] || effectiveMode} (${effectiveMode})`)
-      }
-      state.cimbarCurrentMode = effectiveMode
-      state.cimbarAutoProbeIndex = 0
+    if (state.cimbarCurrentMode !== effectiveMode) {
+      debugLog(`CIMBAR mode pinned: ${CIMBAR_MODE_LABELS[effectiveMode] || effectiveMode} (${effectiveMode})`)
     }
+    state.cimbarCurrentMode = effectiveMode
     if (!state.cimbarRoi) {
       state.cimbarRoi = buildCimbarRoi(width, height, effectiveMode)
       debugLog(`CIMBAR ROI locked: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ${state.cimbarRoi.w}x${state.cimbarRoi.h}`)
@@ -774,10 +726,6 @@ async function tryCimbarDecode(imageData, width, height) {
       debugCurrent(`#${state.frameCount} CIMBAR len=${len}`)
     }
     return true
-  }
-
-  if (isAutoMode) {
-    state.cimbarAutoProbeIndex = (state.cimbarAutoProbeIndex + 1) % HDMI_CIMBAR_MODES.length
   }
 
   if (len === 0) {
@@ -963,12 +911,6 @@ async function processFrame(now, metadata) {
 
   state.frameCount++
   const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
-
-  if (state.cimbarPreferredMode !== 0) {
-    await tryCimbarDecode(imageData, width, height)
-    if (state.isScanning) scheduleNextFrame()
-    return
-  }
 
   if (state.detectedMode === HDMI_MODE.CIMBAR) {
     await tryCimbarDecode(imageData, width, height)
@@ -1331,7 +1273,6 @@ function resetReceiver() {
 
   state.decoder = null
   state.cimbarCurrentMode = 0
-  state.cimbarAutoProbeIndex = 0
   state.cimbarRecentDecode = -1
   state.cimbarRecentExtract = -1
   state.cimbarFileSize = 0
@@ -1377,21 +1318,6 @@ async function handleDeviceChange() {
   }
 }
 
-function handleCimbarModeChange(e) {
-  const value = normalizeHdmiCimbarMode(parseInt(e.target.value, 10))
-  if (!Number.isFinite(value) || value === state.cimbarPreferredMode) return
-
-  state.cimbarPreferredMode = value
-  if (elements.cimbarModeSelect) {
-    elements.cimbarModeSelect.value = String(value)
-  }
-  debugLog(`CIMBAR decode mode selected: ${CIMBAR_MODE_LABELS[value] || value} (${value})`)
-
-  const shouldResume = !!state.stream && state.isScanning
-  resetReceiver()
-  if (shouldResume) startScanning()
-}
-
 function handleReceiveAnother() {
   resetReceiver()
   startScanning()
@@ -1430,7 +1356,6 @@ export function initHdmiUvcReceiver(errorHandler) {
     video: document.getElementById('hdmi-uvc-video'),
     signalStatus: document.getElementById('hdmi-uvc-signal-status'),
     deviceDropdown: document.getElementById('hdmi-uvc-device-dropdown'),
-    cimbarModeSelect: document.getElementById('hdmi-uvc-cimbar-receiver-mode-select'),
     statusScanning: document.getElementById('hdmi-uvc-status-scanning'),
     statusReceiving: document.getElementById('hdmi-uvc-status-receiving'),
     statusComplete: document.getElementById('hdmi-uvc-status-complete'),
@@ -1447,11 +1372,6 @@ export function initHdmiUvcReceiver(errorHandler) {
   }
 
   elements.deviceDropdown.onchange = handleDeviceChange
-  if (elements.cimbarModeSelect) {
-    state.cimbarPreferredMode = normalizeHdmiCimbarMode(state.cimbarPreferredMode)
-    elements.cimbarModeSelect.value = String(state.cimbarPreferredMode)
-    elements.cimbarModeSelect.onchange = handleCimbarModeChange
-  }
   elements.btnReset.onclick = () => {
     resetReceiver()
     startScanning()
