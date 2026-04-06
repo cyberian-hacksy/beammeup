@@ -120,6 +120,37 @@ function waitForLayoutFrames(count = 2) {
   })
 }
 
+function viewportMetricsEqual(a, b, tolerance = 1) {
+  if (!a || !b) return false
+  return (
+    Math.abs(a.width - b.width) <= tolerance &&
+    Math.abs(a.height - b.height) <= tolerance &&
+    Math.abs(a.rectWidth - b.rectWidth) <= tolerance &&
+    Math.abs(a.rectHeight - b.rectHeight) <= tolerance
+  )
+}
+
+async function waitForStableViewport(stableFrames = 3, maxFrames = 30) {
+  let last = null
+  let stableCount = 0
+
+  for (let frame = 0; frame < maxFrames; frame++) {
+    await waitForLayoutFrames(1)
+    const current = getCanvasViewportMetrics()
+    if (viewportMetricsEqual(current, last)) {
+      stableCount++
+      if (stableCount >= stableFrames) {
+        return current
+      }
+    } else {
+      stableCount = 0
+    }
+    last = current
+  }
+
+  return last || getCanvasViewportMetrics()
+}
+
 function getCanvasViewportMetrics() {
   const presentationEl = document.fullscreenElement || elements.container || elements.canvas
   const rect = presentationEl.getBoundingClientRect()
@@ -281,8 +312,7 @@ function ensureCimbarRenderCanvas(width, height) {
   return state.cimbarRenderCanvas
 }
 
-function prepareCimbarCanvasForConfigure() {
-  const metrics = getCanvasViewportMetrics()
+function prepareCimbarCanvasForConfigure(metrics = getCanvasViewportMetrics()) {
   const side = Math.max(1, Math.min(metrics.width, metrics.height))
   const layout = getCimbarLayoutConfig(state.cimbarVariant, metrics.width >= metrics.height)
 
@@ -322,9 +352,8 @@ function blitCimbarToDisplay() {
   )
 }
 
-function scaleCimbarCanvasToViewport() {
+function scaleCimbarCanvasToViewport(metrics = getCanvasViewportMetrics()) {
   const Module = getCimbarModule()
-  const metrics = getCanvasViewportMetrics()
   const landscapeViewport = metrics.width >= metrics.height
   const layout = getCimbarLayoutConfig(state.cimbarVariant, landscapeViewport)
   const padding = layout.padding
@@ -407,8 +436,7 @@ function scaleCimbarCanvasToViewport() {
   debugLog(`Canvas internal: ${elements.canvas.width}x${elements.canvas.height}${useWrapper ? ` (render=${state.cimbarRenderCanvas.width}x${state.cimbarRenderCanvas.height})` : ''}`)
 }
 
-function measureAndApplyCanvasSize() {
-  const metrics = getCanvasViewportMetrics()
+function measureAndApplyCanvasSize(metrics = getCanvasViewportMetrics()) {
 
   elements.canvas.width = metrics.width
   elements.canvas.height = metrics.height
@@ -792,7 +820,7 @@ async function startSending() {
 
     // Fullscreen layout can settle a frame or two after the promise resolves.
     // Measure the actual fullscreen element box instead of trusting window.inner*.
-    await waitForLayoutFrames(3)
+    const stableMetrics = await waitForStableViewport()
 
     if (isCimbarMode()) {
       if (state.fileSize > CIMBAR_MAX_FILE_SIZE) {
@@ -801,7 +829,7 @@ async function startSending() {
 
       state.cimbarVariant = normalizeHdmiCimbarVariant(state.cimbarVariant)
 
-      prepareCimbarCanvasForConfigure()
+      prepareCimbarCanvasForConfigure(stableMetrics)
 
       await loadCimbarWasm()
       const Module = getCimbarModule()
@@ -809,13 +837,13 @@ async function startSending() {
 
       const cimbarLayout = getCimbarLayoutConfig(
         state.cimbarVariant,
-        getCanvasViewportMetrics().width >= getCanvasViewportMetrics().height
+        stableMetrics.width >= stableMetrics.height
       )
       Module.canvas = cimbarLayout.wrapper
         ? ensureCimbarRenderCanvas(elements.canvas.width || 1024, elements.canvas.height || 1024)
         : elements.canvas
       Module._cimbare_configure(state.cimbarVariant, -1)
-      scaleCimbarCanvasToViewport()
+      scaleCimbarCanvasToViewport(stableMetrics)
 
       const fnBytes = new TextEncoder().encode(state.fileName)
       const fnAlloc = copyToWasmHeap(Module, fnBytes)
@@ -856,7 +884,7 @@ async function startSending() {
       return
     }
 
-    const { metrics, capacity } = measureAndApplyCanvasSize()
+    const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics)
     const canvasWidth = metrics.width
     const canvasHeight = metrics.height
     const {
@@ -1025,11 +1053,11 @@ async function resumeSending() {
     }
   }
 
-  await waitForLayoutFrames(3)
+  const stableMetrics = await waitForStableViewport()
   if (isCimbarMode()) {
-    scaleCimbarCanvasToViewport()
+    scaleCimbarCanvasToViewport(stableMetrics)
   } else {
-    measureAndApplyCanvasSize()
+    measureAndApplyCanvasSize(stableMetrics)
   }
 
   elements.fpsSlider.disabled = true

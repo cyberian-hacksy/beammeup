@@ -579,7 +579,9 @@ function buildCimbarRoi(width, height, mode = 68) {
   // Match the sender-side aspect so Bm does not lose its horizontal extent
   // once ROI tracking activates.
   const ratio = getCimbarModeAspect(mode)
-  const fill = mode === 4 ? 0.94 : 0.96
+  // HDMI CIMBAR B currently renders nearly full-height on the sender. Use a
+  // full-height ROI so we avoid intermittent fallbacks to full-frame scans.
+  const fill = mode === 68 ? 1.0 : (mode === 4 ? 0.94 : 0.96)
   const fitted = fitAspectRect(
     Math.max(256, Math.floor(width * fill)),
     Math.max(256, Math.floor(height * fill)),
