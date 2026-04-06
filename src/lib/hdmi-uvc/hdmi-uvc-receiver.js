@@ -574,9 +574,10 @@ function buildCimbarRoi(width, height, mode = 68) {
   // Match the sender-side aspect so Bm does not lose its horizontal extent
   // once ROI tracking activates.
   const ratio = getCimbarModeAspect(mode)
+  const fill = mode === 4 ? 0.94 : 0.96
   const fitted = fitAspectRect(
-    Math.max(256, Math.floor(width * 0.96)),
-    Math.max(256, Math.floor(height * 0.96)),
+    Math.max(256, Math.floor(width * fill)),
+    Math.max(256, Math.floor(height * fill)),
     ratio
   )
   return {
@@ -635,6 +636,20 @@ async function tryCimbarDecode(imageData, width, height) {
 
   const mode = state.cimbarPreferredMode || state.cimbarCurrentMode || 0
   ensureCimbarBuffers(Module, imageData.data.length)
+
+  // Forced-mode HDMI CIMBAR runs benefit from an early centered ROI instead of
+  // waiting for a first full-frame success, but keep the preset limited to the
+  // acquisition window so we still fall back to full-frame scans if it fails.
+  if (
+    state.cimbarPreferredMode !== 0 &&
+    !state.cimbarRoi &&
+    state.cimbarRecentDecode < 0 &&
+    state.frameCount <= 30
+  ) {
+    state.cimbarRoi = buildCimbarRoi(width, height, mode)
+    state.cimbarRoiMisses = 0
+    debugLog(`CIMBAR ROI preset: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ${state.cimbarRoi.w}x${state.cimbarRoi.h}`)
+  }
 
   let len = 0
   let usedRoi = false

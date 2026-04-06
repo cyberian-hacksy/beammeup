@@ -239,7 +239,7 @@ function getCimbarLayoutConfig(variant, landscapeViewport) {
   switch (variant) {
     case 4:
       return {
-        padding: { top: 24, right: 24, bottom: 24, left: 24 },
+        padding: { top: 40, right: 40, bottom: 24, left: 24 },
         rotateFlag: 0,
         contentScale: 1,
         wrapper: true
