@@ -304,6 +304,7 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
 const state = {
   decoder: null,
   cimbarCurrentMode: 0,
+  cimbarPreferredMode: 0,
   cimbarLoaded: false,
   cimbarRecentDecode: -1,
   cimbarRecentExtract: -1,
@@ -337,6 +338,12 @@ const state = {
 }
 
 const CIMBAR_MODE_VALUES = [67, 68, 4]
+const CIMBAR_MODE_LABELS = {
+  0: 'Auto',
+  4: '4C',
+  67: 'Bm',
+  68: 'B'
+}
 
 // Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
 const hasVideoFrameCallback = typeof HTMLVideoElement !== 'undefined' &&
@@ -546,15 +553,37 @@ async function handleCimbarComplete(fileId) {
   return true
 }
 
-function buildCimbarRoi(width, height) {
-  // HDMI CIMBAR is currently rendered as a centered square. Keep the ROI
-  // conservative so it survives minor fullscreen/layout shifts.
-  const side = Math.max(256, Math.floor(Math.min(width, height) * 0.96))
+function fitAspectRect(maxWidth, maxHeight, ratio) {
+  let width = maxWidth
+  let height = Math.floor(width / ratio)
+  if (height > maxHeight) {
+    height = maxHeight
+    width = Math.floor(height * ratio)
+  }
   return {
-    x: Math.max(0, Math.floor((width - side) / 2)),
-    y: Math.max(0, Math.floor((height - side) / 2)),
-    w: Math.min(side, width),
-    h: Math.min(side, height)
+    width: Math.max(1, width),
+    height: Math.max(1, height)
+  }
+}
+
+function getCimbarModeAspect(mode) {
+  return mode === 67 ? 1.413 : 1
+}
+
+function buildCimbarRoi(width, height, mode = 68) {
+  // Match the sender-side aspect so Bm does not lose its horizontal extent
+  // once ROI tracking activates.
+  const ratio = getCimbarModeAspect(mode)
+  const fitted = fitAspectRect(
+    Math.max(256, Math.floor(width * 0.96)),
+    Math.max(256, Math.floor(height * 0.96)),
+    ratio
+  )
+  return {
+    x: Math.max(0, Math.floor((width - fitted.width) / 2)),
+    y: Math.max(0, Math.floor((height - fitted.height) / 2)),
+    w: Math.min(fitted.width, width),
+    h: Math.min(fitted.height, height)
   }
 }
 
@@ -604,7 +633,7 @@ async function tryCimbarDecode(imageData, width, height) {
   const Module = getCimbarModule()
   if (!Module) return false
 
-  let mode = state.cimbarCurrentMode
+  let mode = state.cimbarPreferredMode || state.cimbarCurrentMode
   if (mode === 0) {
     mode = CIMBAR_MODE_VALUES[state.frameCount % CIMBAR_MODE_VALUES.length]
   }
@@ -636,9 +665,9 @@ async function tryCimbarDecode(imageData, width, height) {
   if (len > 0) {
     state.cimbarRecentDecode = state.frameCount
     state.cimbarRawBytes += len
-    if (state.cimbarCurrentMode === 0) state.cimbarCurrentMode = mode
+    if (state.cimbarCurrentMode === 0 || state.cimbarPreferredMode !== 0) state.cimbarCurrentMode = mode
     if (!state.cimbarRoi) {
-      state.cimbarRoi = buildCimbarRoi(width, height)
+      state.cimbarRoi = buildCimbarRoi(width, height, mode)
       debugLog(`CIMBAR ROI locked: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ${state.cimbarRoi.w}x${state.cimbarRoi.h}`)
     }
     state.cimbarRoiMisses = 0
@@ -1280,6 +1309,21 @@ async function handleDeviceChange() {
   }
 }
 
+function handleCimbarModeChange(e) {
+  const value = parseInt(e.target.value, 10)
+  if (!Number.isFinite(value) || value === state.cimbarPreferredMode) return
+
+  state.cimbarPreferredMode = value
+  if (elements.cimbarModeSelect) {
+    elements.cimbarModeSelect.value = String(value)
+  }
+  debugLog(`CIMBAR decode mode selected: ${CIMBAR_MODE_LABELS[value] || value} (${value})`)
+
+  const shouldResume = !!state.stream && state.isScanning
+  resetReceiver()
+  if (shouldResume) startScanning()
+}
+
 function handleReceiveAnother() {
   resetReceiver()
   startScanning()
@@ -1318,6 +1362,7 @@ export function initHdmiUvcReceiver(errorHandler) {
     video: document.getElementById('hdmi-uvc-video'),
     signalStatus: document.getElementById('hdmi-uvc-signal-status'),
     deviceDropdown: document.getElementById('hdmi-uvc-device-dropdown'),
+    cimbarModeSelect: document.getElementById('hdmi-uvc-cimbar-receiver-mode-select'),
     statusScanning: document.getElementById('hdmi-uvc-status-scanning'),
     statusReceiving: document.getElementById('hdmi-uvc-status-receiving'),
     statusComplete: document.getElementById('hdmi-uvc-status-complete'),
@@ -1334,6 +1379,10 @@ export function initHdmiUvcReceiver(errorHandler) {
   }
 
   elements.deviceDropdown.onchange = handleDeviceChange
+  if (elements.cimbarModeSelect) {
+    elements.cimbarModeSelect.value = String(state.cimbarPreferredMode)
+    elements.cimbarModeSelect.onchange = handleCimbarModeChange
+  }
   elements.btnReset.onclick = () => {
     resetReceiver()
     startScanning()

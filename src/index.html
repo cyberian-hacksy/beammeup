@@ -281,6 +281,14 @@
           <input type="range" id="hdmi-uvc-fps-slider" min="0" max="1" value="0" step="1">
           <span id="hdmi-uvc-fps-display">30 fps</span>
         </div>
+        <div class="slider-group" id="hdmi-uvc-cimbar-mode-group" style="display:none;">
+          <label for="hdmi-uvc-cimbar-mode-select">CIMBAR Variant</label>
+          <select id="hdmi-uvc-cimbar-mode-select">
+            <option value="68" selected>B</option>
+            <option value="67">Bm</option>
+            <option value="4">4C</option>
+          </select>
+        </div>
         <div class="file-status">
           <span id="hdmi-uvc-file-info">No file</span>
           <span id="hdmi-uvc-estimate" class="estimate"></span>
@@ -312,6 +320,15 @@
       <div class="device-selector">
         <label for="hdmi-uvc-device-dropdown">Capture Device</label>
         <select id="hdmi-uvc-device-dropdown"></select>
+      </div>
+      <div class="device-selector" style="margin-top:8px;">
+        <label for="hdmi-uvc-cimbar-receiver-mode-select">CIMBAR Decode Mode</label>
+        <select id="hdmi-uvc-cimbar-receiver-mode-select">
+          <option value="0">Auto</option>
+          <option value="68">B (68)</option>
+          <option value="67">Bm (67)</option>
+          <option value="4">4C (4)</option>
+        </select>
       </div>
       <div id="hdmi-uvc-receiver-debug" style="margin-top:8px;border:2px solid #00d4ff;border-radius:4px;">
         <div style="display:flex;align-items:center;background:#16213e;border-bottom:1px solid #333;">

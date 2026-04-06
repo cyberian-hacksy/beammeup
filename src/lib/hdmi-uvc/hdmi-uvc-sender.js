@@ -16,10 +16,11 @@ import { buildFrame, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
 const CIMBAR_MAX_FILE_SIZE = 33 * 1024 * 1024
-const CIMBAR_CANVAS_PAD_TOP_PX = 16
-const CIMBAR_CANVAS_PAD_RIGHT_PX = 16
-const CIMBAR_CANVAS_PAD_BOTTOM_PX = 0
-const CIMBAR_CANVAS_PAD_LEFT_PX = 0
+const CIMBAR_VARIANT_NAMES = {
+  67: 'Bm',
+  68: 'B',
+  4: '4C'
+}
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -63,7 +64,8 @@ const state = {
   mode: HDMI_MODE.COMPAT_4,
   systematicPass: 1,
   metadataIntervalFrames: METADATA_INTERVAL * 2,
-  cimbarIdealRatio: 1
+  cimbarIdealRatio: 1,
+  cimbarVariant: 68
 }
 
 let elements = null
@@ -165,17 +167,44 @@ function copyToWasmHeap(Module, data) {
   return { ptr, view: wasmData }
 }
 
-function fitCimbarToViewport(metrics, ratio) {
-  let width = metrics.width
+function fitCimbarToViewport(viewportWidth, viewportHeight, ratio) {
+  let width = viewportWidth
   let height = Math.floor(width / ratio)
-  if (height > metrics.height) {
-    height = metrics.height
+  if (height > viewportHeight) {
+    height = viewportHeight
     width = Math.floor(height * ratio)
   }
 
   return {
     width: Math.max(1, width),
     height: Math.max(1, height)
+  }
+}
+
+function getCimbarLayoutConfig(variant, landscapeViewport) {
+  // HDMI CIMBAR variants do not share the same usable window geometry.
+  // 4C needs a deliberately smaller inner render box instead of more outer
+  // padding, otherwise it still clips even when the CSS box looks correct.
+  switch (variant) {
+    case 4:
+      return {
+        padding: { top: 16, right: 16, bottom: 16, left: 16 },
+        rotateFlag: 0,
+        contentScale: 0.88
+      }
+    case 67:
+      return {
+        padding: { top: 16, right: 16, bottom: 0, left: 0 },
+        rotateFlag: 0,
+        contentScale: 1
+      }
+    case 68:
+    default:
+      return {
+        padding: { top: 16, right: 16, bottom: 0, left: 0 },
+        rotateFlag: landscapeViewport ? 1 : 0,
+        contentScale: 1
+      }
   }
 }
 
@@ -205,29 +234,38 @@ function scaleCimbarCanvasToViewport() {
   const Module = getCimbarModule()
   const metrics = getCanvasViewportMetrics()
   const landscapeViewport = metrics.width >= metrics.height
+  const layout = getCimbarLayoutConfig(state.cimbarVariant, landscapeViewport)
+  const padding = layout.padding
+  const rotateFlag = layout.rotateFlag
 
   if (Module?._cimbare_rotate_window) {
-    Module._cimbare_rotate_window(landscapeViewport ? 1 : 0)
+    Module._cimbare_rotate_window(rotateFlag)
   }
 
   const ratio = Module?._cimbare_get_aspect_ratio?.() || state.cimbarIdealRatio || 1
   state.cimbarIdealRatio = ratio
-  const { width, height } = fitCimbarToViewport(metrics, ratio)
+  const availableWidth = Math.max(1, metrics.width - padding.left - padding.right)
+  const availableHeight = Math.max(1, metrics.height - padding.top - padding.bottom)
+  const fitted = fitCimbarToViewport(availableWidth, availableHeight, ratio)
+  const contentWidth = Math.max(1, Math.floor(fitted.width * layout.contentScale))
+  const contentHeight = Math.max(1, Math.floor(fitted.height * layout.contentScale))
+  const outerWidth = contentWidth + padding.left + padding.right
+  const outerHeight = contentHeight + padding.top + padding.bottom
 
   if (typeof Module?.setCanvasSize === 'function') {
-    Module.setCanvasSize(width, height)
+    Module.setCanvasSize(contentWidth, contentHeight)
   } else {
-    elements.canvas.width = width
-    elements.canvas.height = height
+    elements.canvas.width = contentWidth
+    elements.canvas.height = contentHeight
   }
 
-  elements.canvas.style.setProperty('width', `${width}px`, 'important')
-  elements.canvas.style.setProperty('height', `${height}px`, 'important')
+  elements.canvas.style.setProperty('width', `${outerWidth}px`, 'important')
+  elements.canvas.style.setProperty('height', `${outerHeight}px`, 'important')
   elements.canvas.style.position = 'static'
   elements.canvas.style.top = ''
   elements.canvas.style.left = ''
   elements.canvas.style.transform = ''
-  elements.canvas.style.padding = `${CIMBAR_CANVAS_PAD_TOP_PX}px ${CIMBAR_CANVAS_PAD_RIGHT_PX}px ${CIMBAR_CANVAS_PAD_BOTTOM_PX}px ${CIMBAR_CANVAS_PAD_LEFT_PX}px`
+  elements.canvas.style.padding = `${padding.top}px ${padding.right}px ${padding.bottom}px ${padding.left}px`
   elements.canvas.style.boxSizing = 'border-box'
   elements.canvas.style.setProperty('max-width', 'none', 'important')
   elements.canvas.style.setProperty('max-height', 'none', 'important')
@@ -237,7 +275,13 @@ function scaleCimbarCanvasToViewport() {
   }
 
   debugLog(`Viewport: rect=${metrics.rectWidth}x${metrics.rectHeight}, visual=${metrics.visualWidth}x${metrics.visualHeight}, inner=${metrics.innerWidth}x${metrics.innerHeight}, screen=${metrics.screenWidth}x${metrics.screenHeight}, dpr=${metrics.devicePixelRatio}`)
-  debugLog(`Canvas: CIMBAR viewport ${width}x${height} (pad t=${CIMBAR_CANVAS_PAD_TOP_PX}, r=${CIMBAR_CANVAS_PAD_RIGHT_PX}, b=${CIMBAR_CANVAS_PAD_BOTTOM_PX}, l=${CIMBAR_CANVAS_PAD_LEFT_PX}, ratio=${ratio.toFixed(3)}, landscape=${landscapeViewport})`)
+  debugLog(
+    `Canvas: CIMBAR viewport ${outerWidth}x${outerHeight} ` +
+    `(content=${contentWidth}x${contentHeight}, ` +
+    `pad t=${padding.top}, r=${padding.right}, ` +
+    `b=${padding.bottom}, l=${padding.left}, ` +
+    `ratio=${ratio.toFixed(3)}, landscape=${landscapeViewport}, rotate=${rotateFlag}, scale=${layout.contentScale.toFixed(2)})`
+  )
   debugLog(`Canvas internal: ${elements.canvas.width}x${elements.canvas.height}`)
 }
 
@@ -315,6 +359,14 @@ function updateModeSelector() {
     const mode = parseInt(button.dataset.mode, 10)
     button.classList.toggle('active', mode === state.mode)
     button.disabled = disabled
+  }
+
+  if (elements.cimbarModeGroup) {
+    elements.cimbarModeGroup.style.display = state.mode === HDMI_MODE.CIMBAR ? '' : 'none'
+  }
+  if (elements.cimbarModeSelect) {
+    elements.cimbarModeSelect.disabled = disabled || state.mode !== HDMI_MODE.CIMBAR
+    elements.cimbarModeSelect.value = String(state.cimbarVariant)
   }
 }
 
@@ -623,7 +675,7 @@ async function startSending() {
       if (!Module) throw new Error('CIMBAR WASM not loaded')
 
       Module.canvas = elements.canvas
-      Module._cimbare_configure(68, -1)
+      Module._cimbare_configure(state.cimbarVariant, -1)
       scaleCimbarCanvasToViewport()
 
       const fnBytes = new TextEncoder().encode(state.fileName)
@@ -646,7 +698,10 @@ async function startSending() {
       Module._free(emptyAlloc.ptr)
 
       debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
-      debugLog(`CIMBAR sender configured: aspect=${state.cimbarIdealRatio.toFixed(3)}`)
+      debugLog(
+        `CIMBAR sender configured: variant=${CIMBAR_VARIANT_NAMES[state.cimbarVariant] || state.cimbarVariant} ` +
+        `(mode=${state.cimbarVariant}) aspect=${state.cimbarIdealRatio.toFixed(3)}`
+      )
       debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)})`)
 
       state.isSending = true
@@ -984,6 +1039,16 @@ function handleModeChange(e) {
   debugLog(`HDMI mode selected: ${HDMI_MODE_NAMES[state.mode]}`)
 }
 
+function handleCimbarVariantChange(e) {
+  const value = parseInt(e.target.value, 10)
+  if (!Number.isFinite(value) || value === state.cimbarVariant) return
+  if (state.isSending || state.isPaused) return
+
+  state.cimbarVariant = value
+  updateModeSelector()
+  debugLog(`CIMBAR variant selected: ${CIMBAR_VARIANT_NAMES[state.cimbarVariant] || state.cimbarVariant} (${state.cimbarVariant})`)
+}
+
 function handleKeydown(e) {
   if (e.key === 'Escape' && state.isSending) {
     stopSending()
@@ -1015,6 +1080,8 @@ export function initHdmiUvcSender(errorHandler) {
     frameCount: document.getElementById('hdmi-uvc-frame-count'),
     progressDisplay: document.getElementById('hdmi-uvc-progress'),
     modeSelector: document.getElementById('hdmi-uvc-mode-selector'),
+    cimbarModeGroup: document.getElementById('hdmi-uvc-cimbar-mode-group'),
+    cimbarModeSelect: document.getElementById('hdmi-uvc-cimbar-mode-select'),
     fpsSlider: document.getElementById('hdmi-uvc-fps-slider'),
     fpsDisplay: document.getElementById('hdmi-uvc-fps-display'),
     fileInfo: document.getElementById('hdmi-uvc-file-info'),
@@ -1033,6 +1100,9 @@ export function initHdmiUvcSender(errorHandler) {
 
   elements.fileInput.onchange = handleFileSelect
   elements.fpsSlider.oninput = handleFpsChange
+  if (elements.cimbarModeSelect) {
+    elements.cimbarModeSelect.onchange = handleCimbarVariantChange
+  }
   elements.modeButtons.forEach(button => {
     button.onclick = handleModeChange
   })
