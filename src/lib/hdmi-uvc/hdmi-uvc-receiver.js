@@ -11,6 +11,12 @@ import {
   HEADER_SIZE,
   getModeDataBlockSize
 } from './hdmi-uvc-constants.js'
+import {
+  getHdmiCimbarLayout,
+  HDMI_CIMBAR_MODE,
+  HDMI_CIMBAR_TILE_COUNT,
+  HDMI_CIMBAR_VARIANT_NAME
+} from './hdmi-cimbar-layout.js'
 import { detectAnchors, dataRegionFromAnchors, decodeDataRegion, readPayloadWithLayout } from './hdmi-uvc-frame.js'
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
@@ -311,6 +317,7 @@ const state = {
   cimbarRawBytes: 0,
   cimbarProgressSamples: [],
   cimbarRoi: null,
+  cimbarTileRois: null,
   cimbarRoiMisses: 0,
   cimbarImgBuff: null,
   cimbarFountainBuff: null,
@@ -339,7 +346,7 @@ const state = {
 }
 
 const CIMBAR_MODE_LABELS = {
-  68: 'B'
+  [HDMI_CIMBAR_MODE]: HDMI_CIMBAR_VARIANT_NAME
 }
 
 // Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
@@ -479,10 +486,6 @@ function getCimbarThroughputStats(currentBytes) {
 }
 
 function resetCimbarSink() {
-  const Module = getCimbarModule()
-  if (!Module) return
-  Module._cimbard_configure_decode(4)
-  Module._cimbard_configure_decode(68)
   state.cimbarCurrentMode = 0
   state.cimbarRecentDecode = -1
   state.cimbarRecentExtract = -1
@@ -490,7 +493,13 @@ function resetCimbarSink() {
   state.cimbarRawBytes = 0
   state.cimbarProgressSamples = []
   state.cimbarRoi = null
+  state.cimbarTileRois = null
   state.cimbarRoiMisses = 0
+
+  const Module = getCimbarModule()
+  if (!Module) return
+  Module._cimbard_configure_decode(4)
+  Module._cimbard_configure_decode(HDMI_CIMBAR_MODE)
 }
 
 async function ensureCimbarLoaded() {
@@ -563,25 +572,22 @@ function fitAspectRect(maxWidth, maxHeight, ratio) {
   }
 }
 
-function getCimbarModeAspect(mode) {
-  return 1
-}
-
-function buildCimbarRoi(width, height, mode = 68) {
-  const ratio = getCimbarModeAspect(mode)
-  // HDMI CIMBAR B currently renders nearly full-height on the sender. Use a
-  // full-height ROI so we avoid intermittent fallbacks to full-frame scans.
-  const fill = 1.0
-  const fitted = fitAspectRect(
-    Math.max(256, Math.floor(width * fill)),
-    Math.max(256, Math.floor(height * fill)),
-    ratio
-  )
+function buildCimbarTileLayout(width, height) {
+  const layout = getHdmiCimbarLayout(width, height)
   return {
-    x: Math.max(0, Math.floor((width - fitted.width) / 2)),
-    y: Math.max(0, Math.floor((height - fitted.height) / 2)),
-    w: Math.min(fitted.width, width),
-    h: Math.min(fitted.height, height)
+    captureRoi: layout.captureRoi,
+    absoluteTiles: layout.tiles.map((tile) => ({
+      x: tile.x,
+      y: tile.y,
+      w: tile.w,
+      h: tile.h
+    })),
+    relativeTiles: layout.tiles.map((tile) => ({
+      x: tile.relX,
+      y: tile.relY,
+      w: tile.w,
+      h: tile.h
+    }))
   }
 }
 
@@ -625,13 +631,46 @@ function scanCimbarFrame(Module, imageData, width, height, mode, rect = null) {
   )
 }
 
+function resetCimbarRoiAfterMisses() {
+  state.cimbarRoiMisses++
+  if (state.cimbarRoiMisses === 3 && state.cimbarRoi) {
+    debugLog(
+      `CIMBAR ROI reset after misses: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ` +
+      `${state.cimbarRoi.w}x${state.cimbarRoi.h} tiles=${HDMI_CIMBAR_TILE_COUNT}`
+    )
+    state.cimbarRoi = null
+    state.cimbarTileRois = null
+    state.cimbarRoiMisses = 0
+  }
+}
+
+function scanCimbarTileRects(Module, imageData, width, height, mode, rects) {
+  let totalLen = 0
+  let hits = 0
+  let completeResult = 0
+
+  for (const rect of rects || []) {
+    const len = scanCimbarFrame(Module, imageData, width, height, mode, rect)
+    if (len > 0) {
+      hits++
+      totalLen += len
+      const res = Module._cimbard_fountain_decode(state.cimbarFountainBuff.byteOffset, len)
+      if (completeResult <= 0 && res > 0) {
+        completeResult = res
+      }
+    }
+  }
+
+  return { totalLen, hits, completeResult }
+}
+
 async function tryCimbarDecode(imageData, width, height, { roiCaptured = false } = {}) {
   if (!(await ensureCimbarLoaded())) return false
 
   const Module = getCimbarModule()
   if (!Module) return false
 
-  const effectiveMode = 68
+  const effectiveMode = HDMI_CIMBAR_MODE
   ensureCimbarBuffers(Module, imageData.data.length)
 
   if (
@@ -639,44 +678,62 @@ async function tryCimbarDecode(imageData, width, height, { roiCaptured = false }
     state.cimbarRecentDecode < 0 &&
     state.frameCount <= 30
   ) {
-    state.cimbarRoi = buildCimbarRoi(width, height, effectiveMode)
+    const layout = buildCimbarTileLayout(width, height)
+    state.cimbarRoi = layout.captureRoi
+    state.cimbarTileRois = {
+      absolute: layout.absoluteTiles,
+      relative: layout.relativeTiles
+    }
     state.cimbarRoiMisses = 0
-    debugLog(`CIMBAR ROI preset: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ${state.cimbarRoi.w}x${state.cimbarRoi.h}`)
+    debugLog(
+      `CIMBAR ROI preset: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ` +
+      `${state.cimbarRoi.w}x${state.cimbarRoi.h} tiles=${HDMI_CIMBAR_TILE_COUNT}`
+    )
   }
 
   let len = 0
+  let tileHits = 0
+  let completeResult = 0
   let usedRoi = roiCaptured
   if (roiCaptured) {
-    len = scanCimbarFrame(Module, imageData, width, height, effectiveMode)
+    const result = scanCimbarTileRects(
+      Module,
+      imageData,
+      width,
+      height,
+      effectiveMode,
+      state.cimbarTileRois?.relative
+    )
+    len = result.totalLen
+    tileHits = result.hits
+    completeResult = result.completeResult
     if (len <= 0) {
-      state.cimbarRoiMisses++
-      if (state.cimbarRoiMisses === 3 && state.cimbarRoi) {
-        debugLog(
-          `CIMBAR ROI reset after misses: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ` +
-          `${state.cimbarRoi.w}x${state.cimbarRoi.h}`
-        )
-        state.cimbarRoi = null
-        state.cimbarRoiMisses = 0
-      }
+      resetCimbarRoiAfterMisses()
     }
   } else if (state.cimbarRoi) {
-    len = scanCimbarFrame(Module, imageData, width, height, effectiveMode, state.cimbarRoi)
+    const result = scanCimbarTileRects(
+      Module,
+      imageData,
+      width,
+      height,
+      effectiveMode,
+      state.cimbarTileRois?.absolute
+    )
+    len = result.totalLen
+    tileHits = result.hits
+    completeResult = result.completeResult
     usedRoi = len > 0
     if (len <= 0) {
-      state.cimbarRoiMisses++
-      if (state.cimbarRoiMisses === 3) {
-        debugLog(
-          `CIMBAR ROI reset after misses: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ` +
-          `${state.cimbarRoi.w}x${state.cimbarRoi.h}`
-        )
-        state.cimbarRoi = null
-        state.cimbarRoiMisses = 0
-      }
+      resetCimbarRoiAfterMisses()
     }
   }
 
   if (len <= 0 && !roiCaptured) {
     len = scanCimbarFrame(Module, imageData, width, height, effectiveMode)
+    if (len > 0) {
+      tileHits = 1
+      completeResult = Module._cimbard_fountain_decode(state.cimbarFountainBuff.byteOffset, len)
+    }
     usedRoi = false
   }
 
@@ -687,9 +744,17 @@ async function tryCimbarDecode(imageData, width, height, { roiCaptured = false }
       debugLog(`CIMBAR mode pinned: ${CIMBAR_MODE_LABELS[effectiveMode] || effectiveMode} (${effectiveMode})`)
     }
     state.cimbarCurrentMode = effectiveMode
-    if (!state.cimbarRoi) {
-      state.cimbarRoi = buildCimbarRoi(width, height, effectiveMode)
-      debugLog(`CIMBAR ROI locked: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ${state.cimbarRoi.w}x${state.cimbarRoi.h}`)
+    if (!state.cimbarRoi || !state.cimbarTileRois) {
+      const layout = buildCimbarTileLayout(width, height)
+      state.cimbarRoi = layout.captureRoi
+      state.cimbarTileRois = {
+        absolute: layout.absoluteTiles,
+        relative: layout.relativeTiles
+      }
+      debugLog(
+        `CIMBAR ROI locked: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ` +
+        `${state.cimbarRoi.w}x${state.cimbarRoi.h} tiles=${HDMI_CIMBAR_TILE_COUNT}`
+      )
     }
     state.cimbarRoiMisses = 0
     if (state.detectedMode !== HDMI_MODE.CIMBAR) {
@@ -699,7 +764,6 @@ async function tryCimbarDecode(imageData, width, height, { roiCaptured = false }
       debugLog(`Mode: ${HDMI_MODE_NAMES[HDMI_MODE.CIMBAR]}`)
     }
 
-    const res = Module._cimbard_fountain_decode(state.cimbarFountainBuff.byteOffset, len)
     const report = getCimbarReport(Module)
     const progress = getCimbarProgressFraction(report)
     const reportedFileSize = getCimbarReportedFileSize(report)
@@ -730,15 +794,18 @@ async function tryCimbarDecode(imageData, width, height, { roiCaptured = false }
         const rateSuffix = throughput
           ? ` rate=${formatBytes(throughput.average)}/s recent=${formatBytes(throughput.recent)}/s${state.cimbarFileSize > 0 ? '' : ' raw'}`
           : ''
-        debugLog(`CIMBAR Progress: ${pct}% len=${len} mode=${effectiveMode}${usedRoi ? ' roi=1' : ' roi=0'}${rateSuffix}`)
+        debugLog(
+          `CIMBAR Progress: ${pct}% len=${len} mode=${effectiveMode}` +
+          `${usedRoi ? ' roi=1' : ' roi=0'} tiles=${tileHits}/${HDMI_CIMBAR_TILE_COUNT}${rateSuffix}`
+        )
       }
     }
 
-    if (res > 0) {
-      const fileId = Number(res & BigInt(0xFFFFFFFF))
+    if (completeResult > 0) {
+      const fileId = Number(completeResult & BigInt(0xFFFFFFFF))
       await handleCimbarComplete(fileId)
     } else {
-      debugCurrent(`#${state.frameCount} CIMBAR len=${len}`)
+      debugCurrent(`#${state.frameCount} CIMBAR len=${len} x${tileHits}`)
     }
     return true
   }
@@ -1384,6 +1451,9 @@ function resetReceiver() {
   state.cimbarFileSize = 0
   state.cimbarRawBytes = 0
   state.cimbarProgressSamples = []
+  state.cimbarRoi = null
+  state.cimbarTileRois = null
+  state.cimbarRoiMisses = 0
   state.frameCount = 0
   state.validFrames = 0
   state.startTime = null
