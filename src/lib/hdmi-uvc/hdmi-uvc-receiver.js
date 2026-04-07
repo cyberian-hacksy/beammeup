@@ -651,6 +651,123 @@ function buildCimbarTileLayout(width, height) {
   }
 }
 
+function clampRect(rect, width, height) {
+  const x = Math.max(0, Math.min(width - 1, rect.x))
+  const y = Math.max(0, Math.min(height - 1, rect.y))
+  const maxX = Math.max(x + 1, Math.min(width, rect.x + rect.w))
+  const maxY = Math.max(y + 1, Math.min(height, rect.y + rect.h))
+  return {
+    x,
+    y,
+    w: maxX - x,
+    h: maxY - y
+  }
+}
+
+function expandRect(rect, padX, padY, width, height) {
+  return clampRect(
+    {
+      x: rect.x - padX,
+      y: rect.y - padY,
+      w: rect.w + padX * 2,
+      h: rect.h + padY * 2
+    },
+    width,
+    height
+  )
+}
+
+function unionRects(a, b) {
+  const minX = Math.min(a.x, b.x)
+  const minY = Math.min(a.y, b.y)
+  const maxX = Math.max(a.x + a.w, b.x + b.w)
+  const maxY = Math.max(a.y + a.h, b.y + b.h)
+  return {
+    x: minX,
+    y: minY,
+    w: maxX - minX,
+    h: maxY - minY
+  }
+}
+
+function findBrightBounds(imageData, imageWidth, xStart, xEnd, yStart, yEnd, threshold = 48, step = 2) {
+  const data = imageData.data
+  let minX = xEnd
+  let minY = yEnd
+  let maxX = -1
+  let maxY = -1
+
+  for (let y = yStart; y < yEnd; y += step) {
+    let rowOffset = (y * imageWidth + xStart) * 4
+    for (let x = xStart; x < xEnd; x += step) {
+      const r = data[rowOffset]
+      const g = data[rowOffset + 1]
+      const b = data[rowOffset + 2]
+      if (r > threshold || g > threshold || b > threshold) {
+        if (x < minX) minX = x
+        if (y < minY) minY = y
+        if (x > maxX) maxX = x
+        if (y > maxY) maxY = y
+      }
+      rowOffset += step * 4
+    }
+  }
+
+  if (maxX < minX || maxY < minY) return null
+  return {
+    x: minX,
+    y: minY,
+    w: maxX - minX + 1,
+    h: maxY - minY + 1
+  }
+}
+
+function detectCimbarTileBounds(imageData, width, height) {
+  const marginX = Math.max(16, Math.floor(width * 0.04))
+  const marginY = Math.max(16, Math.floor(height * 0.08))
+  const centerGap = Math.max(12, Math.floor(width * 0.03))
+  const splitX = Math.floor(width / 2)
+
+  const left = findBrightBounds(
+    imageData,
+    width,
+    marginX,
+    Math.max(marginX + 1, splitX - centerGap),
+    marginY,
+    height - marginY
+  )
+  const right = findBrightBounds(
+    imageData,
+    width,
+    Math.min(width - marginX - 1, splitX + centerGap),
+    width - marginX,
+    marginY,
+    height - marginY
+  )
+
+  if (!left || !right) return null
+
+  const minTileSize = Math.floor(Math.min(width, height) * 0.18)
+  if (left.w < minTileSize || left.h < minTileSize || right.w < minTileSize || right.h < minTileSize) {
+    return null
+  }
+
+  const padX = Math.max(12, Math.floor(Math.min(left.w, right.w) * 0.05))
+  const padY = Math.max(12, Math.floor(Math.min(left.h, right.h) * 0.05))
+  const leftRect = expandRect(left, padX, padY, width, height)
+  const rightRect = expandRect(right, padX, padY, width, height)
+  const captureRoi = unionRects(leftRect, rightRect)
+
+  return {
+    captureRoi,
+    absoluteTiles: [leftRect, rightRect],
+    relativeTiles: [
+      { x: leftRect.x - captureRoi.x, y: leftRect.y - captureRoi.y, w: leftRect.w, h: leftRect.h },
+      { x: rightRect.x - captureRoi.x, y: rightRect.y - captureRoi.y, w: rightRect.w, h: rightRect.h }
+    ]
+  }
+}
+
 function copyCimbarImageRect(Module, imageData, imageWidth, rect) {
   const rgbaSize = rect.w * rect.h * 4
   ensureCimbarBuffers(Module, rgbaSize)
@@ -734,7 +851,7 @@ async function tryCimbarDecode(imageData, width, height, { roiCaptured = false }
   ensureCimbarBuffers(Module, imageData.data.length)
 
   if (!state.cimbarRoi) {
-    const layout = buildCimbarTileLayout(width, height)
+    const layout = detectCimbarTileBounds(imageData, width, height) || buildCimbarTileLayout(width, height)
     state.cimbarRoi = layout.captureRoi
     state.cimbarTileRois = {
       absolute: layout.absoluteTiles,
