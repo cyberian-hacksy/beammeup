@@ -949,9 +949,9 @@ async function processFrame(now, metadata) {
   // anchor lock or a CIMBAR ROI / signal lock, prioritize raw video frames.
   const useImageCapture = imageCapture &&
     !state.anchorBounds &&
-    !state.cimbarRoi &&
+    !(state.detectedMode === HDMI_MODE.CIMBAR && state.cimbarRoi) &&
     state.detectedMode !== HDMI_MODE.CIMBAR
-  const useCimbarRoiCapture = !!state.cimbarRoi
+  const useCimbarRoiCapture = state.detectedMode === HDMI_MODE.CIMBAR && !!state.cimbarRoi
 
   if (useCimbarRoiCapture) {
     const roi = state.cimbarRoi
@@ -1057,7 +1057,7 @@ async function processFrame(now, metadata) {
     return
   }
 
-  if (!state.anchorBounds) {
+  if (!state.anchorBounds && (!state.detectedMode || state.detectedMode === HDMI_MODE.CIMBAR)) {
     const cimbarDetected = await tryCimbarDecode(imageData, width, height)
     if (cimbarDetected) {
       if (state.isScanning) scheduleNextFrame()
@@ -1187,6 +1187,9 @@ async function processFrame(now, metadata) {
   if (result && result.crcValid) {
     if (!state.detectedMode) {
       state.detectedMode = result.header.mode
+      if (state.detectedMode !== HDMI_MODE.CIMBAR) {
+        resetCimbarSink()
+      }
       state.detectedResolution = { width: result.header.width, height: result.header.height }
       elements.signalStatus.textContent = `Detected: ${result.header.width}x${result.header.height}`
       debugLog(`=== SIGNAL DETECTED ===`)

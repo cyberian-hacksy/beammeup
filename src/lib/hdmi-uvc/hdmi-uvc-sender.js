@@ -183,10 +183,6 @@ function waitForLayoutFrames(count = 2) {
   })
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
 function viewportMetricsEqual(a, b, tolerance = 1) {
   if (!a || !b) return false
   return (
@@ -256,16 +252,6 @@ function getCanvasViewportMetrics() {
     screenHeight,
     devicePixelRatio: window.devicePixelRatio || 1
   }
-}
-
-function showFullscreenPreroll(metrics) {
-  if (!elements?.canvas) return
-  elements.canvas.width = metrics.width
-  elements.canvas.height = metrics.height
-  const ctx = elements.canvas.getContext('2d')
-  if (!ctx) return
-  ctx.fillStyle = '#000'
-  ctx.fillRect(0, 0, metrics.width, metrics.height)
 }
 
 function isCimbarMode() {
@@ -535,8 +521,6 @@ const TARGET_SOURCE_BLOCKS = 128
 const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
 const COMPAT4_TAIL_START_PASS = 2
 const COMPAT4_TAIL_METADATA_INTERVAL_FRAMES = 30
-const FULLSCREEN_PREROLL_MS = 2000
-
 function computeMetadataIntervalFrames() {
   if (!state.encoder || !state.packetsPerFrame) return MIN_METADATA_INTERVAL_FRAMES
   const cycleFrames = Math.ceil(state.encoder.K_prime / state.packetsPerFrame)
@@ -850,11 +834,7 @@ async function startSending() {
 
     // Fullscreen layout can settle a frame or two after the promise resolves.
     // Measure the actual fullscreen element box instead of trusting window.inner*.
-    let stableMetrics = await waitForStableViewport()
-    showFullscreenPreroll(stableMetrics)
-    debugLog(`Fullscreen pre-roll: ${FULLSCREEN_PREROLL_MS}ms to clear browser UI`)
-    await sleep(FULLSCREEN_PREROLL_MS)
-    stableMetrics = await waitForStableViewport(1, 10)
+    const stableMetrics = await waitForStableViewport()
 
     if (isCimbarMode()) {
       if (state.fileSize > CIMBAR_MAX_FILE_SIZE) {
