@@ -124,6 +124,9 @@ const state = {
   mode: HDMI_MODE.COMPAT_4,
   systematicPass: 1,
   metadataIntervalFrames: METADATA_INTERVAL * 2,
+  basePacketsPerFrame: 1,
+  baseMetadataIntervalFrames: METADATA_INTERVAL * 2,
+  compat4TailMode: false,
   cimbarIdealRatio: 1,
   cimbarVariant: HDMI_CIMBAR_MODE,
   cimbarBoundsLogged: false,
@@ -178,6 +181,10 @@ function waitForLayoutFrames(count = 2) {
     }
     requestAnimationFrame(step)
   })
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function viewportMetricsEqual(a, b, tolerance = 1) {
@@ -249,6 +256,16 @@ function getCanvasViewportMetrics() {
     screenHeight,
     devicePixelRatio: window.devicePixelRatio || 1
   }
+}
+
+function showFullscreenPreroll(metrics) {
+  if (!elements?.canvas) return
+  elements.canvas.width = metrics.width
+  elements.canvas.height = metrics.height
+  const ctx = elements.canvas.getContext('2d')
+  if (!ctx) return
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, metrics.width, metrics.height)
 }
 
 function isCimbarMode() {
@@ -516,6 +533,9 @@ const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 3072
 const TARGET_SOURCE_BLOCKS = 128
 const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
+const COMPAT4_TAIL_START_PASS = 2
+const COMPAT4_TAIL_METADATA_INTERVAL_FRAMES = 30
+const FULLSCREEN_PREROLL_MS = 2000
 
 function computeMetadataIntervalFrames() {
   if (!state.encoder || !state.packetsPerFrame) return MIN_METADATA_INTERVAL_FRAMES
@@ -621,9 +641,27 @@ function shouldSendMetadata(frameNumber) {
     frameNumber % state.metadataIntervalFrames === 0
 }
 
+function activateCompat4TailMode(frameNumber) {
+  if (state.mode !== HDMI_MODE.COMPAT_4 || state.compat4TailMode || !state.encoder) return
+
+  state.compat4TailMode = true
+  state.systematicStride = 1
+  state.metadataIntervalFrames = Math.min(
+    state.baseMetadataIntervalFrames || state.metadataIntervalFrames,
+    COMPAT4_TAIL_METADATA_INTERVAL_FRAMES
+  )
+
+  debugLog(
+    `4x4 tail mode: pass ${state.systematicPass} at frame ${frameNumber}, ` +
+    `sequential replay stride=${state.systematicStride}/${state.encoder.K}, ` +
+    `metadata interval=${state.metadataIntervalFrames} frame(s), fountain=off`
+  )
+}
+
 function nextDataSymbolId(frameNumber) {
   const sourceSpan = state.encoder.K
   const shouldSendFountain =
+    !state.compat4TailMode &&
     state.systematicPass > 1 &&
     state.fountainSymbolId > state.encoder.K_prime &&
     state.dataPacketCount > 0 &&
@@ -639,6 +677,9 @@ function nextDataSymbolId(frameNumber) {
       if (state.systematicIndex >= sourceSpan) {
         state.systematicPass++
         state.systematicIndex = 0
+        if (state.mode === HDMI_MODE.COMPAT_4 && state.systematicPass >= COMPAT4_TAIL_START_PASS) {
+          activateCompat4TailMode(frameNumber + 1)
+        }
         debugLog(
           `Starting source replay pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
           `(stride=${state.systematicStride}/${sourceSpan})`
@@ -809,7 +850,11 @@ async function startSending() {
 
     // Fullscreen layout can settle a frame or two after the promise resolves.
     // Measure the actual fullscreen element box instead of trusting window.inner*.
-    const stableMetrics = await waitForStableViewport()
+    let stableMetrics = await waitForStableViewport()
+    showFullscreenPreroll(stableMetrics)
+    debugLog(`Fullscreen pre-roll: ${FULLSCREEN_PREROLL_MS}ms to clear browser UI`)
+    await sleep(FULLSCREEN_PREROLL_MS)
+    stableMetrics = await waitForStableViewport(1, 10)
 
     if (isCimbarMode()) {
       if (state.fileSize > CIMBAR_MAX_FILE_SIZE) {
@@ -954,7 +999,9 @@ async function startSending() {
     )
     state.packetSize = blockSize + PACKET_HEADER_SIZE
     state.packetsPerFrame = bestPacketsPerFrame
+    state.basePacketsPerFrame = bestPacketsPerFrame
     state.metadataIntervalFrames = computeMetadataIntervalFrames()
+    state.baseMetadataIntervalFrames = state.metadataIntervalFrames
     const batchedBytes = bestUsedBytes
     const utilization = ((batchedBytes / capacity) * 100).toFixed(1)
 
@@ -973,6 +1020,7 @@ async function startSending() {
     state.dataPacketCount = 0
     state.systematicPass = 1
     state.frameCount = 0
+    state.compat4TailMode = false
     debugLog(`Systematic order: source stride=${state.systematicStride}/${state.encoder.K}`)
     debugLog(`Hybrid schedule: source-only pass 1, then 1 fountain every ${HYBRID_FOUNTAIN_PACKET_INTERVAL} data packets`)
     setSignalLive(true)
@@ -1063,6 +1111,7 @@ async function stopSending() {
   state.fileHash = null
   state.packetSize = 0
   state.packetsPerFrame = 1
+  state.basePacketsPerFrame = 1
   state.isSending = false
   state.isPaused = false
   state.systematicIndex = 0
@@ -1071,7 +1120,9 @@ async function stopSending() {
   state.dataPacketCount = 0
   state.systematicPass = 1
   state.metadataIntervalFrames = METADATA_INTERVAL * 2
+  state.baseMetadataIntervalFrames = METADATA_INTERVAL * 2
   state.frameCount = 0
+  state.compat4TailMode = false
   state.cimbarIdealRatio = 1
   state.cimbarBoundsLogged = false
   state.cimbarUseWrapper = false
