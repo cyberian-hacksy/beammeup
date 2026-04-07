@@ -18,71 +18,49 @@ const DEBUG_MODE = true
 const CIMBAR_MAX_FILE_SIZE = 33 * 1024 * 1024
 const HDMI_CIMBAR_MODE = 68
 const HDMI_CIMBAR_VARIANT_NAME = 'B'
-const HDMI_CIMBAR_TILE_COUNT = 2
-const HDMI_CIMBAR_TILE_GAP = 24
+const HDMI_CIMBAR_TILE_COUNT = 1
+const HDMI_CIMBAR_TILE_GAP = 0
 const HDMI_CIMBAR_TILE_PADDING = {
-  top: 32,
-  right: 32,
-  bottom: 16,
-  left: 16
+  top: 20,
+  right: 20,
+  bottom: 10,
+  left: 10
 }
 const HDMI_CIMBAR_CANONICAL_RENDER_SIZE = 1054
-const HDMI_CIMBAR_OUTER_INSET = {
-  top: 40,
-  right: 40,
-  bottom: 16,
-  left: 16
-}
 const HDMI_CIMBAR_VARIANTS = [HDMI_CIMBAR_MODE]
 const CIMBAR_VARIANT_NAMES = {
   [HDMI_CIMBAR_MODE]: HDMI_CIMBAR_VARIANT_NAME
 }
 
 function getHdmiCimbarLayout(width, height) {
-  const safeWidth = Math.max(1, width - HDMI_CIMBAR_OUTER_INSET.left - HDMI_CIMBAR_OUTER_INSET.right)
-  const safeHeight = Math.max(1, height - HDMI_CIMBAR_OUTER_INSET.top - HDMI_CIMBAR_OUTER_INSET.bottom)
-  const maxContentWidth = Math.floor(
-    (safeWidth - HDMI_CIMBAR_TILE_GAP - (HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right) * HDMI_CIMBAR_TILE_COUNT) /
-      HDMI_CIMBAR_TILE_COUNT
-  )
-  const maxContentHeight = safeHeight - HDMI_CIMBAR_TILE_PADDING.top - HDMI_CIMBAR_TILE_PADDING.bottom
-  const contentSize = Math.max(1, Math.min(maxContentWidth, maxContentHeight))
+  const maxContentWidth = Math.max(1, width - HDMI_CIMBAR_TILE_PADDING.left - HDMI_CIMBAR_TILE_PADDING.right)
+  const maxContentHeight = Math.max(1, height - HDMI_CIMBAR_TILE_PADDING.top - HDMI_CIMBAR_TILE_PADDING.bottom)
+  const contentSize = Math.max(1, Math.min(maxContentWidth, maxContentHeight, HDMI_CIMBAR_CANONICAL_RENDER_SIZE))
   const renderWidth = HDMI_CIMBAR_CANONICAL_RENDER_SIZE
   const renderHeight = HDMI_CIMBAR_CANONICAL_RENDER_SIZE
   const tileOuterWidth = contentSize + HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right
   const tileOuterHeight = contentSize + HDMI_CIMBAR_TILE_PADDING.top + HDMI_CIMBAR_TILE_PADDING.bottom
-  const compositionWidth =
-    tileOuterWidth * HDMI_CIMBAR_TILE_COUNT + HDMI_CIMBAR_TILE_GAP * (HDMI_CIMBAR_TILE_COUNT - 1)
-  const compositionHeight = tileOuterHeight
-  const originX = HDMI_CIMBAR_OUTER_INSET.left + Math.max(0, Math.floor((safeWidth - compositionWidth) / 2))
-  const originY = HDMI_CIMBAR_OUTER_INSET.top + Math.max(0, Math.floor((safeHeight - compositionHeight) / 2))
-
-  const tiles = Array.from({ length: HDMI_CIMBAR_TILE_COUNT }, (_, index) => {
-    const x = originX + index * (tileOuterWidth + HDMI_CIMBAR_TILE_GAP)
-    const y = originY
-    return {
-      index,
-      x,
-      y,
-      w: tileOuterWidth,
-      h: tileOuterHeight,
-      contentX: x + HDMI_CIMBAR_TILE_PADDING.left,
-      contentY: y + HDMI_CIMBAR_TILE_PADDING.top,
-      contentW: contentSize,
-      contentH: contentSize,
-      renderX: x + HDMI_CIMBAR_TILE_PADDING.left,
-      renderY: y + HDMI_CIMBAR_TILE_PADDING.top,
-      renderW: contentSize,
-      renderH: contentSize
-    }
-  })
+  const tiles = [{
+    index: 0,
+    x: 0,
+    y: 0,
+    w: tileOuterWidth,
+    h: tileOuterHeight,
+    contentX: HDMI_CIMBAR_TILE_PADDING.left,
+    contentY: HDMI_CIMBAR_TILE_PADDING.top,
+    contentW: contentSize,
+    contentH: contentSize,
+    renderX: HDMI_CIMBAR_TILE_PADDING.left,
+    renderY: HDMI_CIMBAR_TILE_PADDING.top,
+    renderW: contentSize,
+    renderH: contentSize
+  }]
 
   return {
     mode: HDMI_CIMBAR_MODE,
     ratio: 1,
     gap: HDMI_CIMBAR_TILE_GAP,
     padding: { ...HDMI_CIMBAR_TILE_PADDING },
-    outerInset: { ...HDMI_CIMBAR_OUTER_INSET },
     tileCount: HDMI_CIMBAR_TILE_COUNT,
     contentWidth: contentSize,
     contentHeight: contentSize,
@@ -91,14 +69,14 @@ function getHdmiCimbarLayout(width, height) {
     tileOuterWidth,
     tileOuterHeight,
     composition: {
-      x: originX,
-      y: originY,
-      w: compositionWidth,
-      h: compositionHeight
+      x: 0,
+      y: 0,
+      w: tileOuterWidth,
+      h: tileOuterHeight
     },
     display: {
-      width,
-      height
+      width: tileOuterWidth,
+      height: tileOuterHeight
     },
     tiles
   }
@@ -442,8 +420,6 @@ function scaleCimbarCanvasToViewport(metrics = getCanvasViewportMetrics()) {
     `gap=${layout.gap}, composition=${layout.composition.w}x${layout.composition.h}@(${layout.composition.x},${layout.composition.y}), ` +
     `pad t=${layout.padding.top}, r=${layout.padding.right}, ` +
     `b=${layout.padding.bottom}, l=${layout.padding.left}, ` +
-    `inset t=${layout.outerInset.top}, r=${layout.outerInset.right}, ` +
-    `b=${layout.outerInset.bottom}, l=${layout.outerInset.left}, ` +
     `tiles=${layout.tileCount}, ratio=${ratio.toFixed(3)}, landscape=${landscapeViewport}, rotate=${rotateFlag}, scale=1.00)`
   )
   debugLog(

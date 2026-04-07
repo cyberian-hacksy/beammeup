@@ -303,67 +303,23 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
 
 const HDMI_CIMBAR_MODE = 68
 const HDMI_CIMBAR_VARIANT_NAME = 'B'
-const HDMI_CIMBAR_TILE_COUNT = 2
-const HDMI_CIMBAR_TILE_GAP = 24
+const HDMI_CIMBAR_TILE_COUNT = 1
+const HDMI_CIMBAR_TILE_GAP = 0
 const HDMI_CIMBAR_TILE_PADDING = {
-  top: 32,
-  right: 32,
-  bottom: 16,
-  left: 16
-}
-const HDMI_CIMBAR_OUTER_INSET = {
-  top: 40,
-  right: 40,
-  bottom: 16,
-  left: 16
+  top: 20,
+  right: 20,
+  bottom: 10,
+  left: 10
 }
 
 function getHdmiCimbarLayout(width, height) {
-  const safeWidth = Math.max(1, width - HDMI_CIMBAR_OUTER_INSET.left - HDMI_CIMBAR_OUTER_INSET.right)
-  const safeHeight = Math.max(1, height - HDMI_CIMBAR_OUTER_INSET.top - HDMI_CIMBAR_OUTER_INSET.bottom)
-  const maxContentWidth = Math.floor(
-    (safeWidth - HDMI_CIMBAR_TILE_GAP - (HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right) * HDMI_CIMBAR_TILE_COUNT) /
-      HDMI_CIMBAR_TILE_COUNT
-  )
-  const maxContentHeight = safeHeight - HDMI_CIMBAR_TILE_PADDING.top - HDMI_CIMBAR_TILE_PADDING.bottom
-  const contentSize = Math.max(1, Math.min(maxContentWidth, maxContentHeight))
-  const tileOuterWidth = contentSize + HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right
-  const tileOuterHeight = contentSize + HDMI_CIMBAR_TILE_PADDING.top + HDMI_CIMBAR_TILE_PADDING.bottom
-  const compositionWidth =
-    tileOuterWidth * HDMI_CIMBAR_TILE_COUNT + HDMI_CIMBAR_TILE_GAP * (HDMI_CIMBAR_TILE_COUNT - 1)
-  const compositionHeight = tileOuterHeight
-  const originX = HDMI_CIMBAR_OUTER_INSET.left + Math.max(0, Math.floor((safeWidth - compositionWidth) / 2))
-  const originY = HDMI_CIMBAR_OUTER_INSET.top + Math.max(0, Math.floor((safeHeight - compositionHeight) / 2))
-
-  const tiles = Array.from({ length: HDMI_CIMBAR_TILE_COUNT }, (_, index) => {
-    const x = originX + index * (tileOuterWidth + HDMI_CIMBAR_TILE_GAP)
-    const y = originY
-    return {
-      index,
-      x,
-      y,
-      w: tileOuterWidth,
-      h: tileOuterHeight,
-      contentX: x + HDMI_CIMBAR_TILE_PADDING.left,
-      contentY: y + HDMI_CIMBAR_TILE_PADDING.top,
-      contentW: contentSize,
-      contentH: contentSize,
-      relX: x - originX,
-      relY: y - originY,
-      relContentX: x - originX + HDMI_CIMBAR_TILE_PADDING.left,
-      relContentY: y - originY + HDMI_CIMBAR_TILE_PADDING.top
-    }
-  })
-
   return {
     captureRoi: {
-      x: originX,
-      y: originY,
-      w: compositionWidth,
-      h: compositionHeight
-    },
-    absoluteTiles: tiles.map((tile) => ({ x: tile.x, y: tile.y, w: tile.w, h: tile.h })),
-    relativeTiles: tiles.map((tile) => ({ x: tile.relX, y: tile.relY, w: tile.w, h: tile.h }))
+      x: Math.max(0, Math.floor((width - Math.min(width, height)) / 2)),
+      y: Math.max(0, Math.floor((height - Math.min(width, height)) / 2)),
+      w: Math.min(width, height),
+      h: Math.min(width, height)
+    }
   }
 }
 
@@ -636,135 +592,8 @@ function buildCimbarTileLayout(width, height) {
   const layout = getHdmiCimbarLayout(width, height)
   return {
     captureRoi: layout.captureRoi,
-    absoluteTiles: layout.tiles.map((tile) => ({
-      x: tile.contentX,
-      y: tile.contentY,
-      w: tile.contentW,
-      h: tile.contentH
-    })),
-    relativeTiles: layout.tiles.map((tile) => ({
-      x: tile.relContentX,
-      y: tile.relContentY,
-      w: tile.contentW,
-      h: tile.contentH
-    }))
-  }
-}
-
-function clampRect(rect, width, height) {
-  const x = Math.max(0, Math.min(width - 1, rect.x))
-  const y = Math.max(0, Math.min(height - 1, rect.y))
-  const maxX = Math.max(x + 1, Math.min(width, rect.x + rect.w))
-  const maxY = Math.max(y + 1, Math.min(height, rect.y + rect.h))
-  return {
-    x,
-    y,
-    w: maxX - x,
-    h: maxY - y
-  }
-}
-
-function expandRect(rect, padX, padY, width, height) {
-  return clampRect(
-    {
-      x: rect.x - padX,
-      y: rect.y - padY,
-      w: rect.w + padX * 2,
-      h: rect.h + padY * 2
-    },
-    width,
-    height
-  )
-}
-
-function unionRects(a, b) {
-  const minX = Math.min(a.x, b.x)
-  const minY = Math.min(a.y, b.y)
-  const maxX = Math.max(a.x + a.w, b.x + b.w)
-  const maxY = Math.max(a.y + a.h, b.y + b.h)
-  return {
-    x: minX,
-    y: minY,
-    w: maxX - minX,
-    h: maxY - minY
-  }
-}
-
-function findBrightBounds(imageData, imageWidth, xStart, xEnd, yStart, yEnd, threshold = 48, step = 2) {
-  const data = imageData.data
-  let minX = xEnd
-  let minY = yEnd
-  let maxX = -1
-  let maxY = -1
-
-  for (let y = yStart; y < yEnd; y += step) {
-    let rowOffset = (y * imageWidth + xStart) * 4
-    for (let x = xStart; x < xEnd; x += step) {
-      const r = data[rowOffset]
-      const g = data[rowOffset + 1]
-      const b = data[rowOffset + 2]
-      if (r > threshold || g > threshold || b > threshold) {
-        if (x < minX) minX = x
-        if (y < minY) minY = y
-        if (x > maxX) maxX = x
-        if (y > maxY) maxY = y
-      }
-      rowOffset += step * 4
-    }
-  }
-
-  if (maxX < minX || maxY < minY) return null
-  return {
-    x: minX,
-    y: minY,
-    w: maxX - minX + 1,
-    h: maxY - minY + 1
-  }
-}
-
-function detectCimbarTileBounds(imageData, width, height) {
-  const marginX = Math.max(16, Math.floor(width * 0.04))
-  const marginY = Math.max(16, Math.floor(height * 0.08))
-  const centerGap = Math.max(12, Math.floor(width * 0.03))
-  const splitX = Math.floor(width / 2)
-
-  const left = findBrightBounds(
-    imageData,
-    width,
-    marginX,
-    Math.max(marginX + 1, splitX - centerGap),
-    marginY,
-    height - marginY
-  )
-  const right = findBrightBounds(
-    imageData,
-    width,
-    Math.min(width - marginX - 1, splitX + centerGap),
-    width - marginX,
-    marginY,
-    height - marginY
-  )
-
-  if (!left || !right) return null
-
-  const minTileSize = Math.floor(Math.min(width, height) * 0.18)
-  if (left.w < minTileSize || left.h < minTileSize || right.w < minTileSize || right.h < minTileSize) {
-    return null
-  }
-
-  const padX = Math.max(12, Math.floor(Math.min(left.w, right.w) * 0.05))
-  const padY = Math.max(12, Math.floor(Math.min(left.h, right.h) * 0.05))
-  const leftRect = expandRect(left, padX, padY, width, height)
-  const rightRect = expandRect(right, padX, padY, width, height)
-  const captureRoi = unionRects(leftRect, rightRect)
-
-  return {
-    captureRoi,
-    absoluteTiles: [leftRect, rightRect],
-    relativeTiles: [
-      { x: leftRect.x - captureRoi.x, y: leftRect.y - captureRoi.y, w: leftRect.w, h: leftRect.h },
-      { x: rightRect.x - captureRoi.x, y: rightRect.y - captureRoi.y, w: rightRect.w, h: rightRect.h }
-    ]
+    absoluteTiles: [layout.captureRoi],
+    relativeTiles: [{ x: 0, y: 0, w: layout.captureRoi.w, h: layout.captureRoi.h }]
   }
 }
 
@@ -821,26 +650,6 @@ function resetCimbarRoiAfterMisses() {
   }
 }
 
-function scanCimbarTileRects(Module, imageData, width, height, mode, rects) {
-  let totalLen = 0
-  let hits = 0
-  let completeResult = 0
-
-  for (const rect of rects || []) {
-    const len = scanCimbarFrame(Module, imageData, width, height, mode, rect)
-    if (len > 0) {
-      hits++
-      totalLen += len
-      const res = Module._cimbard_fountain_decode(state.cimbarFountainBuff.byteOffset, len)
-      if (completeResult <= 0 && res > 0) {
-        completeResult = res
-      }
-    }
-  }
-
-  return { totalLen, hits, completeResult }
-}
-
 async function tryCimbarDecode(imageData, width, height, { roiCaptured = false } = {}) {
   if (!(await ensureCimbarLoaded())) return false
 
@@ -851,7 +660,7 @@ async function tryCimbarDecode(imageData, width, height, { roiCaptured = false }
   ensureCimbarBuffers(Module, imageData.data.length)
 
   if (!state.cimbarRoi) {
-    const layout = detectCimbarTileBounds(imageData, width, height) || buildCimbarTileLayout(width, height)
+    const layout = buildCimbarTileLayout(width, height)
     state.cimbarRoi = layout.captureRoi
     state.cimbarTileRois = {
       absolute: layout.absoluteTiles,
@@ -869,32 +678,20 @@ async function tryCimbarDecode(imageData, width, height, { roiCaptured = false }
   let completeResult = 0
   let usedRoi = roiCaptured
   if (roiCaptured) {
-    const result = scanCimbarTileRects(
-      Module,
-      imageData,
-      width,
-      height,
-      effectiveMode,
-      state.cimbarTileRois?.relative
-    )
-    len = result.totalLen
-    tileHits = result.hits
-    completeResult = result.completeResult
+    len = scanCimbarFrame(Module, imageData, width, height, effectiveMode)
+    if (len > 0) {
+      tileHits = 1
+      completeResult = Module._cimbard_fountain_decode(state.cimbarFountainBuff.byteOffset, len)
+    }
     if (len <= 0) {
       resetCimbarRoiAfterMisses()
     }
   } else if (state.cimbarRoi) {
-    const result = scanCimbarTileRects(
-      Module,
-      imageData,
-      width,
-      height,
-      effectiveMode,
-      state.cimbarTileRois?.absolute
-    )
-    len = result.totalLen
-    tileHits = result.hits
-    completeResult = result.completeResult
+    len = scanCimbarFrame(Module, imageData, width, height, effectiveMode, state.cimbarRoi)
+    if (len > 0) {
+      tileHits = 1
+      completeResult = Module._cimbard_fountain_decode(state.cimbarFountainBuff.byteOffset, len)
+    }
     usedRoi = len > 0
     if (len <= 0) {
       resetCimbarRoiAfterMisses()
@@ -917,13 +714,9 @@ async function tryCimbarDecode(imageData, width, height, { roiCaptured = false }
       debugLog(`CIMBAR mode pinned: ${CIMBAR_MODE_LABELS[effectiveMode] || effectiveMode} (${effectiveMode})`)
     }
     state.cimbarCurrentMode = effectiveMode
-    if (!state.cimbarRoi || !state.cimbarTileRois) {
+    if (!state.cimbarRoi) {
       const layout = buildCimbarTileLayout(width, height)
       state.cimbarRoi = layout.captureRoi
-      state.cimbarTileRois = {
-        absolute: layout.absoluteTiles,
-        relative: layout.relativeTiles
-      }
       debugLog(
         `CIMBAR ROI locked: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ` +
         `${state.cimbarRoi.w}x${state.cimbarRoi.h} tiles=${HDMI_CIMBAR_TILE_COUNT}`
