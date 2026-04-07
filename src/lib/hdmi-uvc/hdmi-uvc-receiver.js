@@ -306,26 +306,34 @@ const HDMI_CIMBAR_VARIANT_NAME = 'B'
 const HDMI_CIMBAR_TILE_COUNT = 2
 const HDMI_CIMBAR_TILE_GAP = 24
 const HDMI_CIMBAR_TILE_PADDING = {
-  top: 20,
-  right: 20,
-  bottom: 10,
-  left: 10
+  top: 32,
+  right: 32,
+  bottom: 16,
+  left: 16
+}
+const HDMI_CIMBAR_OUTER_INSET = {
+  top: 40,
+  right: 40,
+  bottom: 16,
+  left: 16
 }
 
 function getHdmiCimbarLayout(width, height) {
+  const safeWidth = Math.max(1, width - HDMI_CIMBAR_OUTER_INSET.left - HDMI_CIMBAR_OUTER_INSET.right)
+  const safeHeight = Math.max(1, height - HDMI_CIMBAR_OUTER_INSET.top - HDMI_CIMBAR_OUTER_INSET.bottom)
   const maxContentWidth = Math.floor(
-    (width - HDMI_CIMBAR_TILE_GAP - (HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right) * HDMI_CIMBAR_TILE_COUNT) /
+    (safeWidth - HDMI_CIMBAR_TILE_GAP - (HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right) * HDMI_CIMBAR_TILE_COUNT) /
       HDMI_CIMBAR_TILE_COUNT
   )
-  const maxContentHeight = height - HDMI_CIMBAR_TILE_PADDING.top - HDMI_CIMBAR_TILE_PADDING.bottom
+  const maxContentHeight = safeHeight - HDMI_CIMBAR_TILE_PADDING.top - HDMI_CIMBAR_TILE_PADDING.bottom
   const contentSize = Math.max(1, Math.min(maxContentWidth, maxContentHeight))
   const tileOuterWidth = contentSize + HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right
   const tileOuterHeight = contentSize + HDMI_CIMBAR_TILE_PADDING.top + HDMI_CIMBAR_TILE_PADDING.bottom
   const compositionWidth =
     tileOuterWidth * HDMI_CIMBAR_TILE_COUNT + HDMI_CIMBAR_TILE_GAP * (HDMI_CIMBAR_TILE_COUNT - 1)
   const compositionHeight = tileOuterHeight
-  const originX = Math.max(0, Math.floor((width - compositionWidth) / 2))
-  const originY = Math.max(0, Math.floor((height - compositionHeight) / 2))
+  const originX = HDMI_CIMBAR_OUTER_INSET.left + Math.max(0, Math.floor((safeWidth - compositionWidth) / 2))
+  const originY = HDMI_CIMBAR_OUTER_INSET.top + Math.max(0, Math.floor((safeHeight - compositionHeight) / 2))
 
   const tiles = Array.from({ length: HDMI_CIMBAR_TILE_COUNT }, (_, index) => {
     const x = originX + index * (tileOuterWidth + HDMI_CIMBAR_TILE_GAP)
