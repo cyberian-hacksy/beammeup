@@ -733,11 +733,7 @@ async function tryCimbarDecode(imageData, width, height, { roiCaptured = false }
   const effectiveMode = HDMI_CIMBAR_MODE
   ensureCimbarBuffers(Module, imageData.data.length)
 
-  if (
-    !state.cimbarRoi &&
-    state.cimbarRecentDecode < 0 &&
-    state.frameCount <= 30
-  ) {
+  if (!state.cimbarRoi) {
     const layout = buildCimbarTileLayout(width, height)
     state.cimbarRoi = layout.captureRoi
     state.cimbarTileRois = {
@@ -1045,7 +1041,7 @@ async function processFrame(now, metadata) {
     !state.anchorBounds &&
     !state.cimbarRoi &&
     state.detectedMode !== HDMI_MODE.CIMBAR
-  const useCimbarRoiCapture = state.detectedMode === HDMI_MODE.CIMBAR && !!state.cimbarRoi
+  const useCimbarRoiCapture = !!state.cimbarRoi
 
   if (useCimbarRoiCapture) {
     const roi = state.cimbarRoi
