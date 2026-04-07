@@ -124,9 +124,6 @@ const state = {
   mode: HDMI_MODE.COMPAT_4,
   systematicPass: 1,
   metadataIntervalFrames: METADATA_INTERVAL * 2,
-  basePacketsPerFrame: 1,
-  baseMetadataIntervalFrames: METADATA_INTERVAL * 2,
-  compat4TailMode: false,
   cimbarIdealRatio: 1,
   cimbarVariant: HDMI_CIMBAR_MODE,
   cimbarBoundsLogged: false,
@@ -519,8 +516,8 @@ const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 3072
 const TARGET_SOURCE_BLOCKS = 128
 const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
-const COMPAT4_TAIL_START_PASS = 2
-const COMPAT4_TAIL_METADATA_INTERVAL_FRAMES = 30
+const COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL = 4
+const COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL = 2
 function computeMetadataIntervalFrames() {
   if (!state.encoder || !state.packetsPerFrame) return MIN_METADATA_INTERVAL_FRAMES
   const cycleFrames = Math.ceil(state.encoder.K_prime / state.packetsPerFrame)
@@ -625,31 +622,21 @@ function shouldSendMetadata(frameNumber) {
     frameNumber % state.metadataIntervalFrames === 0
 }
 
-function activateCompat4TailMode(frameNumber) {
-  if (state.mode !== HDMI_MODE.COMPAT_4 || state.compat4TailMode || !state.encoder) return
-
-  state.compat4TailMode = true
-  state.systematicStride = 1
-  state.metadataIntervalFrames = Math.min(
-    state.baseMetadataIntervalFrames || state.metadataIntervalFrames,
-    COMPAT4_TAIL_METADATA_INTERVAL_FRAMES
-  )
-
-  debugLog(
-    `4x4 tail mode: pass ${state.systematicPass} at frame ${frameNumber}, ` +
-    `sequential replay stride=${state.systematicStride}/${state.encoder.K}, ` +
-    `metadata interval=${state.metadataIntervalFrames} frame(s), fountain=off`
-  )
+function getFountainPacketInterval() {
+  if (state.mode !== HDMI_MODE.COMPAT_4) return HYBRID_FOUNTAIN_PACKET_INTERVAL
+  if (state.systematicPass >= 3) return COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL
+  if (state.systematicPass >= 2) return COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL
+  return HYBRID_FOUNTAIN_PACKET_INTERVAL
 }
 
 function nextDataSymbolId(frameNumber) {
   const sourceSpan = state.encoder.K
+  const fountainPacketInterval = getFountainPacketInterval()
   const shouldSendFountain =
-    !state.compat4TailMode &&
     state.systematicPass > 1 &&
     state.fountainSymbolId > state.encoder.K_prime &&
     state.dataPacketCount > 0 &&
-    state.dataPacketCount % HYBRID_FOUNTAIN_PACKET_INTERVAL === 0
+    state.dataPacketCount % fountainPacketInterval === 0
 
   let symbolId
   if (shouldSendFountain) {
@@ -661,12 +648,10 @@ function nextDataSymbolId(frameNumber) {
       if (state.systematicIndex >= sourceSpan) {
         state.systematicPass++
         state.systematicIndex = 0
-        if (state.mode === HDMI_MODE.COMPAT_4 && state.systematicPass >= COMPAT4_TAIL_START_PASS) {
-          activateCompat4TailMode(frameNumber + 1)
-        }
         debugLog(
           `Starting source replay pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
-          `(stride=${state.systematicStride}/${sourceSpan})`
+          `(stride=${state.systematicStride}/${sourceSpan}, ` +
+          `fountain every ${getFountainPacketInterval()} data packet(s))`
         )
       }
     }
@@ -979,9 +964,7 @@ async function startSending() {
     )
     state.packetSize = blockSize + PACKET_HEADER_SIZE
     state.packetsPerFrame = bestPacketsPerFrame
-    state.basePacketsPerFrame = bestPacketsPerFrame
     state.metadataIntervalFrames = computeMetadataIntervalFrames()
-    state.baseMetadataIntervalFrames = state.metadataIntervalFrames
     const batchedBytes = bestUsedBytes
     const utilization = ((batchedBytes / capacity) * 100).toFixed(1)
 
@@ -1000,9 +983,12 @@ async function startSending() {
     state.dataPacketCount = 0
     state.systematicPass = 1
     state.frameCount = 0
-    state.compat4TailMode = false
     debugLog(`Systematic order: source stride=${state.systematicStride}/${state.encoder.K}`)
-    debugLog(`Hybrid schedule: source-only pass 1, then 1 fountain every ${HYBRID_FOUNTAIN_PACKET_INTERVAL} data packets`)
+    debugLog(
+      `Hybrid schedule: source-only pass 1, then fountain every ` +
+      `${COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL} ` +
+      `data packets in later 4x4 replay passes (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
+    )
     setSignalLive(true)
 
     elements.fpsSlider.disabled = true
@@ -1091,7 +1077,6 @@ async function stopSending() {
   state.fileHash = null
   state.packetSize = 0
   state.packetsPerFrame = 1
-  state.basePacketsPerFrame = 1
   state.isSending = false
   state.isPaused = false
   state.systematicIndex = 0
@@ -1100,9 +1085,7 @@ async function stopSending() {
   state.dataPacketCount = 0
   state.systematicPass = 1
   state.metadataIntervalFrames = METADATA_INTERVAL * 2
-  state.baseMetadataIntervalFrames = METADATA_INTERVAL * 2
   state.frameCount = 0
-  state.compat4TailMode = false
   state.cimbarIdealRatio = 1
   state.cimbarBoundsLogged = false
   state.cimbarUseWrapper = false
