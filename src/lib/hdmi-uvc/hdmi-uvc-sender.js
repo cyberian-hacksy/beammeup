@@ -26,12 +26,7 @@ const HDMI_CIMBAR_TILE_PADDING = {
   bottom: 16,
   left: 16
 }
-const HDMI_CIMBAR_RENDER_INSET = {
-  top: 18,
-  right: 18,
-  bottom: 0,
-  left: 0
-}
+const HDMI_CIMBAR_CANONICAL_RENDER_SIZE = 1054
 const HDMI_CIMBAR_OUTER_INSET = {
   top: 40,
   right: 40,
@@ -52,8 +47,8 @@ function getHdmiCimbarLayout(width, height) {
   )
   const maxContentHeight = safeHeight - HDMI_CIMBAR_TILE_PADDING.top - HDMI_CIMBAR_TILE_PADDING.bottom
   const contentSize = Math.max(1, Math.min(maxContentWidth, maxContentHeight))
-  const renderWidth = Math.max(1, contentSize - HDMI_CIMBAR_RENDER_INSET.left - HDMI_CIMBAR_RENDER_INSET.right)
-  const renderHeight = Math.max(1, contentSize - HDMI_CIMBAR_RENDER_INSET.top - HDMI_CIMBAR_RENDER_INSET.bottom)
+  const renderWidth = HDMI_CIMBAR_CANONICAL_RENDER_SIZE
+  const renderHeight = HDMI_CIMBAR_CANONICAL_RENDER_SIZE
   const tileOuterWidth = contentSize + HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right
   const tileOuterHeight = contentSize + HDMI_CIMBAR_TILE_PADDING.top + HDMI_CIMBAR_TILE_PADDING.bottom
   const compositionWidth =
@@ -75,10 +70,10 @@ function getHdmiCimbarLayout(width, height) {
       contentY: y + HDMI_CIMBAR_TILE_PADDING.top,
       contentW: contentSize,
       contentH: contentSize,
-      renderX: x + HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_RENDER_INSET.left,
-      renderY: y + HDMI_CIMBAR_TILE_PADDING.top + HDMI_CIMBAR_RENDER_INSET.top,
-      renderW: renderWidth,
-      renderH: renderHeight
+      renderX: x + HDMI_CIMBAR_TILE_PADDING.left,
+      renderY: y + HDMI_CIMBAR_TILE_PADDING.top,
+      renderW: contentSize,
+      renderH: contentSize
     }
   })
 
@@ -87,7 +82,6 @@ function getHdmiCimbarLayout(width, height) {
     ratio: 1,
     gap: HDMI_CIMBAR_TILE_GAP,
     padding: { ...HDMI_CIMBAR_TILE_PADDING },
-    renderInset: { ...HDMI_CIMBAR_RENDER_INSET },
     outerInset: { ...HDMI_CIMBAR_OUTER_INSET },
     tileCount: HDMI_CIMBAR_TILE_COUNT,
     contentWidth: contentSize,
@@ -448,8 +442,6 @@ function scaleCimbarCanvasToViewport(metrics = getCanvasViewportMetrics()) {
     `gap=${layout.gap}, composition=${layout.composition.w}x${layout.composition.h}@(${layout.composition.x},${layout.composition.y}), ` +
     `pad t=${layout.padding.top}, r=${layout.padding.right}, ` +
     `b=${layout.padding.bottom}, l=${layout.padding.left}, ` +
-    `renderInset t=${layout.renderInset.top}, r=${layout.renderInset.right}, ` +
-    `b=${layout.renderInset.bottom}, l=${layout.renderInset.left}, ` +
     `inset t=${layout.outerInset.top}, r=${layout.outerInset.right}, ` +
     `b=${layout.outerInset.bottom}, l=${layout.outerInset.left}, ` +
     `tiles=${layout.tileCount}, ratio=${ratio.toFixed(3)}, landscape=${landscapeViewport}, rotate=${rotateFlag}, scale=1.00)`

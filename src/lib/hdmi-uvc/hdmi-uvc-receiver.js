@@ -344,8 +344,14 @@ function getHdmiCimbarLayout(width, height) {
       y,
       w: tileOuterWidth,
       h: tileOuterHeight,
+      contentX: x + HDMI_CIMBAR_TILE_PADDING.left,
+      contentY: y + HDMI_CIMBAR_TILE_PADDING.top,
+      contentW: contentSize,
+      contentH: contentSize,
       relX: x - originX,
-      relY: y - originY
+      relY: y - originY,
+      relContentX: x - originX + HDMI_CIMBAR_TILE_PADDING.left,
+      relContentY: y - originY + HDMI_CIMBAR_TILE_PADDING.top
     }
   })
 
@@ -631,16 +637,16 @@ function buildCimbarTileLayout(width, height) {
   return {
     captureRoi: layout.captureRoi,
     absoluteTiles: layout.tiles.map((tile) => ({
-      x: tile.x,
-      y: tile.y,
-      w: tile.w,
-      h: tile.h
+      x: tile.contentX,
+      y: tile.contentY,
+      w: tile.contentW,
+      h: tile.contentH
     })),
     relativeTiles: layout.tiles.map((tile) => ({
-      x: tile.relX,
-      y: tile.relY,
-      w: tile.w,
-      h: tile.h
+      x: tile.relContentX,
+      y: tile.relContentY,
+      w: tile.contentW,
+      h: tile.contentH
     }))
   }
 }
