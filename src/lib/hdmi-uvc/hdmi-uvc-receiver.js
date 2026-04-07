@@ -617,7 +617,9 @@ function scanCimbarFrame(Module, imageData, width, height, mode, rect = null) {
   let scanWidth = width
   let scanHeight = height
 
-  if (rect) {
+  if (imageData?.directToCimbarBuffer && !rect) {
+    ensureCimbarBuffers(Module, imageData.data.length)
+  } else if (rect) {
     copyCimbarImageRect(Module, imageData, width, rect)
     scanWidth = rect.w
     scanHeight = rect.h
@@ -926,6 +928,33 @@ function captureImageDataToCanvas(source, canvas, ctx, width, height, sourceRect
   return ctx.getImageData(0, 0, width, height)
 }
 
+async function captureVideoFrameRoiToCimbarBuffer(frame, roi) {
+  const Module = getCimbarModule()
+  if (!Module || typeof frame.copyTo !== 'function') return null
+
+  const rgbaSize = roi.w * roi.h * 4
+  ensureCimbarBuffers(Module, rgbaSize)
+
+  await frame.copyTo(state.cimbarImgBuff, {
+    rect: {
+      x: roi.x,
+      y: roi.y,
+      width: roi.w,
+      height: roi.h
+    },
+    format: 'RGBA',
+    layout: [{
+      offset: 0,
+      stride: roi.w * 4
+    }]
+  })
+
+  return {
+    data: state.cimbarImgBuff,
+    directToCimbarBuffer: true
+  }
+}
+
 async function processFrame(now, metadata) {
   if (!state.isScanning || !state.stream) return
 
@@ -961,17 +990,27 @@ async function processFrame(now, metadata) {
     if (hasVideoFrame && metadata) {
       try {
         const frame = new VideoFrame(video, { timestamp: metadata.mediaTime * 1000000 || 0 })
-        imageData = captureImageDataToCanvas(
-          frame,
-          state.cimbarCanvas,
-          state.cimbarCtx,
-          roi.w,
-          roi.h,
-          roi
-        )
-        frame.close()
-        captureMethod = 'VideoFrame ROI'
-        usedCimbarRoiCapture = true
+        try {
+          imageData = await captureVideoFrameRoiToCimbarBuffer(frame, roi)
+          if (imageData) {
+            captureMethod = 'VideoFrame.copyTo ROI'
+            usedCimbarRoiCapture = true
+          }
+        } finally {
+          if (!imageData) {
+            imageData = captureImageDataToCanvas(
+              frame,
+              state.cimbarCanvas,
+              state.cimbarCtx,
+              roi.w,
+              roi.h,
+              roi
+            )
+            captureMethod = 'VideoFrame ROI'
+            usedCimbarRoiCapture = true
+          }
+          frame.close()
+        }
       } catch (e) {
         // Fall through to direct video ROI capture
       }
