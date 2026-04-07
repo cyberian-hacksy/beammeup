@@ -318,6 +318,8 @@ const state = {
   stream: null,
   canvas: null,
   ctx: null,
+  cimbarCanvas: null,
+  cimbarCtx: null,
   animationId: null,
   callbackId: null,
   isScanning: false,
@@ -623,7 +625,7 @@ function scanCimbarFrame(Module, imageData, width, height, mode, rect = null) {
   )
 }
 
-async function tryCimbarDecode(imageData, width, height) {
+async function tryCimbarDecode(imageData, width, height, { roiCaptured = false } = {}) {
   if (!(await ensureCimbarLoaded())) return false
 
   const Module = getCimbarModule()
@@ -643,8 +645,21 @@ async function tryCimbarDecode(imageData, width, height) {
   }
 
   let len = 0
-  let usedRoi = false
-  if (state.cimbarRoi) {
+  let usedRoi = roiCaptured
+  if (roiCaptured) {
+    len = scanCimbarFrame(Module, imageData, width, height, effectiveMode)
+    if (len <= 0) {
+      state.cimbarRoiMisses++
+      if (state.cimbarRoiMisses === 3 && state.cimbarRoi) {
+        debugLog(
+          `CIMBAR ROI reset after misses: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ` +
+          `${state.cimbarRoi.w}x${state.cimbarRoi.h}`
+        )
+        state.cimbarRoi = null
+        state.cimbarRoiMisses = 0
+      }
+    }
+  } else if (state.cimbarRoi) {
     len = scanCimbarFrame(Module, imageData, width, height, effectiveMode, state.cimbarRoi)
     usedRoi = len > 0
     if (len <= 0) {
@@ -660,7 +675,7 @@ async function tryCimbarDecode(imageData, width, height) {
     }
   }
 
-  if (len <= 0) {
+  if (len <= 0 && !roiCaptured) {
     len = scanCimbarFrame(Module, imageData, width, height, effectiveMode)
     usedRoi = false
   }
@@ -817,6 +832,12 @@ async function startCapture(deviceId) {
       alpha: false,  // Might help with consistent color handling
       colorSpace: 'srgb'
     })
+    state.cimbarCanvas = document.createElement('canvas')
+    state.cimbarCtx = state.cimbarCanvas.getContext('2d', {
+      willReadFrequently: true,
+      alpha: false,
+      colorSpace: 'srgb'
+    })
 
     saveDevicePreference(deviceId)
 
@@ -847,6 +868,31 @@ function scheduleNextFrame() {
   }
 }
 
+function ensureCaptureCanvas(canvas, width, height) {
+  if (canvas.width !== width) canvas.width = width
+  if (canvas.height !== height) canvas.height = height
+}
+
+function captureImageDataToCanvas(source, canvas, ctx, width, height, sourceRect = null) {
+  ensureCaptureCanvas(canvas, width, height)
+  if (sourceRect) {
+    ctx.drawImage(
+      source,
+      sourceRect.x,
+      sourceRect.y,
+      sourceRect.w,
+      sourceRect.h,
+      0,
+      0,
+      width,
+      height
+    )
+  } else {
+    ctx.drawImage(source, 0, 0, width, height)
+  }
+  return ctx.getImageData(0, 0, width, height)
+}
+
 async function processFrame(now, metadata) {
   if (!state.isScanning || !state.stream) return
 
@@ -858,11 +904,12 @@ async function processFrame(now, metadata) {
 
   const width = video.videoWidth
   const height = video.videoHeight
-  state.canvas.width = width
-  state.canvas.height = height
 
   let imageData
+  let imageWidth = width
+  let imageHeight = height
   let captureMethod = 'video'
+  let usedCimbarRoiCapture = false
 
   // ImageCapture is useful for initial acquisition, but it is noticeably
   // slower than drawing the video element directly. Once we have either HDMI
@@ -871,14 +918,52 @@ async function processFrame(now, metadata) {
     !state.anchorBounds &&
     !state.cimbarRoi &&
     state.detectedMode !== HDMI_MODE.CIMBAR
+  const useCimbarRoiCapture = state.detectedMode === HDMI_MODE.CIMBAR && !!state.cimbarRoi
+
+  if (useCimbarRoiCapture) {
+    const roi = state.cimbarRoi
+    imageWidth = roi.w
+    imageHeight = roi.h
+
+    if (hasVideoFrame && metadata) {
+      try {
+        const frame = new VideoFrame(video, { timestamp: metadata.mediaTime * 1000000 || 0 })
+        imageData = captureImageDataToCanvas(
+          frame,
+          state.cimbarCanvas,
+          state.cimbarCtx,
+          roi.w,
+          roi.h,
+          roi
+        )
+        frame.close()
+        captureMethod = 'VideoFrame ROI'
+        usedCimbarRoiCapture = true
+      } catch (e) {
+        // Fall through to direct video ROI capture
+      }
+    }
+
+    if (!imageData) {
+      imageData = captureImageDataToCanvas(
+        video,
+        state.cimbarCanvas,
+        state.cimbarCtx,
+        roi.w,
+        roi.h,
+        roi
+      )
+      captureMethod = 'video ROI'
+      usedCimbarRoiCapture = true
+    }
+  }
 
   // Try ImageCapture API first while scanning for initial lock
   if (useImageCapture) {
     try {
       const bitmap = await imageCapture.grabFrame()
-      state.ctx.drawImage(bitmap, 0, 0)
+      imageData = captureImageDataToCanvas(bitmap, state.canvas, state.ctx, width, height)
       bitmap.close()
-      imageData = state.ctx.getImageData(0, 0, width, height)
       captureMethod = 'ImageCapture'
     } catch (e) {
       // Fall through to other methods
@@ -889,9 +974,8 @@ async function processFrame(now, metadata) {
   if (!imageData && hasVideoFrame && metadata) {
     try {
       const frame = new VideoFrame(video, { timestamp: metadata.mediaTime * 1000000 || 0 })
-      state.ctx.drawImage(frame, 0, 0)
+      imageData = captureImageDataToCanvas(frame, state.canvas, state.ctx, width, height)
       frame.close()
-      imageData = state.ctx.getImageData(0, 0, width, height)
       captureMethod = 'VideoFrame'
     } catch (e) {
       // Fall through to default method
@@ -900,8 +984,7 @@ async function processFrame(now, metadata) {
 
   // Default: draw video directly to canvas
   if (!imageData) {
-    state.ctx.drawImage(video, 0, 0)
-    imageData = state.ctx.getImageData(0, 0, width, height)
+    imageData = captureImageDataToCanvas(video, state.canvas, state.ctx, width, height)
   }
 
   if (captureMethod !== state.activeCaptureMethod) {
@@ -913,7 +996,30 @@ async function processFrame(now, metadata) {
   const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
 
   if (state.detectedMode === HDMI_MODE.CIMBAR) {
-    await tryCimbarDecode(imageData, width, height)
+    let cimbarDetected = await tryCimbarDecode(imageData, imageWidth, imageHeight, { roiCaptured: usedCimbarRoiCapture })
+    if (!cimbarDetected && usedCimbarRoiCapture) {
+      let fallbackImageData = null
+      let fallbackMethod = captureMethod
+      if (hasVideoFrame && metadata) {
+        try {
+          const frame = new VideoFrame(video, { timestamp: metadata.mediaTime * 1000000 || 0 })
+          fallbackImageData = captureImageDataToCanvas(frame, state.canvas, state.ctx, width, height)
+          frame.close()
+          fallbackMethod = 'VideoFrame'
+        } catch (e) {
+          // Fall through to direct video capture
+        }
+      }
+      if (!fallbackImageData) {
+        fallbackImageData = captureImageDataToCanvas(video, state.canvas, state.ctx, width, height)
+        fallbackMethod = 'video'
+      }
+      if (fallbackMethod !== state.activeCaptureMethod) {
+        state.activeCaptureMethod = fallbackMethod
+        debugLog(`Capture path: ${fallbackMethod}`)
+      }
+      cimbarDetected = await tryCimbarDecode(fallbackImageData, width, height)
+    }
     if (state.isScanning) scheduleNextFrame()
     return
   }
