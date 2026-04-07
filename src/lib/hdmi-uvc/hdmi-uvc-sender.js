@@ -11,20 +11,79 @@ import {
   FPS_PRESETS,
   DEFAULT_FPS_PRESET
 } from './hdmi-uvc-constants.js'
-import {
-  getHdmiCimbarLayout,
-  HDMI_CIMBAR_MODE,
-  HDMI_CIMBAR_TILE_COUNT,
-  HDMI_CIMBAR_VARIANT_NAME
-} from './hdmi-cimbar-layout.js'
 import { buildFrame, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.js'
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
 const CIMBAR_MAX_FILE_SIZE = 33 * 1024 * 1024
+const HDMI_CIMBAR_MODE = 68
+const HDMI_CIMBAR_VARIANT_NAME = 'B'
+const HDMI_CIMBAR_TILE_COUNT = 2
+const HDMI_CIMBAR_TILE_GAP = 24
+const HDMI_CIMBAR_TILE_PADDING = {
+  top: 20,
+  right: 20,
+  bottom: 10,
+  left: 10
+}
 const HDMI_CIMBAR_VARIANTS = [HDMI_CIMBAR_MODE]
 const CIMBAR_VARIANT_NAMES = {
   [HDMI_CIMBAR_MODE]: HDMI_CIMBAR_VARIANT_NAME
+}
+
+function getHdmiCimbarLayout(width, height) {
+  const maxContentWidth = Math.floor(
+    (width - HDMI_CIMBAR_TILE_GAP - (HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right) * HDMI_CIMBAR_TILE_COUNT) /
+      HDMI_CIMBAR_TILE_COUNT
+  )
+  const maxContentHeight = height - HDMI_CIMBAR_TILE_PADDING.top - HDMI_CIMBAR_TILE_PADDING.bottom
+  const contentSize = Math.max(1, Math.min(maxContentWidth, maxContentHeight))
+  const tileOuterWidth = contentSize + HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right
+  const tileOuterHeight = contentSize + HDMI_CIMBAR_TILE_PADDING.top + HDMI_CIMBAR_TILE_PADDING.bottom
+  const compositionWidth =
+    tileOuterWidth * HDMI_CIMBAR_TILE_COUNT + HDMI_CIMBAR_TILE_GAP * (HDMI_CIMBAR_TILE_COUNT - 1)
+  const compositionHeight = tileOuterHeight
+  const originX = Math.max(0, Math.floor((width - compositionWidth) / 2))
+  const originY = Math.max(0, Math.floor((height - compositionHeight) / 2))
+
+  const tiles = Array.from({ length: HDMI_CIMBAR_TILE_COUNT }, (_, index) => {
+    const x = originX + index * (tileOuterWidth + HDMI_CIMBAR_TILE_GAP)
+    const y = originY
+    return {
+      index,
+      x,
+      y,
+      w: tileOuterWidth,
+      h: tileOuterHeight,
+      contentX: x + HDMI_CIMBAR_TILE_PADDING.left,
+      contentY: y + HDMI_CIMBAR_TILE_PADDING.top,
+      contentW: contentSize,
+      contentH: contentSize
+    }
+  })
+
+  return {
+    mode: HDMI_CIMBAR_MODE,
+    ratio: 1,
+    gap: HDMI_CIMBAR_TILE_GAP,
+    padding: { ...HDMI_CIMBAR_TILE_PADDING },
+    tileCount: HDMI_CIMBAR_TILE_COUNT,
+    contentWidth: contentSize,
+    contentHeight: contentSize,
+    tileOuterWidth,
+    tileOuterHeight,
+    composition: {
+      x: originX,
+      y: originY,
+      w: compositionWidth,
+      h: compositionHeight
+    },
+    display: {
+      width,
+      height
+    },
+    tiles
+  }
 }
 
 function debugLog(text) {

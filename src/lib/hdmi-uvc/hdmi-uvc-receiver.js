@@ -11,12 +11,6 @@ import {
   HEADER_SIZE,
   getModeDataBlockSize
 } from './hdmi-uvc-constants.js'
-import {
-  getHdmiCimbarLayout,
-  HDMI_CIMBAR_MODE,
-  HDMI_CIMBAR_TILE_COUNT,
-  HDMI_CIMBAR_VARIANT_NAME
-} from './hdmi-cimbar-layout.js'
 import { detectAnchors, dataRegionFromAnchors, decodeDataRegion, readPayloadWithLayout } from './hdmi-uvc-frame.js'
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
@@ -362,6 +356,58 @@ const hasImageCapture = typeof ImageCapture !== 'undefined'
 let elements = null
 let imageCapture = null
 let showError = (msg) => console.error(msg)
+
+const HDMI_CIMBAR_MODE = 68
+const HDMI_CIMBAR_VARIANT_NAME = 'B'
+const HDMI_CIMBAR_TILE_COUNT = 2
+const HDMI_CIMBAR_TILE_GAP = 24
+const HDMI_CIMBAR_TILE_PADDING = {
+  top: 20,
+  right: 20,
+  bottom: 10,
+  left: 10
+}
+
+function getHdmiCimbarLayout(width, height) {
+  const maxContentWidth = Math.floor(
+    (width - HDMI_CIMBAR_TILE_GAP - (HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right) * HDMI_CIMBAR_TILE_COUNT) /
+      HDMI_CIMBAR_TILE_COUNT
+  )
+  const maxContentHeight = height - HDMI_CIMBAR_TILE_PADDING.top - HDMI_CIMBAR_TILE_PADDING.bottom
+  const contentSize = Math.max(1, Math.min(maxContentWidth, maxContentHeight))
+  const tileOuterWidth = contentSize + HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right
+  const tileOuterHeight = contentSize + HDMI_CIMBAR_TILE_PADDING.top + HDMI_CIMBAR_TILE_PADDING.bottom
+  const compositionWidth =
+    tileOuterWidth * HDMI_CIMBAR_TILE_COUNT + HDMI_CIMBAR_TILE_GAP * (HDMI_CIMBAR_TILE_COUNT - 1)
+  const compositionHeight = tileOuterHeight
+  const originX = Math.max(0, Math.floor((width - compositionWidth) / 2))
+  const originY = Math.max(0, Math.floor((height - compositionHeight) / 2))
+
+  const tiles = Array.from({ length: HDMI_CIMBAR_TILE_COUNT }, (_, index) => {
+    const x = originX + index * (tileOuterWidth + HDMI_CIMBAR_TILE_GAP)
+    const y = originY
+    return {
+      index,
+      x,
+      y,
+      w: tileOuterWidth,
+      h: tileOuterHeight,
+      relX: x - originX,
+      relY: y - originY
+    }
+  })
+
+  return {
+    captureRoi: {
+      x: originX,
+      y: originY,
+      w: compositionWidth,
+      h: compositionHeight
+    },
+    absoluteTiles: tiles.map((tile) => ({ x: tile.x, y: tile.y, w: tile.w, h: tile.h })),
+    relativeTiles: tiles.map((tile) => ({ x: tile.relX, y: tile.relY, w: tile.w, h: tile.h }))
+  }
+}
 
 function formatBytes(bytes) {
   if (bytes < 1024) return bytes + ' B'
