@@ -109,7 +109,7 @@ document.getElementById('btn-hdmi-uvc-receive').onclick = () => {
 
 // Back buttons with cleanup
 document.querySelectorAll('.back-btn').forEach(btn => {
-  btn.onclick = () => {
+  btn.onclick = async () => {
     // Clean up QR state
     resetSender()
     resetReceiver()
@@ -119,7 +119,7 @@ document.querySelectorAll('.back-btn').forEach(btn => {
     resetCimbarReceiver()
 
     // Clean up HDMI-UVC state
-    resetHdmiUvcSender()
+    await resetHdmiUvcSender()
     resetHdmiUvcReceiver()
 
     // Return to mode selection

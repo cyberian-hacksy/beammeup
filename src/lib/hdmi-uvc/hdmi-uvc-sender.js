@@ -990,7 +990,7 @@ async function startSending() {
   }
 }
 
-function pauseSending() {
+async function pauseSending() {
   state.isPaused = true
   setSignalLive(false)
   if (state.timerId) {
@@ -998,8 +998,8 @@ function pauseSending() {
     state.timerId = null
   }
 
-  if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
   resetCanvasStyles()
+  await exitFullscreenSafely()
   elements.overlay.classList.add('hidden')
   elements.placeholder.style.display = 'flex'
   elements.placeholderIcon.textContent = '⏸'
@@ -1052,7 +1052,7 @@ async function resumeSending() {
   renderFrame()
 }
 
-function stopSending() {
+async function stopSending() {
   if (state.timerId) {
     clearTimeout(state.timerId)
     state.timerId = null
@@ -1080,10 +1080,10 @@ function stopSending() {
   state.cimbarLayout = null
   setSignalLive(false)
 
-  if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
   elements.fpsSlider.disabled = false
 
   resetCanvasStyles()
+  await exitFullscreenSafely()
   elements.placeholder.style.display = 'flex'
   elements.overlay.classList.add('hidden')
   elements.placeholderIcon.textContent = '+'
@@ -1214,8 +1214,17 @@ function handleFullscreenChange() {
   }
 }
 
-export function resetHdmiUvcSender() {
-  stopSending()
+async function exitFullscreenSafely() {
+  if (!document.fullscreenElement) return
+  try {
+    await document.exitFullscreen()
+  } catch {
+    // Ignore fullscreen exit failures during cleanup.
+  }
+}
+
+export async function resetHdmiUvcSender() {
+  await stopSending()
 }
 
 export function initHdmiUvcSender(errorHandler) {
