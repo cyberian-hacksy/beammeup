@@ -824,7 +824,8 @@ async function startCapture(deviceId) {
       video: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
         width: { ideal: 1920 },
-        height: { ideal: 1080 }
+        height: { ideal: 1080 },
+        frameRate: { ideal: 60 }
       }
     }
 
