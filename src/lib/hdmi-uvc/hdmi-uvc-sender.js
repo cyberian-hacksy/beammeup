@@ -608,10 +608,6 @@ function getBatchingProfile(mode) {
         maxBlockSize: 768,
         maxUsedBytes: 8192
       }
-    case HDMI_MODE.COMPAT_8:
-      return { maxPacketsPerFrame: 4, targetFrameFill: 0.90, maxBlockSize: MAX_BLOCK_SIZE, maxUsedBytes: null }
-    case HDMI_MODE.COMPAT_16:
-      return { maxPacketsPerFrame: 2, targetFrameFill: 0.85, maxBlockSize: MAX_BLOCK_SIZE, maxUsedBytes: null }
     default:
       return { maxPacketsPerFrame: 4, targetFrameFill: 0.90, maxBlockSize: MAX_BLOCK_SIZE, maxUsedBytes: null }
   }
@@ -1199,6 +1195,10 @@ function handleFpsChange() {
   elements.fpsDisplay.textContent = preset.name
 }
 
+function getRecommendedFpsPreset(mode = state.mode) {
+  return mode === HDMI_MODE.CIMBAR || mode === HDMI_MODE.COMPAT_4 ? '1' : String(DEFAULT_FPS_PRESET)
+}
+
 function handleModeChange(e) {
   const button = e.currentTarget
   const newMode = parseInt(button.dataset.mode, 10)
@@ -1206,8 +1206,7 @@ function handleModeChange(e) {
   if (state.isSending || state.isPaused) return
 
   state.mode = newMode
-  const recommendedFpsPreset =
-    state.mode === HDMI_MODE.CIMBAR || state.mode === HDMI_MODE.COMPAT_4 ? '1' : '0'
+  const recommendedFpsPreset = getRecommendedFpsPreset(state.mode)
   if (elements.fpsSlider && elements.fpsSlider.value !== recommendedFpsPreset) {
     elements.fpsSlider.value = recommendedFpsPreset
     handleFpsChange()
@@ -1265,7 +1264,7 @@ export function initHdmiUvcSender(errorHandler) {
   }
   elements.modeButtons = Array.from(elements.modeSelector?.querySelectorAll('.mode-btn') || [])
 
-  elements.fpsSlider.value = DEFAULT_FPS_PRESET
+  elements.fpsSlider.value = getRecommendedFpsPreset(state.mode)
 
   updateDropZoneState()
   updateActionButton()

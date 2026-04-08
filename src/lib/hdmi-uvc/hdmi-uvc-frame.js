@@ -14,6 +14,17 @@ const BITS_PER_BYTE = 8
 const HEADER_BLOCKS = HEADER_SIZE * BITS_PER_BYTE // 22 bytes × 8 bits = 176 blocks
 const GRAY2_LEVEL_FRACTIONS = [0.08, 0.36, 0.64, 0.92]
 const GRAY2_THRESHOLD_FRACTIONS = [0.22, 0.50, 0.78]
+const RGB3_PALETTE = [
+  [0, 0, 0],
+  [0, 0, 255],
+  [0, 255, 0],
+  [0, 255, 255],
+  [255, 0, 0],
+  [255, 0, 255],
+  [255, 255, 0],
+  [255, 255, 255]
+]
+const RGB3_NORMALIZED_PALETTE = RGB3_PALETTE.map((color) => color.map((channel) => channel / 255))
 const ENABLE_BINARY_PILOTS = false
 const ENABLE_PAYLOAD_INTERLEAVING = false
 const BINARY_PILOT_SPACING = 16
@@ -175,25 +186,35 @@ function decodeGray2(sample, blackLevel = 0, whiteLevel = 255) {
 }
 
 function encodeRgb3(symbol) {
-  return [
-    (symbol & 0x4) ? 255 : 0,
-    (symbol & 0x2) ? 255 : 0,
-    (symbol & 0x1) ? 255 : 0
-  ]
+  return RGB3_PALETTE[symbol & 0x7]
 }
 
 function decodeRgb3(sample, blackLevels = [0, 0, 0], whiteLevels = [255, 255, 255]) {
-  let symbol = 0
+  const normalized = [0, 0, 0]
   for (let channel = 0; channel < 3; channel++) {
     const minLevel = Math.max(0, Math.min(blackLevels[channel], whiteLevels[channel]))
     const maxLevel = Math.min(255, Math.max(blackLevels[channel], whiteLevels[channel]))
     const span = Math.max(64, maxLevel - minLevel)
-    const threshold = minLevel + span * 0.5
-    if (sample[channel] >= threshold) {
-      symbol |= (1 << (2 - channel))
+    const value = (sample[channel] - minLevel) / span
+    normalized[channel] = Math.max(0, Math.min(1, value))
+  }
+
+  let bestSymbol = 0
+  let bestError = Infinity
+  for (let symbol = 0; symbol < RGB3_NORMALIZED_PALETTE.length; symbol++) {
+    const target = RGB3_NORMALIZED_PALETTE[symbol]
+    let error = 0
+    for (let channel = 0; channel < 3; channel++) {
+      const delta = normalized[channel] - target[channel]
+      error += delta * delta
+    }
+    if (error < bestError) {
+      bestError = error
+      bestSymbol = symbol
     }
   }
-  return symbol
+
+  return bestSymbol
 }
 
 function normalizeBinarySample(sample, blackLevel = 0, whiteLevel = 255) {
@@ -1851,10 +1872,10 @@ export function testModeCapacityOrdering() {
   const width = 640
   const height = 480
   const cap4 = getPayloadCapacity(width, height, HDMI_MODE.COMPAT_4)
-  const cap8 = getPayloadCapacity(width, height, HDMI_MODE.COMPAT_8)
-  const cap16 = getPayloadCapacity(width, height, HDMI_MODE.COMPAT_16)
-  const pass = cap4 > cap8 && cap8 > cap16
-  console.log('Mode capacity ordering test:', pass ? `PASS (${cap4} > ${cap8} > ${cap16})` : 'FAIL')
+  const removedCap8 = getPayloadCapacity(width, height, 3)
+  const removedCap16 = getPayloadCapacity(width, height, 4)
+  const pass = cap4 > 0 && removedCap8 === 0 && removedCap16 === 0
+  console.log('Mode capacity ordering test:', pass ? `PASS (${cap4}; legacy 8x8/16x16 disabled)` : 'FAIL')
   return pass
 }
 
