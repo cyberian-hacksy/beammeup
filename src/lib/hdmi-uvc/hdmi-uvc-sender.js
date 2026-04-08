@@ -787,6 +787,7 @@ async function startSending() {
 
   try {
     debugLog(`=== START SENDING ===`)
+    const selectedFps = getFps()
 
     // Go fullscreen to eliminate browser chrome from the HDMI output.
     // This ensures anchors are at the true corners with no toolbar artifacts.
@@ -820,6 +821,7 @@ async function startSending() {
     // Fullscreen layout can settle a frame or two after the promise resolves.
     // Measure the actual fullscreen element box instead of trusting window.inner*.
     const stableMetrics = await waitForStableViewport()
+    debugLog(`Sender FPS: ${selectedFps.name} (${selectedFps.interval}ms interval)`)
 
     if (isCimbarMode()) {
       if (state.fileSize > CIMBAR_MAX_FILE_SIZE) {
@@ -1204,7 +1206,8 @@ function handleModeChange(e) {
   if (state.isSending || state.isPaused) return
 
   state.mode = newMode
-  const recommendedFpsPreset = state.mode === HDMI_MODE.CIMBAR ? '1' : '0'
+  const recommendedFpsPreset =
+    state.mode === HDMI_MODE.CIMBAR || state.mode === HDMI_MODE.COMPAT_4 ? '1' : '0'
   if (elements.fpsSlider && elements.fpsSlider.value !== recommendedFpsPreset) {
     elements.fpsSlider.value = recommendedFpsPreset
     handleFpsChange()
