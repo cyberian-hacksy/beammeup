@@ -516,11 +516,17 @@ const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 3072
 const TARGET_SOURCE_BLOCKS = 128
 const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
+const RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL = 2
+const RAW_RGB_PASS3_FOUNTAIN_PACKET_INTERVAL = 1
 const COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL = 4
 const COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL = 2
 function computeMetadataIntervalFrames() {
   if (!state.encoder || !state.packetsPerFrame) return MIN_METADATA_INTERVAL_FRAMES
   const cycleFrames = Math.ceil(state.encoder.K_prime / state.packetsPerFrame)
+  if (state.mode === HDMI_MODE.RAW_RGB) {
+    const targetInterval = Math.ceil(cycleFrames / 3)
+    return Math.max(45, Math.min(120, targetInterval))
+  }
   const targetInterval = Math.ceil(cycleFrames / 2)
   return Math.max(
     MIN_METADATA_INTERVAL_FRAMES,
@@ -619,10 +625,35 @@ function shouldSendMetadata(frameNumber) {
 }
 
 function getFountainPacketInterval() {
+  if (state.mode === HDMI_MODE.RAW_RGB) {
+    if (state.systematicPass >= 3) return RAW_RGB_PASS3_FOUNTAIN_PACKET_INTERVAL
+    if (state.systematicPass >= 2) return RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL
+    return HYBRID_FOUNTAIN_PACKET_INTERVAL
+  }
   if (state.mode !== HDMI_MODE.COMPAT_4) return HYBRID_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 3) return COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 2) return COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL
   return HYBRID_FOUNTAIN_PACKET_INTERVAL
+}
+
+function getHybridScheduleDescription() {
+  if (state.mode === HDMI_MODE.RAW_RGB) {
+    return (
+      'Hybrid schedule: source-only pass 1, then fountain every ' +
+      `${RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL}/${RAW_RGB_PASS3_FOUNTAIN_PACKET_INTERVAL} ` +
+      `data packets in later Color4 replay passes (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
+    )
+  }
+
+  if (state.mode === HDMI_MODE.COMPAT_4) {
+    return (
+      'Hybrid schedule: source-only pass 1, then fountain every ' +
+      `${COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL} ` +
+      `data packets in later 4x4 replay passes (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
+    )
+  }
+
+  return `Hybrid schedule: source-only pass 1, then fountain every ${HYBRID_FOUNTAIN_PACKET_INTERVAL} data packets`
 }
 
 function nextDataSymbolId(frameNumber) {
@@ -982,11 +1013,7 @@ async function startSending() {
     state.systematicPass = 1
     state.frameCount = 0
     debugLog(`Systematic order: source stride=${state.systematicStride}/${state.encoder.K}`)
-    debugLog(
-      `Hybrid schedule: source-only pass 1, then fountain every ` +
-      `${COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL} ` +
-      `data packets in later 4x4 replay passes (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
-    )
+    debugLog(getHybridScheduleDescription())
     setSignalLive(true)
 
     elements.fpsSlider.disabled = true

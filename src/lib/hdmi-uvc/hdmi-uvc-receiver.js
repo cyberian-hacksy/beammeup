@@ -249,6 +249,29 @@ function tryFixedLayoutPackets(imageData, width, region) {
   return extractFramePackets(payload, expectedPacketSize)
 }
 
+function tryLockedLayoutFastPath(imageData, width, region) {
+  if (state.detectedMode !== HDMI_MODE.RAW_RGB) return false
+  if (!state.fixedLayout || state.expectedPacketCount < 1) return false
+
+  const expectedPacketSize = getExpectedPacketSize()
+  if (!expectedPacketSize) return false
+
+  const payloadLength = expectedPacketSize * state.expectedPacketCount
+  const payload = readPayloadWithLayout(imageData, width, region, state.fixedLayout, payloadLength)
+  if (!payload) return false
+
+  const packets = extractFramePackets(payload, expectedPacketSize)
+  if (packets.length === 0) return false
+
+  if (acceptPackets(packets, state.frameCount, true, state.expectedPacketCount)) {
+    if (state.decoder?.isComplete()) return true
+    scheduleNextFrame()
+    return true
+  }
+
+  return false
+}
+
 function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expectedFramePacketCount = packets.length) {
   if (packets.length === 0) return false
 
@@ -1178,6 +1201,10 @@ async function processFrame(now, metadata) {
 
   if (!region) {
     scheduleNextFrame()
+    return
+  }
+
+  if (tryLockedLayoutFastPath(imageData, width, region)) {
     return
   }
 
