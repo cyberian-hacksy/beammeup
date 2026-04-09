@@ -96,6 +96,13 @@ function formatRecoveryState(expectedPacketSize, totalFramePackets, salvagedCoun
   )
 }
 
+function getDisplayProgressPercent(decoder = state.decoder) {
+  if (!decoder) return 0
+  const raw = Math.floor((decoder.progress || 0) * 100)
+  if (decoder.isComplete()) return 100
+  return Math.max(0, Math.min(99, raw))
+}
+
 function getProgressBytes() {
   if (!state.decoder?.metadata) return null
   return state.decoder.progress * state.decoder.metadata.fileSize
@@ -302,7 +309,7 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
       ? ` rate=${formatBytes(throughput.average)}/s recent=${formatBytes(throughput.recent ?? throughput.average)}/s`
       : ''
     debugLog(
-      `Progress: ${Math.round(state.decoder.progress * 100)}% ` +
+      `Progress: ${getDisplayProgressPercent(state.decoder)}% ` +
       `solved=${state.decoder.solved}/${state.decoder.K || '?'} ` +
       `unique=${state.decoder.uniqueSymbols} ` +
       `sym=${lastParsed.symbolId ?? fallbackSymbolId} pkts=${packets.length}` +
@@ -312,7 +319,7 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
 
   debugCurrent(
     `#${state.validFrames} sym=${lastParsed.symbolId ?? fallbackSymbolId} ` +
-    `${Math.round((state.decoder.progress || 0) * 100)}% x${packets.length}`
+    `${getDisplayProgressPercent(state.decoder)}% x${packets.length}`
   )
   updateProgress()
 
@@ -1081,7 +1088,7 @@ async function processFrame(now, metadata) {
     return
   }
 
-  if (!state.anchorBounds && (!state.detectedMode || state.detectedMode === HDMI_MODE.CIMBAR)) {
+  if (!state.anchorBounds && (state.detectedMode === null || state.detectedMode === HDMI_MODE.CIMBAR)) {
     const cimbarDetected = await tryCimbarDecode(imageData, width, height)
     if (cimbarDetected) {
       if (state.isScanning) scheduleNextFrame()
@@ -1213,7 +1220,7 @@ async function processFrame(now, metadata) {
   const result = decodeDataRegion(imageData.data, width, region)
 
   if (result && result.crcValid) {
-    if (!state.detectedMode) {
+    if (state.detectedMode === null) {
       state.detectedMode = result.header.mode
       if (state.detectedMode !== HDMI_MODE.CIMBAR) {
         resetCimbarSink()
@@ -1367,8 +1374,9 @@ function updateProgress() {
   const progress = state.decoder.progress
 
   elements.fileName.textContent = meta.filename
-  elements.statProgress.textContent = Math.round(progress * 100) + '%'
-  elements.progressFill.style.width = (progress * 100) + '%'
+  const pct = getDisplayProgressPercent(state.decoder)
+  elements.statProgress.textContent = pct + '%'
+  elements.progressFill.style.width = pct + '%'
 
   const elapsed = (Date.now() - state.startTime) / 1000
   if (elapsed > 0) {

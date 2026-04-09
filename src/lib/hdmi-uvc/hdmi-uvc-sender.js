@@ -563,14 +563,14 @@ function chooseSystematicStride(span) {
 function getBatchingProfile(mode) {
   switch (mode) {
     case HDMI_MODE.RAW_RGB:
-      // Four calibrated colors per 4x4 block. Keep the byte budget
-      // below raw capacity, but high enough to use the mode now that live
-      // decoding is working.
+      // Four calibrated colors per 4x4 block. Favor fewer, larger packets so
+      // K stays closer to the robust 4x4 regime while still keeping total
+      // bytes/frame well below raw capacity.
       return {
-        maxPacketsPerFrame: 12,
+        maxPacketsPerFrame: 10,
         targetFrameFill: 0.40,
-        maxBlockSize: 896,
-        maxUsedBytes: 12288
+        maxBlockSize: 1152,
+        maxUsedBytes: 11000
       }
     case HDMI_MODE.RAW_GRAY:
       // Gray2 is denser but materially less tolerant of capture noise than
