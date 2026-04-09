@@ -558,13 +558,13 @@ function getBatchingProfile(mode) {
   switch (mode) {
     case HDMI_MODE.RAW_RGB:
       // Four calibrated colors per 4x4 block. Keep the byte budget
-      // conservative so the first live runs test color robustness rather
-      // than immediately saturating the channel.
+      // below raw capacity, but high enough to use the mode now that live
+      // decoding is working.
       return {
         maxPacketsPerFrame: 12,
-        targetFrameFill: 0.28,
-        maxBlockSize: 768,
-        maxUsedBytes: 8192
+        targetFrameFill: 0.40,
+        maxBlockSize: 896,
+        maxUsedBytes: 12288
       }
     case HDMI_MODE.RAW_GRAY:
       // Gray2 is denser but materially less tolerant of capture noise than
@@ -1196,7 +1196,9 @@ function handleFpsChange() {
 }
 
 function getRecommendedFpsPreset(mode = state.mode) {
-  return mode === HDMI_MODE.CIMBAR || mode === HDMI_MODE.COMPAT_4 ? '1' : String(DEFAULT_FPS_PRESET)
+  return mode === HDMI_MODE.CIMBAR || mode === HDMI_MODE.COMPAT_4 || mode === HDMI_MODE.RAW_RGB
+    ? '1'
+    : String(DEFAULT_FPS_PRESET)
 }
 
 function handleModeChange(e) {
