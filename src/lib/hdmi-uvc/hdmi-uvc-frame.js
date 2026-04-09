@@ -24,6 +24,7 @@ const RGB3_PALETTE = [
   [255, 255, 0],
   [255, 255, 255]
 ]
+const RGB3_PILOT_SYMBOLS = [0, 1, 2, 3, 4, 5, 6, 7]
 const RGB3_NORMALIZED_PALETTE = RGB3_PALETTE.map((color) => color.map((channel) => channel / 255))
 const ENABLE_BINARY_PILOTS = false
 const ENABLE_PAYLOAD_INTERLEAVING = false
@@ -189,7 +190,7 @@ function encodeRgb3(symbol) {
   return RGB3_PALETTE[symbol & 0x7]
 }
 
-function decodeRgb3(sample, blackLevels = [0, 0, 0], whiteLevels = [255, 255, 255]) {
+function normalizeRgbSample(sample, blackLevels = [0, 0, 0], whiteLevels = [255, 255, 255]) {
   const normalized = [0, 0, 0]
   for (let channel = 0; channel < 3; channel++) {
     const minLevel = Math.max(0, Math.min(blackLevels[channel], whiteLevels[channel]))
@@ -198,11 +199,16 @@ function decodeRgb3(sample, blackLevels = [0, 0, 0], whiteLevels = [255, 255, 25
     const value = (sample[channel] - minLevel) / span
     normalized[channel] = Math.max(0, Math.min(1, value))
   }
+  return normalized
+}
+
+function decodeRgb3(sample, blackLevels = [0, 0, 0], whiteLevels = [255, 255, 255], palette = RGB3_NORMALIZED_PALETTE) {
+  const normalized = normalizeRgbSample(sample, blackLevels, whiteLevels)
 
   let bestSymbol = 0
   let bestError = Infinity
-  for (let symbol = 0; symbol < RGB3_NORMALIZED_PALETTE.length; symbol++) {
-    const target = RGB3_NORMALIZED_PALETTE[symbol]
+  for (let symbol = 0; symbol < palette.length; symbol++) {
+    const target = palette[symbol]
     let error = 0
     for (let channel = 0; channel < 3; channel++) {
       const delta = normalized[channel] - target[channel]
@@ -437,10 +443,14 @@ function countPilotBlocks(mode, blocksX, blocksY) {
   return count
 }
 
+function getReservedPayloadCells(mode) {
+  return mode === HDMI_MODE.RAW_RGB ? RGB3_PILOT_SYMBOLS.length : 0
+}
+
 function getUsablePayloadBlocks(mode, blocksX, blocksY) {
   const totalBlocks = blocksX * blocksY
   const payloadBlocks = Math.max(0, totalBlocks - HEADER_BLOCKS)
-  return Math.max(0, payloadBlocks - countPilotBlocks(mode, blocksX, blocksY))
+  return Math.max(0, payloadBlocks - countPilotBlocks(mode, blocksX, blocksY) - getReservedPayloadCells(mode))
 }
 
 function gcd(a, b) {
@@ -568,6 +578,7 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
   const blocksX = Math.floor(dr.w / dataBlockSize)
   const blocksY = Math.floor(dr.h / dataBlockSize)
   const payloadCells = getPayloadCellOrder(mode, blocksX, blocksY)
+  const reservedPayloadCells = getReservedPayloadCells(mode)
   let headerByteIdx = 0
   let headerBitIdx = 0
   let payloadBitPos = 0
@@ -607,7 +618,17 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
     }
   }
 
-  for (let cellIdx = 0; cellIdx < payloadCells.length && payloadBitPos < payloadBitLength; cellIdx++) {
+  if (mode === HDMI_MODE.RAW_RGB) {
+    for (let cellIdx = 0; cellIdx < reservedPayloadCells && cellIdx < payloadCells.length; cellIdx++) {
+      const { bx, by } = payloadCells[cellIdx]
+      const [r, g, b] = encodeRgb3(RGB3_PILOT_SYMBOLS[cellIdx])
+      const startX = dr.x + bx * dataBlockSize
+      const startY = dr.y + by * dataBlockSize
+      fillBlockSolid(imageData, width, startX, startY, dataBlockSize, r, g, b)
+    }
+  }
+
+  for (let cellIdx = reservedPayloadCells; cellIdx < payloadCells.length && payloadBitPos < payloadBitLength; cellIdx++) {
     const { bx, by } = payloadCells[cellIdx]
     const symbol = extractBits(payload, payloadBitPos, bitsPerBlock)
     payloadBitPos += bitsPerBlock
@@ -1114,6 +1135,7 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
   const blocksY = expectedBlocksY ?? Math.floor(region.h / stepY)
   const bitsPerBlock = getModeBitsPerBlock(header.mode) || 1
   const payloadCells = getPayloadCellOrder(header.mode, blocksX, blocksY)
+  const reservedPayloadCells = getReservedPayloadCells(header.mode)
   const levels = header.mode === HDMI_MODE.RAW_RGB
     ? estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
     : estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
@@ -1124,7 +1146,7 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
   const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
   const height = imageData.length / (width * 4)
 
-  for (let cellIdx = 0; cellIdx < payloadCells.length && decodeState.index < header.payloadLength; cellIdx++) {
+  for (let cellIdx = reservedPayloadCells; cellIdx < payloadCells.length && decodeState.index < header.payloadLength; cellIdx++) {
     const { bx, by } = payloadCells[cellIdx]
     const px = rx + Math.round(bx * stepX)
     const py = ry + Math.round(by * stepY)
@@ -1132,7 +1154,7 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
     if (px >= 0 && px < width && py >= 0 && py < height) {
       if (header.mode === HDMI_MODE.RAW_RGB) {
         const rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
-        symbol = decodeRgb3(rgb, levels?.blackLevels, levels?.whiteLevels)
+        symbol = decodeRgb3(rgb, levels?.blackLevels, levels?.whiteLevels, levels?.rgbPalette)
       } else if (header.mode === HDMI_MODE.GLYPH_5) {
         const samples = sampleGlyph5At(imageData, width, px, py, bs)
         symbol = decodeGlyph5(samples, levels?.blackLevel, levels?.whiteLevel)
@@ -1173,6 +1195,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
   const ry = region.y + (layout.yOff || 0)
   const bitsPerBlock = layout.bitsPerBlock || 1
   const payloadCells = getPayloadCellOrder(frameMode, blocksX, blocksY)
+  const reservedPayloadCells = getReservedPayloadCells(frameMode)
   const pilotField = bitsPerBlock === 1
     ? sampleBinaryPilotField(
       imageData,
@@ -1188,11 +1211,31 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
       frameMode
     )
     : null
+  const rgbPalette = frameMode === HDMI_MODE.RAW_RGB
+    ? (() => {
+      const palette = []
+      const pilotCount = Math.min(RGB3_PILOT_SYMBOLS.length, payloadCells.length)
+      for (let i = 0; i < pilotCount; i++) {
+        const { bx, by } = payloadCells[i]
+        const px = rx + Math.round(bx * layout.stepX)
+        const py = ry + Math.round(by * layout.stepY)
+        let rgb = RGB3_PALETTE[i]
+        if (px >= 0 && px < width && py >= 0 && py < imageData.length / (width * 4)) {
+          rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
+        }
+        palette.push(normalizeRgbSample(rgb, layout.blackLevels, layout.whiteLevels))
+      }
+      while (palette.length < RGB3_PILOT_SYMBOLS.length) {
+        palette.push(RGB3_NORMALIZED_PALETTE[palette.length])
+      }
+      return palette
+    })()
+    : null
   const payload = new Uint8Array(payloadLength)
   const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
   const height = imageData.length / (width * 4)
 
-  for (let cellIdx = 0; cellIdx < payloadCells.length && decodeState.index < payloadLength; cellIdx++) {
+  for (let cellIdx = reservedPayloadCells; cellIdx < payloadCells.length && decodeState.index < payloadLength; cellIdx++) {
     const { bx, by } = payloadCells[cellIdx]
     const px = rx + Math.round(bx * layout.stepX)
     const py = ry + Math.round(by * layout.stepY)
@@ -1200,7 +1243,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
     if (px >= 0 && px < width && py >= 0 && py < height) {
       if (frameMode === HDMI_MODE.RAW_RGB) {
         const rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
-        symbol = decodeRgb3(rgb, layout.blackLevels, layout.whiteLevels)
+        symbol = decodeRgb3(rgb, layout.blackLevels, layout.whiteLevels, rgbPalette)
       } else if (frameMode === HDMI_MODE.GLYPH_5) {
         const samples = sampleGlyph5At(imageData, width, px, py, layout.dataBs)
         symbol = decodeGlyph5(samples, layout.blackLevel, layout.whiteLevel)
@@ -1414,9 +1457,31 @@ function estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, st
     }
   }
 
+  const blackLevels = blackCount > 0 ? blackSums.map((sum) => sum / blackCount) : [0, 0, 0]
+  const whiteLevels = whiteCount > 0 ? whiteSums.map((sum) => sum / whiteCount) : [255, 255, 255]
+  const payloadCells = getPayloadCellOrder(header.mode, blocksX, blocksY)
+  const rgbPalette = []
+  const pilotCount = Math.min(RGB3_PILOT_SYMBOLS.length, payloadCells.length)
+
+  for (let i = 0; i < pilotCount; i++) {
+    const { bx, by } = payloadCells[i]
+    const px = rx + Math.round(bx * stepX)
+    const py = ry + Math.round(by * stepY)
+    let rgb = RGB3_PALETTE[i]
+    if (px >= 0 && px < width && py >= 0 && py < imgHeight) {
+      rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
+    }
+    rgbPalette.push(normalizeRgbSample(rgb, blackLevels, whiteLevels))
+  }
+
+  while (rgbPalette.length < RGB3_PILOT_SYMBOLS.length) {
+    rgbPalette.push(RGB3_NORMALIZED_PALETTE[rgbPalette.length])
+  }
+
   return {
-    blackLevels: blackCount > 0 ? blackSums.map((sum) => sum / blackCount) : [0, 0, 0],
-    whiteLevels: whiteCount > 0 ? whiteSums.map((sum) => sum / whiteCount) : [255, 255, 255]
+    blackLevels,
+    whiteLevels,
+    rgbPalette
   }
 }
 
@@ -1650,7 +1715,7 @@ export function decodeDataRegion(imageData, width, region) {
   const baseBs = region.blockSize || BLOCK_SIZE
   const yOffsets = [0, -1, 1, -2, 2, -3, 3, -4, 4]
   const bsAdjustments = [0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.5, -0.5]
-  const candidateBlockSizes = [4, 8, 16]
+  const candidateBlockSizes = [4, 8]
 
   let bestResult = null
   let bestScore = -1
