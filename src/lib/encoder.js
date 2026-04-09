@@ -7,35 +7,7 @@ import { createPacket } from './packet.js'
 import { createMetadataPayload } from './metadata.js'
 import { calculateParityParams, generateParityMap, generateParityBlocks } from './precode.js'
 
-function resolveEncoderOptions(modeOrOptions, maybeOptions) {
-  let mode = QR_MODE.BW
-  let options = null
-
-  if (typeof modeOrOptions === 'number') {
-    mode = modeOrOptions
-    options = maybeOptions
-  } else if (modeOrOptions && typeof modeOrOptions === 'object') {
-    options = modeOrOptions
-  }
-
-  const degreeOneProbability = typeof options?.degreeOneProbability === 'number'
-    ? Math.max(0, Math.min(1, options.degreeOneProbability))
-    : DEGREE_ONE_PROBABILITY
-  const fountainDegree = typeof options?.fountainDegree === 'number'
-    ? Math.max(1, Math.round(options.fountainDegree))
-    : FOUNTAIN_DEGREE
-
-  return {
-    mode,
-    fountain: {
-      degreeOneProbability,
-      fountainDegree
-    }
-  }
-}
-
-export function createEncoder(fileData, filename, mimeType, hash, blockSize = 200, modeOrOptions = QR_MODE.BW, maybeOptions = null) {
-  const { mode, fountain } = resolveEncoderOptions(modeOrOptions, maybeOptions)
+export function createEncoder(fileData, filename, mimeType, hash, blockSize = 200, mode = QR_MODE.BW) {
   // Pad file to multiple of blockSize
   const paddedSize = Math.ceil(fileData.byteLength / blockSize) * blockSize
   const paddedData = new Uint8Array(paddedSize)
@@ -99,14 +71,13 @@ export function createEncoder(fileData, filename, mimeType, hash, blockSize = 20
         // Fountain-coded symbol: mix of degree-1 and degree-3
         // Use PRNG's first value to decide degree (deterministic per symbol)
         const degreeRoll = rng.next() / 0xFFFFFFFF
-        if (degreeRoll < fountain.degreeOneProbability) {
+        if (degreeRoll < DEGREE_ONE_PROBABILITY) {
           // Degree-1: single random block (helps complete missing blocks faster)
           degree = 1
           indices = [rng.next() % K_prime]
         } else {
-          // Low-degree XOR symbols work better with the lightweight decoder on
-          // noisy channels than broader mixes that need deeper elimination.
-          degree = Math.min(fountain.fountainDegree, Math.max(1, K_prime - 1))
+          // Degree-3: XOR of multiple blocks, but never all
+          degree = Math.min(FOUNTAIN_DEGREE, Math.max(1, K_prime - 1))
           indices = rng.pickUnique(degree, K_prime)
         }
       }

@@ -518,16 +518,8 @@ const TARGET_SOURCE_BLOCKS = 128
 const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
 const RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL = 2
 const RAW_RGB_PASS3_FOUNTAIN_PACKET_INTERVAL = 1
-const RAW_RGB_FOUNTAIN_CONFIG = {
-  degreeOneProbability: 0.5,
-  fountainDegree: 2
-}
 const COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL = 4
 const COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL = 2
-
-function getHdmiUvcFountainConfig(mode = state.mode) {
-  return mode === HDMI_MODE.RAW_RGB ? RAW_RGB_FOUNTAIN_CONFIG : null
-}
 
 function computeMetadataIntervalFrames() {
   if (!state.encoder || !state.packetsPerFrame) return MIN_METADATA_INTERVAL_FRAMES
@@ -1003,8 +995,7 @@ async function startSending() {
       state.fileName,
       'application/octet-stream',
       state.fileHash,
-      blockSize,
-      getHdmiUvcFountainConfig(state.mode)
+      blockSize
     )
     state.packetSize = blockSize + PACKET_HEADER_SIZE
     state.packetsPerFrame = bestPacketsPerFrame

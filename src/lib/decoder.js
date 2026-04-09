@@ -7,18 +7,7 @@ import { parsePacket } from './packet.js'
 import { parseMetadataPayload } from './metadata.js'
 import { calculateParityParams, generateParityMap } from './precode.js'
 
-function normalizeFountainConfig(options = null) {
-  return {
-    degreeOneProbability: typeof options?.degreeOneProbability === 'number'
-      ? Math.max(0, Math.min(1, options.degreeOneProbability))
-      : DEGREE_ONE_PROBABILITY,
-    fountainDegree: typeof options?.fountainDegree === 'number'
-      ? Math.max(1, Math.round(options.fountainDegree))
-      : FOUNTAIN_DEGREE
-  }
-}
-
-export function createDecoder(initialOptions = null) {
+export function createDecoder() {
   let fileId = null
   let K = null          // Source block count
   let K_prime = null    // Intermediate block count (K + parity)
@@ -31,7 +20,6 @@ export function createDecoder(initialOptions = null) {
   let solvedSource = 0  // Source blocks decoded (first K blocks)
   let receivedSymbols = new Set()
   let pendingSymbols = [] // { indices: [], payload: Uint8Array }
-  let fountainConfig = normalizeFountainConfig(initialOptions)
 
   function reduce(symbol) {
     // Remove known blocks from symbol
@@ -156,10 +144,6 @@ export function createDecoder(initialOptions = null) {
 
     isComplete() { return K !== null && solvedSource === K },
 
-    setFountainConfig(options = null) {
-      fountainConfig = normalizeFountainConfig(options)
-    },
-
     // Reset decoder state for a new session
     reset() {
       fileId = null
@@ -248,11 +232,11 @@ export function createDecoder(initialOptions = null) {
       } else {
         // Fountain-coded symbol
         const degreeRoll = rng.next() / 0xFFFFFFFF
-        if (degreeRoll < fountainConfig.degreeOneProbability) {
+        if (degreeRoll < DEGREE_ONE_PROBABILITY) {
           degree = 1
           indices = [rng.next() % K_prime]
         } else {
-          degree = Math.min(fountainConfig.fountainDegree, Math.max(1, K_prime - 1))
+          degree = Math.min(FOUNTAIN_DEGREE, Math.max(1, K_prime - 1))
           indices = rng.pickUnique(degree, K_prime)
         }
       }

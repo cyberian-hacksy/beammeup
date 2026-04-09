@@ -96,15 +96,6 @@ function formatRecoveryState(expectedPacketSize, totalFramePackets, salvagedCoun
   )
 }
 
-const RAW_RGB_FOUNTAIN_CONFIG = {
-  degreeOneProbability: 0.5,
-  fountainDegree: 2
-}
-
-function getHdmiUvcFountainConfig(mode = state.detectedMode) {
-  return mode === HDMI_MODE.RAW_RGB ? RAW_RGB_FOUNTAIN_CONFIG : null
-}
-
 function getDisplayProgressPercent(decoder = state.decoder) {
   if (!decoder) return 0
   const raw = Math.floor((decoder.progress || 0) * 100)
@@ -243,7 +234,7 @@ function getFramePacketSlotCount(framePayload, expectedPacketSize = null) {
 
 function ensureDecoder() {
   if (!state.decoder) {
-    state.decoder = createDecoder(getHdmiUvcFountainConfig())
+    state.decoder = createDecoder()
     state.startTime = Date.now()
     showReceivingStatus()
     debugLog('Decoder created')
@@ -292,7 +283,6 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
   if (packets.length === 0) return false
 
   ensureDecoder()
-  state.decoder.setFountainConfig(getHdmiUvcFountainConfig())
 
   let lastParsed = null
   for (const packet of packets) {
