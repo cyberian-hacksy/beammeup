@@ -518,8 +518,17 @@ const TARGET_SOURCE_BLOCKS = 128
 const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
 const RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL = 2
 const RAW_RGB_PASS3_FOUNTAIN_PACKET_INTERVAL = 1
+const RAW_RGB_FOUNTAIN_CONFIG = {
+  degreeOneProbability: 0.5,
+  fountainDegree: 2
+}
 const COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL = 4
 const COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL = 2
+
+function getHdmiUvcFountainConfig(mode = state.mode) {
+  return mode === HDMI_MODE.RAW_RGB ? RAW_RGB_FOUNTAIN_CONFIG : null
+}
+
 function computeMetadataIntervalFrames() {
   if (!state.encoder || !state.packetsPerFrame) return MIN_METADATA_INTERVAL_FRAMES
   const cycleFrames = Math.ceil(state.encoder.K_prime / state.packetsPerFrame)
@@ -563,14 +572,15 @@ function chooseSystematicStride(span) {
 function getBatchingProfile(mode) {
   switch (mode) {
     case HDMI_MODE.RAW_RGB:
-      // Four calibrated colors per 4x4 block. Favor fewer, larger packets so
-      // K stays closer to the robust 4x4 regime while still keeping total
-      // bytes/frame well below raw capacity.
+      // Four calibrated colors per 4x4 block. The current HDMI-UVC path is
+      // packet-loss limited, so bias toward a lighter per-frame load rather
+      // than maxing out nominal frame capacity. Keep shard size moderate, but
+      // trim total slots and fill so more packets survive end-to-end.
       return {
         maxPacketsPerFrame: 10,
-        targetFrameFill: 0.40,
-        maxBlockSize: 1152,
-        maxUsedBytes: 11000
+        targetFrameFill: 0.36,
+        maxBlockSize: 896,
+        maxUsedBytes: 10240
       }
     case HDMI_MODE.RAW_GRAY:
       // Gray2 is denser but materially less tolerant of capture noise than
@@ -989,7 +999,12 @@ async function startSending() {
     debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)}), blockSize: ${blockSize}`)
 
     state.encoder = createEncoder(
-      state.fileData, state.fileName, 'application/octet-stream', state.fileHash, blockSize
+      state.fileData,
+      state.fileName,
+      'application/octet-stream',
+      state.fileHash,
+      blockSize,
+      getHdmiUvcFountainConfig(state.mode)
     )
     state.packetSize = blockSize + PACKET_HEADER_SIZE
     state.packetsPerFrame = bestPacketsPerFrame
