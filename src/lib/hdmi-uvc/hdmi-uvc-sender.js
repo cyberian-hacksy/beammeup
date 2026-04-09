@@ -557,14 +557,14 @@ function chooseSystematicStride(span) {
 function getBatchingProfile(mode) {
   switch (mode) {
     case HDMI_MODE.RAW_RGB:
-      // Three binary channels per 4x4 block. This is denser than 1-bit 4x4
-      // without relying on unstable grayscale mid-tones, so allow a modestly
-      // higher byte budget while keeping packet shards small enough to salvage.
+      // Four calibrated colors per 4x4 block. Keep the byte budget
+      // conservative so the first live runs test color robustness rather
+      // than immediately saturating the channel.
       return {
         maxPacketsPerFrame: 12,
-        targetFrameFill: 0.32,
-        maxBlockSize: 832,
-        maxUsedBytes: 10240
+        targetFrameFill: 0.28,
+        maxBlockSize: 768,
+        maxUsedBytes: 8192
       }
     case HDMI_MODE.RAW_GRAY:
       // Gray2 is denser but materially less tolerant of capture noise than

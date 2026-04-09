@@ -15,16 +15,12 @@ const HEADER_BLOCKS = HEADER_SIZE * BITS_PER_BYTE // 22 bytes × 8 bits = 176 bl
 const GRAY2_LEVEL_FRACTIONS = [0.08, 0.36, 0.64, 0.92]
 const GRAY2_THRESHOLD_FRACTIONS = [0.22, 0.50, 0.78]
 const RGB3_PALETTE = [
-  [0, 0, 0],
-  [0, 0, 255],
-  [0, 255, 0],
-  [0, 255, 255],
+  [255, 255, 255],
   [255, 0, 0],
-  [255, 0, 255],
-  [255, 255, 0],
-  [255, 255, 255]
+  [0, 255, 0],
+  [0, 0, 255]
 ]
-const RGB3_PILOT_SYMBOLS = [0, 1, 2, 3, 4, 5, 6, 7]
+const RGB3_PILOT_SYMBOLS = [0, 1, 2, 3]
 const RGB3_NORMALIZED_PALETTE = RGB3_PALETTE.map((color) => color.map((channel) => channel / 255))
 const ENABLE_BINARY_PILOTS = false
 const ENABLE_PAYLOAD_INTERLEAVING = false
