@@ -642,7 +642,11 @@ function getFountainPacketInterval() {
     if (state.systematicPass >= 2) return RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL
     return HYBRID_FOUNTAIN_PACKET_INTERVAL
   }
-  if (state.mode !== HDMI_MODE.COMPAT_4 && state.mode !== HDMI_MODE.LUMA_2) {
+  if (
+    state.mode !== HDMI_MODE.COMPAT_4 &&
+    state.mode !== HDMI_MODE.LUMA_2 &&
+    state.mode !== HDMI_MODE.CODEBOOK_3
+  ) {
     return HYBRID_FOUNTAIN_PACKET_INTERVAL
   }
   if (state.systematicPass >= 3) return COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL
@@ -659,8 +663,17 @@ function getHybridScheduleDescription() {
     )
   }
 
-  if (state.mode === HDMI_MODE.COMPAT_4 || state.mode === HDMI_MODE.LUMA_2) {
-    const modeName = state.mode === HDMI_MODE.LUMA_2 ? 'Luma2' : '4x4'
+  if (
+    state.mode === HDMI_MODE.COMPAT_4 ||
+    state.mode === HDMI_MODE.LUMA_2 ||
+    state.mode === HDMI_MODE.CODEBOOK_3
+  ) {
+    const modeName =
+      state.mode === HDMI_MODE.LUMA_2
+        ? 'Luma2'
+        : state.mode === HDMI_MODE.CODEBOOK_3
+          ? 'Tile3'
+          : '4x4'
     return (
       'Hybrid schedule: source-only pass 1, then fountain every ' +
       `${COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL} ` +

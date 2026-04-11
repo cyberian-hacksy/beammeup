@@ -247,15 +247,13 @@ function probeLayoutPackets(imageData, width, region, layout, payloadLength, exp
   if (!layout || !payloadLength || payloadLength <= 0) return null
 
   const {
-    includeScaleSearch = false
+    includeScaleSearch = false,
+    offsets: customOffsets = null,
+    scales: customScales = null
   } = options
 
-  const offsets = layout.frameMode === HDMI_MODE.LUMA_2
-    ? [0, -1, 1, -2, 2, -3, 3]
-    : [0, -1, 1, -2, 2]
-  const scales = includeScaleSearch && layout.frameMode === HDMI_MODE.LUMA_2
-    ? [1, 0.9925, 1.0075, 0.985, 1.015]
-    : [1]
+  const offsets = customOffsets || [0, -1, 1, -2, 2]
+  const scales = customScales || (includeScaleSearch ? [1, 0.995, 1.005] : [1])
 
   let best = null
 
@@ -285,9 +283,21 @@ function probeLayoutPackets(imageData, width, region, layout, payloadLength, exp
 
 function getLayoutProbeOptions(layout) {
   if (!layout) return {}
-  return layout.frameMode === HDMI_MODE.LUMA_2
-    ? { includeScaleSearch: true }
-    : {}
+
+  switch (layout.frameMode) {
+    case HDMI_MODE.CODEBOOK_3:
+      return {
+        includeScaleSearch: true,
+        offsets: [0, -1, 1, -2, 2, -3, 3],
+        scales: [1, 0.995, 1.005]
+      }
+    case HDMI_MODE.LUMA_2:
+      return {
+        offsets: [0, -1, 1, -2, 2]
+      }
+    default:
+      return {}
+  }
 }
 
 function extractFramePackets(framePayload, expectedPacketSize = null) {
@@ -360,7 +370,11 @@ function tryFixedLayoutPackets(imageData, width, region) {
 
 function tryLockedLayoutFastPath(imageData, width, region) {
   const activeMode = state.detectedMode ?? state.fixedLayout?.frameMode ?? state.preferredLayout?.frameMode
-  if (activeMode !== HDMI_MODE.RAW_RGB && activeMode !== HDMI_MODE.LUMA_2) {
+  if (
+    activeMode !== HDMI_MODE.RAW_RGB &&
+    activeMode !== HDMI_MODE.LUMA_2 &&
+    activeMode !== HDMI_MODE.CODEBOOK_3
+  ) {
     return false
   }
   if (!state.fixedLayout || state.expectedPacketCount < 1) return false
@@ -1366,7 +1380,7 @@ async function processFrame(now, metadata) {
       result._diag || state.fixedLayout || state.preferredLayout,
       phasePayloadLength,
       expectedPacketSize,
-      { includeScaleSearch: true }
+      getLayoutProbeOptions(result._diag || state.fixedLayout || state.preferredLayout)
     )
     const phasePackets = phaseProbe?.probe?.packets || []
     if (acceptPackets(salvagedPackets, result.header.symbolId, true, totalFramePackets)) {
