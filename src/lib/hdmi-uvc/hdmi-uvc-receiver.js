@@ -224,6 +224,53 @@ function probeFramePackets(framePayload, expectedPacketSize = null) {
   return { packets: [], slotCount: null, packetSize: expectedPacketSize, strategy: 'none' }
 }
 
+function isBetterPacketProbe(candidate, best) {
+  if (!candidate) return false
+  if (!best) return true
+
+  const candidatePackets = candidate.probe?.packets?.length || 0
+  const bestPackets = best.probe?.packets?.length || 0
+  if (candidatePackets !== bestPackets) return candidatePackets > bestPackets
+
+  const candidatePacketSize = candidate.probe?.packetSize || 0
+  const bestPacketSize = best.probe?.packetSize || 0
+  const candidateBytes = candidatePackets * candidatePacketSize
+  const bestBytes = bestPackets * bestPacketSize
+  if (candidateBytes !== bestBytes) return candidateBytes > bestBytes
+
+  const candidateDistance = Math.abs(candidate.xAdjust) + Math.abs(candidate.yAdjust)
+  const bestDistance = Math.abs(best.xAdjust) + Math.abs(best.yAdjust)
+  return candidateDistance < bestDistance
+}
+
+function probeLayoutPackets(imageData, width, region, layout, payloadLength, expectedPacketSize = null) {
+  if (!layout || !payloadLength || payloadLength <= 0) return null
+
+  const offsets = layout.frameMode === HDMI_MODE.LUMA_2
+    ? [0, -1, 1, -2, 2, -3, 3]
+    : [0, -1, 1, -2, 2]
+
+  let best = null
+
+  for (const xAdjust of offsets) {
+    for (const yAdjust of offsets) {
+      const candidateLayout = {
+        ...layout,
+        xOff: (layout.xOff || 0) + xAdjust,
+        yOff: (layout.yOff || 0) + yAdjust
+      }
+      const payload = readPayloadWithLayout(imageData, width, region, candidateLayout, payloadLength)
+      if (!payload) continue
+
+      const probe = probeFramePackets(payload, expectedPacketSize)
+      const candidate = { payload, probe, layout: candidateLayout, xAdjust, yAdjust }
+      if (isBetterPacketProbe(candidate, best)) best = candidate
+    }
+  }
+
+  return best
+}
+
 function extractFramePackets(framePayload, expectedPacketSize = null) {
   return probeFramePackets(framePayload, expectedPacketSize).packets
 }
@@ -250,10 +297,10 @@ function tryFixedLayoutPackets(imageData, width, region) {
   if (!expectedPacketSize || !state.fixedLayout || state.expectedPacketCount < 1) return []
 
   const payloadLength = expectedPacketSize * state.expectedPacketCount
-  const payload = readPayloadWithLayout(imageData, width, region, state.fixedLayout, payloadLength)
-  if (!payload) return []
-
-  return extractFramePackets(payload, expectedPacketSize)
+  const best = probeLayoutPackets(imageData, width, region, state.fixedLayout, payloadLength, expectedPacketSize)
+  if (!best) return []
+  if (best.layout) state.fixedLayout = { ...best.layout }
+  return best.probe?.packets || []
 }
 
 function tryLockedLayoutFastPath(imageData, width, region) {
@@ -266,11 +313,12 @@ function tryLockedLayoutFastPath(imageData, width, region) {
   if (!expectedPacketSize) return false
 
   const payloadLength = expectedPacketSize * state.expectedPacketCount
-  const payload = readPayloadWithLayout(imageData, width, region, state.fixedLayout, payloadLength)
-  if (!payload) return false
+  const best = probeLayoutPackets(imageData, width, region, state.fixedLayout, payloadLength, expectedPacketSize)
+  if (!best) return false
 
-  const packets = extractFramePackets(payload, expectedPacketSize)
+  const packets = best.probe?.packets || []
   if (packets.length === 0) return false
+  if (best.layout) state.fixedLayout = { ...best.layout }
 
   if (acceptPackets(packets, state.frameCount, true, state.expectedPacketCount)) {
     if (state.decoder?.isComplete()) return true
@@ -1249,9 +1297,25 @@ async function processFrame(now, metadata) {
     const totalFramePackets = salvageProbe.slotCount
     const salvagedPackets = salvageProbe.packets
     const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
+    const phaseProbe = probeLayoutPackets(
+      imageData.data,
+      width,
+      region,
+      result._diag || state.fixedLayout || state.preferredLayout,
+      result.header.payloadLength,
+      expectedPacketSize
+    )
+    const phasePackets = phaseProbe?.probe?.packets || []
     if (acceptPackets(salvagedPackets, result.header.symbolId, true, totalFramePackets)) {
       if (result._diag) state.fixedLayout = { ...result._diag }
       debugLog(`Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) from CRC-fail frame`)
+      if (state.decoder?.isComplete()) return
+      scheduleNextFrame()
+      return
+    }
+    if (acceptPackets(phasePackets, result.header.symbolId, true, phaseProbe?.probe?.slotCount || totalFramePackets)) {
+      if (phaseProbe?.layout) state.fixedLayout = { ...phaseProbe.layout }
+      debugLog(`Frame ${state.frameCount}: phase-recovered ${phasePackets.length} packet(s) from CRC-fail frame`)
       if (state.decoder?.isComplete()) return
       scheduleNextFrame()
       return
@@ -1274,7 +1338,7 @@ async function processFrame(now, metadata) {
       if (scaleLine) debugLog(`  ${scaleLine}`)
       const triedLine = formatDecisionCandidates(diag)
       if (triedLine) debugLog(`  ${triedLine}`)
-      debugLog(`  ${formatRecoveryState(expectedPacketSize, totalFramePackets, salvagedPackets.length, fixedPackets.length, salvageProbe.strategy, salvageProbe.packetSize)}`)
+      debugLog(`  ${formatRecoveryState(expectedPacketSize, totalFramePackets, salvagedPackets.length + phasePackets.length, fixedPackets.length, salvageProbe.strategy, salvageProbe.packetSize)}`)
     }
     debugCurrent(`#${state.frameCount} CRC fail`)
   } else {
