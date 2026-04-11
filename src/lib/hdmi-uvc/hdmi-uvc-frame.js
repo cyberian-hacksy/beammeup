@@ -258,7 +258,20 @@ function decodeCodebook3(samples, blackLevel = 0, whiteLevel = 255) {
 }
 
 function decodeLuma2(samples, blackLevel = 0, whiteLevel = 255) {
-  return decodeQuadrantCodebook(samples, blackLevel, whiteLevel, LUMA2_PATTERNS)
+  const normalized = samples.map((sample) => normalizeBinarySample(sample, blackLevel, whiteLevel))
+  const top = (normalized[0] + normalized[1]) * 0.5
+  const bottom = (normalized[2] + normalized[3]) * 0.5
+  const left = (normalized[0] + normalized[2]) * 0.5
+  const right = (normalized[1] + normalized[3]) * 0.5
+
+  const horizontalContrast = Math.abs(top - bottom)
+  const verticalContrast = Math.abs(left - right)
+
+  if (horizontalContrast >= verticalContrast) {
+    return top >= bottom ? 0 : 1
+  }
+
+  return left >= right ? 2 : 3
 }
 
 function decodeGlyph5(samples, blackLevel = 0, whiteLevel = 255) {
@@ -2061,6 +2074,19 @@ export function testLuma2FrameRoundtrip() {
     result.payload.every((v, i) => v === payload[i])
 
   console.log('Luma2 frame roundtrip test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testLuma2Classifier() {
+  const cases = [
+    { samples: [230, 220, 20, 30], expected: 0 },
+    { samples: [20, 30, 220, 230], expected: 1 },
+    { samples: [225, 25, 235, 35], expected: 2 },
+    { samples: [30, 230, 40, 220], expected: 3 }
+  ]
+
+  const pass = cases.every(({ samples, expected }) => decodeLuma2(samples, 0, 255) === expected)
+  console.log('Luma2 classifier test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 
