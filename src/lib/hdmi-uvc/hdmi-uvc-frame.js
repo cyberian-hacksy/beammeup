@@ -14,17 +14,13 @@ const BITS_PER_BYTE = 8
 const HEADER_BLOCKS = HEADER_SIZE * BITS_PER_BYTE // 22 bytes × 8 bits = 176 blocks
 const GRAY2_LEVEL_FRACTIONS = [0.08, 0.36, 0.64, 0.92]
 const GRAY2_THRESHOLD_FRACTIONS = [0.22, 0.50, 0.78]
-// Color4 uses white plus RGB primaries. The UVC path tends to preserve channel
-// dominance better than exact chroma, so decoding keys off a white gate plus
-// dominant-channel selection rather than strict nearest-neighbor distances.
 const RGB3_PALETTE = [
   [255, 255, 255],
   [255, 0, 0],
   [0, 255, 0],
   [0, 0, 255]
 ]
-// Repeat pilot colors so the decoder can average multiple reads each frame.
-const RGB3_PILOT_SYMBOLS = [0, 1, 2, 3, 0, 1, 2, 3]
+const RGB3_PILOT_SYMBOLS = [0, 1, 2, 3]
 const RGB3_NORMALIZED_PALETTE = RGB3_PALETTE.map((color) => color.map((channel) => channel / 255))
 const ENABLE_BINARY_PILOTS = false
 const ENABLE_PAYLOAD_INTERLEAVING = false
@@ -187,11 +183,7 @@ function decodeGray2(sample, blackLevel = 0, whiteLevel = 255) {
 }
 
 function encodeRgb3(symbol) {
-  return RGB3_PALETTE[symbol & 0x3]
-}
-
-function clamp01(value) {
-  return Math.max(0, Math.min(1, value))
+  return RGB3_PALETTE[symbol & 0x7]
 }
 
 function normalizeRgbSample(sample, blackLevels = [0, 0, 0], whiteLevels = [255, 255, 255]) {
@@ -206,59 +198,8 @@ function normalizeRgbSample(sample, blackLevels = [0, 0, 0], whiteLevels = [255,
   return normalized
 }
 
-function buildRgbPaletteFromPilotSamples(samples, blackLevels, whiteLevels) {
-  const sums = RGB3_PALETTE.map(() => [0, 0, 0])
-  const counts = new Array(RGB3_PALETTE.length).fill(0)
-
-  for (let i = 0; i < samples.length; i++) {
-    const symbol = RGB3_PILOT_SYMBOLS[i]
-    const normalized = normalizeRgbSample(samples[i], blackLevels, whiteLevels)
-    counts[symbol]++
-    for (let channel = 0; channel < 3; channel++) {
-      sums[symbol][channel] += normalized[channel]
-    }
-  }
-
-  return RGB3_PALETTE.map((_, symbol) => {
-    if (counts[symbol] === 0) return RGB3_NORMALIZED_PALETTE[symbol]
-    return sums[symbol].map((sum) => sum / counts[symbol])
-  })
-}
-
 function decodeRgb3(sample, blackLevels = [0, 0, 0], whiteLevels = [255, 255, 255], palette = RGB3_NORMALIZED_PALETTE) {
   const normalized = normalizeRgbSample(sample, blackLevels, whiteLevels)
-
-  if (palette.length === 4) {
-    const white = palette[0]
-    const whiteMin = Math.min(...white)
-    const whiteSpread = Math.max(...white) - whiteMin
-    let coloredMinMax = 0
-    let coloredSpreadMin = 1
-
-    for (let symbol = 1; symbol < palette.length; symbol++) {
-      const target = palette[symbol]
-      const targetMin = Math.min(...target)
-      const targetSpread = Math.max(...target) - targetMin
-      coloredMinMax = Math.max(coloredMinMax, targetMin)
-      coloredSpreadMin = Math.min(coloredSpreadMin, targetSpread)
-    }
-
-    const sampleMin = Math.min(...normalized)
-    const sampleMax = Math.max(...normalized)
-    const sampleSpread = sampleMax - sampleMin
-    const whiteMinThreshold = clamp01((whiteMin + coloredMinMax) * 0.5)
-    const whiteSpreadThreshold = clamp01((whiteSpread + coloredSpreadMin) * 0.5)
-
-    if (sampleMin >= whiteMinThreshold || sampleSpread <= whiteSpreadThreshold) {
-      return 0
-    }
-
-    let strongestChannel = 0
-    if (normalized[1] > normalized[strongestChannel]) strongestChannel = 1
-    if (normalized[2] > normalized[strongestChannel]) strongestChannel = 2
-
-    return strongestChannel === 0 ? 1 : strongestChannel === 1 ? 2 : 3
-  }
 
   let bestSymbol = 0
   let bestError = Infinity
@@ -1268,20 +1209,22 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
     : null
   const rgbPalette = frameMode === HDMI_MODE.RAW_RGB
     ? (() => {
-      const samples = []
+      const palette = []
       const pilotCount = Math.min(RGB3_PILOT_SYMBOLS.length, payloadCells.length)
       for (let i = 0; i < pilotCount; i++) {
         const { bx, by } = payloadCells[i]
         const px = rx + Math.round(bx * layout.stepX)
         const py = ry + Math.round(by * layout.stepY)
-        const pilotSymbol = RGB3_PILOT_SYMBOLS[i]
-        let rgb = RGB3_PALETTE[pilotSymbol]
+        let rgb = RGB3_PALETTE[i]
         if (px >= 0 && px < width && py >= 0 && py < imageData.length / (width * 4)) {
           rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
         }
-        samples.push(rgb)
+        palette.push(normalizeRgbSample(rgb, layout.blackLevels, layout.whiteLevels))
       }
-      return buildRgbPaletteFromPilotSamples(samples, layout.blackLevels, layout.whiteLevels)
+      while (palette.length < RGB3_PILOT_SYMBOLS.length) {
+        palette.push(RGB3_NORMALIZED_PALETTE[palette.length])
+      }
+      return palette
     })()
     : null
   const payload = new Uint8Array(payloadLength)
@@ -1513,25 +1456,28 @@ function estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, st
   const blackLevels = blackCount > 0 ? blackSums.map((sum) => sum / blackCount) : [0, 0, 0]
   const whiteLevels = whiteCount > 0 ? whiteSums.map((sum) => sum / whiteCount) : [255, 255, 255]
   const payloadCells = getPayloadCellOrder(header.mode, blocksX, blocksY)
-  const pilotSamples = []
+  const rgbPalette = []
   const pilotCount = Math.min(RGB3_PILOT_SYMBOLS.length, payloadCells.length)
 
   for (let i = 0; i < pilotCount; i++) {
     const { bx, by } = payloadCells[i]
     const px = rx + Math.round(bx * stepX)
     const py = ry + Math.round(by * stepY)
-    const pilotSymbol = RGB3_PILOT_SYMBOLS[i]
-    let rgb = RGB3_PALETTE[pilotSymbol]
+    let rgb = RGB3_PALETTE[i]
     if (px >= 0 && px < width && py >= 0 && py < imgHeight) {
       rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
     }
-    pilotSamples.push(rgb)
+    rgbPalette.push(normalizeRgbSample(rgb, blackLevels, whiteLevels))
+  }
+
+  while (rgbPalette.length < RGB3_PILOT_SYMBOLS.length) {
+    rgbPalette.push(RGB3_NORMALIZED_PALETTE[rgbPalette.length])
   }
 
   return {
     blackLevels,
     whiteLevels,
-    rgbPalette: buildRgbPaletteFromPilotSamples(pilotSamples, blackLevels, whiteLevels)
+    rgbPalette
   }
 }
 
@@ -2051,29 +1997,6 @@ export function testRgb3FrameRoundtrip() {
     result.payload.every((v, i) => v === payload[i])
 
   console.log('RGB3 frame roundtrip test:', pass ? 'PASS' : 'FAIL')
-  return pass
-}
-
-export function testColor4PaletteClassifier() {
-  const blackLevels = [12, 14, 10]
-  const whiteLevels = [236, 242, 232]
-  const palette = buildRgbPaletteFromPilotSamples(RGB3_PALETTE, blackLevels, whiteLevels)
-  const samples = [
-    { symbol: 0, rgb: [231, 235, 228] },
-    { symbol: 1, rgb: [216, 48, 44] },
-    { symbol: 2, rgb: [42, 208, 54] },
-    { symbol: 3, rgb: [48, 60, 214] },
-    { symbol: 0, rgb: [218, 221, 214] },
-    { symbol: 1, rgb: [198, 62, 58] },
-    { symbol: 2, rgb: [58, 192, 70] },
-    { symbol: 3, rgb: [66, 76, 198] }
-  ]
-
-  const pass = samples.every(({ symbol, rgb }) =>
-    decodeRgb3(rgb, blackLevels, whiteLevels, palette) === symbol
-  )
-
-  console.log('Color4 palette classifier test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 
