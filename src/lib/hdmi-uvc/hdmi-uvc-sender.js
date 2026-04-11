@@ -175,11 +175,12 @@ function logSenderSessionMetrics(phase, metrics, capacity) {
 function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fps, canvasWidth, canvasHeight) {
   const perf = state.txPerf
   if (!perf) return
+  const targetIntervalMs = 1000 / fps.fps
 
   if (perf.lastFrameStartMs > 0) {
     const intervalMs = frameStartMs - perf.lastFrameStartMs
     recordPerfSample(perf.intervalMs, intervalMs)
-    recordPerfSample(perf.jitterMs, Math.abs(intervalMs - fps.interval))
+    recordPerfSample(perf.jitterMs, Math.abs(intervalMs - targetIntervalMs))
   }
   perf.lastFrameStartMs = frameStartMs
 
@@ -187,7 +188,7 @@ function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fp
   recordPerfSample(perf.buildMs, buildMs)
   recordPerfSample(perf.blitMs, blitMs)
   recordPerfSample(perf.totalMs, totalMs)
-  if (totalMs > fps.interval) perf.overBudgetCount++
+  if (totalMs > targetIntervalMs) perf.overBudgetCount++
   perf.framesSinceLog++
 
   if (perf.framesSinceLog < TX_PERF_LOG_INTERVAL_FRAMES) return
@@ -216,6 +217,7 @@ const state = {
   packetSize: 0,
   packetsPerFrame: 1,
   timerId: null,
+  animationId: null,
   isSending: false,
   isPaused: false,
   systematicIndex: 0,
@@ -232,6 +234,7 @@ const state = {
   cimbarRenderCanvas: null,
   cimbarUseWrapper: false,
   cimbarLayout: null,
+  nextFrameDueMs: 0,
   txPerf: createSenderPerfState()
 }
 
@@ -553,6 +556,50 @@ function measureAndApplyCanvasSize(metrics = getCanvasViewportMetrics()) {
   debugLog(`Canvas: ${metrics.width}x${metrics.height} (${metrics.source}), data region ${dataWidth}x${dataHeight} (${dataUtil}% of frame)`)
 
   return { metrics, capacity }
+}
+
+function cancelScheduledRender() {
+  if (state.timerId) {
+    clearTimeout(state.timerId)
+    state.timerId = null
+  }
+  if (state.animationId) {
+    cancelAnimationFrame(state.animationId)
+    state.animationId = null
+  }
+}
+
+function resetRenderSchedule() {
+  cancelScheduledRender()
+  state.nextFrameDueMs = 0
+}
+
+function scheduleNextRender() {
+  if (!state.isSending || state.isPaused) return
+
+  const fps = getFps()
+  const targetIntervalMs = 1000 / fps.fps
+  if (!state.nextFrameDueMs) {
+    state.nextFrameDueMs = performance.now() + targetIntervalMs
+  }
+
+  const tick = (now) => {
+    state.animationId = null
+    if (!state.isSending || state.isPaused) return
+
+    if (now + 0.25 < state.nextFrameDueMs) {
+      state.animationId = requestAnimationFrame(tick)
+      return
+    }
+
+    while (state.nextFrameDueMs <= now) {
+      state.nextFrameDueMs += targetIntervalMs
+    }
+
+    renderFrame()
+  }
+
+  state.animationId = requestAnimationFrame(tick)
 }
 
 function formatBytes(bytes) {
@@ -885,8 +932,7 @@ function renderFrame() {
       elements.progressDisplay.textContent = 'CIMBAR'
       debugCurrent(`#${state.frameCount} CIMBAR x${layout.tileCount}`)
 
-      const fps = getFps()
-      state.timerId = setTimeout(renderFrame, fps.interval)
+      scheduleNextRender()
     } catch (err) {
       debugLog(`ERROR: ${err.message}`)
       showError('CIMBAR render error: ' + err.message)
@@ -947,7 +993,7 @@ function renderFrame() {
       ch
     )
 
-    state.timerId = setTimeout(renderFrame, fps.interval)
+    scheduleNextRender()
 
   } catch (err) {
     debugLog(`ERROR: ${err.message}`)
@@ -1043,6 +1089,7 @@ async function startSending() {
       state.isSending = true
       state.isPaused = false
       state.frameCount = 0
+      state.nextFrameDueMs = performance.now() + (1000 / selectedFps.fps)
       state.cimbarBoundsLogged = false
       setSignalLive(true)
 
@@ -1163,6 +1210,7 @@ async function startSending() {
     state.dataPacketCount = 0
     state.systematicPass = 1
     state.frameCount = 0
+    state.nextFrameDueMs = performance.now() + (1000 / selectedFps.fps)
     resetSenderPerfState()
     debugLog(`Systematic order: source stride=${state.systematicStride}/${state.encoder.K}`)
     debugLog(getHybridScheduleDescription())
@@ -1182,10 +1230,7 @@ async function startSending() {
 async function pauseSending() {
   state.isPaused = true
   setSignalLive(false)
-  if (state.timerId) {
-    clearTimeout(state.timerId)
-    state.timerId = null
-  }
+  cancelScheduledRender()
 
   resetCanvasStyles()
   await exitFullscreenSafely()
@@ -1235,6 +1280,7 @@ async function resumeSending() {
     const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics)
     logSenderSessionMetrics('Resume session', metrics, capacity)
   }
+  state.nextFrameDueMs = performance.now() + (1000 / getFps().fps)
   resetSenderPerfState()
 
   elements.fpsSlider.disabled = true
@@ -1244,10 +1290,7 @@ async function resumeSending() {
 }
 
 async function stopSending() {
-  if (state.timerId) {
-    clearTimeout(state.timerId)
-    state.timerId = null
-  }
+  resetRenderSchedule()
 
   state.encoder = null
   state.fileData = null
@@ -1269,6 +1312,7 @@ async function stopSending() {
   state.cimbarBoundsLogged = false
   state.cimbarUseWrapper = false
   state.cimbarLayout = null
+  state.animationId = null
   resetSenderPerfState()
   setSignalLive(false)
 
