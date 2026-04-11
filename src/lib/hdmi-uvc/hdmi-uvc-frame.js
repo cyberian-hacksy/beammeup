@@ -37,6 +37,12 @@ const CODEBOOK3_PATTERNS = [
   [1, 0, 0, 1],
   [0, 1, 1, 0]
 ]
+const LUMA2_PATTERNS = [
+  [1, 1, 0, 0],
+  [0, 0, 1, 1],
+  [1, 0, 1, 0],
+  [0, 1, 0, 1]
+]
 const GLYPH5_GRID_SIZE = 4
 const GLYPH5_SYMBOL_COUNT = 32
 const GLYPH5_CODEBOOK = buildGlyph5Codebook()
@@ -226,13 +232,13 @@ function normalizeBinarySample(sample, blackLevel = 0, whiteLevel = 255) {
   return Math.max(0, Math.min(1, normalized))
 }
 
-function decodeCodebook3(samples, blackLevel = 0, whiteLevel = 255) {
+function decodeQuadrantCodebook(samples, blackLevel = 0, whiteLevel = 255, patterns) {
   const normalized = samples.map((sample) => normalizeBinarySample(sample, blackLevel, whiteLevel))
   let bestSymbol = 0
   let bestError = Infinity
 
-  for (let symbol = 0; symbol < CODEBOOK3_PATTERNS.length; symbol++) {
-    const pattern = CODEBOOK3_PATTERNS[symbol]
+  for (let symbol = 0; symbol < patterns.length; symbol++) {
+    const pattern = patterns[symbol]
     let error = 0
     for (let i = 0; i < 4; i++) {
       const delta = normalized[i] - pattern[i]
@@ -245,6 +251,14 @@ function decodeCodebook3(samples, blackLevel = 0, whiteLevel = 255) {
   }
 
   return bestSymbol
+}
+
+function decodeCodebook3(samples, blackLevel = 0, whiteLevel = 255) {
+  return decodeQuadrantCodebook(samples, blackLevel, whiteLevel, CODEBOOK3_PATTERNS)
+}
+
+function decodeLuma2(samples, blackLevel = 0, whiteLevel = 255) {
+  return decodeQuadrantCodebook(samples, blackLevel, whiteLevel, LUMA2_PATTERNS)
 }
 
 function decodeGlyph5(samples, blackLevel = 0, whiteLevel = 255) {
@@ -279,8 +293,7 @@ function fillBlockSolid(imageData, width, startX, startY, size, r, g, b) {
   }
 }
 
-function renderCodebook3Block(imageData, width, startX, startY, size, symbol) {
-  const pattern = CODEBOOK3_PATTERNS[symbol & 0x7]
+function renderQuadrantCodebookBlock(imageData, width, startX, startY, size, pattern) {
   const xMid = Math.max(startX + 1, Math.min(startX + size - 1, startX + Math.round(size / 2)))
   const yMid = Math.max(startY + 1, Math.min(startY + size - 1, startY + Math.round(size / 2)))
   const quadrants = [
@@ -302,6 +315,14 @@ function renderCodebook3Block(imageData, width, startX, startY, size, symbol) {
       }
     }
   }
+}
+
+function renderCodebook3Block(imageData, width, startX, startY, size, symbol) {
+  renderQuadrantCodebookBlock(imageData, width, startX, startY, size, CODEBOOK3_PATTERNS[symbol & 0x7])
+}
+
+function renderLuma2Block(imageData, width, startX, startY, size, symbol) {
+  renderQuadrantCodebookBlock(imageData, width, startX, startY, size, LUMA2_PATTERNS[symbol & 0x3])
 }
 
 function renderGlyph5Block(imageData, width, startX, startY, size, symbol) {
@@ -645,6 +666,10 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
     }
     if (mode === HDMI_MODE.CODEBOOK_3) {
       renderCodebook3Block(imageData, width, startX, startY, dataBlockSize, symbol)
+      continue
+    }
+    if (mode === HDMI_MODE.LUMA_2) {
+      renderLuma2Block(imageData, width, startX, startY, dataBlockSize, symbol)
       continue
     } else {
       const val = bitsPerBlock === 2 ? encodeGray2(symbol) : (symbol ? 255 : 0)
@@ -1151,6 +1176,9 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
       if (header.mode === HDMI_MODE.RAW_RGB) {
         const rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
         symbol = decodeRgb3(rgb, levels?.blackLevels, levels?.whiteLevels, levels?.rgbPalette)
+      } else if (header.mode === HDMI_MODE.LUMA_2) {
+        const samples = sampleCodebook3At(imageData, width, px, py, bs)
+        symbol = decodeLuma2(samples, levels?.blackLevel, levels?.whiteLevel)
       } else if (header.mode === HDMI_MODE.GLYPH_5) {
         const samples = sampleGlyph5At(imageData, width, px, py, bs)
         symbol = decodeGlyph5(samples, levels?.blackLevel, levels?.whiteLevel)
@@ -1240,6 +1268,9 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
       if (frameMode === HDMI_MODE.RAW_RGB) {
         const rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
         symbol = decodeRgb3(rgb, layout.blackLevels, layout.whiteLevels, rgbPalette)
+      } else if (frameMode === HDMI_MODE.LUMA_2) {
+        const samples = sampleCodebook3At(imageData, width, px, py, layout.dataBs)
+        symbol = decodeLuma2(samples, layout.blackLevel, layout.whiteLevel)
       } else if (frameMode === HDMI_MODE.GLYPH_5) {
         const samples = sampleGlyph5At(imageData, width, px, py, layout.dataBs)
         symbol = decodeGlyph5(samples, layout.blackLevel, layout.whiteLevel)
@@ -1933,10 +1964,13 @@ export function testModeCapacityOrdering() {
   const width = 640
   const height = 480
   const cap4 = getPayloadCapacity(width, height, HDMI_MODE.COMPAT_4)
-  const removedCap8 = getPayloadCapacity(width, height, 3)
+  const luma2Cap = getPayloadCapacity(width, height, HDMI_MODE.LUMA_2)
   const removedCap16 = getPayloadCapacity(width, height, 4)
-  const pass = cap4 > 0 && removedCap8 === 0 && removedCap16 === 0
-  console.log('Mode capacity ordering test:', pass ? `PASS (${cap4}; legacy 8x8/16x16 disabled)` : 'FAIL')
+  const pass = cap4 > 0 && luma2Cap > cap4 && removedCap16 === 0
+  console.log(
+    'Mode capacity ordering test:',
+    pass ? `PASS (${cap4}; Luma2=${luma2Cap}; legacy 16x16 disabled)` : 'FAIL'
+  )
   return pass
 }
 
@@ -1997,6 +2031,36 @@ export function testRgb3FrameRoundtrip() {
     result.payload.every((v, i) => v === payload[i])
 
   console.log('RGB3 frame roundtrip test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testLuma2FrameRoundtrip() {
+  const payload = new Uint8Array(401)
+  for (let i = 0; i < payload.length; i++) payload[i] = (i * 31) & 0xFF
+
+  const width = 640
+  const height = 480
+  const frame = buildFrame(payload, HDMI_MODE.LUMA_2, width, height, 30, 42)
+  const anchors = detectAnchors(frame, width, height)
+  if (anchors.length < 2) {
+    console.log('Luma2 frame roundtrip test: FAIL (anchors)')
+    return false
+  }
+
+  const region = dataRegionFromAnchors(anchors)
+  if (!region) {
+    console.log('Luma2 frame roundtrip test: FAIL (no region)')
+    return false
+  }
+
+  const result = decodeDataRegion(frame, width, region)
+  const pass = result !== null &&
+    result.crcValid &&
+    result.header.mode === HDMI_MODE.LUMA_2 &&
+    result.payload.length === payload.length &&
+    result.payload.every((v, i) => v === payload[i])
+
+  console.log('Luma2 frame roundtrip test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

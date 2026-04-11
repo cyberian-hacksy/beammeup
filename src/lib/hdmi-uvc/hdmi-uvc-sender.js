@@ -584,6 +584,16 @@ function getBatchingProfile(mode) {
         maxBlockSize: 768,
         maxUsedBytes: 8192
       }
+    case HDMI_MODE.LUMA_2:
+      // Luma2 keeps the 4x4 grid but replaces fragile mid-tones/chroma with a
+      // balanced black/white quadrant alphabet. Start just above the proven
+      // binary 4x4 byte budget so live results isolate symbol robustness.
+      return {
+        maxPacketsPerFrame: 10,
+        targetFrameFill: 0.32,
+        maxBlockSize: 896,
+        maxUsedBytes: 8192
+      }
     case HDMI_MODE.COMPAT_4:
       // 4x4 mode is the most robust live path. Permuted systematic order helps
       // late-stage completion, but the best sustained throughput still comes
@@ -632,7 +642,9 @@ function getFountainPacketInterval() {
     if (state.systematicPass >= 2) return RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL
     return HYBRID_FOUNTAIN_PACKET_INTERVAL
   }
-  if (state.mode !== HDMI_MODE.COMPAT_4) return HYBRID_FOUNTAIN_PACKET_INTERVAL
+  if (state.mode !== HDMI_MODE.COMPAT_4 && state.mode !== HDMI_MODE.LUMA_2) {
+    return HYBRID_FOUNTAIN_PACKET_INTERVAL
+  }
   if (state.systematicPass >= 3) return COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 2) return COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL
   return HYBRID_FOUNTAIN_PACKET_INTERVAL
@@ -647,11 +659,12 @@ function getHybridScheduleDescription() {
     )
   }
 
-  if (state.mode === HDMI_MODE.COMPAT_4) {
+  if (state.mode === HDMI_MODE.COMPAT_4 || state.mode === HDMI_MODE.LUMA_2) {
+    const modeName = state.mode === HDMI_MODE.LUMA_2 ? 'Luma2' : '4x4'
     return (
       'Hybrid schedule: source-only pass 1, then fountain every ' +
       `${COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL} ` +
-      `data packets in later 4x4 replay passes (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
+      `data packets in later ${modeName} replay passes (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
     )
   }
 
@@ -1229,7 +1242,10 @@ function handleFpsChange() {
 }
 
 function getRecommendedFpsPreset(mode = state.mode) {
-  return mode === HDMI_MODE.CIMBAR || mode === HDMI_MODE.COMPAT_4 || mode === HDMI_MODE.RAW_RGB
+  return mode === HDMI_MODE.CIMBAR ||
+    mode === HDMI_MODE.COMPAT_4 ||
+    mode === HDMI_MODE.RAW_RGB ||
+    mode === HDMI_MODE.LUMA_2
     ? '1'
     : String(DEFAULT_FPS_PRESET)
 }

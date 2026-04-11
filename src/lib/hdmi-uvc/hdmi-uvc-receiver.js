@@ -257,7 +257,9 @@ function tryFixedLayoutPackets(imageData, width, region) {
 }
 
 function tryLockedLayoutFastPath(imageData, width, region) {
-  if (state.detectedMode !== HDMI_MODE.RAW_RGB) return false
+  if (state.detectedMode !== HDMI_MODE.RAW_RGB && state.detectedMode !== HDMI_MODE.LUMA_2) {
+    return false
+  }
   if (!state.fixedLayout || state.expectedPacketCount < 1) return false
 
   const expectedPacketSize = getExpectedPacketSize()
