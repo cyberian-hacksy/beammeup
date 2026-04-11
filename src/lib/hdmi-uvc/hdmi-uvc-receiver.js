@@ -243,32 +243,51 @@ function isBetterPacketProbe(candidate, best) {
   return candidateDistance < bestDistance
 }
 
-function probeLayoutPackets(imageData, width, region, layout, payloadLength, expectedPacketSize = null) {
+function probeLayoutPackets(imageData, width, region, layout, payloadLength, expectedPacketSize = null, options = {}) {
   if (!layout || !payloadLength || payloadLength <= 0) return null
+
+  const {
+    includeScaleSearch = false
+  } = options
 
   const offsets = layout.frameMode === HDMI_MODE.LUMA_2
     ? [0, -1, 1, -2, 2, -3, 3]
     : [0, -1, 1, -2, 2]
+  const scales = includeScaleSearch && layout.frameMode === HDMI_MODE.LUMA_2
+    ? [1, 0.9925, 1.0075, 0.985, 1.015]
+    : [1]
 
   let best = null
 
-  for (const xAdjust of offsets) {
-    for (const yAdjust of offsets) {
-      const candidateLayout = {
-        ...layout,
-        xOff: (layout.xOff || 0) + xAdjust,
-        yOff: (layout.yOff || 0) + yAdjust
-      }
-      const payload = readPayloadWithLayout(imageData, width, region, candidateLayout, payloadLength)
-      if (!payload) continue
+  for (const scale of scales) {
+    for (const xAdjust of offsets) {
+      for (const yAdjust of offsets) {
+        const candidateLayout = {
+          ...layout,
+          xOff: (layout.xOff || 0) + xAdjust,
+          yOff: (layout.yOff || 0) + yAdjust,
+          stepX: layout.stepX * scale,
+          stepY: layout.stepY * scale,
+          dataBs: layout.dataBs * scale
+        }
+        const payload = readPayloadWithLayout(imageData, width, region, candidateLayout, payloadLength)
+        if (!payload) continue
 
-      const probe = probeFramePackets(payload, expectedPacketSize)
-      const candidate = { payload, probe, layout: candidateLayout, xAdjust, yAdjust }
-      if (isBetterPacketProbe(candidate, best)) best = candidate
+        const probe = probeFramePackets(payload, expectedPacketSize)
+        const candidate = { payload, probe, layout: candidateLayout, xAdjust, yAdjust }
+        if (isBetterPacketProbe(candidate, best)) best = candidate
+      }
     }
   }
 
   return best
+}
+
+function getLayoutProbeOptions(layout) {
+  if (!layout) return {}
+  return layout.frameMode === HDMI_MODE.LUMA_2
+    ? { includeScaleSearch: true }
+    : {}
 }
 
 function extractFramePackets(framePayload, expectedPacketSize = null) {
@@ -288,6 +307,34 @@ function ensureDecoder() {
   }
 }
 
+function noteSignalDetected(mode, resolution = null) {
+  if (mode === null || mode === undefined) return
+
+  const firstDetection = state.detectedMode === null
+  if (state.detectedMode === null) {
+    state.detectedMode = mode
+    if (state.detectedMode !== HDMI_MODE.CIMBAR) {
+      resetCimbarSink()
+    }
+  }
+
+  if (resolution?.width && resolution?.height) {
+    state.detectedResolution = { width: resolution.width, height: resolution.height }
+    elements.signalStatus.textContent = `Detected: ${resolution.width}x${resolution.height}`
+  } else if (firstDetection) {
+    elements.signalStatus.textContent = `Detected: ${HDMI_MODE_NAMES[mode]}`
+  }
+
+  if (firstDetection) {
+    debugLog(`=== SIGNAL DETECTED ===`)
+    debugLog(
+      resolution?.width && resolution?.height
+        ? `Mode: ${HDMI_MODE_NAMES[mode]}, ${resolution.width}x${resolution.height}`
+        : `Mode: ${HDMI_MODE_NAMES[mode]}`
+    )
+  }
+}
+
 function getExpectedPacketSize() {
   return state.decoder ? state.decoder.blockSize + PACKET_HEADER_SIZE : null
 }
@@ -297,14 +344,23 @@ function tryFixedLayoutPackets(imageData, width, region) {
   if (!expectedPacketSize || !state.fixedLayout || state.expectedPacketCount < 1) return []
 
   const payloadLength = expectedPacketSize * state.expectedPacketCount
-  const best = probeLayoutPackets(imageData, width, region, state.fixedLayout, payloadLength, expectedPacketSize)
+  const best = probeLayoutPackets(
+    imageData,
+    width,
+    region,
+    state.fixedLayout,
+    payloadLength,
+    expectedPacketSize,
+    getLayoutProbeOptions(state.fixedLayout)
+  )
   if (!best) return []
   if (best.layout) state.fixedLayout = { ...best.layout }
   return best.probe?.packets || []
 }
 
 function tryLockedLayoutFastPath(imageData, width, region) {
-  if (state.detectedMode !== HDMI_MODE.RAW_RGB && state.detectedMode !== HDMI_MODE.LUMA_2) {
+  const activeMode = state.detectedMode ?? state.fixedLayout?.frameMode ?? state.preferredLayout?.frameMode
+  if (activeMode !== HDMI_MODE.RAW_RGB && activeMode !== HDMI_MODE.LUMA_2) {
     return false
   }
   if (!state.fixedLayout || state.expectedPacketCount < 1) return false
@@ -313,7 +369,15 @@ function tryLockedLayoutFastPath(imageData, width, region) {
   if (!expectedPacketSize) return false
 
   const payloadLength = expectedPacketSize * state.expectedPacketCount
-  const best = probeLayoutPackets(imageData, width, region, state.fixedLayout, payloadLength, expectedPacketSize)
+  const best = probeLayoutPackets(
+    imageData,
+    width,
+    region,
+    state.fixedLayout,
+    payloadLength,
+    expectedPacketSize,
+    getLayoutProbeOptions(state.fixedLayout)
+  )
   if (!best) return false
 
   const packets = best.probe?.packets || []
@@ -1270,16 +1334,10 @@ async function processFrame(now, metadata) {
   const result = decodeDataRegion(imageData.data, width, region)
 
   if (result && result.crcValid) {
-    if (state.detectedMode === null) {
-      state.detectedMode = result.header.mode
-      if (state.detectedMode !== HDMI_MODE.CIMBAR) {
-        resetCimbarSink()
-      }
-      state.detectedResolution = { width: result.header.width, height: result.header.height }
-      elements.signalStatus.textContent = `Detected: ${result.header.width}x${result.header.height}`
-      debugLog(`=== SIGNAL DETECTED ===`)
-      debugLog(`Mode: ${HDMI_MODE_NAMES[result.header.mode]}, ${result.header.width}x${result.header.height}`)
-    }
+    noteSignalDetected(result.header.mode, {
+      width: result.header.width,
+      height: result.header.height
+    })
 
     const expectedPacketSize = getExpectedPacketSize()
     const totalFramePackets = getFramePacketSlotCount(result.payload, expectedPacketSize)
@@ -1297,30 +1355,40 @@ async function processFrame(now, metadata) {
     const totalFramePackets = salvageProbe.slotCount
     const salvagedPackets = salvageProbe.packets
     const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
+    const phasePayloadLength =
+      expectedPacketSize && state.expectedPacketCount > 0
+        ? expectedPacketSize * state.expectedPacketCount
+        : result.header.payloadLength
     const phaseProbe = probeLayoutPackets(
       imageData.data,
       width,
       region,
       result._diag || state.fixedLayout || state.preferredLayout,
-      result.header.payloadLength,
-      expectedPacketSize
+      phasePayloadLength,
+      expectedPacketSize,
+      { includeScaleSearch: true }
     )
     const phasePackets = phaseProbe?.probe?.packets || []
     if (acceptPackets(salvagedPackets, result.header.symbolId, true, totalFramePackets)) {
+      noteSignalDetected(result.header.mode)
       if (result._diag) state.fixedLayout = { ...result._diag }
+      if (result._diag) state.preferredLayout = { ...result._diag }
       debugLog(`Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) from CRC-fail frame`)
       if (state.decoder?.isComplete()) return
       scheduleNextFrame()
       return
     }
     if (acceptPackets(phasePackets, result.header.symbolId, true, phaseProbe?.probe?.slotCount || totalFramePackets)) {
+      noteSignalDetected(phaseProbe?.layout?.frameMode ?? result.header.mode)
       if (phaseProbe?.layout) state.fixedLayout = { ...phaseProbe.layout }
+      if (phaseProbe?.layout) state.preferredLayout = { ...phaseProbe.layout }
       debugLog(`Frame ${state.frameCount}: phase-recovered ${phasePackets.length} packet(s) from CRC-fail frame`)
       if (state.decoder?.isComplete()) return
       scheduleNextFrame()
       return
     }
     if (acceptPackets(fixedPackets, result.header.symbolId, true, state.expectedPacketCount)) {
+      noteSignalDetected(state.fixedLayout?.frameMode ?? result.header.mode)
       debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) via fixed layout`)
       if (state.decoder?.isComplete()) return
       scheduleNextFrame()
