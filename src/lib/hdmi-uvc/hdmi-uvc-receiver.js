@@ -16,6 +16,7 @@ import { detectAnchors, dataRegionFromAnchors, decodeDataRegion, readPayloadWith
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
 const MAX_DEBUG_LINES = 500
+const RX_PERF_LOG_INTERVAL_FRAMES = 60
 const debugLines = []
 
 function renderDebugLog() {
@@ -47,6 +48,116 @@ function debugCurrent(text) {
   if (!DEBUG_MODE) return
   const el = document.getElementById('hdmi-uvc-receiver-debug-current')
   if (el) el.textContent = text
+}
+
+function createPerfWindow() {
+  return {
+    count: 0,
+    sum: 0,
+    min: Infinity,
+    max: 0
+  }
+}
+
+function resetPerfWindow(window) {
+  window.count = 0
+  window.sum = 0
+  window.min = Infinity
+  window.max = 0
+}
+
+function recordPerfSample(window, value) {
+  if (!Number.isFinite(value)) return
+  window.count++
+  window.sum += value
+  if (value < window.min) window.min = value
+  if (value > window.max) window.max = value
+}
+
+function averagePerfWindow(window) {
+  return window.count > 0 ? window.sum / window.count : 0
+}
+
+function createReceiverPerfState() {
+  return {
+    captureMs: createPerfWindow(),
+    anchorMs: createPerfWindow(),
+    fastPathMs: createPerfWindow(),
+    decodeMs: createPerfWindow(),
+    totalMs: createPerfWindow(),
+    intervalMs: createPerfWindow(),
+    acceptMs: createPerfWindow(),
+    framesSinceLog: 0,
+    lastFrameStartMs: 0,
+    lastCaptureMethod: null,
+    acceptCalls: 0,
+    acceptedPackets: 0
+  }
+}
+
+function clearReceiverPerfSamples(perf) {
+  resetPerfWindow(perf.captureMs)
+  resetPerfWindow(perf.anchorMs)
+  resetPerfWindow(perf.fastPathMs)
+  resetPerfWindow(perf.decodeMs)
+  resetPerfWindow(perf.totalMs)
+  resetPerfWindow(perf.intervalMs)
+  resetPerfWindow(perf.acceptMs)
+  perf.framesSinceLog = 0
+  perf.acceptCalls = 0
+  perf.acceptedPackets = 0
+}
+
+function resetReceiverPerfState() {
+  state.rxPerf = createReceiverPerfState()
+}
+
+function noteReceiverAcceptPerf(durationMs, packetCount, accepted) {
+  const perf = state.rxPerf
+  if (!perf) return
+
+  recordPerfSample(perf.acceptMs, durationMs)
+  perf.acceptCalls++
+  if (accepted) perf.acceptedPackets += packetCount
+}
+
+function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs) {
+  const perf = state.rxPerf
+  if (!perf) return
+
+  if (perf.lastFrameStartMs > 0) {
+    recordPerfSample(perf.intervalMs, frameStartMs - perf.lastFrameStartMs)
+  }
+  perf.lastFrameStartMs = frameStartMs
+
+  recordPerfSample(perf.captureMs, captureMs)
+  recordPerfSample(perf.anchorMs, anchorMs)
+  recordPerfSample(perf.fastPathMs, fastPathMs)
+  recordPerfSample(perf.decodeMs, decodeMs)
+  recordPerfSample(perf.totalMs, performance.now() - frameStartMs)
+  perf.framesSinceLog++
+  perf.lastCaptureMethod = captureMethod || perf.lastCaptureMethod
+
+  if (perf.framesSinceLog < RX_PERF_LOG_INTERVAL_FRAMES) return
+
+  const avgIntervalMs = averagePerfWindow(perf.intervalMs)
+  const processedFps = avgIntervalMs > 0 ? 1000 / avgIntervalMs : 0
+  const avgAcceptCalls = perf.framesSinceLog > 0 ? perf.acceptCalls / perf.framesSinceLog : 0
+  const avgAcceptedPackets = perf.framesSinceLog > 0 ? perf.acceptedPackets / perf.framesSinceLog : 0
+
+  debugLog(
+    `RX perf: fps=${processedFps.toFixed(1)} ` +
+    `capture=${averagePerfWindow(perf.captureMs).toFixed(2)}ms ` +
+    `anchor=${averagePerfWindow(perf.anchorMs).toFixed(2)}ms ` +
+    `fast=${averagePerfWindow(perf.fastPathMs).toFixed(2)}ms ` +
+    `decode=${averagePerfWindow(perf.decodeMs).toFixed(2)}ms ` +
+    `acceptCall=${averagePerfWindow(perf.acceptMs).toFixed(2)}ms ` +
+    `total=${averagePerfWindow(perf.totalMs).toFixed(2)}ms ` +
+    `acceptCalls=${avgAcceptCalls.toFixed(2)}/frame pkts=${avgAcceptedPackets.toFixed(2)}/frame ` +
+    `method=${perf.lastCaptureMethod || 'n/a'}`
+  )
+
+  clearReceiverPerfSamples(perf)
 }
 
 function formatMaybeNumber(value, digits = 2) {
@@ -408,55 +519,63 @@ function tryLockedLayoutFastPath(imageData, width, region) {
 }
 
 function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expectedFramePacketCount = packets.length) {
-  if (packets.length === 0) return false
+  const acceptStartMs = performance.now()
+  let accepted = false
 
-  ensureDecoder()
+  try {
+    if (packets.length === 0) return false
 
-  let lastParsed = null
-  for (const packet of packets) {
-    const parsed = parsePacket(packet)
-    if (!parsed) continue
-    lastParsed = parsed
-    state.decoder.receive(packet)
-  }
+    ensureDecoder()
 
-  if (!lastParsed) return false
+    let lastParsed = null
+    for (const packet of packets) {
+      const parsed = parsePacket(packet)
+      if (!parsed) continue
+      lastParsed = parsed
+      state.decoder.receive(packet)
+    }
 
-  if (countAsValidFrame) {
-    state.validFrames++
-    state.decodeFailCount = 0
-    elements.statFrames.textContent = state.validFrames + ' valid frames'
-  }
+    if (!lastParsed) return false
 
-  state.expectedPacketCount = Math.max(packets.length, expectedFramePacketCount || 0)
-  recordProgressSample()
+    if (countAsValidFrame) {
+      state.validFrames++
+      state.decodeFailCount = 0
+      elements.statFrames.textContent = state.validFrames + ' valid frames'
+    }
 
-  if (state.validFrames % 10 === 0) {
-    const throughput = getThroughputStats()
-    const rateSuffix = throughput
-      ? ` rate=${formatBytes(throughput.average)}/s recent=${formatBytes(throughput.recent ?? throughput.average)}/s`
-      : ''
-    debugLog(
-      `Progress: ${getDisplayProgressPercent(state.decoder)}% ` +
-      `solved=${state.decoder.solved}/${state.decoder.K || '?'} ` +
-      `unique=${state.decoder.uniqueSymbols} ` +
-      `sym=${lastParsed.symbolId ?? fallbackSymbolId} pkts=${packets.length}` +
-      rateSuffix
+    state.expectedPacketCount = Math.max(packets.length, expectedFramePacketCount || 0)
+    recordProgressSample()
+
+    if (state.validFrames % 10 === 0) {
+      const throughput = getThroughputStats()
+      const rateSuffix = throughput
+        ? ` rate=${formatBytes(throughput.average)}/s recent=${formatBytes(throughput.recent ?? throughput.average)}/s`
+        : ''
+      debugLog(
+        `Progress: ${getDisplayProgressPercent(state.decoder)}% ` +
+        `solved=${state.decoder.solved}/${state.decoder.K || '?'} ` +
+        `unique=${state.decoder.uniqueSymbols} ` +
+        `sym=${lastParsed.symbolId ?? fallbackSymbolId} pkts=${packets.length}` +
+        rateSuffix
+      )
+    }
+
+    debugCurrent(
+      `#${state.validFrames} sym=${lastParsed.symbolId ?? fallbackSymbolId} ` +
+      `${getDisplayProgressPercent(state.decoder)}% x${packets.length}`
     )
+    updateProgress()
+
+    if (state.decoder.isComplete()) {
+      debugLog('=== TRANSFER COMPLETE ===')
+      handleComplete()
+    }
+
+    accepted = true
+    return true
+  } finally {
+    noteReceiverAcceptPerf(performance.now() - acceptStartMs, packets.length, accepted)
   }
-
-  debugCurrent(
-    `#${state.validFrames} sym=${lastParsed.symbolId ?? fallbackSymbolId} ` +
-    `${getDisplayProgressPercent(state.decoder)}% x${packets.length}`
-  )
-  updateProgress()
-
-  if (state.decoder.isComplete()) {
-    debugLog('=== TRANSFER COMPLETE ===')
-    handleComplete()
-  }
-
-  return true
 }
 
 const HDMI_CIMBAR_MODE = 68
@@ -516,7 +635,8 @@ const state = {
   fixedLayout: null,
   expectedPacketCount: 0,
   preferredLayout: null,
-  progressSamples: []
+  progressSamples: [],
+  rxPerf: createReceiverPerfState()
 }
 
 const CIMBAR_MODE_LABELS = {
@@ -988,6 +1108,7 @@ async function startCapture(deviceId) {
     }
 
     state.stream = await navigator.mediaDevices.getUserMedia(constraints)
+    resetReceiverPerfState()
     elements.video.srcObject = state.stream
 
     await new Promise(resolve => {
@@ -1102,6 +1223,18 @@ async function processFrame(now, metadata) {
   let imageHeight = height
   let captureMethod = 'video'
   let usedCimbarRoiCapture = false
+  const frameStartMs = performance.now()
+  let captureMs = 0
+  let anchorMs = 0
+  let fastPathMs = 0
+  let decodeMs = 0
+  let framePerfFinalized = false
+  const finalizeFramePerf = () => {
+    if (framePerfFinalized) return
+    framePerfFinalized = true
+    noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs)
+  }
+  const captureStartMs = performance.now()
 
   // ImageCapture is useful for initial acquisition, but it is noticeably
   // slower than drawing the video element directly. Once we have either HDMI
@@ -1178,6 +1311,7 @@ async function processFrame(now, metadata) {
   if (!imageData) {
     imageData = captureImageDataToCanvas(video, state.canvas, state.ctx, width, height)
   }
+  captureMs = performance.now() - captureStartMs
 
   if (captureMethod !== state.activeCaptureMethod) {
     state.activeCaptureMethod = captureMethod
@@ -1213,6 +1347,7 @@ async function processFrame(now, metadata) {
       cimbarDetected = await tryCimbarDecode(fallbackImageData, width, height)
     }
     if (state.isScanning) scheduleNextFrame()
+    finalizeFramePerf()
     return
   }
 
@@ -1220,6 +1355,7 @@ async function processFrame(now, metadata) {
     const cimbarDetected = await tryCimbarDecode(imageData, width, height)
     if (cimbarDetected) {
       if (state.isScanning) scheduleNextFrame()
+      finalizeFramePerf()
       return
     }
   }
@@ -1314,7 +1450,9 @@ async function processFrame(now, metadata) {
   let region = state.anchorBounds
 
   if (!region) {
+    const anchorStartMs = performance.now()
     const anchors = detectAnchors(imageData.data, width, height)
+    anchorMs += performance.now() - anchorStartMs
     if (anchors.length >= 2) {
       region = dataRegionFromAnchors(anchors)
       if (region) {
@@ -1336,16 +1474,23 @@ async function processFrame(now, metadata) {
 
   if (!region) {
     scheduleNextFrame()
+    finalizeFramePerf()
     return
   }
 
-  if (tryLockedLayoutFastPath(imageData, width, region)) {
+  const fastPathStartMs = performance.now()
+  const fastPathAccepted = tryLockedLayoutFastPath(imageData, width, region)
+  fastPathMs += performance.now() - fastPathStartMs
+  if (fastPathAccepted) {
+    finalizeFramePerf()
     return
   }
 
   // === DECODE DATA REGION ===
   region.preferredLayout = state.preferredLayout
+  const decodeStartMs = performance.now()
   const result = decodeDataRegion(imageData.data, width, region)
+  decodeMs += performance.now() - decodeStartMs
 
   if (result && result.crcValid) {
     noteSignalDetected(result.header.mode, {
@@ -1360,7 +1505,10 @@ async function processFrame(now, metadata) {
     if (acceptPackets(packets, result.header.symbolId, true, totalFramePackets)) {
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
-      if (state.decoder?.isComplete()) return
+      if (state.decoder?.isComplete()) {
+        finalizeFramePerf()
+        return
+      }
     }
   } else if (result && !result.crcValid) {
     if (result._diag) state.preferredLayout = { ...result._diag }
@@ -1388,8 +1536,12 @@ async function processFrame(now, metadata) {
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
       debugLog(`Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) from CRC-fail frame`)
-      if (state.decoder?.isComplete()) return
+      if (state.decoder?.isComplete()) {
+        finalizeFramePerf()
+        return
+      }
       scheduleNextFrame()
+      finalizeFramePerf()
       return
     }
     if (acceptPackets(phasePackets, result.header.symbolId, true, phaseProbe?.probe?.slotCount || totalFramePackets)) {
@@ -1397,15 +1549,23 @@ async function processFrame(now, metadata) {
       if (phaseProbe?.layout) state.fixedLayout = { ...phaseProbe.layout }
       if (phaseProbe?.layout) state.preferredLayout = { ...phaseProbe.layout }
       debugLog(`Frame ${state.frameCount}: phase-recovered ${phasePackets.length} packet(s) from CRC-fail frame`)
-      if (state.decoder?.isComplete()) return
+      if (state.decoder?.isComplete()) {
+        finalizeFramePerf()
+        return
+      }
       scheduleNextFrame()
+      finalizeFramePerf()
       return
     }
     if (acceptPackets(fixedPackets, result.header.symbolId, true, state.expectedPacketCount)) {
       noteSignalDetected(state.fixedLayout?.frameMode ?? result.header.mode)
       debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) via fixed layout`)
-      if (state.decoder?.isComplete()) return
+      if (state.decoder?.isComplete()) {
+        finalizeFramePerf()
+        return
+      }
       scheduleNextFrame()
+      finalizeFramePerf()
       return
     }
 
@@ -1427,8 +1587,12 @@ async function processFrame(now, metadata) {
     const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
     if (acceptPackets(fixedPackets, state.frameCount, true, state.expectedPacketCount)) {
       debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) without outer header`)
-      if (state.decoder?.isComplete()) return
+      if (state.decoder?.isComplete()) {
+        finalizeFramePerf()
+        return
+      }
       scheduleNextFrame()
+      finalizeFramePerf()
       return
     }
 
@@ -1501,6 +1665,7 @@ async function processFrame(now, metadata) {
   }
 
   scheduleNextFrame()
+  finalizeFramePerf()
 }
 
 function showReceivingStatus() {
@@ -1620,6 +1785,7 @@ function resetReceiver() {
   state.preferredLayout = null
   state.expectedPacketCount = 0
   state.progressSamples = []
+  resetReceiverPerfState()
   resetCimbarSink()
 
   elements.statFrames.textContent = '0 frames'

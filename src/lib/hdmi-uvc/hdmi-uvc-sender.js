@@ -20,6 +20,7 @@ const HDMI_CIMBAR_MODE = 68
 const HDMI_CIMBAR_VARIANT_NAME = 'B'
 const HDMI_CIMBAR_TILE_COUNT = 1
 const HDMI_CIMBAR_TILE_GAP = 0
+const TX_PERF_LOG_INTERVAL_FRAMES = 60
 const HDMI_CIMBAR_TILE_PADDING = {
   top: 20,
   right: 20,
@@ -105,6 +106,107 @@ function debugCurrent(text) {
   if (el) el.textContent = text
 }
 
+function createPerfWindow() {
+  return {
+    count: 0,
+    sum: 0,
+    min: Infinity,
+    max: 0
+  }
+}
+
+function resetPerfWindow(window) {
+  window.count = 0
+  window.sum = 0
+  window.min = Infinity
+  window.max = 0
+}
+
+function recordPerfSample(window, value) {
+  if (!Number.isFinite(value)) return
+  window.count++
+  window.sum += value
+  if (value < window.min) window.min = value
+  if (value > window.max) window.max = value
+}
+
+function averagePerfWindow(window) {
+  return window.count > 0 ? window.sum / window.count : 0
+}
+
+function createSenderPerfState() {
+  return {
+    batchMs: createPerfWindow(),
+    buildMs: createPerfWindow(),
+    blitMs: createPerfWindow(),
+    totalMs: createPerfWindow(),
+    intervalMs: createPerfWindow(),
+    jitterMs: createPerfWindow(),
+    framesSinceLog: 0,
+    lastFrameStartMs: 0,
+    overBudgetCount: 0
+  }
+}
+
+function clearSenderPerfSamples(perf) {
+  resetPerfWindow(perf.batchMs)
+  resetPerfWindow(perf.buildMs)
+  resetPerfWindow(perf.blitMs)
+  resetPerfWindow(perf.totalMs)
+  resetPerfWindow(perf.intervalMs)
+  resetPerfWindow(perf.jitterMs)
+  perf.framesSinceLog = 0
+  perf.overBudgetCount = 0
+}
+
+function resetSenderPerfState() {
+  state.txPerf = createSenderPerfState()
+}
+
+function logSenderSessionMetrics(phase, metrics, capacity) {
+  const fps = getFps()
+  debugLog(
+    `${phase}: mode=${HDMI_MODE_NAMES[state.mode]} canvas=${metrics.width}x${metrics.height} ` +
+    `target=${fps.fps}fps payload=${capacity} B/frame theoretical=${formatBytes(capacity * fps.fps)}/s ` +
+    `source=${metrics.source}`
+  )
+}
+
+function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fps, canvasWidth, canvasHeight) {
+  const perf = state.txPerf
+  if (!perf) return
+
+  if (perf.lastFrameStartMs > 0) {
+    const intervalMs = frameStartMs - perf.lastFrameStartMs
+    recordPerfSample(perf.intervalMs, intervalMs)
+    recordPerfSample(perf.jitterMs, Math.abs(intervalMs - fps.interval))
+  }
+  perf.lastFrameStartMs = frameStartMs
+
+  recordPerfSample(perf.batchMs, batchMs)
+  recordPerfSample(perf.buildMs, buildMs)
+  recordPerfSample(perf.blitMs, blitMs)
+  recordPerfSample(perf.totalMs, totalMs)
+  if (totalMs > fps.interval) perf.overBudgetCount++
+  perf.framesSinceLog++
+
+  if (perf.framesSinceLog < TX_PERF_LOG_INTERVAL_FRAMES) return
+
+  const avgIntervalMs = averagePerfWindow(perf.intervalMs)
+  const deliveredFps = avgIntervalMs > 0 ? 1000 / avgIntervalMs : fps.fps
+  debugLog(
+    `TX perf: fps=${deliveredFps.toFixed(1)}/${fps.fps} ` +
+    `interval=${avgIntervalMs.toFixed(2)}ms jitter=${averagePerfWindow(perf.jitterMs).toFixed(2)}ms ` +
+    `batch=${averagePerfWindow(perf.batchMs).toFixed(2)}ms ` +
+    `build=${averagePerfWindow(perf.buildMs).toFixed(2)}ms ` +
+    `blit=${averagePerfWindow(perf.blitMs).toFixed(2)}ms ` +
+    `total=${averagePerfWindow(perf.totalMs).toFixed(2)}ms ` +
+    `overBudget=${perf.overBudgetCount}/${perf.totalMs.count} canvas=${canvasWidth}x${canvasHeight}`
+  )
+
+  clearSenderPerfSamples(perf)
+}
+
 const state = {
   encoder: null,
   fileData: null,
@@ -129,7 +231,8 @@ const state = {
   cimbarBoundsLogged: false,
   cimbarRenderCanvas: null,
   cimbarUseWrapper: false,
-  cimbarLayout: null
+  cimbarLayout: null,
+  txPerf: createSenderPerfState()
 }
 
 let elements = null
@@ -799,12 +902,16 @@ function renderFrame() {
 
   try {
     const nextFrameNumber = state.frameCount + 1
+    const frameStartMs = performance.now()
     const batch = buildFramePacketBatch(nextFrameNumber)
+    const batchReadyMs = performance.now()
 
     const frameData = buildFrame(batch.payload, state.mode, cw, ch, fps.fps, batch.outerSymbolId)
+    const buildDoneMs = performance.now()
 
     const ctx = elements.canvas.getContext('2d')
     ctx.putImageData(new ImageData(new Uint8ClampedArray(frameData), cw, ch), 0, 0)
+    const blitDoneMs = performance.now()
 
     state.frameCount = nextFrameNumber
     elements.frameCount.textContent = state.frameCount
@@ -827,6 +934,17 @@ function renderFrame() {
       batch.sendMetadata
         ? `#${state.frameCount} META + ${symbolLabel} ${progress}%`
         : `#${state.frameCount} ${symbolLabel} ${progress}%`
+    )
+
+    noteSenderFramePerf(
+      frameStartMs,
+      batchReadyMs - frameStartMs,
+      buildDoneMs - batchReadyMs,
+      blitDoneMs - buildDoneMs,
+      blitDoneMs - frameStartMs,
+      fps,
+      cw,
+      ch
     )
 
     state.timerId = setTimeout(renderFrame, fps.interval)
@@ -936,6 +1054,7 @@ async function startSending() {
     }
 
     const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics)
+    logSenderSessionMetrics('Start session', metrics, capacity)
     const canvasWidth = metrics.width
     const canvasHeight = metrics.height
     const {
@@ -1044,6 +1163,7 @@ async function startSending() {
     state.dataPacketCount = 0
     state.systematicPass = 1
     state.frameCount = 0
+    resetSenderPerfState()
     debugLog(`Systematic order: source stride=${state.systematicStride}/${state.encoder.K}`)
     debugLog(getHybridScheduleDescription())
     setSignalLive(true)
@@ -1112,8 +1232,10 @@ async function resumeSending() {
   if (isCimbarMode()) {
     scaleCimbarCanvasToViewport(stableMetrics)
   } else {
-    measureAndApplyCanvasSize(stableMetrics)
+    const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics)
+    logSenderSessionMetrics('Resume session', metrics, capacity)
   }
+  resetSenderPerfState()
 
   elements.fpsSlider.disabled = true
   updateActionButton()
@@ -1147,6 +1269,7 @@ async function stopSending() {
   state.cimbarBoundsLogged = false
   state.cimbarUseWrapper = false
   state.cimbarLayout = null
+  resetSenderPerfState()
   setSignalLive(false)
 
   elements.fpsSlider.disabled = false
