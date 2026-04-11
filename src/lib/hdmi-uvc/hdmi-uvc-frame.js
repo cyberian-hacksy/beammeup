@@ -14,14 +14,14 @@ const BITS_PER_BYTE = 8
 const HEADER_BLOCKS = HEADER_SIZE * BITS_PER_BYTE // 22 bytes × 8 bits = 176 blocks
 const GRAY2_LEVEL_FRACTIONS = [0.08, 0.36, 0.64, 0.92]
 const GRAY2_THRESHOLD_FRACTIONS = [0.22, 0.50, 0.78]
-// Color4 uses white plus subtractive primaries. This keeps every colored symbol
-// bright enough for the HDMI-UVC path while preserving a unique "missing"
-// channel per symbol.
+// Color4 uses white plus RGB primaries. The UVC path tends to preserve channel
+// dominance better than exact chroma, so decoding keys off a white gate plus
+// dominant-channel selection rather than strict nearest-neighbor distances.
 const RGB3_PALETTE = [
   [255, 255, 255],
-  [0, 255, 255],
-  [255, 0, 255],
-  [255, 255, 0]
+  [255, 0, 0],
+  [0, 255, 0],
+  [0, 0, 255]
 ]
 // Repeat pilot colors so the decoder can average multiple reads each frame.
 const RGB3_PILOT_SYMBOLS = [0, 1, 2, 3, 0, 1, 2, 3]
@@ -253,8 +253,11 @@ function decodeRgb3(sample, blackLevels = [0, 0, 0], whiteLevels = [255, 255, 25
       return 0
     }
 
-    const weakestChannel = normalized.indexOf(sampleMin)
-    return weakestChannel === 0 ? 1 : weakestChannel === 1 ? 2 : 3
+    let strongestChannel = 0
+    if (normalized[1] > normalized[strongestChannel]) strongestChannel = 1
+    if (normalized[2] > normalized[strongestChannel]) strongestChannel = 2
+
+    return strongestChannel === 0 ? 1 : strongestChannel === 1 ? 2 : 3
   }
 
   let bestSymbol = 0
@@ -2057,13 +2060,13 @@ export function testColor4PaletteClassifier() {
   const palette = buildRgbPaletteFromPilotSamples(RGB3_PALETTE, blackLevels, whiteLevels)
   const samples = [
     { symbol: 0, rgb: [231, 235, 228] },
-    { symbol: 1, rgb: [40, 206, 212] },
-    { symbol: 2, rgb: [216, 44, 208] },
-    { symbol: 3, rgb: [224, 216, 37] },
+    { symbol: 1, rgb: [216, 48, 44] },
+    { symbol: 2, rgb: [42, 208, 54] },
+    { symbol: 3, rgb: [48, 60, 214] },
     { symbol: 0, rgb: [218, 221, 214] },
-    { symbol: 1, rgb: [58, 188, 196] },
-    { symbol: 2, rgb: [202, 66, 196] },
-    { symbol: 3, rgb: [205, 204, 58] }
+    { symbol: 1, rgb: [198, 62, 58] },
+    { symbol: 2, rgb: [58, 192, 70] },
+    { symbol: 3, rgb: [66, 76, 198] }
   ]
 
   const pass = samples.every(({ symbol, rgb }) =>
