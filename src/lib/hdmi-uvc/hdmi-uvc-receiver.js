@@ -17,13 +17,32 @@ import { detectAnchors, dataRegionFromAnchors, decodeDataRegion, readPayloadWith
 const DEBUG_MODE = true
 const MAX_DEBUG_LINES = 500
 const RX_PERF_LOG_INTERVAL_FRAMES = 60
+const DEBUG_RENDER_INTERVAL_MS = 120
+const DEBUG_CONSOLE = false
 const debugLines = []
+let debugRenderTimer = null
 
 function renderDebugLog() {
   const el = document.getElementById('hdmi-uvc-receiver-debug-log')
   if (!el) return
   el.textContent = debugLines.join('\n')
   el.scrollTop = el.scrollHeight
+}
+
+function scheduleDebugLogRender() {
+  if (debugRenderTimer !== null) return
+  debugRenderTimer = setTimeout(() => {
+    debugRenderTimer = null
+    renderDebugLog()
+  }, DEBUG_RENDER_INTERVAL_MS)
+}
+
+function flushDebugLogRender() {
+  if (debugRenderTimer !== null) {
+    clearTimeout(debugRenderTimer)
+    debugRenderTimer = null
+  }
+  renderDebugLog()
 }
 
 function debugLog(text) {
@@ -40,8 +59,10 @@ function debugLog(text) {
   if (debugLines.length > MAX_DEBUG_LINES) {
     debugLines.splice(0, debugLines.length - MAX_DEBUG_LINES)
   }
-  renderDebugLog()
-  console.log('[HDMI-RX]', text)
+  scheduleDebugLogRender()
+  if (DEBUG_CONSOLE) {
+    console.log('[HDMI-RX]', text)
+  }
 }
 
 function debugCurrent(text) {
@@ -91,7 +112,16 @@ function createReceiverPerfState() {
     lastFrameStartMs: 0,
     lastCaptureMethod: null,
     acceptCalls: 0,
-    acceptedPackets: 0
+    acceptedPackets: 0,
+    crcFailFrames: 0,
+    salvagedFrames: 0,
+    salvagedPackets: 0,
+    phaseRecoveredFrames: 0,
+    phaseRecoveredPackets: 0,
+    fixedRecoveredFrames: 0,
+    fixedRecoveredPackets: 0,
+    headerlessRecoveredFrames: 0,
+    headerlessRecoveredPackets: 0
   }
 }
 
@@ -106,6 +136,15 @@ function clearReceiverPerfSamples(perf) {
   perf.framesSinceLog = 0
   perf.acceptCalls = 0
   perf.acceptedPackets = 0
+  perf.crcFailFrames = 0
+  perf.salvagedFrames = 0
+  perf.salvagedPackets = 0
+  perf.phaseRecoveredFrames = 0
+  perf.phaseRecoveredPackets = 0
+  perf.fixedRecoveredFrames = 0
+  perf.fixedRecoveredPackets = 0
+  perf.headerlessRecoveredFrames = 0
+  perf.headerlessRecoveredPackets = 0
 }
 
 function resetReceiverPerfState() {
@@ -119,6 +158,36 @@ function noteReceiverAcceptPerf(durationMs, packetCount, accepted) {
   recordPerfSample(perf.acceptMs, durationMs)
   perf.acceptCalls++
   if (accepted) perf.acceptedPackets += packetCount
+}
+
+function noteReceiverCrcFailFrame() {
+  const perf = state.rxPerf
+  if (!perf) return
+  perf.crcFailFrames++
+}
+
+function noteReceiverRecovery(kind, packetCount) {
+  const perf = state.rxPerf
+  if (!perf) return
+
+  switch (kind) {
+    case 'salvage':
+      perf.salvagedFrames++
+      perf.salvagedPackets += packetCount
+      break
+    case 'phase':
+      perf.phaseRecoveredFrames++
+      perf.phaseRecoveredPackets += packetCount
+      break
+    case 'fixed':
+      perf.fixedRecoveredFrames++
+      perf.fixedRecoveredPackets += packetCount
+      break
+    case 'headerless':
+      perf.headerlessRecoveredFrames++
+      perf.headerlessRecoveredPackets += packetCount
+      break
+  }
 }
 
 function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs) {
@@ -144,6 +213,13 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
   const processedFps = avgIntervalMs > 0 ? 1000 / avgIntervalMs : 0
   const avgAcceptCalls = perf.framesSinceLog > 0 ? perf.acceptCalls / perf.framesSinceLog : 0
   const avgAcceptedPackets = perf.framesSinceLog > 0 ? perf.acceptedPackets / perf.framesSinceLog : 0
+  const frameBase = perf.framesSinceLog > 0 ? perf.framesSinceLog : 1
+  const recoverySummary =
+    `crcFail=${perf.crcFailFrames}/${perf.framesSinceLog} ` +
+    `recover=s${(perf.salvagedFrames / frameBase).toFixed(2)}/${(perf.salvagedPackets / frameBase).toFixed(2)} ` +
+    `p${(perf.phaseRecoveredFrames / frameBase).toFixed(2)}/${(perf.phaseRecoveredPackets / frameBase).toFixed(2)} ` +
+    `f${(perf.fixedRecoveredFrames / frameBase).toFixed(2)}/${(perf.fixedRecoveredPackets / frameBase).toFixed(2)} ` +
+    `h${(perf.headerlessRecoveredFrames / frameBase).toFixed(2)}/${(perf.headerlessRecoveredPackets / frameBase).toFixed(2)}`
 
   debugLog(
     `RX perf: fps=${processedFps.toFixed(1)} ` +
@@ -154,7 +230,7 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `acceptCall=${averagePerfWindow(perf.acceptMs).toFixed(2)}ms ` +
     `total=${averagePerfWindow(perf.totalMs).toFixed(2)}ms ` +
     `acceptCalls=${avgAcceptCalls.toFixed(2)}/frame pkts=${avgAcceptedPackets.toFixed(2)}/frame ` +
-    `method=${perf.lastCaptureMethod || 'n/a'}`
+    `${recoverySummary} method=${perf.lastCaptureMethod || 'n/a'}`
   )
 
   clearReceiverPerfSamples(perf)
@@ -1511,6 +1587,7 @@ async function processFrame(now, metadata) {
       }
     }
   } else if (result && !result.crcValid) {
+    noteReceiverCrcFailFrame()
     if (result._diag) state.preferredLayout = { ...result._diag }
     const expectedPacketSize = getExpectedPacketSize()
     const salvageProbe = probeFramePackets(result.payload, expectedPacketSize)
@@ -1533,9 +1610,12 @@ async function processFrame(now, metadata) {
     const phasePackets = phaseProbe?.probe?.packets || []
     if (acceptPackets(salvagedPackets, result.header.symbolId, true, totalFramePackets)) {
       noteSignalDetected(result.header.mode)
+      noteReceiverRecovery('salvage', salvagedPackets.length)
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
-      debugLog(`Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) from CRC-fail frame`)
+      if (isDiagFrame) {
+        debugLog(`Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) from CRC-fail frame`)
+      }
       if (state.decoder?.isComplete()) {
         finalizeFramePerf()
         return
@@ -1546,9 +1626,12 @@ async function processFrame(now, metadata) {
     }
     if (acceptPackets(phasePackets, result.header.symbolId, true, phaseProbe?.probe?.slotCount || totalFramePackets)) {
       noteSignalDetected(phaseProbe?.layout?.frameMode ?? result.header.mode)
+      noteReceiverRecovery('phase', phasePackets.length)
       if (phaseProbe?.layout) state.fixedLayout = { ...phaseProbe.layout }
       if (phaseProbe?.layout) state.preferredLayout = { ...phaseProbe.layout }
-      debugLog(`Frame ${state.frameCount}: phase-recovered ${phasePackets.length} packet(s) from CRC-fail frame`)
+      if (isDiagFrame) {
+        debugLog(`Frame ${state.frameCount}: phase-recovered ${phasePackets.length} packet(s) from CRC-fail frame`)
+      }
       if (state.decoder?.isComplete()) {
         finalizeFramePerf()
         return
@@ -1559,7 +1642,10 @@ async function processFrame(now, metadata) {
     }
     if (acceptPackets(fixedPackets, result.header.symbolId, true, state.expectedPacketCount)) {
       noteSignalDetected(state.fixedLayout?.frameMode ?? result.header.mode)
-      debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) via fixed layout`)
+      noteReceiverRecovery('fixed', fixedPackets.length)
+      if (isDiagFrame) {
+        debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) via fixed layout`)
+      }
       if (state.decoder?.isComplete()) {
         finalizeFramePerf()
         return
@@ -1586,7 +1672,10 @@ async function processFrame(now, metadata) {
   } else {
     const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
     if (acceptPackets(fixedPackets, state.frameCount, true, state.expectedPacketCount)) {
-      debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) without outer header`)
+      noteReceiverRecovery('headerless', fixedPackets.length)
+      if (isDiagFrame) {
+        debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) without outer header`)
+      }
       if (state.decoder?.isComplete()) {
         finalizeFramePerf()
         return
@@ -1893,7 +1982,7 @@ export function initHdmiUvcReceiver(errorHandler) {
   if (clearBtn) {
     clearBtn.onclick = () => {
       debugLines.length = 0
-      renderDebugLog()
+      flushDebugLogRender()
       debugLog('=== LOG CLEARED ===')
       debugLog(`Frame count at clear: ${state.frameCount}`)
     }

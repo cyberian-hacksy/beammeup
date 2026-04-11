@@ -641,6 +641,13 @@ function measureAndApplyCanvasSize(viewportMetrics = getCanvasViewportMetrics())
     `within viewport ${metrics.viewportWidth}x${metrics.viewportHeight}, ` +
     `scale=${metrics.displayScale.toFixed(3)}, data region ${dataWidth}x${dataHeight} (${dataUtil}% of frame)`
   )
+  if (metrics.renderPresetId !== 'viewport' && Math.abs(metrics.displayScale - 1) > 0.001) {
+    debugLog(
+      `Render scale warning: preset ${metrics.renderPresetName} is being resampled to ` +
+      `${metrics.displayWidth}x${metrics.displayHeight} (scale=${metrics.displayScale.toFixed(3)}); ` +
+      'expect lower payload robustness on the active display path'
+    )
+  }
 
   return { metrics, capacity }
 }
