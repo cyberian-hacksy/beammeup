@@ -9,7 +9,9 @@ import {
   HDMI_MODE,
   HDMI_MODE_NAMES,
   FPS_PRESETS,
-  DEFAULT_FPS_PRESET
+  DEFAULT_FPS_PRESET,
+  RENDER_SIZE_PRESETS,
+  DEFAULT_RENDER_SIZE_PRESET
 } from './hdmi-uvc-constants.js'
 import { buildFrame, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.js'
 
@@ -168,7 +170,8 @@ function logSenderSessionMetrics(phase, metrics, capacity) {
   debugLog(
     `${phase}: mode=${HDMI_MODE_NAMES[state.mode]} canvas=${metrics.width}x${metrics.height} ` +
     `target=${fps.fps}fps payload=${capacity} B/frame theoretical=${formatBytes(capacity * fps.fps)}/s ` +
-    `source=${metrics.source}`
+    `source=${metrics.source} display=${metrics.displayWidth}x${metrics.displayHeight}@(${metrics.displayX},${metrics.displayY}) ` +
+    `viewport=${metrics.viewportWidth}x${metrics.viewportHeight}`
   )
 }
 
@@ -226,6 +229,7 @@ const state = {
   dataPacketCount: 0,
   frameCount: 0,
   mode: HDMI_MODE.COMPAT_4,
+  renderSizePresetId: DEFAULT_RENDER_SIZE_PRESET,
   systematicPass: 1,
   metadataIntervalFrames: METADATA_INTERVAL * 2,
   cimbarIdealRatio: 1,
@@ -354,6 +358,79 @@ function getCanvasViewportMetrics() {
     screenWidth,
     screenHeight,
     devicePixelRatio: window.devicePixelRatio || 1
+  }
+}
+
+function getRenderSizePreset(id = state.renderSizePresetId) {
+  return RENDER_SIZE_PRESETS.find((preset) => preset.id === id) ||
+    RENDER_SIZE_PRESETS[0]
+}
+
+function fitRectWithin(boundsWidth, boundsHeight, contentWidth, contentHeight) {
+  if (!boundsWidth || !boundsHeight || !contentWidth || !contentHeight) {
+    return {
+      width: Math.max(1, contentWidth || boundsWidth || 1),
+      height: Math.max(1, contentHeight || boundsHeight || 1),
+      x: 0,
+      y: 0,
+      scale: 1
+    }
+  }
+
+  const scale = Math.min(boundsWidth / contentWidth, boundsHeight / contentHeight)
+  const width = Math.max(1, Math.round(contentWidth * scale))
+  const height = Math.max(1, Math.round(contentHeight * scale))
+
+  return {
+    width,
+    height,
+    x: Math.max(0, Math.floor((boundsWidth - width) / 2)),
+    y: Math.max(0, Math.floor((boundsHeight - height) / 2)),
+    scale
+  }
+}
+
+function resolveHdmiCanvasMetrics(viewportMetrics = getCanvasViewportMetrics()) {
+  const preset = getRenderSizePreset()
+  const viewportWidth = Math.max(1, viewportMetrics.width)
+  const viewportHeight = Math.max(1, viewportMetrics.height)
+
+  if (preset.id === 'viewport') {
+    return {
+      ...viewportMetrics,
+      viewportWidth,
+      viewportHeight,
+      width: viewportWidth,
+      height: viewportHeight,
+      source: viewportMetrics.source,
+      renderPresetId: preset.id,
+      renderPresetName: preset.name,
+      displayWidth: viewportWidth,
+      displayHeight: viewportHeight,
+      displayX: 0,
+      displayY: 0,
+      displayScale: 1
+    }
+  }
+
+  const internalWidth = preset.width
+  const internalHeight = preset.height
+  const fitted = fitRectWithin(viewportWidth, viewportHeight, internalWidth, internalHeight)
+
+  return {
+    ...viewportMetrics,
+    viewportWidth,
+    viewportHeight,
+    width: internalWidth,
+    height: internalHeight,
+    source: `preset:${preset.id}`,
+    renderPresetId: preset.id,
+    renderPresetName: preset.name,
+    displayWidth: fitted.width,
+    displayHeight: fitted.height,
+    displayX: fitted.x,
+    displayY: fitted.y,
+    displayScale: fitted.scale
   }
 }
 
@@ -534,10 +611,15 @@ function scaleCimbarCanvasToViewport(metrics = getCanvasViewportMetrics()) {
   )
 }
 
-function measureAndApplyCanvasSize(metrics = getCanvasViewportMetrics()) {
+function measureAndApplyCanvasSize(viewportMetrics = getCanvasViewportMetrics()) {
+  const metrics = resolveHdmiCanvasMetrics(viewportMetrics)
 
   elements.canvas.width = metrics.width
   elements.canvas.height = metrics.height
+  elements.canvas.style.setProperty('width', `${metrics.displayWidth}px`, 'important')
+  elements.canvas.style.setProperty('height', `${metrics.displayHeight}px`, 'important')
+  elements.canvas.style.left = `${metrics.displayX}px`
+  elements.canvas.style.top = `${metrics.displayY}px`
 
   const capacity = getPayloadCapacity(metrics.width, metrics.height, state.mode)
   const dataRegion = getDataRegion(metrics.width, metrics.height)
@@ -553,7 +635,12 @@ function measureAndApplyCanvasSize(metrics = getCanvasViewportMetrics()) {
     `inner=${metrics.innerWidth}x${metrics.innerHeight}, ` +
     `screen=${metrics.screenWidth}x${metrics.screenHeight}, dpr=${metrics.devicePixelRatio}`
   )
-  debugLog(`Canvas: ${metrics.width}x${metrics.height} (${metrics.source}), data region ${dataWidth}x${dataHeight} (${dataUtil}% of frame)`)
+  debugLog(
+    `Canvas: internal ${metrics.width}x${metrics.height} (${metrics.source}, preset=${metrics.renderPresetName}), ` +
+    `display ${metrics.displayWidth}x${metrics.displayHeight}@(${metrics.displayX},${metrics.displayY}) ` +
+    `within viewport ${metrics.viewportWidth}x${metrics.viewportHeight}, ` +
+    `scale=${metrics.displayScale.toFixed(3)}, data region ${dataWidth}x${dataHeight} (${dataUtil}% of frame)`
+  )
 
   return { metrics, capacity }
 }
@@ -643,6 +730,12 @@ function updateActionButton() {
   elements.btnStop.disabled = !state.fileData
 }
 
+function updateEstimateSummary() {
+  if (!elements?.estimate) return
+  const preset = getRenderSizePreset()
+  elements.estimate.textContent = `Render ${preset.name}`
+}
+
 function updateModeSelector() {
   const buttons = elements.modeButtons || []
   const disabled = state.isSending || state.isPaused
@@ -654,6 +747,13 @@ function updateModeSelector() {
   }
 
   state.cimbarVariant = HDMI_CIMBAR_MODE
+}
+
+function updateRenderSizeSelector() {
+  if (!elements?.renderSizeSelect) return
+  elements.renderSizeSelect.value = getRenderSizePreset().id
+  elements.renderSizeSelect.disabled = state.isSending || state.isPaused || isCimbarMode()
+  updateEstimateSummary()
 }
 
 // Once the HDMI-UVC decode path is stable, repeating every symbol wastes most
@@ -1219,6 +1319,7 @@ async function startSending() {
     elements.fpsSlider.disabled = true
     updateActionButton()
     updateModeSelector()
+    updateRenderSizeSelector()
     renderFrame()
 
   } catch (err) {
@@ -1242,6 +1343,7 @@ async function pauseSending() {
   elements.fpsSlider.disabled = false
   updateActionButton()
   updateModeSelector()
+  updateRenderSizeSelector()
 }
 
 async function resumeSending() {
@@ -1286,6 +1388,7 @@ async function resumeSending() {
   elements.fpsSlider.disabled = true
   updateActionButton()
   updateModeSelector()
+  updateRenderSizeSelector()
   renderFrame()
 }
 
@@ -1325,12 +1428,12 @@ async function stopSending() {
   elements.placeholderIcon.textContent = '+'
   elements.placeholderText.textContent = 'Drop file here or tap to select'
   elements.fileInfo.textContent = 'No file'
-  elements.estimate.textContent = ''
   elements.fileInput.value = ''
 
   updateDropZoneState()
   updateActionButton()
   updateModeSelector()
+  updateRenderSizeSelector()
 }
 
 function handleActionClick() {
@@ -1365,13 +1468,13 @@ async function processFile(file) {
     state.isPaused = false
 
     elements.fileInfo.textContent = file.name + ' (' + formatBytes(file.size) + ')'
-    elements.estimate.textContent = ''
 
     elements.placeholderIcon.textContent = '✓'
     elements.placeholderText.textContent = 'File ready, click Start'
 
     updateDropZoneState()
     updateActionButton()
+    updateRenderSizeSelector()
 
   } catch (err) {
     console.error('File read error:', err)
@@ -1419,6 +1522,7 @@ async function handleDrop(e) {
 function handleFpsChange() {
   const preset = getFps()
   elements.fpsDisplay.textContent = preset.name
+  updateEstimateSummary()
 }
 
 function getRecommendedFpsPreset(mode = state.mode) {
@@ -1443,7 +1547,17 @@ function handleModeChange(e) {
     handleFpsChange()
   }
   updateModeSelector()
+  updateRenderSizeSelector()
   debugLog(`HDMI mode selected: ${HDMI_MODE_NAMES[state.mode]}`)
+}
+
+function handleRenderSizeChange(e) {
+  const preset = getRenderSizePreset(e.target.value)
+  if (preset.id === state.renderSizePresetId) return
+
+  state.renderSizePresetId = preset.id
+  updateRenderSizeSelector()
+  debugLog(`Render size selected: ${preset.name}`)
 }
 
 function handleKeydown(e) {
@@ -1486,6 +1600,7 @@ export function initHdmiUvcSender(errorHandler) {
     frameCount: document.getElementById('hdmi-uvc-frame-count'),
     progressDisplay: document.getElementById('hdmi-uvc-progress'),
     modeSelector: document.getElementById('hdmi-uvc-mode-selector'),
+    renderSizeSelect: document.getElementById('hdmi-uvc-render-size-select'),
     fpsSlider: document.getElementById('hdmi-uvc-fps-slider'),
     fpsDisplay: document.getElementById('hdmi-uvc-fps-display'),
     fileInfo: document.getElementById('hdmi-uvc-file-info'),
@@ -1496,13 +1611,18 @@ export function initHdmiUvcSender(errorHandler) {
   elements.modeButtons = Array.from(elements.modeSelector?.querySelectorAll('.mode-btn') || [])
 
   elements.fpsSlider.value = getRecommendedFpsPreset(state.mode)
+  if (elements.renderSizeSelect) {
+    elements.renderSizeSelect.value = getRenderSizePreset().id
+  }
 
   updateDropZoneState()
   updateActionButton()
   handleFpsChange()
   updateModeSelector()
+  updateRenderSizeSelector()
 
   elements.fileInput.onchange = handleFileSelect
+  elements.renderSizeSelect.oninput = handleRenderSizeChange
   elements.fpsSlider.oninput = handleFpsChange
   elements.modeButtons.forEach(button => {
     button.onclick = handleModeChange

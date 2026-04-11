@@ -89,5 +89,12 @@ export const FPS_PRESETS = [
 ]
 export const DEFAULT_FPS_PRESET = 0
 
+export const RENDER_SIZE_PRESETS = [
+  { id: 'viewport', name: 'Viewport', width: 0, height: 0 },
+  { id: '720p', name: '720p', width: 1280, height: 720 },
+  { id: '1080p', name: '1080p', width: 1920, height: 1080 }
+]
+export const DEFAULT_RENDER_SIZE_PRESET = RENDER_SIZE_PRESETS[0].id
+
 // LocalStorage key for device persistence
 export const DEVICE_STORAGE_KEY = 'hdmiUvcDevice'
