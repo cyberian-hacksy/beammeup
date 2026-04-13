@@ -737,23 +737,36 @@ function scheduleNextRender() {
     state.nextFrameDueMs = performance.now() + targetIntervalMs
   }
 
-  const tick = (now) => {
-    state.animationId = null
+  const armRender = () => {
     if (!state.isSending || state.isPaused) return
 
-    if (now + 0.25 < state.nextFrameDueMs) {
-      state.animationId = requestAnimationFrame(tick)
+    const waitMs = state.nextFrameDueMs - performance.now()
+    if (waitMs > 8) {
+      state.timerId = setTimeout(() => {
+        state.timerId = null
+        armRender()
+      }, Math.max(0, waitMs - 4))
       return
     }
 
-    while (state.nextFrameDueMs <= now) {
-      state.nextFrameDueMs += targetIntervalMs
-    }
+    state.animationId = requestAnimationFrame((now) => {
+      state.animationId = null
+      if (!state.isSending || state.isPaused) return
 
-    renderFrame()
+      if (now + 0.25 < state.nextFrameDueMs) {
+        armRender()
+        return
+      }
+
+      state.nextFrameDueMs += targetIntervalMs
+      if (state.nextFrameDueMs < now) {
+        state.nextFrameDueMs = now + targetIntervalMs
+      }
+      renderFrame()
+    })
   }
 
-  state.animationId = requestAnimationFrame(tick)
+  armRender()
 }
 
 function formatBytes(bytes) {
