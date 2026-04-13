@@ -19,6 +19,7 @@ const MAX_DEBUG_LINES = 500
 const RX_PERF_LOG_INTERVAL_FRAMES = 60
 const DEBUG_RENDER_INTERVAL_MS = 120
 const DEBUG_CONSOLE = false
+const CAPTURE_BENCHMARK_SAMPLES_PER_METHOD = 6
 const debugLines = []
 let debugRenderTimer = null
 
@@ -149,6 +150,49 @@ function clearReceiverPerfSamples(perf) {
 
 function resetReceiverPerfState() {
   state.rxPerf = createReceiverPerfState()
+}
+
+function createCaptureTuningState() {
+  return {
+    preferredMethod: hasVideoFrame ? null : 'video',
+    benchmarkRemaining: hasVideoFrame ? CAPTURE_BENCHMARK_SAMPLES_PER_METHOD * 2 : 0,
+    videoSampleCount: 0,
+    videoSampleTotalMs: 0,
+    videoFrameSampleCount: 0,
+    videoFrameSampleTotalMs: 0
+  }
+}
+
+function resetCaptureTuningState() {
+  state.captureTuning = createCaptureTuningState()
+}
+
+function noteCaptureTuningSample(method, durationMs) {
+  const tuning = state.captureTuning
+  if (!tuning || !Number.isFinite(durationMs)) return
+  if (method !== 'video' && method !== 'VideoFrame') return
+  if (tuning.preferredMethod) return
+
+  if (method === 'video') {
+    tuning.videoSampleCount++
+    tuning.videoSampleTotalMs += durationMs
+  } else {
+    tuning.videoFrameSampleCount++
+    tuning.videoFrameSampleTotalMs += durationMs
+  }
+  if (tuning.benchmarkRemaining > 0) tuning.benchmarkRemaining--
+
+  const haveEnoughVideo = tuning.videoSampleCount >= CAPTURE_BENCHMARK_SAMPLES_PER_METHOD
+  const haveEnoughVideoFrame = tuning.videoFrameSampleCount >= CAPTURE_BENCHMARK_SAMPLES_PER_METHOD
+  if (!haveEnoughVideo || !haveEnoughVideoFrame) return
+
+  const avgVideoMs = tuning.videoSampleTotalMs / tuning.videoSampleCount
+  const avgVideoFrameMs = tuning.videoFrameSampleTotalMs / tuning.videoFrameSampleCount
+  tuning.preferredMethod = avgVideoMs <= avgVideoFrameMs ? 'video' : 'VideoFrame'
+  debugLog(
+    `Capture tuning: prefer ${tuning.preferredMethod} ` +
+    `(video=${avgVideoMs.toFixed(2)}ms, VideoFrame=${avgVideoFrameMs.toFixed(2)}ms)`
+  )
 }
 
 function noteReceiverAcceptPerf(durationMs, packetCount, accepted) {
@@ -712,7 +756,8 @@ const state = {
   expectedPacketCount: 0,
   preferredLayout: null,
   progressSamples: [],
-  rxPerf: createReceiverPerfState()
+  rxPerf: createReceiverPerfState(),
+  captureTuning: createCaptureTuningState()
 }
 
 const CIMBAR_MODE_LABELS = {
@@ -1371,23 +1416,35 @@ async function processFrame(now, metadata) {
     }
   }
 
-  // Try VideoFrame API for direct frame access
-  if (!imageData && hasVideoFrame && metadata) {
-    try {
-      const frame = new VideoFrame(video, { timestamp: metadata.mediaTime * 1000000 || 0 })
-      imageData = captureImageDataToCanvas(frame, state.canvas, state.ctx, width, height)
-      frame.close()
-      captureMethod = 'VideoFrame'
-    } catch (e) {
-      // Fall through to default method
+  // For the steady-state HDMI path, benchmark VideoFrame against direct video
+  // capture and keep whichever is faster for the session.
+  if (!imageData) {
+    const tuning = state.captureTuning
+    const preferredMethod = tuning?.preferredMethod
+    const useVideoFrameCapture = hasVideoFrame && metadata && (
+      preferredMethod === 'VideoFrame' ||
+      (!preferredMethod && tuning?.videoFrameSampleCount <= tuning?.videoSampleCount)
+    )
+
+    if (useVideoFrameCapture) {
+      try {
+        const frame = new VideoFrame(video, { timestamp: metadata.mediaTime * 1000000 || 0 })
+        imageData = captureImageDataToCanvas(frame, state.canvas, state.ctx, width, height)
+        frame.close()
+        captureMethod = 'VideoFrame'
+      } catch (e) {
+        // Fall through to direct video capture
+      }
     }
   }
 
-  // Default: draw video directly to canvas
+  // Default steady-state path: draw video directly to canvas.
   if (!imageData) {
     imageData = captureImageDataToCanvas(video, state.canvas, state.ctx, width, height)
+    captureMethod = 'video'
   }
   captureMs = performance.now() - captureStartMs
+  noteCaptureTuningSample(captureMethod, captureMs)
 
   if (captureMethod !== state.activeCaptureMethod) {
     state.activeCaptureMethod = captureMethod
@@ -1875,6 +1932,7 @@ function resetReceiver() {
   state.expectedPacketCount = 0
   state.progressSamples = []
   resetReceiverPerfState()
+  resetCaptureTuningState()
   resetCimbarSink()
 
   elements.statFrames.textContent = '0 frames'
