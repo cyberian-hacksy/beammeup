@@ -276,6 +276,26 @@ function setSignalLive(isLive) {
   document.body?.classList.toggle('hdmi-uvc-signal-live', isLive)
 }
 
+async function restoreSenderReadyState() {
+  resetRenderSchedule()
+  setSignalLive(false)
+  resetCanvasStyles()
+  await exitFullscreenSafely()
+  elements.overlay.classList.add('hidden')
+  elements.placeholder.style.display = 'flex'
+  if (state.fileData) {
+    elements.placeholderIcon.textContent = '✓'
+    elements.placeholderText.textContent = 'File ready, click Start'
+  } else {
+    elements.placeholderIcon.textContent = '+'
+    elements.placeholderText.textContent = 'Drop file here or tap to select'
+  }
+  elements.fpsSlider.disabled = false
+  updateActionButton()
+  updateModeSelector()
+  updateRenderSizeSelector()
+}
+
 function waitForLayoutFrames(count = 2) {
   return new Promise((resolve) => {
     const step = () => {
@@ -652,6 +672,17 @@ function measureAndApplyCanvasSize(viewportMetrics = getCanvasViewportMetrics())
   return { metrics, capacity }
 }
 
+function getRenderScaleIssue(metrics) {
+  if (!metrics || metrics.renderPresetId === 'viewport') return null
+  if (Math.abs(metrics.displayScale - 1) <= 0.001) return null
+
+  return (
+    `Render preset ${metrics.renderPresetName} requires 1:1 presentation, but the active display path ` +
+    `would resample it to ${metrics.displayWidth}x${metrics.displayHeight} ` +
+    `(scale=${metrics.displayScale.toFixed(3)}). Use Viewport mode or change browser/display scaling.`
+  )
+}
+
 function cancelScheduledRender() {
   if (state.timerId) {
     clearTimeout(state.timerId)
@@ -777,6 +808,7 @@ const RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL = 2
 const RAW_RGB_PASS3_FOUNTAIN_PACKET_INTERVAL = 1
 const COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL = 4
 const COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL = 2
+const COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL = 1
 
 function computeMetadataIntervalFrames() {
   if (!state.encoder || !state.packetsPerFrame) return MIN_METADATA_INTERVAL_FRAMES
@@ -906,6 +938,7 @@ function getFountainPacketInterval() {
   ) {
     return HYBRID_FOUNTAIN_PACKET_INTERVAL
   }
+  if (state.systematicPass >= 4) return COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 3) return COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 2) return COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL
   return HYBRID_FOUNTAIN_PACKET_INTERVAL
@@ -933,7 +966,7 @@ function getHybridScheduleDescription() {
           : '4x4'
     return (
       'Hybrid schedule: source-only pass 1, then fountain every ' +
-      `${COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL} ` +
+      `${COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL} ` +
       `data packets in later ${modeName} replay passes (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
     )
   }
@@ -1208,6 +1241,10 @@ async function startSending() {
     }
 
     const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics)
+    const renderScaleIssue = getRenderScaleIssue(metrics)
+    if (renderScaleIssue) {
+      throw new Error(renderScaleIssue)
+    }
     logSenderSessionMetrics('Start session', metrics, capacity)
     const canvasWidth = metrics.width
     const canvasHeight = metrics.height
@@ -1331,6 +1368,10 @@ async function startSending() {
 
   } catch (err) {
     console.error('HDMI-UVC start error:', err)
+    state.isSending = false
+    state.isPaused = false
+    state.encoder = null
+    await restoreSenderReadyState()
     showError('Failed to start: ' + err.message)
   }
 }
@@ -1354,49 +1395,60 @@ async function pauseSending() {
 }
 
 async function resumeSending() {
-  state.isPaused = false
-  setSignalLive(true)
-
-  elements.container.classList.add('fullscreen')
-  elements.canvas.style.display = 'block'
-  elements.canvas.style.position = 'absolute'
-  elements.canvas.style.top = '0'
-  elements.canvas.style.left = '0'
-  elements.canvas.style.imageRendering = 'pixelated'
-  elements.canvas.style.background = '#000'
-  elements.canvas.style.width = '100%'
-  elements.canvas.style.height = '100%'
-  elements.placeholder.style.display = 'none'
-
   try {
-    await elements.container.requestFullscreen({ navigationUI: 'hide' })
-  } catch (e) {
-    if (elements.container.requestFullscreen) {
-      try {
-        await elements.container.requestFullscreen()
-      } catch (fallbackErr) {
-        debugLog(`Resume fullscreen failed: ${fallbackErr.message}, falling back to fixed overlay`)
+    state.isPaused = false
+    setSignalLive(true)
+
+    elements.container.classList.add('fullscreen')
+    elements.canvas.style.display = 'block'
+    elements.canvas.style.position = 'absolute'
+    elements.canvas.style.top = '0'
+    elements.canvas.style.left = '0'
+    elements.canvas.style.imageRendering = 'pixelated'
+    elements.canvas.style.background = '#000'
+    elements.canvas.style.width = '100%'
+    elements.canvas.style.height = '100%'
+    elements.placeholder.style.display = 'none'
+
+    try {
+      await elements.container.requestFullscreen({ navigationUI: 'hide' })
+    } catch (e) {
+      if (elements.container.requestFullscreen) {
+        try {
+          await elements.container.requestFullscreen()
+        } catch (fallbackErr) {
+          debugLog(`Resume fullscreen failed: ${fallbackErr.message}, falling back to fixed overlay`)
+        }
+      } else {
+        debugLog(`Resume fullscreen failed: ${e.message}, falling back to fixed overlay`)
       }
-    } else {
-      debugLog(`Resume fullscreen failed: ${e.message}, falling back to fixed overlay`)
     }
-  }
 
-  const stableMetrics = await waitForStableViewport()
-  if (isCimbarMode()) {
-    scaleCimbarCanvasToViewport(stableMetrics)
-  } else {
-    const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics)
-    logSenderSessionMetrics('Resume session', metrics, capacity)
-  }
-  state.nextFrameDueMs = performance.now() + (1000 / getFps().fps)
-  resetSenderPerfState()
+    const stableMetrics = await waitForStableViewport()
+    if (isCimbarMode()) {
+      scaleCimbarCanvasToViewport(stableMetrics)
+    } else {
+      const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics)
+      const renderScaleIssue = getRenderScaleIssue(metrics)
+      if (renderScaleIssue) {
+        throw new Error(renderScaleIssue)
+      }
+      logSenderSessionMetrics('Resume session', metrics, capacity)
+    }
+    state.nextFrameDueMs = performance.now() + (1000 / getFps().fps)
+    resetSenderPerfState()
 
-  elements.fpsSlider.disabled = true
-  updateActionButton()
-  updateModeSelector()
-  updateRenderSizeSelector()
-  renderFrame()
+    elements.fpsSlider.disabled = true
+    updateActionButton()
+    updateModeSelector()
+    updateRenderSizeSelector()
+    renderFrame()
+  } catch (err) {
+    console.error('HDMI-UVC resume error:', err)
+    state.isPaused = true
+    await restoreSenderReadyState()
+    showError('Failed to resume: ' + err.message)
+  }
 }
 
 async function stopSending() {
