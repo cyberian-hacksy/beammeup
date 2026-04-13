@@ -160,7 +160,13 @@ function createCaptureTuningState() {
     videoSampleCount: 0,
     videoSampleTotalMs: 0,
     videoFrameSampleCount: 0,
-    videoFrameSampleTotalMs: 0
+    videoFrameSampleTotalMs: 0,
+    roiPreferredMethod: canUseVideoFrame ? null : 'video',
+    roiBenchmarkRemaining: canUseVideoFrame ? CAPTURE_BENCHMARK_SAMPLES_PER_METHOD * 2 : 0,
+    roiVideoSampleCount: 0,
+    roiVideoSampleTotalMs: 0,
+    roiVideoFrameSampleCount: 0,
+    roiVideoFrameSampleTotalMs: 0
   }
 }
 
@@ -168,30 +174,37 @@ function resetCaptureTuningState() {
   state.captureTuning = createCaptureTuningState()
 }
 
-function noteCaptureTuningSample(method, durationMs) {
+function noteCaptureTuningSample(method, durationMs, isRoi = false) {
   const tuning = state.captureTuning
   if (!tuning || !Number.isFinite(durationMs)) return
   if (method !== 'video' && method !== 'VideoFrame') return
-  if (tuning.preferredMethod) return
+  const preferredKey = isRoi ? 'roiPreferredMethod' : 'preferredMethod'
+  if (tuning[preferredKey]) return
+
+  const videoCountKey = isRoi ? 'roiVideoSampleCount' : 'videoSampleCount'
+  const videoTotalKey = isRoi ? 'roiVideoSampleTotalMs' : 'videoSampleTotalMs'
+  const videoFrameCountKey = isRoi ? 'roiVideoFrameSampleCount' : 'videoFrameSampleCount'
+  const videoFrameTotalKey = isRoi ? 'roiVideoFrameSampleTotalMs' : 'videoFrameSampleTotalMs'
+  const benchmarkRemainingKey = isRoi ? 'roiBenchmarkRemaining' : 'benchmarkRemaining'
 
   if (method === 'video') {
-    tuning.videoSampleCount++
-    tuning.videoSampleTotalMs += durationMs
+    tuning[videoCountKey]++
+    tuning[videoTotalKey] += durationMs
   } else {
-    tuning.videoFrameSampleCount++
-    tuning.videoFrameSampleTotalMs += durationMs
+    tuning[videoFrameCountKey]++
+    tuning[videoFrameTotalKey] += durationMs
   }
-  if (tuning.benchmarkRemaining > 0) tuning.benchmarkRemaining--
+  if (tuning[benchmarkRemainingKey] > 0) tuning[benchmarkRemainingKey]--
 
-  const haveEnoughVideo = tuning.videoSampleCount >= CAPTURE_BENCHMARK_SAMPLES_PER_METHOD
-  const haveEnoughVideoFrame = tuning.videoFrameSampleCount >= CAPTURE_BENCHMARK_SAMPLES_PER_METHOD
+  const haveEnoughVideo = tuning[videoCountKey] >= CAPTURE_BENCHMARK_SAMPLES_PER_METHOD
+  const haveEnoughVideoFrame = tuning[videoFrameCountKey] >= CAPTURE_BENCHMARK_SAMPLES_PER_METHOD
   if (!haveEnoughVideo || !haveEnoughVideoFrame) return
 
-  const avgVideoMs = tuning.videoSampleTotalMs / tuning.videoSampleCount
-  const avgVideoFrameMs = tuning.videoFrameSampleTotalMs / tuning.videoFrameSampleCount
-  tuning.preferredMethod = avgVideoMs <= avgVideoFrameMs ? 'video' : 'VideoFrame'
+  const avgVideoMs = tuning[videoTotalKey] / tuning[videoCountKey]
+  const avgVideoFrameMs = tuning[videoFrameTotalKey] / tuning[videoFrameCountKey]
+  tuning[preferredKey] = avgVideoMs <= avgVideoFrameMs ? 'video' : 'VideoFrame'
   debugLog(
-    `Capture tuning: prefer ${tuning.preferredMethod} ` +
+    `Capture tuning: prefer ${tuning[preferredKey]}${isRoi ? ' ROI' : ''} ` +
     `(video=${avgVideoMs.toFixed(2)}ms, VideoFrame=${avgVideoFrameMs.toFixed(2)}ms)`
   )
 }
@@ -751,6 +764,7 @@ const state = {
   detectedResolution: null,
   completedFile: null,
   anchorBounds: null,  // Cached data region from detected anchors
+  lockedCaptureRegion: null,
   decodeFailCount: 0,  // Consecutive decode failures (triggers relock when too many)
   activeCaptureMethod: null,
   fixedLayout: null,
@@ -1328,6 +1342,30 @@ function captureImageDataToCanvas(source, canvas, ctx, width, height, sourceRect
   return ctx.getImageData(0, 0, width, height)
 }
 
+function getLockedCaptureRegion(region, sourceWidth, sourceHeight) {
+  if (!region) return null
+
+  const padX = Math.max(4, Math.ceil(region.stepX || BLOCK_SIZE))
+  const padY = Math.max(4, Math.ceil(region.stepY || BLOCK_SIZE))
+  const x = Math.max(0, Math.floor(region.x - padX))
+  const y = Math.max(0, Math.floor(region.y - padY))
+  const w = Math.max(1, Math.min(sourceWidth - x, Math.ceil(region.w + padX * 2)))
+  const h = Math.max(1, Math.min(sourceHeight - y, Math.ceil(region.h + padY * 2)))
+
+  return {
+    sourceRect: { x, y, w, h },
+    sourceWidth,
+    sourceHeight,
+    width: w,
+    height: h,
+    region: {
+      ...region,
+      x: region.x - x,
+      y: region.y - y
+    }
+  }
+}
+
 async function processFrame(now, metadata) {
   if (!state.isScanning || !state.stream) return
 
@@ -1343,6 +1381,7 @@ async function processFrame(now, metadata) {
   let imageData
   let imageWidth = width
   let imageHeight = height
+  let decodeRegion = state.anchorBounds
   let captureMethod = 'video'
   let usedCimbarRoiCapture = false
   const frameStartMs = performance.now()
@@ -1366,6 +1405,24 @@ async function processFrame(now, metadata) {
     !(state.detectedMode === HDMI_MODE.CIMBAR && state.cimbarRoi) &&
     state.detectedMode !== HDMI_MODE.CIMBAR
   const useCimbarRoiCapture = state.detectedMode === HDMI_MODE.CIMBAR && !!state.cimbarRoi
+  let lockedCapture = null
+  if (state.anchorBounds && state.detectedMode !== HDMI_MODE.CIMBAR) {
+    const needsLockedCaptureRefresh =
+      !state.lockedCaptureRegion ||
+      state.lockedCaptureRegion.sourceWidth !== width ||
+      state.lockedCaptureRegion.sourceHeight !== height
+    if (needsLockedCaptureRefresh) {
+      state.lockedCaptureRegion = getLockedCaptureRegion(state.anchorBounds, width, height)
+      if (state.lockedCaptureRegion) {
+        const { sourceRect } = state.lockedCaptureRegion
+        debugLog(
+          `Capture ROI locked: src=(${sourceRect.x},${sourceRect.y}) ` +
+          `${sourceRect.w}x${sourceRect.h}`
+        )
+      }
+    }
+    lockedCapture = state.lockedCaptureRegion
+  }
 
   if (useCimbarRoiCapture) {
     const roi = state.cimbarRoi
@@ -1421,18 +1478,36 @@ async function processFrame(now, metadata) {
   // capture and keep whichever is faster for the session.
   if (!imageData) {
     const tuning = state.captureTuning
-    const preferredMethod = tuning?.preferredMethod
+    const roiCapture = !!lockedCapture
+    const preferredMethod = roiCapture ? tuning?.roiPreferredMethod : tuning?.preferredMethod
+    const videoFrameSampleCount = roiCapture ? tuning?.roiVideoFrameSampleCount : tuning?.videoFrameSampleCount
+    const videoSampleCount = roiCapture ? tuning?.roiVideoSampleCount : tuning?.videoSampleCount
     const useVideoFrameCapture = hasVideoFrame && metadata && (
       preferredMethod === 'VideoFrame' ||
-      (!preferredMethod && tuning?.videoFrameSampleCount <= tuning?.videoSampleCount)
+      (!preferredMethod && videoFrameSampleCount <= videoSampleCount)
     )
 
     if (useVideoFrameCapture) {
       try {
         const frame = new VideoFrame(video, { timestamp: metadata.mediaTime * 1000000 || 0 })
-        imageData = captureImageDataToCanvas(frame, state.canvas, state.ctx, width, height)
+        if (lockedCapture) {
+          imageData = captureImageDataToCanvas(
+            frame,
+            state.canvas,
+            state.ctx,
+            lockedCapture.width,
+            lockedCapture.height,
+            lockedCapture.sourceRect
+          )
+          imageWidth = lockedCapture.width
+          imageHeight = lockedCapture.height
+          decodeRegion = lockedCapture.region
+          captureMethod = 'VideoFrame ROI'
+        } else {
+          imageData = captureImageDataToCanvas(frame, state.canvas, state.ctx, width, height)
+          captureMethod = 'VideoFrame'
+        }
         frame.close()
-        captureMethod = 'VideoFrame'
       } catch (e) {
         // Fall through to direct video capture
       }
@@ -1441,11 +1516,33 @@ async function processFrame(now, metadata) {
 
   // Default steady-state path: draw video directly to canvas.
   if (!imageData) {
-    imageData = captureImageDataToCanvas(video, state.canvas, state.ctx, width, height)
-    captureMethod = 'video'
+    if (lockedCapture) {
+      imageData = captureImageDataToCanvas(
+        video,
+        state.canvas,
+        state.ctx,
+        lockedCapture.width,
+        lockedCapture.height,
+        lockedCapture.sourceRect
+      )
+      imageWidth = lockedCapture.width
+      imageHeight = lockedCapture.height
+      decodeRegion = lockedCapture.region
+      captureMethod = 'video ROI'
+    } else {
+      imageData = captureImageDataToCanvas(video, state.canvas, state.ctx, width, height)
+      captureMethod = 'video'
+    }
   }
   captureMs = performance.now() - captureStartMs
-  noteCaptureTuningSample(captureMethod, captureMs)
+  noteCaptureTuningSample(
+    captureMethod.startsWith('VideoFrame') ? 'VideoFrame' : captureMethod.startsWith('video') ? 'video' : captureMethod,
+    captureMs,
+    captureMethod.endsWith('ROI')
+  )
+
+  const frameWidth = imageWidth
+  const frameHeight = imageHeight
 
   if (captureMethod !== state.activeCaptureMethod) {
     state.activeCaptureMethod = captureMethod
@@ -1499,10 +1596,10 @@ async function processFrame(now, metadata) {
     const p = imageData.data
 
     // Step 1: Find chrome bottom (transition from bright to dark at center x)
-    const midX = Math.floor(width / 2)
+    const midX = Math.floor(frameWidth / 2)
     let chromeBottom = 0
-    for (let y = 0; y < Math.min(200, height - 1); y++) {
-      if (p[(y * width + midX) * 4] > 100 && p[((y + 1) * width + midX) * 4] < 30) {
+    for (let y = 0; y < Math.min(200, frameHeight - 1); y++) {
+      if (p[(y * frameWidth + midX) * 4] > 100 && p[((y + 1) * frameWidth + midX) * 4] < 30) {
         chromeBottom = y + 1
         break
       }
@@ -1516,8 +1613,8 @@ async function processFrame(now, metadata) {
     // They look the same, so instead scan for first pixel >20 (data region)
     // then subtract margin width to estimate canvas left.
     let firstData = -1
-    for (let x = 0; x < width; x++) {
-      if (p[(probeY * width + x) * 4] > 20) { firstData = x; break }
+    for (let x = 0; x < frameWidth; x++) {
+      if (p[(probeY * frameWidth + x) * 4] > 20) { firstData = x; break }
     }
 
     debugLog(`Chrome bottom: ${chromeBottom}, probeY: ${probeY}, firstData@probeY: ${firstData}`)
@@ -1526,9 +1623,9 @@ async function processFrame(now, metadata) {
     // Search in top-left quadrant below chrome
     let tlX = -1, tlY = -1
     outer_tl:
-    for (let y = chromeBottom; y < Math.min(chromeBottom + 200, height); y++) {
-      for (let x = 0; x < Math.min(300, width); x++) {
-        if (p[(y * width + x) * 4] > 150) { tlX = x; tlY = y; break outer_tl }
+    for (let y = chromeBottom; y < Math.min(chromeBottom + 200, frameHeight); y++) {
+      for (let x = 0; x < Math.min(300, frameWidth); x++) {
+        if (p[(y * frameWidth + x) * 4] > 150) { tlX = x; tlY = y; break outer_tl }
       }
     }
     debugLog(`TL first bright(>150) below chrome: (${tlX},${tlY})`)
@@ -1536,22 +1633,22 @@ async function processFrame(now, metadata) {
     if (tlX >= 0 && tlY >= 0) {
       // Dump horizontal and vertical strips around the find
       const hstrip = []
-      for (let x = Math.max(0, tlX - 5); x < Math.min(width, tlX + 45); x++) {
-        hstrip.push(p[(tlY * width + x) * 4])
+      for (let x = Math.max(0, tlX - 5); x < Math.min(frameWidth, tlX + 45); x++) {
+        hstrip.push(p[(tlY * frameWidth + x) * 4])
       }
       debugLog(`  Row${tlY} R[${Math.max(0,tlX-5)}..+50]: ${hstrip.join(',')}`)
 
       const vstrip = []
-      for (let y = Math.max(0, tlY - 5); y < Math.min(height, tlY + 40); y++) {
-        vstrip.push(p[(y * width + tlX) * 4])
+      for (let y = Math.max(0, tlY - 5); y < Math.min(frameHeight, tlY + 40); y++) {
+        vstrip.push(p[(y * frameWidth + tlX) * 4])
       }
       debugLog(`  Col${tlX} R[${Math.max(0,tlY-5)}..+45]: ${vstrip.join(',')}`)
     } else {
       // No bright pixel found! Dump raw values in the expected anchor zone
       debugLog(`NO bright pixel found below chrome! Dumping rows ${chromeBottom}..${chromeBottom+5} x=0..60:`)
-      for (let y = chromeBottom; y < Math.min(chromeBottom + 6, height); y++) {
+      for (let y = chromeBottom; y < Math.min(chromeBottom + 6, frameHeight); y++) {
         const row = []
-        for (let x = 0; x < Math.min(60, width); x++) row.push(p[(y * width + x) * 4])
+        for (let x = 0; x < Math.min(60, frameWidth); x++) row.push(p[(y * frameWidth + x) * 4])
         debugLog(`  Row${y}: ${row.join(',')}`)
       }
     }
@@ -1559,41 +1656,46 @@ async function processFrame(now, metadata) {
     // Bottom-right scan (skip last few rows which might be chrome/dock)
     let brX = -1, brY = -1
     outer_br:
-    for (let y = height - 1; y >= Math.max(0, height - 200); y--) {
-      for (let x = width - 1; x >= Math.max(0, width - 300); x--) {
-        if (p[(y * width + x) * 4] > 150) { brX = x; brY = y; break outer_br }
+    for (let y = frameHeight - 1; y >= Math.max(0, frameHeight - 200); y--) {
+      for (let x = frameWidth - 1; x >= Math.max(0, frameWidth - 300); x--) {
+        if (p[(y * frameWidth + x) * 4] > 150) { brX = x; brY = y; break outer_br }
       }
     }
     debugLog(`BR last bright(>150): (${brX},${brY})`)
     if (brX >= 0) {
       const hstrip = []
-      for (let x = Math.max(0, brX - 40); x < Math.min(width, brX + 10); x++) {
-        hstrip.push(p[(brY * width + x) * 4])
+      for (let x = Math.max(0, brX - 40); x < Math.min(frameWidth, brX + 10); x++) {
+        hstrip.push(p[(brY * frameWidth + x) * 4])
       }
       debugLog(`  Row${brY} R[${Math.max(0,brX-40)}..+50]: ${hstrip.join(',')}`)
     }
 
     // Center
-    const cx = Math.floor(width / 2), cy = Math.floor(height / 2)
+    const cx = Math.floor(frameWidth / 2), cy = Math.floor(frameHeight / 2)
     const center = []
-    for (let x = cx - 5; x <= cx + 5; x++) center.push(p[(cy * width + x) * 4])
+    for (let x = cx - 5; x <= cx + 5; x++) center.push(p[(cy * frameWidth + x) * 4])
     debugLog(`Center[${cx},${cy}]: ${center.join(',')}`)
   }
 
   // === ANCHOR DETECTION ===
-  let region = state.anchorBounds
+  let region = decodeRegion
 
   if (!region) {
     const anchorStartMs = performance.now()
-    const anchors = detectAnchors(imageData.data, width, height)
+    const anchors = detectAnchors(imageData.data, frameWidth, frameHeight)
     anchorMs += performance.now() - anchorStartMs
     if (anchors.length >= 2) {
       region = dataRegionFromAnchors(anchors)
       if (region) {
         state.anchorBounds = region
+        state.lockedCaptureRegion = getLockedCaptureRegion(region, frameWidth, frameHeight)
         const pos = anchors.map(a => `${a.corner}(${a.x},${a.y} bs=${a.blockSize.toFixed(1)})`).join(' ')
         debugLog(`*** ANCHORS LOCKED: ${anchors.length} found, region (${region.x},${region.y}) ${region.w}x${region.h} step=${region.stepX.toFixed(1)}/${region.stepY.toFixed(1)} ***`)
         debugLog(`  Anchors: ${pos}`)
+        if (state.lockedCaptureRegion) {
+          const { sourceRect } = state.lockedCaptureRegion
+          debugLog(`  Capture ROI: (${sourceRect.x},${sourceRect.y}) ${sourceRect.w}x${sourceRect.h}`)
+        }
       } else if (isDiagFrame) {
         // Anchors found but region invalid (e.g. all at same y = false positives)
         const pos = anchors.map(a => `(${a.x},${a.y} ${a.corner})`).join(' ')
@@ -1613,7 +1715,7 @@ async function processFrame(now, metadata) {
   }
 
   const fastPathStartMs = performance.now()
-  const fastPathAccepted = tryLockedLayoutFastPath(imageData, width, region)
+  const fastPathAccepted = tryLockedLayoutFastPath(imageData, frameWidth, region)
   fastPathMs += performance.now() - fastPathStartMs
   if (fastPathAccepted) {
     finalizeFramePerf()
@@ -1623,7 +1725,7 @@ async function processFrame(now, metadata) {
   // === DECODE DATA REGION ===
   region.preferredLayout = state.preferredLayout
   const decodeStartMs = performance.now()
-  const result = decodeDataRegion(imageData.data, width, region)
+  const result = decodeDataRegion(imageData.data, frameWidth, region)
   decodeMs += performance.now() - decodeStartMs
 
   if (result && result.crcValid) {
@@ -1651,14 +1753,14 @@ async function processFrame(now, metadata) {
     const salvageProbe = probeFramePackets(result.payload, expectedPacketSize)
     const totalFramePackets = salvageProbe.slotCount
     const salvagedPackets = salvageProbe.packets
-    const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
+    const fixedPackets = tryFixedLayoutPackets(imageData.data, frameWidth, region)
     const phasePayloadLength =
       expectedPacketSize && state.expectedPacketCount > 0
         ? expectedPacketSize * state.expectedPacketCount
         : result.header.payloadLength
     const phaseProbe = probeLayoutPackets(
       imageData.data,
-      width,
+      frameWidth,
       region,
       result._diag || state.fixedLayout || state.preferredLayout,
       phasePayloadLength,
@@ -1728,7 +1830,7 @@ async function processFrame(now, metadata) {
     }
     debugCurrent(`#${state.frameCount} CRC fail`)
   } else {
-    const fixedPackets = tryFixedLayoutPackets(imageData.data, width, region)
+    const fixedPackets = tryFixedLayoutPackets(imageData.data, frameWidth, region)
     if (acceptPackets(fixedPackets, state.frameCount, true, state.expectedPacketCount)) {
       noteReceiverRecovery('headerless', fixedPackets.length)
       if (isDiagFrame) {
@@ -1797,6 +1899,7 @@ async function processFrame(now, metadata) {
   if (state.decodeFailCount > 30) {
     debugLog(`Relock: ${state.decodeFailCount} consecutive failures`)
     state.anchorBounds = null
+    state.lockedCaptureRegion = null
     state.preferredLayout = null
     state.decodeFailCount = 0
   }
@@ -1926,6 +2029,7 @@ function resetReceiver() {
   state.detectedResolution = null
   state.completedFile = null
   state.anchorBounds = null
+  state.lockedCaptureRegion = null
   state.decodeFailCount = 0
   state.activeCaptureMethod = null
   state.fixedLayout = null
