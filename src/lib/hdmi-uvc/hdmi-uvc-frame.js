@@ -580,8 +580,28 @@ export function parseHeader(data) {
 
 // --- Frame building (sender) ---
 
-// Build a complete frame: black background + 4 anchors + data blocks (header + payload)
-export function buildFrame(payload, mode, width, height, fps, symbolId) {
+export function initializeFrameBuffer(imageData, width, height) {
+  imageData.fill(0)
+  for (let i = 3; i < imageData.length; i += 4) {
+    imageData[i] = 255
+  }
+
+  renderAnchor(imageData, width, 0, 0)                                      // top-left
+  renderAnchor(imageData, width, width - ANCHOR_SIZE, 0)                    // top-right
+  renderAnchor(imageData, width, 0, height - ANCHOR_SIZE)                   // bottom-left
+  renderAnchor(imageData, width, width - ANCHOR_SIZE, height - ANCHOR_SIZE) // bottom-right
+}
+
+export function createFrameBuffer(width, height) {
+  const imageData = new Uint8ClampedArray(width * height * 4)
+  initializeFrameBuffer(imageData, width, height)
+  return imageData
+}
+
+// Build a complete frame: static background/anchors plus header + payload blocks.
+// When `targetBuffer` is provided, it must already contain the initialized static
+// frame base (black background, alpha=255, anchors).
+export function buildFrame(payload, mode, width, height, fps, symbolId, targetBuffer = null) {
   const dataBlockSize = getModeDataBlockSize(mode)
   const bitsPerBlock = getModeBitsPerBlock(mode)
   if (!dataBlockSize || !bitsPerBlock) {
@@ -590,17 +610,10 @@ export function buildFrame(payload, mode, width, height, fps, symbolId) {
   const payloadCrc = crc32(payload)
   const headerBytes = buildHeader(mode, width, height, fps, symbolId, payload.length, payloadCrc)
 
-  // Create RGBA image (black background, alpha=255)
-  const imageData = new Uint8ClampedArray(width * height * 4)
-  for (let i = 3; i < imageData.length; i += 4) {
-    imageData[i] = 255 // Set all alpha to 255, RGB stays 0 (black)
-  }
-
-  // Draw 4 corner anchors
-  renderAnchor(imageData, width, 0, 0)                                    // top-left
-  renderAnchor(imageData, width, width - ANCHOR_SIZE, 0)                  // top-right
-  renderAnchor(imageData, width, 0, height - ANCHOR_SIZE)                 // bottom-left
-  renderAnchor(imageData, width, width - ANCHOR_SIZE, height - ANCHOR_SIZE) // bottom-right
+  const expectedLength = width * height * 4
+  const imageData = targetBuffer && targetBuffer.length === expectedLength
+    ? targetBuffer
+    : createFrameBuffer(width, height)
 
   // Fill data region with mode-sized blocks. The HDMI header remains binary for
   // robust lock; some modes carry more than 1 bit per payload block.

@@ -13,7 +13,7 @@ import {
   RENDER_SIZE_PRESETS,
   DEFAULT_RENDER_SIZE_PRESET
 } from './hdmi-uvc-constants.js'
-import { buildFrame, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.js'
+import { buildFrame, createFrameBuffer, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.js'
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
@@ -165,6 +165,30 @@ function resetSenderPerfState() {
   state.txPerf = createSenderPerfState()
 }
 
+function resetHdmiFrameResources() {
+  state.frameBuffer = null
+  state.frameImageData = null
+  state.frameBufferWidth = 0
+  state.frameBufferHeight = 0
+}
+
+function ensureHdmiFrameResources(width, height) {
+  if (
+    state.frameBuffer &&
+    state.frameImageData &&
+    state.frameBufferWidth === width &&
+    state.frameBufferHeight === height
+  ) {
+    return state.frameImageData
+  }
+
+  state.frameBuffer = createFrameBuffer(width, height)
+  state.frameImageData = new ImageData(state.frameBuffer, width, height)
+  state.frameBufferWidth = width
+  state.frameBufferHeight = height
+  return state.frameImageData
+}
+
 function logSenderSessionMetrics(phase, metrics, capacity) {
   const fps = getFps()
   debugLog(
@@ -239,6 +263,10 @@ const state = {
   cimbarUseWrapper: false,
   cimbarLayout: null,
   nextFrameDueMs: 0,
+  frameBuffer: null,
+  frameImageData: null,
+  frameBufferWidth: 0,
+  frameBufferHeight: 0,
   txPerf: createSenderPerfState()
 }
 
@@ -278,6 +306,7 @@ function setSignalLive(isLive) {
 
 async function restoreSenderReadyState() {
   resetRenderSchedule()
+  resetHdmiFrameResources()
   setSignalLive(false)
   resetCanvasStyles()
   await exitFullscreenSafely()
@@ -1092,11 +1121,12 @@ function renderFrame() {
     const batch = buildFramePacketBatch(nextFrameNumber)
     const batchReadyMs = performance.now()
 
-    const frameData = buildFrame(batch.payload, state.mode, cw, ch, fps.fps, batch.outerSymbolId)
+    const frameImageData = ensureHdmiFrameResources(cw, ch)
+    buildFrame(batch.payload, state.mode, cw, ch, fps.fps, batch.outerSymbolId, state.frameBuffer)
     const buildDoneMs = performance.now()
 
     const ctx = elements.canvas.getContext('2d')
-    ctx.putImageData(new ImageData(new Uint8ClampedArray(frameData), cw, ch), 0, 0)
+    ctx.putImageData(frameImageData, 0, 0)
     const blitDoneMs = performance.now()
 
     state.frameCount = nextFrameNumber
@@ -1453,6 +1483,7 @@ async function resumeSending() {
 
 async function stopSending() {
   resetRenderSchedule()
+  resetHdmiFrameResources()
 
   state.encoder = null
   state.fileData = null
