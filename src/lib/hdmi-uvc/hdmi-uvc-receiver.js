@@ -153,9 +153,10 @@ function resetReceiverPerfState() {
 }
 
 function createCaptureTuningState() {
+  const canUseVideoFrame = typeof VideoFrame !== 'undefined'
   return {
-    preferredMethod: hasVideoFrame ? null : 'video',
-    benchmarkRemaining: hasVideoFrame ? CAPTURE_BENCHMARK_SAMPLES_PER_METHOD * 2 : 0,
+    preferredMethod: canUseVideoFrame ? null : 'video',
+    benchmarkRemaining: canUseVideoFrame ? CAPTURE_BENCHMARK_SAMPLES_PER_METHOD * 2 : 0,
     videoSampleCount: 0,
     videoSampleTotalMs: 0,
     videoFrameSampleCount: 0,
