@@ -255,6 +255,7 @@ const state = {
   mode: HDMI_MODE.COMPAT_4,
   renderSizePresetId: DEFAULT_RENDER_SIZE_PRESET,
   systematicPass: 1,
+  tailStartFrame: 0,
   metadataIntervalFrames: METADATA_INTERVAL * 2,
   cimbarIdealRatio: 1,
   cimbarVariant: HDMI_CIMBAR_MODE,
@@ -851,6 +852,8 @@ const RAW_RGB_PASS3_FOUNTAIN_PACKET_INTERVAL = 1
 const COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL = 4
 const COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL = 2
 const COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL = 1
+const TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES = 6
+const TAIL_SYSTEMATIC_BURST_FRAMES = 1
 
 function computeMetadataIntervalFrames() {
   if (!state.encoder || !state.packetsPerFrame) return MIN_METADATA_INTERVAL_FRAMES
@@ -1009,21 +1012,28 @@ function getHybridScheduleDescription() {
     return (
       'Hybrid schedule: source-only pass 1, then fountain every ' +
       `${COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL} ` +
-      `data packets in later ${modeName} replay passes (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
+      `data packets in later ${modeName} replay passes, plus ` +
+      `one full systematic burst frame every ${TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES} frame(s) ` +
+      `after pass 4 (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
     )
   }
 
   return `Hybrid schedule: source-only pass 1, then fountain every ${HYBRID_FOUNTAIN_PACKET_INTERVAL} data packets`
 }
 
-function nextDataSymbolId(frameNumber) {
+function nextDataSymbolId(frameNumber, strategy = 'auto') {
   const sourceSpan = state.encoder.K
   const fountainPacketInterval = getFountainPacketInterval()
   const shouldSendFountain =
-    state.systematicPass > 1 &&
-    state.fountainSymbolId > state.encoder.K_prime &&
-    state.dataPacketCount > 0 &&
-    state.dataPacketCount % fountainPacketInterval === 0
+    strategy !== 'systematic' && (
+      strategy === 'fountain' ||
+      (
+        state.systematicPass > 1 &&
+        state.fountainSymbolId > state.encoder.K_prime &&
+        state.dataPacketCount > 0 &&
+        state.dataPacketCount % fountainPacketInterval === 0
+      )
+    )
 
   let symbolId
   if (shouldSendFountain) {
@@ -1035,6 +1045,21 @@ function nextDataSymbolId(frameNumber) {
       if (state.systematicIndex >= sourceSpan) {
         state.systematicPass++
         state.systematicIndex = 0
+        if (
+          state.tailStartFrame === 0 &&
+          (
+            state.mode === HDMI_MODE.COMPAT_4 ||
+            state.mode === HDMI_MODE.LUMA_2 ||
+            state.mode === HDMI_MODE.CODEBOOK_3
+          ) &&
+          state.systematicPass >= 4
+        ) {
+          state.tailStartFrame = frameNumber + 1
+          debugLog(
+            `Late-phase schedule: systematic burst frames start at frame ${state.tailStartFrame} ` +
+            `(every ${TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES} frame(s))`
+          )
+        }
         debugLog(
           `Starting source replay pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
           `(stride=${state.systematicStride}/${sourceSpan}, ` +
@@ -1051,11 +1076,26 @@ function nextDataSymbolId(frameNumber) {
   return symbolId
 }
 
+function isTailSystematicBurstFrame(frameNumber) {
+  if (
+    state.mode !== HDMI_MODE.COMPAT_4 &&
+    state.mode !== HDMI_MODE.LUMA_2 &&
+    state.mode !== HDMI_MODE.CODEBOOK_3
+  ) {
+    return false
+  }
+  if (state.tailStartFrame <= 0 || frameNumber < state.tailStartFrame) return false
+
+  const tailFrameIndex = frameNumber - state.tailStartFrame
+  return (tailFrameIndex % TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES) < TAIL_SYSTEMATIC_BURST_FRAMES
+}
+
 function buildFramePacketBatch(frameNumber) {
   const sendMetadata = shouldSendMetadata(frameNumber)
   const packets = []
   const symbolIds = []
   const slots = Math.max(1, state.packetsPerFrame)
+  const tailSystematicBurst = isTailSystematicBurstFrame(frameNumber)
 
   if (sendMetadata) {
     packets.push(state.encoder.generateSymbol(0))
@@ -1063,7 +1103,10 @@ function buildFramePacketBatch(frameNumber) {
   }
 
   while (packets.length < slots) {
-    const symbolId = nextDataSymbolId(frameNumber)
+    const symbolId = nextDataSymbolId(
+      frameNumber,
+      tailSystematicBurst ? 'systematic' : 'auto'
+    )
     packets.push(state.encoder.generateSymbol(symbolId))
     symbolIds.push(symbolId)
   }
@@ -1396,6 +1439,7 @@ async function startSending() {
     state.fountainSymbolId = state.encoder.K_prime + 1
     state.dataPacketCount = 0
     state.systematicPass = 1
+    state.tailStartFrame = 0
     state.frameCount = 0
     state.nextFrameDueMs = performance.now() + (1000 / selectedFps.fps)
     resetSenderPerfState()
@@ -1512,6 +1556,7 @@ async function stopSending() {
   state.fountainSymbolId = 0
   state.dataPacketCount = 0
   state.systematicPass = 1
+  state.tailStartFrame = 0
   state.metadataIntervalFrames = METADATA_INTERVAL * 2
   state.frameCount = 0
   state.cimbarIdealRatio = 1
