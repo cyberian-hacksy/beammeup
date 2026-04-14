@@ -771,6 +771,7 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
 
     if (state.validFrames % 10 === 0) {
       const throughput = getThroughputStats()
+      const symbolBreakdown = decoder.symbolBreakdown || {}
       const rateSuffix = throughput
         ? ` rate=${formatBytes(throughput.average)}/s recent=${formatBytes(throughput.recent ?? throughput.average)}/s`
         : ''
@@ -778,6 +779,12 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
         `Progress: ${getDisplayProgressPercent(decoder)}% ` +
         `solved=${decoder.solved}/${decoder.K || '?'} ` +
         `unique=${decoder.uniqueSymbols} ` +
+        `src=${symbolBreakdown.sourceCount ?? '?'} ` +
+        `par=${symbolBreakdown.parityCount ?? '?'} ` +
+        `fou=${symbolBreakdown.fountainCount ?? '?'} ` +
+        `meta=${symbolBreakdown.metadataCount ?? '?'} ` +
+        `pending=${decoder.pendingSymbolCount ?? '?'} ` +
+        `missing=${decoder.unresolvedSourceCount ?? '?'} ` +
         `sym=${lastParsed.symbolId ?? fallbackSymbolId} pkts=${packets.length}` +
         rateSuffix
       )

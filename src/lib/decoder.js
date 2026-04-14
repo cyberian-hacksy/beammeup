@@ -222,6 +222,27 @@ export function createDecoder() {
     return true
   }
 
+  function getReceivedSymbolBreakdown() {
+    let metadataCount = 0
+    let sourceCount = 0
+    let parityCount = 0
+    let fountainCount = 0
+
+    for (const symbolId of receivedSymbols) {
+      if (symbolId === 0) {
+        metadataCount++
+      } else if (K_prime !== null && symbolId > K_prime) {
+        fountainCount++
+      } else if (K !== null && symbolId > K) {
+        parityCount++
+      } else {
+        sourceCount++
+      }
+    }
+
+    return { metadataCount, sourceCount, parityCount, fountainCount }
+  }
+
   return {
     get fileId() { return fileId },
     get k() { return K },        // Source block count (for compatibility)
@@ -232,6 +253,10 @@ export function createDecoder() {
     get solved() { return solvedSource },  // Report source blocks solved
     get solvedTotal() { return solved },   // All intermediate blocks solved
     get uniqueSymbols() { return receivedSymbols.size },
+    get symbolBreakdown() { return getReceivedSymbolBreakdown() },
+    get pendingSymbolCount() { return pendingSymbols.length },
+    get unresolvedSourceCount() { return K !== null ? Math.max(0, K - solvedSource) : null },
+    get unresolvedIntermediateCount() { return K_prime !== null ? Math.max(0, K_prime - solved) : null },
     get progress() { return K ? solvedSource / K : 0 },
 
     isComplete() { return K !== null && solvedSource === K },

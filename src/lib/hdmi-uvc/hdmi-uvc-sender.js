@@ -250,6 +250,7 @@ const state = {
   isAwaitingStart: false,
   systematicIndex: 0,
   systematicStride: 1,
+  intermediateSystematicStride: 1,
   fountainSymbolId: 0,
   dataPacketCount: 0,
   frameCount: 0,
@@ -321,6 +322,7 @@ function resetPreparedSessionState() {
   state.isAwaitingStart = false
   state.systematicIndex = 0
   state.systematicStride = 1
+  state.intermediateSystematicStride = 1
   state.fountainSymbolId = 0
   state.dataPacketCount = 0
   state.systematicPass = 1
@@ -919,11 +921,12 @@ const TARGET_SOURCE_BLOCKS = 128
 const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
 const RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL = 2
 const RAW_RGB_PASS3_FOUNTAIN_PACKET_INTERVAL = 1
-const COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL = 0
-const COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL = 0
-const COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL = 4
-const COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL = 2
+const COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL = 4
+const COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL = 4
+const COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL = 2
+const COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL = 1
 const COMPAT4_PASS6_FOUNTAIN_PACKET_INTERVAL = 1
+const COMPAT4_PASS7_FOUNTAIN_PACKET_INTERVAL = 1
 const TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES = 6
 const TAIL_SYSTEMATIC_BURST_FRAMES = 1
 
@@ -1061,6 +1064,7 @@ function getFountainPacketInterval() {
   ) {
     return HYBRID_FOUNTAIN_PACKET_INTERVAL
   }
+  if (state.systematicPass >= 7) return COMPAT4_PASS7_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 6) return COMPAT4_PASS6_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 5) return COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 4) return COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL
@@ -1090,11 +1094,11 @@ function getHybridScheduleDescription() {
           ? 'Tile3'
           : '4x4'
     return (
-      'Hybrid schedule: source-only passes 1-3, then fountain every ' +
-      `${COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS6_FOUNTAIN_PACKET_INTERVAL} ` +
+      "Hybrid schedule: source-only pass 1, then systematic K' replay with fountain every " +
+      `${COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL} ` +
       `data packets in later ${modeName} replay passes, plus ` +
       `one full systematic burst frame every ${TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES} frame(s) ` +
-      `after pass 6 (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
+      `after pass 5 (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
     )
   }
 
@@ -1107,16 +1111,35 @@ function describeFountainInterval(interval) {
     : 'source-only'
 }
 
+function getCurrentSystematicSpan() {
+  if (!state.encoder) return 0
+  return state.systematicPass <= 1 ? state.encoder.K : state.encoder.K_prime
+}
+
+function getCurrentSystematicStride() {
+  if (!state.encoder) return 1
+  return state.systematicPass <= 1
+    ? state.systematicStride
+    : state.intermediateSystematicStride
+}
+
+function getCurrentSystematicLabel() {
+  return state.systematicPass <= 1 ? 'source' : 'intermediate'
+}
+
 function getSystematicPassIndexOffset(sourceSpan) {
-  if (sourceSpan <= 1 || state.systematicPass <= 2) return 0
-  if (state.systematicPass === 3) return Math.floor(sourceSpan / 2)
-  if (state.systematicPass === 4) return Math.floor(sourceSpan / 4)
-  if (state.systematicPass === 5) return Math.floor((sourceSpan * 3) / 4)
-  return Math.floor(sourceSpan / 8)
+  if (sourceSpan <= 1) return 0
+  if (state.systematicPass === 1) return 0
+  if (state.systematicPass === 2) return Math.floor(sourceSpan / 2)
+  if (state.systematicPass === 3) return Math.floor(sourceSpan / 4)
+  if (state.systematicPass === 4) return Math.floor((sourceSpan * 3) / 4)
+  if (state.systematicPass === 5) return Math.floor(sourceSpan / 8)
+  return Math.floor((sourceSpan * 5) / 8)
 }
 
 function nextDataSymbolId(frameNumber, strategy = 'auto') {
-  const sourceSpan = state.encoder.K
+  const systematicSpan = getCurrentSystematicSpan()
+  const systematicStride = getCurrentSystematicStride()
   const fountainPacketInterval = getFountainPacketInterval()
   const shouldSendFountain =
     strategy !== 'systematic' && (
@@ -1134,11 +1157,11 @@ function nextDataSymbolId(frameNumber, strategy = 'auto') {
   if (shouldSendFountain) {
     symbolId = state.fountainSymbolId++
   } else {
-    const passOffset = getSystematicPassIndexOffset(sourceSpan)
-    symbolId = (((state.systematicIndex + passOffset) * state.systematicStride) % sourceSpan) + 1
+    const passOffset = getSystematicPassIndexOffset(systematicSpan)
+    symbolId = (((state.systematicIndex + passOffset) * systematicStride) % systematicSpan) + 1
     if (frameNumber % FRAMES_PER_SYMBOL === 0) {
       state.systematicIndex++
-      if (state.systematicIndex >= sourceSpan) {
+      if (state.systematicIndex >= systematicSpan) {
         state.systematicPass++
         state.systematicIndex = 0
         if (
@@ -1148,7 +1171,7 @@ function nextDataSymbolId(frameNumber, strategy = 'auto') {
             state.mode === HDMI_MODE.LUMA_2 ||
             state.mode === HDMI_MODE.CODEBOOK_3
           ) &&
-          state.systematicPass >= 6
+          state.systematicPass >= 5
         ) {
           state.tailStartFrame = frameNumber + 1
           debugLog(
@@ -1156,10 +1179,13 @@ function nextDataSymbolId(frameNumber, strategy = 'auto') {
             `(every ${TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES} frame(s))`
           )
         }
+        const nextSpan = getCurrentSystematicSpan()
+        const nextStride = getCurrentSystematicStride()
+        const nextLabel = getCurrentSystematicLabel()
         debugLog(
-          `Starting source replay pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
-          `(stride=${state.systematicStride}/${sourceSpan}, ` +
-          `offset=${getSystematicPassIndexOffset(sourceSpan)}/${sourceSpan}, ` +
+          `Starting ${nextLabel} replay pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
+          `(stride=${nextStride}/${nextSpan}, ` +
+          `offset=${getSystematicPassIndexOffset(nextSpan)}/${nextSpan}, ` +
           `${describeFountainInterval(getFountainPacketInterval())})`
         )
       }
@@ -1285,7 +1311,8 @@ function renderFrame() {
     state.frameCount = nextFrameNumber
     elements.frameCount.textContent = state.frameCount
 
-    const progress = Math.min(100, Math.round((state.systematicIndex / state.encoder.K_prime) * 100))
+    const systematicSpan = Math.max(1, getCurrentSystematicSpan())
+    const progress = Math.min(100, Math.round((state.systematicIndex / systematicSpan) * 100))
     elements.progressDisplay.textContent = progress + '%'
     const dataSymbols = batch.symbolIds.filter(id => id !== 0)
     const firstData = dataSymbols[0]
@@ -1562,13 +1589,17 @@ async function startSending() {
 
     state.systematicIndex = 0
     state.systematicStride = chooseSystematicStride(state.encoder.K)
+    state.intermediateSystematicStride = chooseSystematicStride(state.encoder.K_prime)
     state.fountainSymbolId = state.encoder.K_prime + 1
     state.dataPacketCount = 0
     state.systematicPass = 1
     state.tailStartFrame = 0
     state.frameCount = 0
     resetSenderPerfState()
-    debugLog(`Systematic order: source stride=${state.systematicStride}/${state.encoder.K}`)
+    debugLog(
+      `Systematic order: source stride=${state.systematicStride}/${state.encoder.K}, ` +
+      `intermediate stride=${state.intermediateSystematicStride}/${state.encoder.K_prime}`
+    )
     debugLog(getHybridScheduleDescription())
     armPreparedStart()
 
