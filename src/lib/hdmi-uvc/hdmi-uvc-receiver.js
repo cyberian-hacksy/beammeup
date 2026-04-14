@@ -552,6 +552,27 @@ function getLayoutProbeOptions(layout) {
   }
 }
 
+function getLockedLayoutProbeOptions(layout) {
+  if (!layout) return {}
+
+  switch (layout.frameMode) {
+    case HDMI_MODE.COMPAT_4:
+    case HDMI_MODE.RAW_GRAY:
+    case HDMI_MODE.RAW_RGB:
+    case HDMI_MODE.LUMA_2:
+      return {
+        offsets: [0, -1, 1]
+      }
+    case HDMI_MODE.CODEBOOK_3:
+      return {
+        offsets: [0, -1, 1, -2, 2],
+        scales: [1, 0.995, 1.005]
+      }
+    default:
+      return {}
+  }
+}
+
 function extractFramePackets(framePayload, expectedPacketSize = null) {
   return probeFramePackets(framePayload, expectedPacketSize).packets
 }
@@ -623,13 +644,16 @@ function tryFixedLayoutPackets(imageData, width, region) {
 function tryLockedLayoutFastPath(imageData, width, region) {
   const activeMode = state.detectedMode ?? state.fixedLayout?.frameMode ?? state.preferredLayout?.frameMode
   if (
+    activeMode !== HDMI_MODE.COMPAT_4 &&
+    activeMode !== HDMI_MODE.RAW_GRAY &&
     activeMode !== HDMI_MODE.RAW_RGB &&
     activeMode !== HDMI_MODE.LUMA_2 &&
     activeMode !== HDMI_MODE.CODEBOOK_3
   ) {
     return false
   }
-  if (!state.fixedLayout || state.expectedPacketCount < 1) return false
+  const lockedLayout = state.fixedLayout || state.preferredLayout
+  if (!lockedLayout || state.expectedPacketCount < 1) return false
 
   const expectedPacketSize = getExpectedPacketSize()
   if (!expectedPacketSize) return false
@@ -639,16 +663,19 @@ function tryLockedLayoutFastPath(imageData, width, region) {
     imageData,
     width,
     region,
-    state.fixedLayout,
+    lockedLayout,
     payloadLength,
     expectedPacketSize,
-    getLayoutProbeOptions(state.fixedLayout)
+    getLockedLayoutProbeOptions(lockedLayout)
   )
   if (!best) return false
 
   const packets = best.probe?.packets || []
   if (packets.length === 0) return false
-  if (best.layout) state.fixedLayout = { ...best.layout }
+  if (best.layout) {
+    state.fixedLayout = { ...best.layout }
+    state.preferredLayout = { ...best.layout }
+  }
 
   if (acceptPackets(packets, state.frameCount, true, state.expectedPacketCount)) {
     if (state.decoder?.isComplete()) return true
