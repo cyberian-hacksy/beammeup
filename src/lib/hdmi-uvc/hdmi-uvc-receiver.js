@@ -18,6 +18,7 @@ const DEBUG_MODE = true
 const MAX_DEBUG_LINES = 500
 const RX_PERF_LOG_INTERVAL_FRAMES = 60
 const DEBUG_RENDER_INTERVAL_MS = 120
+const RECEIVER_UI_UPDATE_INTERVAL_MS = 120
 const DEBUG_CONSOLE = false
 const CAPTURE_BENCHMARK_SAMPLES_PER_METHOD = 6
 const debugLines = []
@@ -70,6 +71,12 @@ function debugCurrent(text) {
   if (!DEBUG_MODE) return
   const el = document.getElementById('hdmi-uvc-receiver-debug-current')
   if (el) el.textContent = text
+}
+
+function shouldUpdateReceiverUi(lastUpdateMs, nowMs, force = false) {
+  if (force) return true
+  if (!Number.isFinite(lastUpdateMs) || lastUpdateMs <= 0) return true
+  return (nowMs - lastUpdateMs) >= RECEIVER_UI_UPDATE_INTERVAL_MS
 }
 
 function createPerfWindow() {
@@ -660,13 +667,18 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
     if (packets.length === 0) return false
 
     ensureDecoder()
+    const decoder = state.decoder
 
     let lastParsed = null
     for (const packet of packets) {
       const parsed = parsePacket(packet)
       if (!parsed) continue
       lastParsed = parsed
-      state.decoder.receive(packet)
+      if (typeof decoder.receiveParsed === 'function') {
+        decoder.receiveParsed(parsed)
+      } else {
+        decoder.receive(packet)
+      }
     }
 
     if (!lastParsed) return false
@@ -674,11 +686,18 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
     if (countAsValidFrame) {
       state.validFrames++
       state.decodeFailCount = 0
-      elements.statFrames.textContent = state.validFrames + ' valid frames'
     }
 
     state.expectedPacketCount = Math.max(packets.length, expectedFramePacketCount || 0)
     recordProgressSample()
+
+    const nowMs = performance.now()
+    const forceUiUpdate = decoder.isComplete() || state.validFrames <= 1
+    const shouldRefreshUi = shouldUpdateReceiverUi(state.lastReceivingUiUpdateMs, nowMs, forceUiUpdate)
+
+    if (countAsValidFrame && shouldRefreshUi) {
+      elements.statFrames.textContent = state.validFrames + ' valid frames'
+    }
 
     if (state.validFrames % 10 === 0) {
       const throughput = getThroughputStats()
@@ -686,21 +705,28 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
         ? ` rate=${formatBytes(throughput.average)}/s recent=${formatBytes(throughput.recent ?? throughput.average)}/s`
         : ''
       debugLog(
-        `Progress: ${getDisplayProgressPercent(state.decoder)}% ` +
-        `solved=${state.decoder.solved}/${state.decoder.K || '?'} ` +
-        `unique=${state.decoder.uniqueSymbols} ` +
+        `Progress: ${getDisplayProgressPercent(decoder)}% ` +
+        `solved=${decoder.solved}/${decoder.K || '?'} ` +
+        `unique=${decoder.uniqueSymbols} ` +
         `sym=${lastParsed.symbolId ?? fallbackSymbolId} pkts=${packets.length}` +
         rateSuffix
       )
     }
 
-    debugCurrent(
-      `#${state.validFrames} sym=${lastParsed.symbolId ?? fallbackSymbolId} ` +
-      `${getDisplayProgressPercent(state.decoder)}% x${packets.length}`
-    )
-    updateProgress()
+    if (shouldRefreshUi) {
+      debugCurrent(
+        `#${state.validFrames} sym=${lastParsed.symbolId ?? fallbackSymbolId} ` +
+        `${getDisplayProgressPercent(decoder)}% x${packets.length}`
+      )
+      updateProgress()
+      state.lastReceivingUiUpdateMs = nowMs
+    }
 
-    if (state.decoder.isComplete()) {
+    if (decoder.isComplete()) {
+      if (!shouldRefreshUi) {
+        updateProgress()
+        state.lastReceivingUiUpdateMs = nowMs
+      }
       debugLog('=== TRANSFER COMPLETE ===')
       handleComplete()
     }
@@ -771,6 +797,7 @@ const state = {
   expectedPacketCount: 0,
   preferredLayout: null,
   progressSamples: [],
+  lastReceivingUiUpdateMs: 0,
   rxPerf: createReceiverPerfState(),
   captureTuning: createCaptureTuningState()
 }
@@ -2036,6 +2063,7 @@ function resetReceiver() {
   state.preferredLayout = null
   state.expectedPacketCount = 0
   state.progressSamples = []
+  state.lastReceivingUiUpdateMs = 0
   resetReceiverPerfState()
   resetCaptureTuningState()
   resetCimbarSink()

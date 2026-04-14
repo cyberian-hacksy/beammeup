@@ -130,6 +130,98 @@ export function createDecoder() {
     return totalRecovered
   }
 
+  function ingestParsedPacket(parsed) {
+    if (!parsed) return false
+
+    // First packet sets session
+    if (fileId === null) {
+      fileId = parsed.fileId
+      K_prime = parsed.k  // Packet contains K' (intermediate block count)
+      blockSize = parsed.blockSize  // Store block size from packet
+      decodedBlocks = new Array(K_prime).fill(null)
+    } else if (parsed.fileId !== fileId) {
+      // New session detected - return special value so receiver can reset
+      return 'new_session'
+    }
+
+    // Track unique symbols
+    if (receivedSymbols.has(parsed.symbolId)) {
+      return false // Duplicate
+    }
+    receivedSymbols.add(parsed.symbolId)
+
+    // Handle metadata - extract K and set up parity
+    if (parsed.isMetadata || parsed.symbolId === 0) {
+      if (!metadata) {
+        metadata = parseMetadataPayload(parsed.payload)
+        // Extract K from metadata and set up parity parameters
+        K = metadata.K
+        const params = calculateParityParams(K)
+        G = params.G
+        parityMap = generateParityMap(K, G)
+        // K_prime is K + actual parity count (may differ from estimate)
+        const newK_prime = K + parityMap.length
+
+        // Resize array if needed, preserve existing decoded blocks
+        if (K_prime !== newK_prime) {
+          const oldBlocks = decodedBlocks || []
+          K_prime = newK_prime
+          decodedBlocks = new Array(K_prime).fill(null)
+          // Copy over any previously decoded blocks
+          for (let i = 0; i < Math.min(oldBlocks.length, K_prime); i++) {
+            if (oldBlocks[i]) {
+              decodedBlocks[i] = oldBlocks[i]
+            }
+          }
+        }
+
+        // Recount solved blocks now that K is known
+        solved = 0
+        solvedSource = 0
+        for (let i = 0; i < K_prime; i++) {
+          if (decodedBlocks[i]) {
+            solved++
+            if (i < K) solvedSource++
+          }
+        }
+      }
+      return true
+    }
+
+    // Reconstruct indices using same logic as encoder
+    const seed = (fileId ^ parsed.symbolId) >>> 0
+    const rng = createPRNG(seed)
+
+    // Match encoder's systematic/fountain logic (using K_prime)
+    let degree, indices
+    if (parsed.symbolId <= K_prime) {
+      // Systematic symbol: just one intermediate block
+      degree = 1
+      indices = [(parsed.symbolId - 1) % K_prime]
+    } else {
+      // Fountain-coded symbol
+      const degreeRoll = rng.next() / 0xFFFFFFFF
+      if (degreeRoll < DEGREE_ONE_PROBABILITY) {
+        degree = 1
+        indices = [rng.next() % K_prime]
+      } else {
+        degree = Math.min(FOUNTAIN_DEGREE, Math.max(1, K_prime - 1))
+        indices = rng.pickUnique(degree, K_prime)
+      }
+    }
+
+    // Add to pending and propagate
+    pendingSymbols.push({ indices, payload: new Uint8Array(parsed.payload) })
+    propagate()
+
+    // Try parity recovery after each symbol if we have metadata
+    if (!this.isComplete() && parityMap) {
+      parityRecovery()
+    }
+
+    return true
+  }
+
   return {
     get fileId() { return fileId },
     get k() { return K },        // Source block count (for compatibility)
@@ -162,95 +254,11 @@ export function createDecoder() {
 
     receive(packet) {
       const parsed = parsePacket(packet)
-      if (!parsed) return false
+      return ingestParsedPacket.call(this, parsed)
+    },
 
-      // First packet sets session
-      if (fileId === null) {
-        fileId = parsed.fileId
-        K_prime = parsed.k  // Packet contains K' (intermediate block count)
-        blockSize = parsed.blockSize  // Store block size from packet
-        decodedBlocks = new Array(K_prime).fill(null)
-      } else if (parsed.fileId !== fileId) {
-        // New session detected - return special value so receiver can reset
-        return 'new_session'
-      }
-
-      // Track unique symbols
-      if (receivedSymbols.has(parsed.symbolId)) {
-        return false // Duplicate
-      }
-      receivedSymbols.add(parsed.symbolId)
-
-      // Handle metadata - extract K and set up parity
-      if (parsed.isMetadata || parsed.symbolId === 0) {
-        if (!metadata) {
-          metadata = parseMetadataPayload(parsed.payload)
-          // Extract K from metadata and set up parity parameters
-          K = metadata.K
-          const params = calculateParityParams(K)
-          G = params.G
-          parityMap = generateParityMap(K, G)
-          // K_prime is K + actual parity count (may differ from estimate)
-          const newK_prime = K + parityMap.length
-
-          // Resize array if needed, preserve existing decoded blocks
-          if (K_prime !== newK_prime) {
-            const oldBlocks = decodedBlocks || []
-            K_prime = newK_prime
-            decodedBlocks = new Array(K_prime).fill(null)
-            // Copy over any previously decoded blocks
-            for (let i = 0; i < Math.min(oldBlocks.length, K_prime); i++) {
-              if (oldBlocks[i]) {
-                decodedBlocks[i] = oldBlocks[i]
-              }
-            }
-          }
-
-          // Recount solved blocks now that K is known
-          solved = 0
-          solvedSource = 0
-          for (let i = 0; i < K_prime; i++) {
-            if (decodedBlocks[i]) {
-              solved++
-              if (i < K) solvedSource++
-            }
-          }
-        }
-        return true
-      }
-
-      // Reconstruct indices using same logic as encoder
-      const seed = (fileId ^ parsed.symbolId) >>> 0
-      const rng = createPRNG(seed)
-
-      // Match encoder's systematic/fountain logic (using K_prime)
-      let degree, indices
-      if (parsed.symbolId <= K_prime) {
-        // Systematic symbol: just one intermediate block
-        degree = 1
-        indices = [(parsed.symbolId - 1) % K_prime]
-      } else {
-        // Fountain-coded symbol
-        const degreeRoll = rng.next() / 0xFFFFFFFF
-        if (degreeRoll < DEGREE_ONE_PROBABILITY) {
-          degree = 1
-          indices = [rng.next() % K_prime]
-        } else {
-          degree = Math.min(FOUNTAIN_DEGREE, Math.max(1, K_prime - 1))
-          indices = rng.pickUnique(degree, K_prime)
-        }
-      }
-
-      // Add to pending and propagate
-      pendingSymbols.push({ indices, payload: new Uint8Array(parsed.payload) })
-      propagate()
-
-      // Try parity recovery after each symbol if we have metadata
-      if (!this.isComplete() && parityMap) {
-        parityRecovery()
-      }
-
-      return true
+    receiveParsed(parsed) {
+      return ingestParsedPacket.call(this, parsed)
     },
 
     reconstruct() {

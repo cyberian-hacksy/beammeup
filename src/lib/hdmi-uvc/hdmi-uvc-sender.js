@@ -247,6 +247,7 @@ const state = {
   animationId: null,
   isSending: false,
   isPaused: false,
+  isAwaitingStart: false,
   systematicIndex: 0,
   systematicStride: 1,
   fountainSymbolId: 0,
@@ -297,6 +298,12 @@ function resetCanvasStyles() {
   elements.canvas.style.boxSizing = ''
   elements.canvas.style.removeProperty('max-width')
   elements.canvas.style.removeProperty('max-height')
+  if (elements?.placeholder) {
+    elements.placeholder.style.position = ''
+    elements.placeholder.style.zIndex = ''
+    elements.placeholder.style.textAlign = ''
+    elements.placeholder.style.padding = ''
+  }
 }
 
 function setSignalLive(isLive) {
@@ -305,9 +312,34 @@ function setSignalLive(isLive) {
   document.body?.classList.toggle('hdmi-uvc-signal-live', isLive)
 }
 
+function resetPreparedSessionState() {
+  state.encoder = null
+  state.packetSize = 0
+  state.packetsPerFrame = 1
+  state.isSending = false
+  state.isPaused = false
+  state.isAwaitingStart = false
+  state.systematicIndex = 0
+  state.systematicStride = 1
+  state.fountainSymbolId = 0
+  state.dataPacketCount = 0
+  state.systematicPass = 1
+  state.tailStartFrame = 0
+  state.metadataIntervalFrames = METADATA_INTERVAL * 2
+  state.frameCount = 0
+  state.nextFrameDueMs = 0
+  state.cimbarIdealRatio = 1
+  state.cimbarBoundsLogged = false
+  state.cimbarUseWrapper = false
+  state.cimbarLayout = null
+  state.animationId = null
+  resetSenderPerfState()
+}
+
 async function restoreSenderReadyState() {
   resetRenderSchedule()
   resetHdmiFrameResources()
+  resetPreparedSessionState()
   setSignalLive(false)
   resetCanvasStyles()
   await exitFullscreenSafely()
@@ -324,6 +356,39 @@ async function restoreSenderReadyState() {
   updateActionButton()
   updateModeSelector()
   updateRenderSizeSelector()
+}
+
+function applyFullscreenCanvasStyles() {
+  elements.container.classList.add('fullscreen')
+  elements.canvas.style.display = 'block'
+  elements.canvas.style.position = 'absolute'
+  elements.canvas.style.top = '0'
+  elements.canvas.style.left = '0'
+  elements.canvas.style.zIndex = '0'
+  elements.canvas.style.imageRendering = 'pixelated'
+  elements.canvas.style.background = '#000'
+  elements.canvas.style.width = '100%'
+  elements.canvas.style.height = '100%'
+}
+
+function clearSenderCanvasToBlack() {
+  if (!elements?.canvas?.width || !elements?.canvas?.height) return
+  const ctx = elements.canvas.getContext('2d')
+  if (!ctx) return
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, elements.canvas.width, elements.canvas.height)
+}
+
+function showArmedStartPrompt() {
+  elements.overlay.classList.add('hidden')
+  elements.placeholder.style.display = 'flex'
+  elements.placeholder.style.position = 'relative'
+  elements.placeholder.style.zIndex = '1'
+  elements.placeholder.style.textAlign = 'center'
+  elements.placeholder.style.padding = '1.5rem'
+  elements.placeholderIcon.textContent = '>'
+  elements.placeholderText.textContent = 'Fullscreen ready. Wait for the browser tip to disappear, then press Space or Enter to start.'
+  debugCurrent('ARMED - press Space or Enter to start')
 }
 
 function waitForLayoutFrames(count = 2) {
@@ -798,6 +863,9 @@ function updateActionButton() {
   if (!state.fileData) {
     btn.textContent = 'Start'
     btn.disabled = true
+  } else if (state.isAwaitingStart) {
+    btn.textContent = 'Press Space'
+    btn.disabled = true
   } else if (state.isSending && !state.isPaused) {
     btn.textContent = 'Pause'
     btn.disabled = false
@@ -819,7 +887,7 @@ function updateEstimateSummary() {
 
 function updateModeSelector() {
   const buttons = elements.modeButtons || []
-  const disabled = state.isSending || state.isPaused
+  const disabled = state.isSending || state.isPaused || state.isAwaitingStart
 
   for (const button of buttons) {
     const mode = parseInt(button.dataset.mode, 10)
@@ -833,7 +901,7 @@ function updateModeSelector() {
 function updateRenderSizeSelector() {
   if (!elements?.renderSizeSelect) return
   elements.renderSizeSelect.value = getRenderSizePreset().id
-  elements.renderSizeSelect.disabled = state.isSending || state.isPaused || isCimbarMode()
+  elements.renderSizeSelect.disabled = state.isSending || state.isPaused || state.isAwaitingStart || isCimbarMode()
   updateEstimateSummary()
 }
 
@@ -849,9 +917,10 @@ const TARGET_SOURCE_BLOCKS = 128
 const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
 const RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL = 2
 const RAW_RGB_PASS3_FOUNTAIN_PACKET_INTERVAL = 1
-const COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL = 4
-const COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL = 2
-const COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL = 1
+const COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL = 0
+const COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL = 4
+const COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL = 2
+const COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL = 1
 const TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES = 6
 const TAIL_SYSTEMATIC_BURST_FRAMES = 1
 
@@ -983,6 +1052,7 @@ function getFountainPacketInterval() {
   ) {
     return HYBRID_FOUNTAIN_PACKET_INTERVAL
   }
+  if (state.systematicPass >= 5) return COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 4) return COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 3) return COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 2) return COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL
@@ -1010,15 +1080,21 @@ function getHybridScheduleDescription() {
           ? 'Tile3'
           : '4x4'
     return (
-      'Hybrid schedule: source-only pass 1, then fountain every ' +
-      `${COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL} ` +
+      'Hybrid schedule: source-only passes 1-2, then fountain every ' +
+      `${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL} ` +
       `data packets in later ${modeName} replay passes, plus ` +
       `one full systematic burst frame every ${TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES} frame(s) ` +
-      `after pass 4 (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
+      `after pass 5 (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
     )
   }
 
   return `Hybrid schedule: source-only pass 1, then fountain every ${HYBRID_FOUNTAIN_PACKET_INTERVAL} data packets`
+}
+
+function describeFountainInterval(interval) {
+  return interval > 0
+    ? `fountain every ${interval} data packet(s)`
+    : 'source-only'
 }
 
 function nextDataSymbolId(frameNumber, strategy = 'auto') {
@@ -1028,6 +1104,7 @@ function nextDataSymbolId(frameNumber, strategy = 'auto') {
     strategy !== 'systematic' && (
       strategy === 'fountain' ||
       (
+        fountainPacketInterval > 0 &&
         state.systematicPass > 1 &&
         state.fountainSymbolId > state.encoder.K_prime &&
         state.dataPacketCount > 0 &&
@@ -1052,7 +1129,7 @@ function nextDataSymbolId(frameNumber, strategy = 'auto') {
             state.mode === HDMI_MODE.LUMA_2 ||
             state.mode === HDMI_MODE.CODEBOOK_3
           ) &&
-          state.systematicPass >= 4
+          state.systematicPass >= 5
         ) {
           state.tailStartFrame = frameNumber + 1
           debugLog(
@@ -1063,7 +1140,7 @@ function nextDataSymbolId(frameNumber, strategy = 'auto') {
         debugLog(
           `Starting source replay pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
           `(stride=${state.systematicStride}/${sourceSpan}, ` +
-          `fountain every ${getFountainPacketInterval()} data packet(s))`
+          `${describeFountainInterval(getFountainPacketInterval())})`
         )
       }
     }
@@ -1227,25 +1304,64 @@ function renderFrame() {
   }
 }
 
+function armPreparedStart() {
+  state.isAwaitingStart = true
+  state.isSending = false
+  state.isPaused = false
+  state.nextFrameDueMs = 0
+  clearSenderCanvasToBlack()
+  showArmedStartPrompt()
+  setSignalLive(false)
+
+  elements.fpsSlider.disabled = true
+  updateActionButton()
+  updateModeSelector()
+  updateRenderSizeSelector()
+  debugLog('Sender armed: wait for the fullscreen tip to clear, then press Space or Enter to begin transmission')
+}
+
+function beginPreparedStart() {
+  if (!state.fileData) return
+  if (isCimbarMode()) {
+    const Module = getCimbarModule()
+    if (!Module) return
+  } else if (!state.encoder) {
+    return
+  }
+
+  debugLog('=== START SENDING ===')
+  state.isAwaitingStart = false
+  state.isSending = true
+  state.isPaused = false
+  state.frameCount = 0
+  state.nextFrameDueMs = performance.now() + (1000 / getFps().fps)
+  resetSenderPerfState()
+  elements.placeholder.style.display = 'none'
+  setSignalLive(true)
+
+  elements.fpsSlider.disabled = true
+  updateActionButton()
+  updateModeSelector()
+  updateRenderSizeSelector()
+  renderFrame()
+}
+
+async function cancelArmedStart(reason = 'Armed start cancelled') {
+  if (!state.isAwaitingStart) return
+  debugLog(reason)
+  await restoreSenderReadyState()
+}
+
 async function startSending() {
   if (!state.fileData || !state.fileHash) return
 
   try {
-    debugLog(`=== START SENDING ===`)
+    debugLog('=== ARMING FULLSCREEN START ===')
     const selectedFps = getFps()
 
     // Go fullscreen to eliminate browser chrome from the HDMI output.
     // This ensures anchors are at the true corners with no toolbar artifacts.
-    elements.container.classList.add('fullscreen')
-    elements.canvas.style.display = 'block'
-    elements.canvas.style.position = 'absolute'
-    elements.canvas.style.top = '0'
-    elements.canvas.style.left = '0'
-    elements.canvas.style.imageRendering = 'pixelated'
-    elements.canvas.style.background = '#000'
-    elements.canvas.style.width = '100%'
-    elements.canvas.style.height = '100%'
-    elements.placeholder.style.display = 'none'
+    applyFullscreenCanvasStyles()
 
     try {
       await elements.container.requestFullscreen({ navigationUI: 'hide' })
@@ -1312,17 +1428,8 @@ async function startSending() {
       )
       debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)})`)
 
-      state.isSending = true
-      state.isPaused = false
-      state.frameCount = 0
-      state.nextFrameDueMs = performance.now() + (1000 / selectedFps.fps)
       state.cimbarBoundsLogged = false
-      setSignalLive(true)
-
-      elements.fpsSlider.disabled = true
-      updateActionButton()
-      updateModeSelector()
-      renderFrame()
+      armPreparedStart()
       return
     }
 
@@ -1432,8 +1539,6 @@ async function startSending() {
     )
     debugLog(`Batching: ${state.packetsPerFrame} packet(s)/frame, packetSize=${state.packetSize}, used=${batchedBytes}/${capacity} bytes (${utilization}%)`)
 
-    state.isSending = true
-    state.isPaused = false
     state.systematicIndex = 0
     state.systematicStride = chooseSystematicStride(state.encoder.K)
     state.fountainSymbolId = state.encoder.K_prime + 1
@@ -1441,23 +1546,13 @@ async function startSending() {
     state.systematicPass = 1
     state.tailStartFrame = 0
     state.frameCount = 0
-    state.nextFrameDueMs = performance.now() + (1000 / selectedFps.fps)
     resetSenderPerfState()
     debugLog(`Systematic order: source stride=${state.systematicStride}/${state.encoder.K}`)
     debugLog(getHybridScheduleDescription())
-    setSignalLive(true)
-
-    elements.fpsSlider.disabled = true
-    updateActionButton()
-    updateModeSelector()
-    updateRenderSizeSelector()
-    renderFrame()
+    armPreparedStart()
 
   } catch (err) {
     console.error('HDMI-UVC start error:', err)
-    state.isSending = false
-    state.isPaused = false
-    state.encoder = null
     await restoreSenderReadyState()
     showError('Failed to start: ' + err.message)
   }
@@ -1541,30 +1636,12 @@ async function resumeSending() {
 async function stopSending() {
   resetRenderSchedule()
   resetHdmiFrameResources()
+  resetPreparedSessionState()
 
-  state.encoder = null
   state.fileData = null
   state.fileName = null
   state.fileSize = 0
   state.fileHash = null
-  state.packetSize = 0
-  state.packetsPerFrame = 1
-  state.isSending = false
-  state.isPaused = false
-  state.systematicIndex = 0
-  state.systematicStride = 1
-  state.fountainSymbolId = 0
-  state.dataPacketCount = 0
-  state.systematicPass = 1
-  state.tailStartFrame = 0
-  state.metadataIntervalFrames = METADATA_INTERVAL * 2
-  state.frameCount = 0
-  state.cimbarIdealRatio = 1
-  state.cimbarBoundsLogged = false
-  state.cimbarUseWrapper = false
-  state.cimbarLayout = null
-  state.animationId = null
-  resetSenderPerfState()
   setSignalLive(false)
 
   elements.fpsSlider.disabled = false
@@ -1586,6 +1663,8 @@ async function stopSending() {
 
 function handleActionClick() {
   if (!state.fileData) return
+
+  if (state.isAwaitingStart) return
 
   if (state.isSending && !state.isPaused) {
     pauseSending()
@@ -1612,6 +1691,7 @@ async function processFile(file) {
     state.fileName = file.name
     state.fileSize = file.size
     state.fileHash = hash
+    resetPreparedSessionState()
     state.isSending = false
     state.isPaused = false
 
@@ -1686,7 +1766,7 @@ function handleModeChange(e) {
   const button = e.currentTarget
   const newMode = parseInt(button.dataset.mode, 10)
   if (!Number.isFinite(newMode) || newMode === state.mode) return
-  if (state.isSending || state.isPaused) return
+  if (state.isSending || state.isPaused || state.isAwaitingStart) return
 
   state.mode = newMode
   const recommendedFpsPreset = getRecommendedFpsPreset(state.mode)
@@ -1700,6 +1780,7 @@ function handleModeChange(e) {
 }
 
 function handleRenderSizeChange(e) {
+  if (state.isAwaitingStart) return
   const preset = getRenderSizePreset(e.target.value)
   if (preset.id === state.renderSizePresetId) return
 
@@ -1709,12 +1790,29 @@ function handleRenderSizeChange(e) {
 }
 
 function handleKeydown(e) {
+  if (state.isAwaitingStart) {
+    if (e.code === 'Space' || e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault()
+      beginPreparedStart()
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      void cancelArmedStart('Armed start cancelled before transmission')
+      return
+    }
+  }
+
   if (e.key === 'Escape' && state.isSending) {
     stopSending()
   }
 }
 
 function handleFullscreenChange() {
+  if (state.isAwaitingStart && !document.fullscreenElement) {
+    void cancelArmedStart('Fullscreen exited before transmission started')
+    return
+  }
   // If we were sending and fullscreen was exited (e.g. by pressing Escape), pause
   if (state.isSending && !state.isPaused && !document.fullscreenElement) {
     pauseSending()
