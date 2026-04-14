@@ -909,8 +909,10 @@ function updateRenderSizeSelector() {
 // of the available bandwidth. Let fountain redundancy absorb frame loss.
 const FRAMES_PER_SYMBOL = 1
 const METADATA_BURST_FRAMES = 4
+const BOOTSTRAP_METADATA_INTERVAL_FRAMES = 12
+const BOOTSTRAP_METADATA_WINDOW_FRAMES = 180
 const MIN_METADATA_INTERVAL_FRAMES = 90
-const MAX_METADATA_INTERVAL_FRAMES = 180
+const MAX_METADATA_INTERVAL_FRAMES = 90
 const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 3072
 const TARGET_SOURCE_BLOCKS = 128
@@ -918,9 +920,10 @@ const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
 const RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL = 2
 const RAW_RGB_PASS3_FOUNTAIN_PACKET_INTERVAL = 1
 const COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL = 0
-const COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL = 4
-const COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL = 2
-const COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL = 1
+const COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL = 0
+const COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL = 4
+const COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL = 2
+const COMPAT4_PASS6_FOUNTAIN_PACKET_INTERVAL = 1
 const TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES = 6
 const TAIL_SYSTEMATIC_BURST_FRAMES = 1
 
@@ -1035,8 +1038,14 @@ function getBatchingProfile(mode) {
 }
 
 function shouldSendMetadata(frameNumber) {
-  return frameNumber <= METADATA_BURST_FRAMES ||
-    frameNumber % state.metadataIntervalFrames === 0
+  if (frameNumber <= METADATA_BURST_FRAMES) return true
+  if (
+    frameNumber <= BOOTSTRAP_METADATA_WINDOW_FRAMES &&
+    (frameNumber % BOOTSTRAP_METADATA_INTERVAL_FRAMES) === 0
+  ) {
+    return true
+  }
+  return frameNumber % state.metadataIntervalFrames === 0
 }
 
 function getFountainPacketInterval() {
@@ -1052,6 +1061,7 @@ function getFountainPacketInterval() {
   ) {
     return HYBRID_FOUNTAIN_PACKET_INTERVAL
   }
+  if (state.systematicPass >= 6) return COMPAT4_PASS6_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 5) return COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 4) return COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL
   if (state.systematicPass >= 3) return COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL
@@ -1080,11 +1090,11 @@ function getHybridScheduleDescription() {
           ? 'Tile3'
           : '4x4'
     return (
-      'Hybrid schedule: source-only passes 1-2, then fountain every ' +
-      `${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL} ` +
+      'Hybrid schedule: source-only passes 1-3, then fountain every ' +
+      `${COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS6_FOUNTAIN_PACKET_INTERVAL} ` +
       `data packets in later ${modeName} replay passes, plus ` +
       `one full systematic burst frame every ${TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES} frame(s) ` +
-      `after pass 5 (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
+      `after pass 6 (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
     )
   }
 
@@ -1095,6 +1105,14 @@ function describeFountainInterval(interval) {
   return interval > 0
     ? `fountain every ${interval} data packet(s)`
     : 'source-only'
+}
+
+function getSystematicPassIndexOffset(sourceSpan) {
+  if (sourceSpan <= 1 || state.systematicPass <= 2) return 0
+  if (state.systematicPass === 3) return Math.floor(sourceSpan / 2)
+  if (state.systematicPass === 4) return Math.floor(sourceSpan / 4)
+  if (state.systematicPass === 5) return Math.floor((sourceSpan * 3) / 4)
+  return Math.floor(sourceSpan / 8)
 }
 
 function nextDataSymbolId(frameNumber, strategy = 'auto') {
@@ -1116,7 +1134,8 @@ function nextDataSymbolId(frameNumber, strategy = 'auto') {
   if (shouldSendFountain) {
     symbolId = state.fountainSymbolId++
   } else {
-    symbolId = ((state.systematicIndex * state.systematicStride) % sourceSpan) + 1
+    const passOffset = getSystematicPassIndexOffset(sourceSpan)
+    symbolId = (((state.systematicIndex + passOffset) * state.systematicStride) % sourceSpan) + 1
     if (frameNumber % FRAMES_PER_SYMBOL === 0) {
       state.systematicIndex++
       if (state.systematicIndex >= sourceSpan) {
@@ -1129,7 +1148,7 @@ function nextDataSymbolId(frameNumber, strategy = 'auto') {
             state.mode === HDMI_MODE.LUMA_2 ||
             state.mode === HDMI_MODE.CODEBOOK_3
           ) &&
-          state.systematicPass >= 5
+          state.systematicPass >= 6
         ) {
           state.tailStartFrame = frameNumber + 1
           debugLog(
@@ -1140,6 +1159,7 @@ function nextDataSymbolId(frameNumber, strategy = 'auto') {
         debugLog(
           `Starting source replay pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
           `(stride=${state.systematicStride}/${sourceSpan}, ` +
+          `offset=${getSystematicPassIndexOffset(sourceSpan)}/${sourceSpan}, ` +
           `${describeFountainInterval(getFountainPacketInterval())})`
         )
       }
@@ -1535,6 +1555,7 @@ async function startSending() {
     debugLog(`Encoder: K=${state.encoder.K}, K'=${state.encoder.K_prime}`)
     debugLog(
       `Metadata schedule: burst=${METADATA_BURST_FRAMES} frame(s), ` +
+      `bootstrap=${BOOTSTRAP_METADATA_INTERVAL_FRAMES} frame(s) through frame ${BOOTSTRAP_METADATA_WINDOW_FRAMES}, ` +
       `interval=${state.metadataIntervalFrames} frame(s)`
     )
     debugLog(`Batching: ${state.packetsPerFrame} packet(s)/frame, packetSize=${state.packetSize}, used=${batchedBytes}/${capacity} bytes (${utilization}%)`)
