@@ -19,6 +19,7 @@ const MAX_DEBUG_LINES = 500
 const RX_PERF_LOG_INTERVAL_FRAMES = 60
 const DEBUG_RENDER_INTERVAL_MS = 120
 const RECEIVER_UI_UPDATE_INTERVAL_MS = 120
+const LOCKED_LAYOUT_RECOVERY_PROBE_INTERVAL_FRAMES = 8
 const DEBUG_CONSOLE = false
 const CAPTURE_BENCHMARK_SAMPLES_PER_METHOD = 6
 const debugLines = []
@@ -581,6 +582,19 @@ function getFramePacketSlotCount(framePayload, expectedPacketSize = null) {
   return probeFramePackets(framePayload, expectedPacketSize).slotCount
 }
 
+function readLayoutPacketsExact(imageData, width, region, layout, payloadLength, expectedPacketSize = null) {
+  if (!layout || !payloadLength || payloadLength <= 0) return null
+
+  const payload = readPayloadWithLayout(imageData, width, region, layout, payloadLength)
+  if (!payload) return null
+
+  return {
+    payload,
+    probe: probeFramePackets(payload, expectedPacketSize),
+    layout
+  }
+}
+
 function ensureDecoder() {
   if (!state.decoder) {
     state.decoder = createDecoder()
@@ -659,6 +673,34 @@ function tryLockedLayoutFastPath(imageData, width, region) {
   if (!expectedPacketSize) return false
 
   const payloadLength = expectedPacketSize * state.expectedPacketCount
+  const exact = readLayoutPacketsExact(
+    imageData,
+    width,
+    region,
+    lockedLayout,
+    payloadLength,
+    expectedPacketSize
+  )
+  const exactPackets = exact?.probe?.packets || []
+  if (exactPackets.length > 0) {
+    if (acceptPackets(exactPackets, state.frameCount, true, state.expectedPacketCount)) {
+      state.lockedLayoutFastPathMisses = 0
+      if (exact.layout) {
+        state.fixedLayout = { ...exact.layout }
+        state.preferredLayout = { ...exact.layout }
+      }
+      if (state.decoder?.isComplete()) return true
+      scheduleNextFrame()
+      return true
+    }
+  }
+
+  state.lockedLayoutFastPathMisses++
+  const shouldRunRecoveryProbe =
+    state.lockedLayoutFastPathMisses === 1 ||
+    (state.lockedLayoutFastPathMisses % LOCKED_LAYOUT_RECOVERY_PROBE_INTERVAL_FRAMES) === 0
+  if (!shouldRunRecoveryProbe) return false
+
   const best = probeLayoutPackets(
     imageData,
     width,
@@ -678,6 +720,7 @@ function tryLockedLayoutFastPath(imageData, width, region) {
   }
 
   if (acceptPackets(packets, state.frameCount, true, state.expectedPacketCount)) {
+    state.lockedLayoutFastPathMisses = 0
     if (state.decoder?.isComplete()) return true
     scheduleNextFrame()
     return true
@@ -823,6 +866,7 @@ const state = {
   fixedLayout: null,
   expectedPacketCount: 0,
   preferredLayout: null,
+  lockedLayoutFastPathMisses: 0,
   progressSamples: [],
   lastReceivingUiUpdateMs: 0,
   rxPerf: createReceiverPerfState(),
@@ -2088,6 +2132,7 @@ function resetReceiver() {
   state.activeCaptureMethod = null
   state.fixedLayout = null
   state.preferredLayout = null
+  state.lockedLayoutFastPathMisses = 0
   state.expectedPacketCount = 0
   state.progressSamples = []
   state.lastReceivingUiUpdateMs = 0
