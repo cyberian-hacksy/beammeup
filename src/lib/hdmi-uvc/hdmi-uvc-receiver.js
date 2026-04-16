@@ -1471,6 +1471,23 @@ function getLockedCaptureRegion(region, sourceWidth, sourceHeight) {
   }
 }
 
+function lockAnchorRegion(region, sourceWidth, sourceHeight, anchors = null) {
+  if (!region) return
+
+  state.anchorBounds = region
+  state.lockedCaptureRegion = getLockedCaptureRegion(region, sourceWidth, sourceHeight)
+
+  if (anchors?.length) {
+    const pos = anchors.map(a => `${a.corner}(${a.x},${a.y} bs=${a.blockSize.toFixed(1)})`).join(' ')
+    debugLog(`*** ANCHORS LOCKED: ${anchors.length} found, region (${region.x},${region.y}) ${region.w}x${region.h} step=${region.stepX.toFixed(1)}/${region.stepY.toFixed(1)} ***`)
+    debugLog(`  Anchors: ${pos}`)
+    if (state.lockedCaptureRegion) {
+      const { sourceRect } = state.lockedCaptureRegion
+      debugLog(`  Capture ROI: (${sourceRect.x},${sourceRect.y}) ${sourceRect.w}x${sourceRect.h}`)
+    }
+  }
+}
+
 async function processFrame(now, metadata) {
   if (!state.isScanning || !state.stream) return
 
@@ -1784,23 +1801,18 @@ async function processFrame(now, metadata) {
 
   // === ANCHOR DETECTION ===
   let region = decodeRegion
+  let candidateRegion = null
+  let candidateAnchors = null
 
   if (!region) {
     const anchorStartMs = performance.now()
     const anchors = detectAnchors(imageData.data, frameWidth, frameHeight)
     anchorMs += performance.now() - anchorStartMs
     if (anchors.length >= 2) {
-      region = dataRegionFromAnchors(anchors)
-      if (region) {
-        state.anchorBounds = region
-        state.lockedCaptureRegion = getLockedCaptureRegion(region, frameWidth, frameHeight)
-        const pos = anchors.map(a => `${a.corner}(${a.x},${a.y} bs=${a.blockSize.toFixed(1)})`).join(' ')
-        debugLog(`*** ANCHORS LOCKED: ${anchors.length} found, region (${region.x},${region.y}) ${region.w}x${region.h} step=${region.stepX.toFixed(1)}/${region.stepY.toFixed(1)} ***`)
-        debugLog(`  Anchors: ${pos}`)
-        if (state.lockedCaptureRegion) {
-          const { sourceRect } = state.lockedCaptureRegion
-          debugLog(`  Capture ROI: (${sourceRect.x},${sourceRect.y}) ${sourceRect.w}x${sourceRect.h}`)
-        }
+      candidateRegion = dataRegionFromAnchors(anchors)
+      if (candidateRegion) {
+        region = candidateRegion
+        candidateAnchors = anchors
       } else if (isDiagFrame) {
         // Anchors found but region invalid (e.g. all at same y = false positives)
         const pos = anchors.map(a => `(${a.x},${a.y} ${a.corner})`).join(' ')
@@ -1844,6 +1856,9 @@ async function processFrame(now, metadata) {
     const packets = extractFramePackets(result.payload, expectedPacketSize)
 
     if (acceptPackets(packets, result.header.symbolId, true, totalFramePackets)) {
+      if (!state.anchorBounds && candidateRegion) {
+        lockAnchorRegion(candidateRegion, frameWidth, frameHeight, candidateAnchors)
+      }
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
       if (state.decoder?.isComplete()) {
@@ -1876,6 +1891,9 @@ async function processFrame(now, metadata) {
     if (acceptPackets(salvagedPackets, result.header.symbolId, true, totalFramePackets)) {
       noteSignalDetected(result.header.mode)
       noteReceiverRecovery('salvage', salvagedPackets.length)
+      if (!state.anchorBounds && candidateRegion) {
+        lockAnchorRegion(candidateRegion, frameWidth, frameHeight, candidateAnchors)
+      }
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
       if (isDiagFrame) {
@@ -1892,6 +1910,9 @@ async function processFrame(now, metadata) {
     if (acceptPackets(phasePackets, result.header.symbolId, true, phaseProbe?.probe?.slotCount || totalFramePackets)) {
       noteSignalDetected(phaseProbe?.layout?.frameMode ?? result.header.mode)
       noteReceiverRecovery('phase', phasePackets.length)
+      if (!state.anchorBounds && candidateRegion) {
+        lockAnchorRegion(candidateRegion, frameWidth, frameHeight, candidateAnchors)
+      }
       if (phaseProbe?.layout) state.fixedLayout = { ...phaseProbe.layout }
       if (phaseProbe?.layout) state.preferredLayout = { ...phaseProbe.layout }
       if (isDiagFrame) {
@@ -1908,6 +1929,9 @@ async function processFrame(now, metadata) {
     if (acceptPackets(fixedPackets, result.header.symbolId, true, state.expectedPacketCount)) {
       noteSignalDetected(state.fixedLayout?.frameMode ?? result.header.mode)
       noteReceiverRecovery('fixed', fixedPackets.length)
+      if (!state.anchorBounds && candidateRegion) {
+        lockAnchorRegion(candidateRegion, frameWidth, frameHeight, candidateAnchors)
+      }
       if (isDiagFrame) {
         debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) via fixed layout`)
       }
@@ -1938,6 +1962,9 @@ async function processFrame(now, metadata) {
     const fixedPackets = tryFixedLayoutPackets(imageData.data, frameWidth, region)
     if (acceptPackets(fixedPackets, state.frameCount, true, state.expectedPacketCount)) {
       noteReceiverRecovery('headerless', fixedPackets.length)
+      if (!state.anchorBounds && candidateRegion) {
+        lockAnchorRegion(candidateRegion, frameWidth, frameHeight, candidateAnchors)
+      }
       if (isDiagFrame) {
         debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) without outer header`)
       }
