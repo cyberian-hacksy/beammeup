@@ -1136,10 +1136,10 @@ export function dataRegionFromAnchors(anchors) {
   const tl = anchors.find(a => a.corner === 'TL')
   const tr = anchors.find(a => a.corner === 'TR')
 
-  // Need at least one top anchor and one bottom anchor
-  const hasTop = tl || tr
-  const hasBottom = bl || br
-  if (!hasTop || !hasBottom) return null
+  // On the HDMI-UVC fullscreen path, partial anchor sets are much more likely
+  // to be browser/UI false positives than valid frames. Require all four
+  // corners so a single fake top edge cannot create a plausible data region.
+  if (!bl || !br || !tl || !tr) return null
 
   // Check block size consistency: all anchors within 20% of median
   const sizes = anchors.map(a => a.blockSize).sort((a, b) => a - b)
@@ -1148,6 +1148,25 @@ export function dataRegionFromAnchors(anchors) {
 
   const avgBs = anchors.reduce((s, a) => s + a.blockSize, 0) / anchors.length
   const actualAnchorSize = Math.ceil(8 * avgBs)
+
+  // The captured HDMI feed should be axis-aligned: top anchors should sit
+  // nearly above the bottom anchors, and the left/right vertical spans should
+  // agree closely. UI chrome often creates fake top anchors that fail this.
+  const maxHorizontalDrift = Math.max(12, Math.round(actualAnchorSize * 0.5))
+  if (Math.abs(tl.x - bl.x) > maxHorizontalDrift) return null
+  if (Math.abs(tr.x - br.x) > maxHorizontalDrift) return null
+
+  const leftVSpan = bl.y - tl.y
+  const rightVSpan = br.y - tr.y
+  if (leftVSpan <= 0 || rightVSpan <= 0) return null
+  const verticalSpanDelta = Math.abs(leftVSpan - rightVSpan)
+  if (verticalSpanDelta > Math.max(18, Math.round(avgBs * 8))) return null
+
+  const topSpan = tr.x - tl.x
+  const bottomSpan = br.x - bl.x
+  if (topSpan <= 0 || bottomSpan <= 0) return null
+  const horizontalSpanDelta = Math.abs(topSpan - bottomSpan)
+  if (horizontalSpanDelta > Math.max(18, Math.round(avgBs * 8))) return null
 
   // Compute bounds from available anchors
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
