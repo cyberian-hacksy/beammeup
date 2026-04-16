@@ -825,6 +825,7 @@ const HDMI_CIMBAR_TILE_PADDING = {
   bottom: 10,
   left: 10
 }
+const TENTATIVE_ANCHOR_MAX_FAILS = 10
 
 function getHdmiCimbarLayout(width, height) {
   return {
@@ -868,6 +869,9 @@ const state = {
   completedFile: null,
   anchorBounds: null,  // Cached data region from detected anchors
   lockedCaptureRegion: null,
+  tentativeAnchorBounds: null,
+  tentativeLockedCaptureRegion: null,
+  tentativeAnchors: null,
   decodeFailCount: 0,  // Consecutive decode failures (triggers relock when too many)
   activeCaptureMethod: null,
   fixedLayout: null,
@@ -1476,6 +1480,9 @@ function lockAnchorRegion(region, sourceWidth, sourceHeight, anchors = null) {
 
   state.anchorBounds = region
   state.lockedCaptureRegion = getLockedCaptureRegion(region, sourceWidth, sourceHeight)
+  state.tentativeAnchorBounds = null
+  state.tentativeLockedCaptureRegion = null
+  state.tentativeAnchors = null
 
   if (anchors?.length) {
     const pos = anchors.map(a => `${a.corner}(${a.x},${a.y} bs=${a.blockSize.toFixed(1)})`).join(' ')
@@ -1486,6 +1493,20 @@ function lockAnchorRegion(region, sourceWidth, sourceHeight, anchors = null) {
       debugLog(`  Capture ROI: (${sourceRect.x},${sourceRect.y}) ${sourceRect.w}x${sourceRect.h}`)
     }
   }
+}
+
+function setTentativeAnchorRegion(region, sourceWidth, sourceHeight, anchors = null) {
+  if (!region || state.anchorBounds) return
+
+  state.tentativeAnchorBounds = region
+  state.tentativeLockedCaptureRegion = getLockedCaptureRegion(region, sourceWidth, sourceHeight)
+  state.tentativeAnchors = anchors || null
+}
+
+function clearTentativeAnchorRegion() {
+  state.tentativeAnchorBounds = null
+  state.tentativeLockedCaptureRegion = null
+  state.tentativeAnchors = null
 }
 
 async function processFrame(now, metadata) {
@@ -1503,7 +1524,7 @@ async function processFrame(now, metadata) {
   let imageData
   let imageWidth = width
   let imageHeight = height
-  let decodeRegion = state.anchorBounds
+  let decodeRegion = state.anchorBounds || state.tentativeAnchorBounds
   let captureMethod = 'video'
   let usedCimbarRoiCapture = false
   const frameStartMs = performance.now()
@@ -1524,26 +1545,43 @@ async function processFrame(now, metadata) {
   // anchor lock or a CIMBAR ROI / signal lock, prioritize raw video frames.
   const useImageCapture = imageCapture &&
     !state.anchorBounds &&
+    !state.tentativeAnchorBounds &&
     !(state.detectedMode === HDMI_MODE.CIMBAR && state.cimbarRoi) &&
     state.detectedMode !== HDMI_MODE.CIMBAR
   const useCimbarRoiCapture = state.detectedMode === HDMI_MODE.CIMBAR && !!state.cimbarRoi
   let lockedCapture = null
-  if (state.anchorBounds && state.detectedMode !== HDMI_MODE.CIMBAR) {
+  const anchorRegionForCapture = state.anchorBounds || state.tentativeAnchorBounds
+  if (anchorRegionForCapture && state.detectedMode !== HDMI_MODE.CIMBAR) {
     const needsLockedCaptureRefresh =
-      !state.lockedCaptureRegion ||
-      state.lockedCaptureRegion.sourceWidth !== width ||
-      state.lockedCaptureRegion.sourceHeight !== height
+      state.anchorBounds
+        ? (
+            !state.lockedCaptureRegion ||
+            state.lockedCaptureRegion.sourceWidth !== width ||
+            state.lockedCaptureRegion.sourceHeight !== height
+          )
+        : (
+            !state.tentativeLockedCaptureRegion ||
+            state.tentativeLockedCaptureRegion.sourceWidth !== width ||
+            state.tentativeLockedCaptureRegion.sourceHeight !== height
+          )
     if (needsLockedCaptureRefresh) {
-      state.lockedCaptureRegion = getLockedCaptureRegion(state.anchorBounds, width, height)
-      if (state.lockedCaptureRegion) {
-        const { sourceRect } = state.lockedCaptureRegion
+      const refreshedCaptureRegion = getLockedCaptureRegion(anchorRegionForCapture, width, height)
+      if (state.anchorBounds) {
+        state.lockedCaptureRegion = refreshedCaptureRegion
+      } else {
+        state.tentativeLockedCaptureRegion = refreshedCaptureRegion
+      }
+      if (refreshedCaptureRegion) {
+        const { sourceRect } = refreshedCaptureRegion
         debugLog(
-          `Capture ROI locked: src=(${sourceRect.x},${sourceRect.y}) ` +
+          `Capture ROI ${state.anchorBounds ? 'locked' : 'candidate'}: src=(${sourceRect.x},${sourceRect.y}) ` +
           `${sourceRect.w}x${sourceRect.h}`
         )
       }
     }
-    lockedCapture = state.lockedCaptureRegion
+    lockedCapture = state.anchorBounds
+      ? state.lockedCaptureRegion
+      : state.tentativeLockedCaptureRegion
   }
 
   if (useCimbarRoiCapture) {
@@ -1811,6 +1849,7 @@ async function processFrame(now, metadata) {
     if (anchors.length >= 2) {
       candidateRegion = dataRegionFromAnchors(anchors)
       if (candidateRegion) {
+        setTentativeAnchorRegion(candidateRegion, frameWidth, frameHeight, anchors)
         region = candidateRegion
         candidateAnchors = anchors
       } else if (isDiagFrame) {
@@ -1856,8 +1895,13 @@ async function processFrame(now, metadata) {
     const packets = extractFramePackets(result.payload, expectedPacketSize)
 
     if (acceptPackets(packets, result.header.symbolId, true, totalFramePackets)) {
-      if (!state.anchorBounds && candidateRegion) {
-        lockAnchorRegion(candidateRegion, frameWidth, frameHeight, candidateAnchors)
+      if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
+        lockAnchorRegion(
+          candidateRegion || state.tentativeAnchorBounds,
+          frameWidth,
+          frameHeight,
+          candidateAnchors || state.tentativeAnchors
+        )
       }
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
@@ -1891,8 +1935,13 @@ async function processFrame(now, metadata) {
     if (acceptPackets(salvagedPackets, result.header.symbolId, true, totalFramePackets)) {
       noteSignalDetected(result.header.mode)
       noteReceiverRecovery('salvage', salvagedPackets.length)
-      if (!state.anchorBounds && candidateRegion) {
-        lockAnchorRegion(candidateRegion, frameWidth, frameHeight, candidateAnchors)
+      if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
+        lockAnchorRegion(
+          candidateRegion || state.tentativeAnchorBounds,
+          frameWidth,
+          frameHeight,
+          candidateAnchors || state.tentativeAnchors
+        )
       }
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
@@ -1910,8 +1959,13 @@ async function processFrame(now, metadata) {
     if (acceptPackets(phasePackets, result.header.symbolId, true, phaseProbe?.probe?.slotCount || totalFramePackets)) {
       noteSignalDetected(phaseProbe?.layout?.frameMode ?? result.header.mode)
       noteReceiverRecovery('phase', phasePackets.length)
-      if (!state.anchorBounds && candidateRegion) {
-        lockAnchorRegion(candidateRegion, frameWidth, frameHeight, candidateAnchors)
+      if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
+        lockAnchorRegion(
+          candidateRegion || state.tentativeAnchorBounds,
+          frameWidth,
+          frameHeight,
+          candidateAnchors || state.tentativeAnchors
+        )
       }
       if (phaseProbe?.layout) state.fixedLayout = { ...phaseProbe.layout }
       if (phaseProbe?.layout) state.preferredLayout = { ...phaseProbe.layout }
@@ -1929,8 +1983,13 @@ async function processFrame(now, metadata) {
     if (acceptPackets(fixedPackets, result.header.symbolId, true, state.expectedPacketCount)) {
       noteSignalDetected(state.fixedLayout?.frameMode ?? result.header.mode)
       noteReceiverRecovery('fixed', fixedPackets.length)
-      if (!state.anchorBounds && candidateRegion) {
-        lockAnchorRegion(candidateRegion, frameWidth, frameHeight, candidateAnchors)
+      if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
+        lockAnchorRegion(
+          candidateRegion || state.tentativeAnchorBounds,
+          frameWidth,
+          frameHeight,
+          candidateAnchors || state.tentativeAnchors
+        )
       }
       if (isDiagFrame) {
         debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) via fixed layout`)
@@ -1962,8 +2021,13 @@ async function processFrame(now, metadata) {
     const fixedPackets = tryFixedLayoutPackets(imageData.data, frameWidth, region)
     if (acceptPackets(fixedPackets, state.frameCount, true, state.expectedPacketCount)) {
       noteReceiverRecovery('headerless', fixedPackets.length)
-      if (!state.anchorBounds && candidateRegion) {
-        lockAnchorRegion(candidateRegion, frameWidth, frameHeight, candidateAnchors)
+      if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
+        lockAnchorRegion(
+          candidateRegion || state.tentativeAnchorBounds,
+          frameWidth,
+          frameHeight,
+          candidateAnchors || state.tentativeAnchors
+        )
       }
       if (isDiagFrame) {
         debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) without outer header`)
@@ -2028,11 +2092,19 @@ async function processFrame(now, metadata) {
   }
 
   // Relock anchors after too many consecutive failures (CRC or decode)
+  if (!state.anchorBounds && state.tentativeAnchorBounds && state.decodeFailCount >= TENTATIVE_ANCHOR_MAX_FAILS) {
+    debugLog(`Tentative anchor cleared after ${state.decodeFailCount} consecutive failures`)
+    clearTentativeAnchorRegion()
+  }
   if (state.decodeFailCount > 30) {
     debugLog(`Relock: ${state.decodeFailCount} consecutive failures`)
     state.anchorBounds = null
     state.lockedCaptureRegion = null
+    clearTentativeAnchorRegion()
+    state.fixedLayout = null
     state.preferredLayout = null
+    state.expectedPacketCount = 0
+    state.lockedLayoutFastPathMisses = 0
     state.decodeFailCount = 0
   }
 
@@ -2162,6 +2234,7 @@ function resetReceiver() {
   state.completedFile = null
   state.anchorBounds = null
   state.lockedCaptureRegion = null
+  clearTentativeAnchorRegion()
   state.decodeFailCount = 0
   state.activeCaptureMethod = null
   state.fixedLayout = null
