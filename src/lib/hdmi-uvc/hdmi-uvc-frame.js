@@ -1081,6 +1081,8 @@ function findChromeBottom(imageData, width, height) {
   return 0
 }
 
+const ESTIMATED_ANCHOR_VERTICAL_RATIO = 1025 / 1648
+
 // Scan the frame for anchor patterns. Returns array of {x, y, corner, blockSize}.
 // Strategy: find bottom anchors first (reliable, away from browser chrome),
 // then use their positions to guide top anchor search BELOW chromeBottom.
@@ -1102,6 +1104,7 @@ export function detectAnchors(imageData, width, height) {
   // expected canvas geometry (aspect ratio 0.45-0.75 of horizontal span).
   if (bl && br) {
     const hSpan = br.x - bl.x
+    const expectedVSpan = Math.round(hSpan * ESTIMATED_ANCHOR_VERTICAL_RATIO)
     // Expected vertical span: between 45% and 75% of horizontal span
     const minVSpan = Math.round(hSpan * 0.40)
     const maxVSpan = Math.round(hSpan * 0.80)
@@ -1113,14 +1116,52 @@ export function detectAnchors(imageData, width, height) {
     const tr = findCornerAnchor(imageData, width, height,
       Math.max(0, br.x - 20), Math.min(width, br.x + 50), topSearchLo, topSearchHi, 1, 'TR')
 
-    // Only accept top anchors if BOTH are found at matching y (±15px)
-    if (tl && tr && Math.abs(tl.y - tr.y) <= 15) {
+    // Only accept detected top anchors if they match each other and the
+    // expected sender geometry. Fullscreen UI can create a plausible-looking
+    // horizontal edge much lower than the true top anchors.
+    const detectedTopYDelta = tl && tr ? Math.abs(tl.y - tr.y) : Infinity
+    const leftDetectedVSpan = tl ? bl.y - tl.y : 0
+    const rightDetectedVSpan = tr ? br.y - tr.y : 0
+    const avgDetectedVSpan = (leftDetectedVSpan + rightDetectedVSpan) * 0.5
+    const vSpanTolerance = Math.max(40, Math.round(hSpan * 0.08))
+    const expectedVSpanTolerance = Math.max(60, Math.round(hSpan * 0.10))
+    const detectedTopAnchorsLookValid =
+      tl &&
+      tr &&
+      detectedTopYDelta <= 15 &&
+      leftDetectedVSpan > 0 &&
+      rightDetectedVSpan > 0 &&
+      Math.abs(leftDetectedVSpan - rightDetectedVSpan) <= vSpanTolerance &&
+      Math.abs(avgDetectedVSpan - expectedVSpan) <= expectedVSpanTolerance
+
+    if (detectedTopAnchorsLookValid) {
       tl.blockSize = refineAnchorScale(imageData, width, height, tl)
       tr.blockSize = refineAnchorScale(imageData, width, height, tr)
       anchors.push(tl)
       anchors.push(tr)
+    } else {
+      // Fullscreen HDMI captures often preserve the bottom anchors cleanly while
+      // the top anchors are obscured by transient browser/fullscreen UI. Fall
+      // back to the known sender frame geometry using the trusted bottom pair.
+      const avgBottomBs = ((bl.blockSize || BLOCK_SIZE) + (br.blockSize || BLOCK_SIZE)) * 0.5
+      const estimatedTopY = Math.max(0, Math.round(Math.min(bl.y, br.y) - expectedVSpan))
+      if (estimatedTopY < Math.min(bl.y, br.y)) {
+        anchors.push({
+          x: bl.x,
+          y: estimatedTopY,
+          corner: 'TL',
+          blockSize: avgBottomBs,
+          estimated: true
+        })
+        anchors.push({
+          x: br.x,
+          y: estimatedTopY,
+          corner: 'TR',
+          blockSize: avgBottomBs,
+          estimated: true
+        })
+      }
     }
-    // If top anchors aren't found or don't match, we'll estimate from bottom pair
   }
 
   return anchors
