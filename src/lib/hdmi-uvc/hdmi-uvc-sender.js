@@ -251,6 +251,8 @@ const state = {
   systematicIndex: 0,
   systematicStride: 1,
   intermediateSystematicStride: 1,
+  paritySystematicIndex: 0,
+  paritySystematicStride: 1,
   fountainSymbolId: 0,
   dataPacketCount: 0,
   frameCount: 0,
@@ -323,6 +325,8 @@ function resetPreparedSessionState() {
   state.systematicIndex = 0
   state.systematicStride = 1
   state.intermediateSystematicStride = 1
+  state.paritySystematicIndex = 0
+  state.paritySystematicStride = 1
   state.fountainSymbolId = 0
   state.dataPacketCount = 0
   state.systematicPass = 1
@@ -1040,6 +1044,14 @@ function getBatchingProfile(mode) {
   }
 }
 
+function usesMixedSlotReplay() {
+  return (
+    state.mode === HDMI_MODE.COMPAT_4 ||
+    state.mode === HDMI_MODE.LUMA_2 ||
+    state.mode === HDMI_MODE.CODEBOOK_3
+  )
+}
+
 function shouldSendMetadata(frameNumber) {
   if (frameNumber <= METADATA_BURST_FRAMES) return true
   if (
@@ -1094,11 +1106,8 @@ function getHybridScheduleDescription() {
           ? 'Tile3'
           : '4x4'
     return (
-      "Hybrid schedule: source-only pass 1, then systematic K' replay with fountain every " +
-      `${COMPAT4_PASS2_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS3_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS4_FOUNTAIN_PACKET_INTERVAL}/${COMPAT4_PASS5_FOUNTAIN_PACKET_INTERVAL} ` +
-      `data packets in later ${modeName} replay passes, plus ` +
-      `one full systematic burst frame every ${TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES} frame(s) ` +
-      `after pass 5 (default=${HYBRID_FOUNTAIN_PACKET_INTERVAL})`
+      `Hybrid schedule: source-only pass 1, then mixed ${modeName} slot replay ` +
+      `(5S/1P, 4S/1P/1F, 3S/1P/2F, 1S/2P/3F)`
     )
   }
 
@@ -1111,33 +1120,127 @@ function describeFountainInterval(interval) {
     : 'source-only'
 }
 
+function getSlotMixPatternForPass(passNumber) {
+  if (!usesMixedSlotReplay()) return null
+  if (passNumber <= 1) return ['source', 'source', 'source', 'source', 'source', 'source']
+  if (passNumber === 2) return ['source', 'source', 'source', 'source', 'source', 'parity']
+  if (passNumber === 3) return ['source', 'source', 'source', 'source', 'parity', 'fountain']
+  if (passNumber === 4) return ['source', 'source', 'source', 'parity', 'fountain', 'fountain']
+  return ['source', 'parity', 'parity', 'fountain', 'fountain', 'fountain']
+}
+
+function describeSlotMixPattern(pattern) {
+  if (!pattern || pattern.length === 0) return 'systematic'
+  const counts = { source: 0, parity: 0, fountain: 0 }
+  for (const slot of pattern) {
+    if (counts[slot] !== undefined) counts[slot]++
+  }
+  const parts = []
+  if (counts.source) parts.push(`${counts.source}S`)
+  if (counts.parity) parts.push(`${counts.parity}P`)
+  if (counts.fountain) parts.push(`${counts.fountain}F`)
+  return parts.join('/')
+}
+
 function getCurrentSystematicSpan() {
   if (!state.encoder) return 0
+  if (usesMixedSlotReplay()) return state.encoder.K
   return state.systematicPass <= 1 ? state.encoder.K : state.encoder.K_prime
 }
 
 function getCurrentSystematicStride() {
   if (!state.encoder) return 1
+  if (usesMixedSlotReplay()) return state.systematicStride
   return state.systematicPass <= 1
     ? state.systematicStride
     : state.intermediateSystematicStride
 }
 
 function getCurrentSystematicLabel() {
+  if (usesMixedSlotReplay()) return 'mixed'
   return state.systematicPass <= 1 ? 'source' : 'intermediate'
 }
 
-function getSystematicPassIndexOffset(sourceSpan) {
+function getSystematicPassIndexOffset(sourceSpan, passNumber = state.systematicPass) {
   if (sourceSpan <= 1) return 0
-  if (state.systematicPass === 1) return 0
-  if (state.systematicPass === 2) return Math.floor(sourceSpan / 2)
-  if (state.systematicPass === 3) return Math.floor(sourceSpan / 4)
-  if (state.systematicPass === 4) return Math.floor((sourceSpan * 3) / 4)
-  if (state.systematicPass === 5) return Math.floor(sourceSpan / 8)
+  if (passNumber === 1) return 0
+  if (passNumber === 2) return Math.floor(sourceSpan / 2)
+  if (passNumber === 3) return Math.floor(sourceSpan / 4)
+  if (passNumber === 4) return Math.floor((sourceSpan * 3) / 4)
+  if (passNumber === 5) return Math.floor(sourceSpan / 8)
   return Math.floor((sourceSpan * 5) / 8)
 }
 
+function getParitySystematicSpan() {
+  if (!state.encoder) return 0
+  return Math.max(0, state.encoder.K_prime - state.encoder.K)
+}
+
+function getSystematicSymbolIdForPass(index, span, stride, passNumber, base = 0) {
+  if (span <= 0) return base + 1
+  const passOffset = getSystematicPassIndexOffset(span, passNumber)
+  return base + ((((index + passOffset) * stride) % span) + 1)
+}
+
+function advanceMixedReplayPass(frameNumber) {
+  state.systematicPass++
+  state.systematicIndex = 0
+  const paritySpan = getParitySystematicSpan()
+  const pattern = getSlotMixPatternForPass(state.systematicPass)
+  debugLog(
+    `Starting mixed replay pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
+    `(mix=${describeSlotMixPattern(pattern)}, ` +
+    `source stride=${state.systematicStride}/${state.encoder.K}, ` +
+    `offset=${getSystematicPassIndexOffset(state.encoder.K)}/${state.encoder.K}, ` +
+    `parity stride=${state.paritySystematicStride}/${paritySpan || 1})`
+  )
+}
+
+function nextSourceSystematicSymbolId(frameNumber) {
+  const span = state.encoder.K
+  const symbolId = getSystematicSymbolIdForPass(
+    state.systematicIndex,
+    span,
+    state.systematicStride,
+    state.systematicPass
+  )
+  state.systematicIndex++
+  if (state.systematicIndex >= span) {
+    advanceMixedReplayPass(frameNumber)
+  }
+  return symbolId
+}
+
+function nextParitySystematicSymbolId() {
+  const paritySpan = getParitySystematicSpan()
+  if (paritySpan <= 0) return state.encoder.K
+  const symbolId = getSystematicSymbolIdForPass(
+    state.paritySystematicIndex,
+    paritySpan,
+    state.paritySystematicStride,
+    state.systematicPass,
+    state.encoder.K
+  )
+  state.paritySystematicIndex = (state.paritySystematicIndex + 1) % paritySpan
+  return symbolId
+}
+
 function nextDataSymbolId(frameNumber, strategy = 'auto') {
+  if (usesMixedSlotReplay()) {
+    let symbolId
+    if (strategy === 'fountain') {
+      symbolId = state.fountainSymbolId++
+    } else if (strategy === 'parity') {
+      symbolId = nextParitySystematicSymbolId()
+    } else {
+      symbolId = nextSourceSystematicSymbolId(frameNumber)
+    }
+    if (frameNumber % FRAMES_PER_SYMBOL === 0) {
+      state.dataPacketCount++
+    }
+    return symbolId
+  }
+
   const systematicSpan = getCurrentSystematicSpan()
   const systematicStride = getCurrentSystematicStride()
   const fountainPacketInterval = getFountainPacketInterval()
@@ -1200,6 +1303,7 @@ function nextDataSymbolId(frameNumber, strategy = 'auto') {
 }
 
 function isTailSystematicBurstFrame(frameNumber) {
+  if (usesMixedSlotReplay()) return false
   if (
     state.mode !== HDMI_MODE.COMPAT_4 &&
     state.mode !== HDMI_MODE.LUMA_2 &&
@@ -1219,19 +1323,23 @@ function buildFramePacketBatch(frameNumber) {
   const symbolIds = []
   const slots = Math.max(1, state.packetsPerFrame)
   const tailSystematicBurst = isTailSystematicBurstFrame(frameNumber)
+  const slotMixPattern = getSlotMixPatternForPass(state.systematicPass)
 
   if (sendMetadata) {
     packets.push(state.encoder.generateSymbol(0))
     symbolIds.push(0)
   }
 
+  let dataSlotsBuilt = 0
   while (packets.length < slots) {
-    const symbolId = nextDataSymbolId(
-      frameNumber,
-      tailSystematicBurst ? 'systematic' : 'auto'
-    )
+    let strategy = tailSystematicBurst ? 'systematic' : 'auto'
+    if (slotMixPattern) {
+      strategy = slotMixPattern[Math.min(dataSlotsBuilt, slotMixPattern.length - 1)] || 'source'
+    }
+    const symbolId = nextDataSymbolId(frameNumber, strategy)
     packets.push(state.encoder.generateSymbol(symbolId))
     symbolIds.push(symbolId)
+    dataSlotsBuilt++
   }
 
   let totalLength = 0
@@ -1590,16 +1698,25 @@ async function startSending() {
     state.systematicIndex = 0
     state.systematicStride = chooseSystematicStride(state.encoder.K)
     state.intermediateSystematicStride = chooseSystematicStride(state.encoder.K_prime)
+    state.paritySystematicIndex = 0
+    state.paritySystematicStride = chooseSystematicStride(Math.max(1, state.encoder.K_prime - state.encoder.K))
     state.fountainSymbolId = state.encoder.K_prime + 1
     state.dataPacketCount = 0
     state.systematicPass = 1
     state.tailStartFrame = 0
     state.frameCount = 0
     resetSenderPerfState()
-    debugLog(
-      `Systematic order: source stride=${state.systematicStride}/${state.encoder.K}, ` +
-      `intermediate stride=${state.intermediateSystematicStride}/${state.encoder.K_prime}`
-    )
+    if (usesMixedSlotReplay()) {
+      debugLog(
+        `Systematic order: source stride=${state.systematicStride}/${state.encoder.K}, ` +
+        `parity stride=${state.paritySystematicStride}/${Math.max(1, state.encoder.K_prime - state.encoder.K)}`
+      )
+    } else {
+      debugLog(
+        `Systematic order: source stride=${state.systematicStride}/${state.encoder.K}, ` +
+        `intermediate stride=${state.intermediateSystematicStride}/${state.encoder.K_prime}`
+      )
+    }
     debugLog(getHybridScheduleDescription())
     armPreparedStart()
 
