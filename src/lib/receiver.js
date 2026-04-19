@@ -939,6 +939,12 @@ function processPacket(bytes) {
     state.symbolTimes = state.symbolTimes.filter(t => now - t < 5000)
   }
 
+  // 1 QR = 1 frame for this receiver — signal frame boundary regardless of
+  // accept/duplicate outcome so the stall counter and tail solver track time.
+  if (typeof state.decoder.noteFrameBoundary === 'function') {
+    state.decoder.noteFrameBoundary()
+  }
+
   return accepted
 }
 

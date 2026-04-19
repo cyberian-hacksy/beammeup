@@ -22,6 +22,8 @@ const RECEIVER_UI_UPDATE_INTERVAL_MS = 120
 const LOCKED_LAYOUT_RECOVERY_PROBE_INTERVAL_FRAMES = 8
 const DEBUG_CONSOLE = false
 const CAPTURE_BENCHMARK_SAMPLES_PER_METHOD = 6
+const CAPTURE_BENCH_ONLY = typeof location !== 'undefined' &&
+  new URLSearchParams(location.search).has('captureBench')
 const debugLines = []
 let debugRenderTimer = null
 
@@ -217,13 +219,17 @@ function noteCaptureTuningSample(method, durationMs, isRoi = false) {
   )
 }
 
-function noteReceiverAcceptPerf(durationMs, packetCount, accepted) {
+// innovationCount counts packets that delivered a new symbol to the decoder
+// (receiveParsed returned true). Duplicate-only frames contribute 0 here so
+// `pkts=` in the RX perf log reflects useful decoder throughput rather than
+// raw parse count, which would otherwise overstate progress under replay.
+function noteReceiverAcceptPerf(durationMs, innovationCount, accepted) {
   const perf = state.rxPerf
   if (!perf) return
 
   recordPerfSample(perf.acceptMs, durationMs)
   perf.acceptCalls++
-  if (accepted) perf.acceptedPackets += packetCount
+  if (accepted) perf.acceptedPackets += innovationCount
 }
 
 function noteReceiverCrcFailFrame() {
@@ -287,6 +293,11 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `f${(perf.fixedRecoveredFrames / frameBase).toFixed(2)}/${(perf.fixedRecoveredPackets / frameBase).toFixed(2)} ` +
     `h${(perf.headerlessRecoveredFrames / frameBase).toFixed(2)}/${(perf.headerlessRecoveredPackets / frameBase).toFixed(2)}`
 
+  const t = state.decoder?.telemetry
+  const telemetrySummary = t
+    ? `stall=${t.stallFramesSinceLastSolve} paritySeen=${t.paritySweepComplete} pNoProg=${t.parityNoProgressSweeps} tailTrig=${t.tailSolveTriggerCount}`
+    : 'stall=n/a paritySeen=n/a pNoProg=n/a tailTrig=n/a'
+
   debugLog(
     `RX perf: fps=${processedFps.toFixed(1)} ` +
     `capture=${averagePerfWindow(perf.captureMs).toFixed(2)}ms ` +
@@ -296,10 +307,32 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `acceptCall=${averagePerfWindow(perf.acceptMs).toFixed(2)}ms ` +
     `total=${averagePerfWindow(perf.totalMs).toFixed(2)}ms ` +
     `acceptCalls=${avgAcceptCalls.toFixed(2)}/frame pkts=${avgAcceptedPackets.toFixed(2)}/frame ` +
-    `${recoverySummary} method=${perf.lastCaptureMethod || 'n/a'}`
+    `${recoverySummary} method=${perf.lastCaptureMethod || 'n/a'} ` +
+    `${telemetrySummary}`
   )
 
   clearReceiverPerfSamples(perf)
+}
+
+let captureBenchFrames = 0
+
+function noteCaptureBenchFrame(method, width, height) {
+  captureBenchFrames++
+  if (captureBenchFrames < RX_PERF_LOG_INTERVAL_FRAMES) return
+
+  const perf = state.rxPerf
+  if (!perf) return
+
+  const avgIntervalMs = averagePerfWindow(perf.intervalMs)
+  const processedFps = avgIntervalMs > 0 ? 1000 / avgIntervalMs : 0
+  const captureAvgMs = averagePerfWindow(perf.captureMs)
+
+  debugLog(
+    `captureBench: method=${method} roi=${width}x${height} ` +
+    `capture=${captureAvgMs.toFixed(2)}ms fps=${processedFps.toFixed(1)}`
+  )
+
+  captureBenchFrames = 0
 }
 
 function formatMaybeNumber(value, digits = 2) {
@@ -732,6 +765,7 @@ function tryLockedLayoutFastPath(imageData, width, region) {
 function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expectedFramePacketCount = packets.length) {
   const acceptStartMs = performance.now()
   let accepted = false
+  let innovationCount = 0
 
   try {
     if (packets.length === 0) return false
@@ -744,12 +778,32 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
       const parsed = parsePacket(packet)
       if (!parsed) continue
       lastParsed = parsed
-      if (typeof decoder.receiveParsed === 'function') {
-        decoder.receiveParsed(parsed)
-      } else {
-        decoder.receive(packet)
+      let result = typeof decoder.receiveParsed === 'function'
+        ? decoder.receiveParsed(parsed)
+        : decoder.receive(packet)
+      // Sender restarted — reset in-flight session state and re-ingest the packet.
+      if (result === 'new_session') {
+        debugLog('New session detected (sender restart / config change); resetting decoder state')
+        decoder.reset()
+        state.validFrames = 0
+        // Reseed the rate clock — ensureDecoder() only runs when state.decoder
+        // is null, so it won't fire again for the reused decoder object.
+        state.startTime = Date.now()
+        state.completedFile = null
+        state.completionStarted = false
+        state.progressSamples = []
+        state.expectedPacketCount = 0
+        state.fixedLayout = null
+        state.preferredLayout = null
+        state.lockedLayoutFastPathMisses = 0
+        state.decodeFailCount = 0
+        result = decoder.receiveParsed(parsed)
       }
+      // receiveParsed returns true for new symbols, false for duplicates
+      // (dedup at decoder.js:190). Only `true` counts as innovation.
+      if (result === true) innovationCount++
     }
+    const anyInnovation = innovationCount > 0
 
     if (!lastParsed) return false
 
@@ -808,10 +862,16 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
       handleComplete()
     }
 
+    // Signal this frame delivered at least one new symbol to the decoder, so
+    // finalizeFramePerf() will tick the stall counter via noteFrameBoundary().
+    // Duplicate-only frames (all symbols previously seen) do not count as
+    // innovation and therefore do not advance stallFramesSinceLastSolve —
+    // matching the feedback's "30–60 accepted frames" heuristic.
+    if (anyInnovation) state.frameAcceptedThisFrame = true
     accepted = true
     return true
   } finally {
-    noteReceiverAcceptPerf(performance.now() - acceptStartMs, packets.length, accepted)
+    noteReceiverAcceptPerf(performance.now() - acceptStartMs, innovationCount, accepted)
   }
 }
 
@@ -867,6 +927,7 @@ const state = {
   detectedMode: null,
   detectedResolution: null,
   completedFile: null,
+  completionStarted: false,  // Synchronous guard — set before await in handleComplete()
   anchorBounds: null,  // Cached data region from detected anchors
   lockedCaptureRegion: null,
   tentativeAnchorBounds: null,
@@ -1533,10 +1594,26 @@ async function processFrame(now, metadata) {
   let fastPathMs = 0
   let decodeMs = 0
   let framePerfFinalized = false
+  // Reset per-frame accept signal; acceptPackets() flips this true on success.
+  // stall= must count *accepted* frames (feedback's heuristic), not merely
+  // processed frames — otherwise no-region / decode-fail frames dilute the
+  // signal into receiver miss rate.
+  state.frameAcceptedThisFrame = false
   const finalizeFramePerf = () => {
     if (framePerfFinalized) return
     framePerfFinalized = true
     noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs)
+    if (state.frameAcceptedThisFrame &&
+        typeof state.decoder?.noteFrameBoundary === 'function') {
+      state.decoder.noteFrameBoundary()
+      // If the tail solver just closed the file, surface completion now
+      // rather than on the next frame — acceptPackets already checked
+      // isComplete() before noteFrameBoundary ran.
+      if (state.decoder.isComplete() && !state.completedFile) {
+        debugLog('=== TRANSFER COMPLETE (via tail solver) ===')
+        handleComplete()
+      }
+    }
   }
   const captureStartMs = performance.now()
 
@@ -1700,6 +1777,17 @@ async function processFrame(now, metadata) {
     captureMs,
     captureMethod.endsWith('ROI')
   )
+
+  // Capture-only benchmark mode: once anchors are locked (so lockedCapture
+  // drove the ROI capture this frame), skip all decode work and just record
+  // capture timing. Pre-lock frames fall through to anchor detection — we
+  // need the lock to measure the locked-ROI path the feedback asks for.
+  if (CAPTURE_BENCH_ONLY && state.anchorBounds) {
+    noteCaptureBenchFrame(captureMethod, imageWidth, imageHeight)
+    finalizeFramePerf()
+    if (state.isScanning) scheduleNextFrame()
+    return
+  }
 
   const frameWidth = imageWidth
   const frameHeight = imageHeight
@@ -2154,6 +2242,12 @@ function updateProgress() {
 }
 
 async function handleComplete() {
+  // Synchronous re-entry guard. `state.completedFile` is only set after the
+  // awaited hash, so two same-tick callers (acceptPackets + finalizeFramePerf
+  // when the tail solver closes the file) can both see it unset and race.
+  if (state.completionStarted) return
+  state.completionStarted = true
+
   state.isScanning = false
 
   cancelNextFrame()
@@ -2232,6 +2326,7 @@ function resetReceiver() {
   state.detectedMode = null
   state.detectedResolution = null
   state.completedFile = null
+  state.completionStarted = false
   state.anchorBounds = null
   state.lockedCaptureRegion = null
   clearTentativeAnchorRegion()

@@ -6,8 +6,8 @@ import { testPRNG } from './lib/prng.js'
 import { testPacketRoundtrip } from './lib/packet.js'
 import { testMetadataRoundtrip } from './lib/metadata.js'
 import { testEncoder } from './lib/encoder.js'
-import { testCodecRoundtrip } from './lib/decoder.js'
-import { testParityMap, testParityRecovery } from './lib/precode.js'
+import { testCodecRoundtrip, testCodecRoundtripWithLoss } from './lib/decoder.js'
+import { testParityMap, testParityRecovery, testGF2SolverSmall, testGF2SolverLarge } from './lib/precode.js'
 
 // Import UI modules
 import { initSender, resetSender } from './lib/sender.js'
@@ -39,8 +39,11 @@ window.testPacketRoundtrip = testPacketRoundtrip
 window.testMetadataRoundtrip = testMetadataRoundtrip
 window.testEncoder = testEncoder
 window.testCodecRoundtrip = testCodecRoundtrip
+window.testCodecRoundtripWithLoss = testCodecRoundtripWithLoss
 window.testParityMap = testParityMap
 window.testParityRecovery = testParityRecovery
+window.testGF2SolverSmall = testGF2SolverSmall
+window.testGF2SolverLarge = testGF2SolverLarge
 
 // HDMI-UVC tests
 window.testCrc32 = testCrc32
@@ -162,8 +165,11 @@ async function runAllTests() {
     metadata: testMetadataRoundtrip(),
     parityMap: testParityMap(),
     parityRecovery: testParityRecovery(),
+    gf2Small: await testGF2SolverSmall(),
+    gf2Large: await testGF2SolverLarge(),
     encoder: await testEncoder(),
     codec: await testCodecRoundtrip(),
+    codecWithLoss: await testCodecRoundtripWithLoss(),
     // HDMI-UVC tests
     crc32: testCrc32(),
     hdmiHeader: testHeaderRoundtrip(),

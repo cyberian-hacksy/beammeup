@@ -17,6 +17,14 @@ import { buildFrame, createFrameBuffer, getDataRegion, getPayloadCapacity } from
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
+// Pass-2 slot-mix variant. Default is `p2` (4S/2P) per the clean-run feedback:
+// the old 5S/1P schedule reached 97% with par=0, i.e. the source replay
+// starved parity too long. Emit parity earlier to shorten the tail.
+// Overrides: `?pass2=legacy` (5S/1P historical), `?pass2=mix` (2S/2P/2F
+// aggressive). See docs/plans/2026-04-17-hdmi-tail-solver-and-rx-hardening.md
+// Phase 3.
+const PASS2_VARIANT = (typeof location !== 'undefined'
+  ? new URLSearchParams(location.search).get('pass2') : null) || 'p2'
 const CIMBAR_MAX_FILE_SIZE = 33 * 1024 * 1024
 const HDMI_CIMBAR_MODE = 68
 const HDMI_CIMBAR_VARIANT_NAME = 'B'
@@ -1123,7 +1131,20 @@ function describeFountainInterval(interval) {
 function getSlotMixPatternForPass(passNumber) {
   if (!usesMixedSlotReplay()) return null
   if (passNumber <= 1) return ['source', 'source', 'source', 'source', 'source', 'source']
-  if (passNumber === 2) return ['source', 'source', 'source', 'source', 'source', 'parity']
+  if (passNumber === 2) {
+    // Default `p2`: 4S/2P — emit parity earlier so the receiver can start
+    // running parity recovery before the source replay completes.
+    // `mix`: 2S/2P/2F — aggressive, useful when source arrival is already
+    // saturated. `legacy`: historical 5S/1P, kept as an escape hatch.
+    if (PASS2_VARIANT === 'legacy') {
+      return ['source', 'source', 'source', 'source', 'source', 'parity']
+    }
+    if (PASS2_VARIANT === 'mix') {
+      return ['source', 'source', 'parity', 'parity', 'fountain', 'fountain']
+    }
+    // `p2` and any unrecognized value fall through to the new default.
+    return ['source', 'source', 'source', 'source', 'parity', 'parity']
+  }
   if (passNumber === 3) return ['source', 'source', 'source', 'source', 'parity', 'fountain']
   if (passNumber === 4) return ['source', 'source', 'source', 'parity', 'fountain', 'fountain']
   return ['source', 'parity', 'parity', 'fountain', 'fountain', 'fountain']
@@ -1666,6 +1687,7 @@ async function startSending() {
     blockSize = bestBlockSize
 
     debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
+    debugLog(`Pass-2 variant: ${PASS2_VARIANT}`)
     debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
     debugLog(
       `Batch profile: maxPackets=${maxPacketsPerFrame}, ` +
