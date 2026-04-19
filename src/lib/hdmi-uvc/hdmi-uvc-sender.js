@@ -1113,9 +1113,14 @@ function getHybridScheduleDescription() {
         : state.mode === HDMI_MODE.CODEBOOK_3
           ? 'Tile3'
           : '4x4'
+    const passDescs = []
+    for (let p = 2; p <= 5; p++) {
+      const pattern = getSlotMixPatternForPass(p)
+      passDescs.push(describeSlotMixPattern(pattern))
+    }
     return (
       `Hybrid schedule: source-only pass 1, then mixed ${modeName} slot replay ` +
-      `(5S/1P, 4S/1P/1F, 3S/1P/2F, 1S/2P/3F)`
+      `(pass2=${PASS2_VARIANT}; ${passDescs.join(', ')})`
     )
   }
 

@@ -6,8 +6,12 @@ import { testPRNG } from './lib/prng.js'
 import { testPacketRoundtrip } from './lib/packet.js'
 import { testMetadataRoundtrip } from './lib/metadata.js'
 import { testEncoder } from './lib/encoder.js'
-import { testCodecRoundtrip, testCodecRoundtripWithLoss } from './lib/decoder.js'
-import { testParityMap, testParityRecovery, testGF2SolverSmall, testGF2SolverLarge } from './lib/precode.js'
+import {
+  testCodecRoundtrip,
+  testCodecRoundtripWithLoss,
+  testCodecRoundtripDeferredMetadata
+} from './lib/decoder.js'
+import { testParityMap, testParityRecovery, testGF2SolverSmall, testGF2SolverLarge, testSourceToParityAdjacency } from './lib/precode.js'
 
 // Import UI modules
 import { initSender, resetSender } from './lib/sender.js'
@@ -40,10 +44,12 @@ window.testMetadataRoundtrip = testMetadataRoundtrip
 window.testEncoder = testEncoder
 window.testCodecRoundtrip = testCodecRoundtrip
 window.testCodecRoundtripWithLoss = testCodecRoundtripWithLoss
+window.testCodecRoundtripDeferredMetadata = testCodecRoundtripDeferredMetadata
 window.testParityMap = testParityMap
 window.testParityRecovery = testParityRecovery
 window.testGF2SolverSmall = testGF2SolverSmall
 window.testGF2SolverLarge = testGF2SolverLarge
+window.testSourceToParityAdjacency = testSourceToParityAdjacency
 
 // HDMI-UVC tests
 window.testCrc32 = testCrc32
@@ -165,11 +171,13 @@ async function runAllTests() {
     metadata: testMetadataRoundtrip(),
     parityMap: testParityMap(),
     parityRecovery: testParityRecovery(),
+    srcParityAdj: testSourceToParityAdjacency(),
     gf2Small: await testGF2SolverSmall(),
     gf2Large: await testGF2SolverLarge(),
     encoder: await testEncoder(),
     codec: await testCodecRoundtrip(),
     codecWithLoss: await testCodecRoundtripWithLoss(),
+    codecDeferredMetadata: await testCodecRoundtripDeferredMetadata(),
     // HDMI-UVC tests
     crc32: testCrc32(),
     hdmiHeader: testHeaderRoundtrip(),

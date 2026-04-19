@@ -5,7 +5,7 @@ import { FOUNTAIN_DEGREE, DEGREE_ONE_PROBABILITY } from './constants.js'
 import { createPRNG } from './prng.js'
 import { parsePacket } from './packet.js'
 import { parseMetadataPayload } from './metadata.js'
-import { calculateParityParams, generateParityMap } from './precode.js'
+import { calculateParityParams, generateParityMap, buildSourceToParityAdjacency } from './precode.js'
 import { solveGF2 } from './gf2-solver.js'
 
 export function createDecoder() {
@@ -28,6 +28,59 @@ export function createDecoder() {
   let tailSolveTriggerCount = 0            // How many times the GF(2) fallback has been invoked (Phase 1)
   let lastSolvedSourceCount = 0            // Tracking value for stall detection
   let lastTailSolveSignature = -1          // (pendingSymbols.length, solved) snapshot — skip redundant solves
+
+  // Event-driven parity recovery state. adj[s] lists parity rows referencing
+  // source block s; parityUnknownCount[p] tracks remaining unknowns in row p;
+  // parityKnown[p] latches when the parity block at K+p has been decoded;
+  // dirtyParities queues rows whose state changed since the last drain.
+  let adj = null
+  let parityUnknownCount = null
+  let parityKnown = null
+  const dirtyParities = new Set()
+
+  // Rebuild adjacency bookkeeping from current decodedBlocks state. Called on
+  // metadata ingest (K becomes known) and after bulk mutations like the GF(2)
+  // tail solver that bypass markSourceSolved/markParitySolved.
+  function initParityAdjacency() {
+    if (!parityMap || K === null || !decodedBlocks) return
+    adj = buildSourceToParityAdjacency(K, parityMap)
+    parityUnknownCount = new Uint16Array(parityMap.length)
+    parityKnown = new Uint8Array(parityMap.length)
+    dirtyParities.clear()
+    for (let p = 0; p < parityMap.length; p++) {
+      let unk = 0
+      const srcIndices = parityMap[p]
+      for (const s of srcIndices) {
+        if (!decodedBlocks[s]) unk++
+      }
+      parityUnknownCount[p] = unk
+      if (decodedBlocks[K + p]) {
+        parityKnown[p] = 1
+        if (unk === 1) dirtyParities.add(p)
+      }
+    }
+  }
+
+  // Record that source block `idx` transitioned from unknown → known.
+  // Decrements unknown counts for each parity row that references it and
+  // queues rows that are now one-unknown-and-parity-known.
+  function markSourceSolved(idx) {
+    if (!adj || K === null || idx >= K) return
+    const parities = adj[idx]
+    for (let i = 0; i < parities.length; i++) {
+      const p = parities[i]
+      if (parityUnknownCount[p] > 0) parityUnknownCount[p]--
+      if (parityKnown[p] && parityUnknownCount[p] === 1) dirtyParities.add(p)
+    }
+  }
+
+  // Record that parity block p transitioned from unknown → known.
+  function markParitySolved(p) {
+    if (!parityKnown || p < 0 || p >= parityKnown.length) return
+    if (parityKnown[p]) return
+    parityKnown[p] = 1
+    if (parityUnknownCount[p] === 1) dirtyParities.add(p)
+  }
 
   function reduce(symbol) {
     // Remove known blocks from symbol
@@ -68,9 +121,16 @@ export function createDecoder() {
           if (!decodedBlocks[idx]) {
             decodedBlocks[idx] = reduced.payload
             solved++
-            // Track source blocks separately (only if K is known)
-            if (K !== null && idx < K) {
-              solvedSource++
+            // Track source blocks separately (only if K is known). When K is
+            // known we also update the event-driven parity bookkeeping so a
+            // subsequent parityRecovery() can drain only the affected rows.
+            if (K !== null) {
+              if (idx < K) {
+                solvedSource++
+                markSourceSolved(idx)
+              } else {
+                markParitySolved(idx - K)
+              }
             }
           }
           pendingSymbols.splice(i, 1)
@@ -83,61 +143,62 @@ export function createDecoder() {
     }
   }
 
-  // Parity recovery phase - try to recover missing blocks using parity relationships
+  // Event-driven parity recovery. Instead of sweeping every parity row on every
+  // accepted packet, we drain `dirtyParities` — rows that transitioned to "one
+  // unknown source and the parity block is known" since the last mutation.
+  // Drain/propagate alternate until nothing new is enqueued: recoveries inside
+  // the drain call markSourceSolved (re-populating the queue), and propagate()
+  // after each drain may peel pending symbols that were waiting on the newly
+  // recovered blocks (also re-populating the queue via mark*Solved).
   function parityRecovery() {
-    if (!parityMap || !K) return 0
+    if (!parityMap || K === null || !adj) return 0
+    // Skip idle calls. Incrementing parityNoProgressSweeps only when there
+    // was at least one dirty row keeps the counter a real signal of
+    // "attempted parity work that produced nothing" instead of counting
+    // every no-op invocation from ingestParsedPacket.
+    if (dirtyParities.size === 0) return 0
 
     let totalRecovered = 0
-    let progress = true
+    let recoveredThisRound
+    do {
+      recoveredThisRound = 0
+      while (dirtyParities.size > 0) {
+        // Pop one entry without constructing an iterator array.
+        const p = dirtyParities.values().next().value
+        dirtyParities.delete(p)
+        if (!parityKnown[p]) continue
+        if (parityUnknownCount[p] !== 1) continue
 
-    while (progress) {
-      progress = false
-
-      for (let p = 0; p < parityMap.length; p++) {
-        const parityIdx = K + p
-        const sourceIndices = parityMap[p]
-
-        // Skip if parity block itself is not decoded
-        if (!decodedBlocks[parityIdx]) {
-          continue
+        const srcIndices = parityMap[p]
+        let missingIdx = -1
+        for (let i = 0; i < srcIndices.length; i++) {
+          const s = srcIndices[i]
+          if (!decodedBlocks[s]) { missingIdx = s; break }
         }
+        if (missingIdx === -1) continue // State drifted; skip.
 
-        // Count unknowns among source blocks in this parity relationship
-        const unknowns = sourceIndices.filter(i => !decodedBlocks[i])
-
-        if (unknowns.length === 1) {
-          // Can recover the one unknown
-          const missingIdx = unknowns[0]
-
-          // Start with parity block
-          const recovered = new Uint8Array(decodedBlocks[parityIdx])
-
-          // XOR out all known source blocks
-          for (const idx of sourceIndices) {
-            if (idx !== missingIdx && decodedBlocks[idx]) {
-              for (let i = 0; i < recovered.length; i++) {
-                recovered[i] ^= decodedBlocks[idx][i]
-              }
-            }
-          }
-
-          decodedBlocks[missingIdx] = recovered
-          solved++
-          solvedSource++
-          totalRecovered++
-          progress = true
+        const out = new Uint8Array(decodedBlocks[K + p])
+        for (let i = 0; i < srcIndices.length; i++) {
+          const s = srcIndices[i]
+          if (s === missingIdx) continue
+          const known = decodedBlocks[s]
+          for (let j = 0; j < out.length; j++) out[j] ^= known[j]
         }
+        decodedBlocks[missingIdx] = out
+        solved++
+        solvedSource++
+        recoveredThisRound++
+        markSourceSolved(missingIdx)
       }
-
-      // Re-run LT propagation after each parity pass
-      if (progress) {
+      if (recoveredThisRound > 0) {
         propagate()
       }
-    }
+      totalRecovered += recoveredThisRound
+    } while (recoveredThisRound > 0 && dirtyParities.size > 0)
 
-    // Full-sweep no-progress counter: a proxy for expensive parity work that
-    // returned nothing, which is the cost signal Phase 2 (event-driven parity)
-    // is intended to eliminate.
+    // Proxy counter for "parity-recovery call finished without progress." With
+    // the event-driven queue this mostly ticks on no-op drains — still useful
+    // for distinguishing active parity work from idle calls in telemetry.
     if (totalRecovered === 0) {
       parityNoProgressSweeps++
     }
@@ -247,6 +308,14 @@ export function createDecoder() {
         for (const sid of receivedSymbols) {
           if (sid > K && sid <= K_prime) uniqueParitySymbolsSeen++
         }
+
+        // Seed event-driven parity bookkeeping from whatever state
+        // decodedBlocks already holds (symbols that arrived before metadata).
+        initParityAdjacency()
+        // Pending symbols accepted before metadata may now collapse to
+        // degree-1 once they're reduced against already-known blocks.
+        propagate()
+        parityRecovery()
       }
       return true
     }
@@ -338,7 +407,12 @@ export function createDecoder() {
     if (got > 0) {
       recountSolved()
       pruneFullyReducedPending()
+      // GF(2) mutated decodedBlocks directly, bypassing mark*Solved. Rebuild
+      // the event-driven bookkeeping from the current state before propagate
+      // so any follow-on parity recovery uses accurate counts.
+      initParityAdjacency()
       propagate()
+      if (dirtyParities.size > 0) parityRecovery()
     }
     return got
   }
@@ -413,6 +487,10 @@ export function createDecoder() {
       tailSolveTriggerCount = 0
       lastSolvedSourceCount = 0
       lastTailSolveSignature = -1
+      adj = null
+      parityUnknownCount = null
+      parityKnown = null
+      dirtyParities.clear()
     },
 
     receive(packet) {
@@ -609,6 +687,75 @@ export async function testCodecRoundtripWithLoss() {
     K: encoder.K,
     K_prime: encoder.K_prime,
     symbolsReceived: decoder.uniqueSymbols
+  })
+
+  return pass
+}
+
+// Metadata can arrive mid-stream (every 10th frame in QR mode; longer gaps on
+// HDMI). This test sends a mix of systematic, parity, and fountain symbols
+// *before* metadata, holds metadata until the end of the initial burst, and
+// then checks that the decoder still completes. Exercises the
+// initParityAdjacency / replay-propagate path in the metadata branch.
+export async function testCodecRoundtripDeferredMetadata() {
+  const { createEncoder } = await import('./encoder.js')
+
+  const fileSize = 20000
+  const originalData = new Uint8Array(fileSize)
+  for (let i = 0; i < fileSize; i++) {
+    originalData[i] = (i * 23 + 41) & 0xff
+  }
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', originalData))
+  const encoder = createEncoder(originalData.buffer, 'deferred.bin', 'application/octet-stream', hash)
+  const decoder = createDecoder()
+
+  // Burst 1: every systematic symbol (1..K_prime) plus a fountain tail,
+  // delivered before metadata. This includes parity symbols
+  // (K < symbolId <= K_prime) which exercise markParitySolved via propagate.
+  const preMetadataCount = encoder.K_prime + 30
+  for (let id = 1; id <= preMetadataCount; id++) {
+    decoder.receive(encoder.generateSymbol(id))
+  }
+
+  if (decoder.K !== null) {
+    console.log('Deferred-metadata test FAIL - K leaked before metadata')
+    return false
+  }
+
+  // Burst 2: metadata arrives now. initParityAdjacency should seed from the
+  // blocks already filled in by propagate(), then replay propagate + parity
+  // recovery in the metadata branch so no symbol is wasted.
+  decoder.receive(encoder.generateSymbol(0))
+
+  // Burst 3 (tail): a few more fountain symbols in case burst 1 wasn't enough.
+  for (let id = preMetadataCount + 1; id <= preMetadataCount + 200 && !decoder.isComplete(); id++) {
+    decoder.receive(encoder.generateSymbol(id))
+  }
+
+  if (!decoder.isComplete()) {
+    console.log('Deferred-metadata test FAIL - incomplete after', decoder.uniqueSymbols, 'symbols')
+    console.log('  Solved:', decoder.solved, '/', encoder.K, 'source blocks')
+    console.log('  Telemetry:', decoder.telemetry)
+    return false
+  }
+
+  const verified = await decoder.verify()
+  const reconstructed = decoder.reconstruct()
+  let dataMatch = reconstructed.length === originalData.length
+  if (dataMatch) {
+    for (let i = 0; i < originalData.length; i++) {
+      if (reconstructed[i] !== originalData[i]) { dataMatch = false; break }
+    }
+  }
+
+  const pass = verified && dataMatch
+  console.log('Deferred-metadata test:', pass ? 'PASS' : 'FAIL', {
+    verified,
+    dataMatch,
+    K: encoder.K,
+    K_prime: encoder.K_prime,
+    symbolsReceived: decoder.uniqueSymbols,
+    parityNoProgressSweeps: decoder.telemetry.parityNoProgressSweeps,
   })
 
   return pass

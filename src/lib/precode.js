@@ -69,6 +69,22 @@ export function generateParityMap(K, G) {
 }
 
 /**
+ * For each source block index, list the parity-row indices that reference it.
+ * Used by the decoder to update only affected parity rows when a source block
+ * transitions from unknown → known, instead of sweeping the whole parity map.
+ * @param {number} K - Number of source blocks
+ * @param {number[][]} parityMap - Parity map from generateParityMap
+ * @returns {number[][]} adj[sourceIdx] = array of parity row indices
+ */
+export function buildSourceToParityAdjacency(K, parityMap) {
+  const adj = Array.from({ length: K }, () => [])
+  for (let p = 0; p < parityMap.length; p++) {
+    for (const srcIdx of parityMap[p]) adj[srcIdx].push(p)
+  }
+  return adj
+}
+
+/**
  * Generate parity blocks by XORing source blocks according to parityMap
  * @param {Uint8Array[]} sourceBlocks - Array of source blocks
  * @param {number[][]} parityMap - Parity map from generateParityMap
@@ -226,6 +242,31 @@ export function testParityRecovery() {
   const pass = recovered === 1 && match
   console.log('Parity recovery test:', pass ? 'PASS' : 'FAIL')
   return pass
+}
+
+// Adjacency sanity: every parity row references must be reflected in adj, and
+// every adj entry must point to a parity row that lists that source index.
+export function testSourceToParityAdjacency() {
+  const K = 16
+  const { G } = calculateParityParams(K)
+  const map = generateParityMap(K, G)
+  const adj = buildSourceToParityAdjacency(K, map)
+
+  // Forward: every (s, p) in adj appears in map[p].
+  for (let s = 0; s < K; s++) {
+    for (const p of adj[s]) {
+      if (!map[p].includes(s)) { console.log('adj FAIL forward s=', s, 'p=', p); return false }
+    }
+  }
+  // Reverse: every (s, p) in map appears in adj[s].
+  for (let p = 0; p < map.length; p++) {
+    for (const s of map[p]) {
+      if (!adj[s].includes(p)) { console.log('adj FAIL reverse s=', s, 'p=', p); return false }
+    }
+  }
+
+  console.log('adj test: PASS (K=' + K + ', parity rows=' + map.length + ')')
+  return true
 }
 
 export async function testGF2SolverSmall() {
