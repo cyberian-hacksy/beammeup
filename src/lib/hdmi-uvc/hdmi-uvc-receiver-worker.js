@@ -1,0 +1,456 @@
+// HDMI-UVC receiver worker — decode pump that can run anchor detection,
+// decoder ingest, and file reconstruction off the main thread. Constructed
+// from the receiver via Vite's ?worker&inline so all imports below bundle
+// into a single inline blob and survive vite-plugin-singlefile.
+//
+// Protocol (main → worker):
+//   { type: 'ping', id }
+//   { type: 'hash', id, buffer, width, height }          // sub-phase 1 diagnostic
+//   { type: 'detectAnchors', id, buffer, width, height } // sub-phase 2
+//   { type: 'initDecoder' }                              // sub-phase 3
+//   { type: 'ingestBatch', id, parsedList }              // sub-phase 3 (async)
+//   { type: 'decodeAndIngest', id, buffer, width, region, expectedPacketSize }
+//   { type: 'resetDecoder' }                             // sub-phase 3
+//   { type: 'noteFrameBoundary', id? }                   // sub-phase 3
+//   { type: 'reconstruct', id }                          // sub-phase 3
+//
+// Protocol (worker → main):
+//   { type: 'ready', protocolVersion }
+//   { type: 'pong', id }
+//   { type: 'hashResult', id, hash, byteLength, width, height, elapsedMs }
+//   { type: 'anchorsResult', id, anchors, region, elapsedMs }
+//   { type: 'decoderDelta', ... }   // emitted on every ingest/reset
+//   { type: 'reconstructResult', id, data?, error? }
+//   { type: 'error', id?, message }
+
+import { detectAnchors, dataRegionFromAnchors, decodeDataRegion } from './hdmi-uvc-frame.js'
+import { createDecoder } from '../decoder.js'
+import { parsePacket, PACKET_HEADER_SIZE } from '../packet.js'
+
+const WORKER_PROTOCOL_VERSION = 2
+
+// Keep the shadow decoder singleton so initDecoder can be called multiple
+// times in a session (e.g., receive-another flow) without leaking state.
+let decoder = null
+
+function fnv1a32(bytes) {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= bytes[i]
+    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0
+  }
+  return hash >>> 0
+}
+
+function handleHash(msg) {
+  const start = performance.now()
+  const bytes = new Uint8ClampedArray(msg.buffer)
+  const hash = fnv1a32(bytes)
+  const elapsedMs = performance.now() - start
+  return {
+    type: 'hashResult',
+    id: msg.id,
+    hash,
+    byteLength: bytes.length,
+    width: msg.width,
+    height: msg.height,
+    elapsedMs
+  }
+}
+
+function handleDetectAnchors(msg) {
+  const start = performance.now()
+  const bytes = new Uint8ClampedArray(msg.buffer)
+  const anchors = detectAnchors(bytes, msg.width, msg.height)
+  const region = anchors.length >= 2 ? dataRegionFromAnchors(anchors) : null
+  const elapsedMs = performance.now() - start
+  return {
+    type: 'anchorsResult',
+    id: msg.id,
+    anchors: serializeAnchors(anchors),
+    region: serializeRegion(region),
+    elapsedMs
+  }
+}
+
+function serializeAnchors(anchors) {
+  if (!anchors) return []
+  const out = new Array(anchors.length)
+  for (let i = 0; i < anchors.length; i++) {
+    const a = anchors[i]
+    out[i] = { x: a.x, y: a.y, corner: a.corner, blockSize: a.blockSize }
+  }
+  return out
+}
+
+function serializeRegion(region) {
+  if (!region) return null
+  // Shallow copy — fields are all primitives / small arrays.
+  return { ...region }
+}
+
+function ensureDecoder() {
+  if (!decoder) decoder = createDecoder()
+  return decoder
+}
+
+function currentSymbolBreakdown() {
+  if (!decoder) {
+    return {
+      unique: 0,
+      duplicate: 0,
+      sourceCount: 0,
+      parityCount: 0,
+      fountainCount: 0,
+      metadataCount: 0
+    }
+  }
+  try {
+    // The decoder exposes `symbolBreakdown` as a getter (decoder.js:492) —
+    // calling that delegates to its internal incremental counters.
+    return decoder.symbolBreakdown || null
+  } catch (_) {
+    return null
+  }
+}
+
+function decoderDelta(extra = {}) {
+  const d = decoder
+  if (!d) return { type: 'decoderDelta' }
+  return {
+    type: 'decoderDelta',
+    solved: d.solved,
+    solvedTotal: d.solvedTotal,
+    K: d.K ?? null,
+    K_prime: d.K_prime ?? null,
+    blockSize: d.blockSize ?? 0,
+    progress: d.progress ?? 0,
+    uniqueSymbols: d.uniqueSymbols ?? 0,
+    pendingSymbolCount: d.pendingSymbolCount ?? 0,
+    unresolvedSourceCount: d.unresolvedSourceCount ?? null,
+    metadata: d.metadata ?? null,
+    telemetry: d.telemetry ?? null,
+    isComplete: typeof d.isComplete === 'function' ? d.isComplete() : false,
+    symbolBreakdown: currentSymbolBreakdown(),
+    ...extra
+  }
+}
+
+function handleInitDecoder() {
+  decoder = createDecoder()
+  return decoderDelta()
+}
+
+// Slice a CRC-valid frame payload into packets, parse each, and return the
+// list that survived CRC. Mirrors probeFramePackets() in the receiver
+// module: try the expected packet size first, then fall back to the
+// equal-chunk probe so first-frame/preset-change cases where blockSize
+// hasn't synced still surface valid packets.
+function extractFromExpectedSize(framePayload, expectedPacketSize) {
+  if (!expectedPacketSize || expectedPacketSize < PACKET_HEADER_SIZE) return []
+  if (framePayload.length % expectedPacketSize !== 0) return []
+  const out = []
+  for (let offset = 0; offset < framePayload.length; offset += expectedPacketSize) {
+    const slice = framePayload.subarray(offset, offset + expectedPacketSize)
+    const parsed = parsePacket(slice)
+    if (parsed) out.push(parsed)
+  }
+  return out
+}
+
+function tryEqualChunkExtract(framePayload, maxPackets = 16) {
+  let best = null
+  for (let slotCount = 2; slotCount <= maxPackets; slotCount++) {
+    if (framePayload.length % slotCount !== 0) continue
+    const packetSize = framePayload.length / slotCount
+    if (packetSize < PACKET_HEADER_SIZE) continue
+    const packets = []
+    for (let offset = 0; offset < framePayload.length; offset += packetSize) {
+      const slice = framePayload.subarray(offset, offset + packetSize)
+      const parsed = parsePacket(slice)
+      if (parsed) packets.push(parsed)
+    }
+    if (packets.length === 0) continue
+    const validBytes = packets.length * packetSize
+    if (
+      !best ||
+      packets.length > best.packets.length ||
+      (packets.length === best.packets.length && validBytes > best.validBytes)
+    ) {
+      best = { packets, slotCount, packetSize, validBytes }
+    }
+  }
+  return best
+}
+
+function extractValidPacketsFromPayload(framePayload, expectedPacketSize) {
+  if (!framePayload) return { packets: [], slotCount: 0 }
+  const expectedHit = extractFromExpectedSize(framePayload, expectedPacketSize)
+  if (expectedHit.length > 0) {
+    return {
+      packets: expectedHit,
+      slotCount: Math.floor(framePayload.length / expectedPacketSize)
+    }
+  }
+  const equal = tryEqualChunkExtract(framePayload)
+  if (equal) return { packets: equal.packets, slotCount: equal.slotCount }
+  return { packets: [], slotCount: 0 }
+}
+
+function serializeDecodeHeader(header) {
+  if (!header) return null
+  // Structured clone handles nested plain objects / typed arrays natively,
+  // so we mostly just forward the shape. _diag may carry non-structurable
+  // refs; strip via JSON round-trip only if it causes a serialization issue
+  // in practice — today the receiver's _diag consumers accept any shape.
+  return {
+    magic: header.magic,
+    mode: header.mode,
+    width: header.width,
+    height: header.height,
+    fps: header.fps,
+    symbolId: header.symbolId,
+    payloadLength: header.payloadLength,
+    payloadCrc: header.payloadCrc
+  }
+}
+
+function handleDecodeAndIngest(msg) {
+  const start = performance.now()
+  const bytes = new Uint8ClampedArray(msg.buffer)
+  const region = msg.region
+  const decodeResult = decodeDataRegion(bytes, msg.width, region)
+
+  if (!decodeResult) {
+    return {
+      type: 'decodeAndIngestResult',
+      id: msg.id,
+      decodeResult: null,
+      elapsedMs: performance.now() - start
+    }
+  }
+
+  // CRC-invalid frames: return the decode result and let the main thread
+  // drive the salvage paths locally. They're rare and stateful (fixed
+  // layout, phase recovery, headerless) and not worth moving until the
+  // common case proves worth it. Transfer the payload buffer so the main
+  // thread gets it zero-copy.
+  if (!decodeResult.crcValid) {
+    const p = decodeResult.payload
+    const buf = p ? p.buffer.slice(p.byteOffset, p.byteOffset + p.byteLength) : null
+    const reply = {
+      type: 'decodeAndIngestResult',
+      id: msg.id,
+      decodeResult: {
+        crcValid: false,
+        header: serializeDecodeHeader(decodeResult.header),
+        payload: buf,
+        _diag: decodeResult._diag || null
+      },
+      elapsedMs: performance.now() - start
+    }
+    return buf ? { reply, transfer: [buf] } : reply
+  }
+
+  const d = ensureDecoder()
+  const extract = extractValidPacketsFromPayload(decodeResult.payload, msg.expectedPacketSize)
+  const parsedList = extract.packets
+  let innovations = 0
+  let newSession = false
+  for (const parsed of parsedList) {
+    if (!parsed) continue
+    let r = d.receiveParsed(parsed)
+    if (r === 'new_session') {
+      newSession = true
+      if (typeof d.reset === 'function') d.reset()
+      r = d.receiveParsed(parsed)
+    }
+    if (r === true) innovations++
+  }
+  const isComplete = typeof d.isComplete === 'function' ? d.isComplete() : false
+
+  return {
+    type: 'decodeAndIngestResult',
+    id: msg.id,
+    decodeResult: {
+      crcValid: true,
+      header: serializeDecodeHeader(decodeResult.header),
+      // The main thread uses only the header + slot count from the payload
+      // for UI/logging; don't ship the raw bytes back.
+      payloadLength: decodeResult.payload ? decodeResult.payload.length : 0,
+      slotCount: extract.slotCount || parsedList.length,
+      _diag: decodeResult._diag || null
+    },
+    innovations,
+    accepted: parsedList.length,
+    newSession,
+    completionEvent: isComplete,
+    solved: d.solved,
+    solvedTotal: d.solvedTotal,
+    K: d.K ?? null,
+    K_prime: d.K_prime ?? null,
+    blockSize: d.blockSize ?? 0,
+    progress: d.progress ?? 0,
+    uniqueSymbols: d.uniqueSymbols ?? 0,
+    pendingSymbolCount: d.pendingSymbolCount ?? 0,
+    unresolvedSourceCount: d.unresolvedSourceCount ?? null,
+    metadata: d.metadata ?? null,
+    telemetry: d.telemetry ?? null,
+    isComplete,
+    symbolBreakdown: currentSymbolBreakdown(),
+    elapsedMs: performance.now() - start
+  }
+}
+
+function handleIngestBatch(msg) {
+  const d = ensureDecoder()
+  const parsedList = msg.parsedList || []
+  let innovations = 0
+  let newSession = false
+  for (const parsed of parsedList) {
+    if (!parsed) continue
+    let result = typeof d.receiveParsed === 'function' ? d.receiveParsed(parsed) : false
+    if (result === 'new_session') {
+      newSession = true
+      if (typeof d.reset === 'function') d.reset()
+      result = d.receiveParsed(parsed)
+    }
+    if (result === true) innovations++
+  }
+  const isComplete = typeof d.isComplete === 'function' ? d.isComplete() : false
+  return {
+    type: 'ingestBatchResult',
+    id: msg.id,
+    innovations,
+    accepted: parsedList.length,
+    newSession,
+    completionEvent: isComplete,
+    // Snapshot of decoder state so the main thread can update the shadow in
+    // the same tick as innovation accounting — no dual-channel staleness.
+    solved: d.solved,
+    solvedTotal: d.solvedTotal,
+    K: d.K ?? null,
+    K_prime: d.K_prime ?? null,
+    blockSize: d.blockSize ?? 0,
+    progress: d.progress ?? 0,
+    uniqueSymbols: d.uniqueSymbols ?? 0,
+    pendingSymbolCount: d.pendingSymbolCount ?? 0,
+    unresolvedSourceCount: d.unresolvedSourceCount ?? null,
+    metadata: d.metadata ?? null,
+    telemetry: d.telemetry ?? null,
+    isComplete,
+    symbolBreakdown: currentSymbolBreakdown()
+  }
+}
+
+function handleResetDecoder() {
+  if (decoder && typeof decoder.reset === 'function') decoder.reset()
+  return decoderDelta()
+}
+
+function handleNoteFrameBoundary(msg) {
+  let recovered = 0
+  if (decoder && typeof decoder.noteFrameBoundary === 'function') {
+    const r = decoder.noteFrameBoundary()
+    if (typeof r === 'number') recovered = r
+  }
+  // noteFrameBoundary can trigger the tail solver which may close the file;
+  // always emit a fresh delta so the main thread sees the new state.
+  const reply = decoderDelta({
+    completionEvent:
+      decoder && typeof decoder.isComplete === 'function' && decoder.isComplete(),
+    frameBoundaryRecovered: recovered
+  })
+  if (msg && msg.id) reply.id = msg.id
+  return reply
+}
+
+function handleReconstruct(msg) {
+  try {
+    const d = ensureDecoder()
+    const data = typeof d.reconstruct === 'function' ? d.reconstruct() : null
+    if (!data) {
+      return {
+        type: 'reconstructResult',
+        id: msg.id,
+        error: 'Worker decoder has no reconstruct() or returned null'
+      }
+    }
+    // Transfer the backing buffer so the main thread gets it zero-copy.
+    const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+    return {
+      reply: { type: 'reconstructResult', id: msg.id, data: buf },
+      transfer: [buf]
+    }
+  } catch (err) {
+    return {
+      type: 'reconstructResult',
+      id: msg.id,
+      error: (err && err.message) ? err.message : String(err)
+    }
+  }
+}
+
+self.onmessage = (event) => {
+  const msg = event.data
+  if (!msg || typeof msg !== 'object') return
+  try {
+    let reply = null
+    let transfer = null
+    switch (msg.type) {
+      case 'ping':
+        reply = { type: 'pong', id: msg.id }
+        break
+      case 'hash': {
+        reply = handleHash(msg)
+        break
+      }
+      case 'detectAnchors': {
+        reply = handleDetectAnchors(msg)
+        break
+      }
+      case 'initDecoder':
+        reply = handleInitDecoder()
+        break
+      case 'ingestBatch':
+        reply = handleIngestBatch(msg)
+        break
+      case 'decodeAndIngest': {
+        const res = handleDecodeAndIngest(msg)
+        if (res && res.reply) { reply = res.reply; transfer = res.transfer }
+        else reply = res
+        break
+      }
+      case 'resetDecoder':
+        reply = handleResetDecoder()
+        break
+      case 'noteFrameBoundary':
+        reply = handleNoteFrameBoundary(msg)
+        break
+      case 'reconstruct': {
+        const res = handleReconstruct(msg)
+        if (res.reply) { reply = res.reply; transfer = res.transfer }
+        else reply = res
+        break
+      }
+      default:
+        reply = {
+          type: 'error',
+          id: msg.id,
+          message: `Unknown message type: ${msg.type}`
+        }
+    }
+    if (reply) {
+      if (transfer && transfer.length) self.postMessage(reply, transfer)
+      else self.postMessage(reply)
+    }
+  } catch (err) {
+    self.postMessage({
+      type: 'error',
+      id: msg && msg.id,
+      message: (err && err.message) ? err.message : String(err)
+    })
+  }
+}
+
+self.postMessage({ type: 'ready', protocolVersion: WORKER_PROTOCOL_VERSION })
