@@ -12,6 +12,7 @@ import {
   getModeDataBlockSize
 } from './hdmi-uvc-constants.js'
 import { detectAnchors, dataRegionFromAnchors, decodeDataRegion, readPayloadWithLayout } from './hdmi-uvc-frame.js'
+import ReceiverWorker from './hdmi-uvc-receiver-worker.js?worker&inline'
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
@@ -31,6 +32,28 @@ const DEBUG_CONSOLE = false
 const CAPTURE_BENCHMARK_SAMPLES_PER_METHOD = 6
 const CAPTURE_BENCH_ONLY = typeof location !== 'undefined' &&
   new URLSearchParams(location.search).has('captureBench')
+// ?worker selects the decode-pump mode (Phase 5). Missing = off; '1'/'hash'
+// runs a diagnostic hash probe only (sub-phase 1); 'anchors' offloads anchor
+// detection (sub-phase 2); 'full' offloads anchor + decoder ingest + tail
+// work (sub-phase 3). On any construction/runtime error the receiver falls
+// back to the main-thread path for the session.
+const WORKER_MODE_RAW = typeof location !== 'undefined'
+  ? new URLSearchParams(location.search).get('worker') : null
+const WORKER_MODE_SET = typeof location !== 'undefined' &&
+  new URLSearchParams(location.search).has('worker')
+const WORKER_MODE = (() => {
+  if (!WORKER_MODE_SET) return 'off'
+  const raw = (WORKER_MODE_RAW || '').toLowerCase()
+  if (raw === '' || raw === '1' || raw === 'hash' || raw === 'true') return 'hash'
+  if (raw === 'anchors') return 'anchors'
+  if (raw === 'full') return 'full'
+  return 'hash'
+})()
+const WORKER_ANCHORS_ENABLED = WORKER_MODE === 'anchors' || WORKER_MODE === 'full'
+const WORKER_FULL_ENABLED = WORKER_MODE === 'full'
+// Frames between diagnostic hash probes. Probing every frame is wasteful for
+// a pure diagnostic; every ~30 frames is enough to confirm transport.
+const WORKER_PROBE_INTERVAL_FRAMES = 30
 const debugLines = []
 let debugRenderTimer = null
 
@@ -87,6 +110,481 @@ function shouldUpdateReceiverUi(lastUpdateMs, nowMs, force = false) {
   if (force) return true
   if (!Number.isFinite(lastUpdateMs) || lastUpdateMs <= 0) return true
   return (nowMs - lastUpdateMs) >= RECEIVER_UI_UPDATE_INTERVAL_MS
+}
+
+// Phase 5 worker client. Constructed via Vite's ?worker&inline so all module
+// imports inside the worker (frame.js, decoder, etc.) bundle into a single
+// inline Blob and survive vite-plugin-singlefile. The worker silently
+// disables itself on construction error so the receiver keeps working on the
+// main thread. Mode selection:
+//   'hash'    → sub-phase 1: diagnostic round-trip hash every N frames
+//   'anchors' → sub-phase 2: offload anchor detection (pre-lock phase)
+//   'full'    → sub-phase 3: offload anchor + decoder ingest + tail work
+let receiverWorker = null
+let receiverWorkerReady = false
+let receiverWorkerNextId = 1
+let receiverWorkerFailed = false
+const receiverWorkerPending = new Map()
+const receiverWorkerProbeState = {
+  framesSinceProbe: 0,
+  samplesReceived: 0,
+  samplesSent: 0,
+  lastHash: 0,
+  lastWorkerMs: 0,
+  lastRoundTripMs: 0,
+  lastByteLength: 0,
+  logsEmitted: 0
+}
+// Shadow state mirror for the worker's decoder when running in 'full' mode.
+// The main thread reads from this object like it used to read from the
+// in-process decoder; the worker ships back deltas on every ingest/reset.
+let receiverWorkerDecoderState = null
+// Pending reconstruct requests keyed by id → { resolve, reject }.
+const receiverWorkerReconstructPending = new Map()
+
+function initReceiverWorker() {
+  if (WORKER_MODE === 'off') return false
+  if (receiverWorker) return true
+  if (receiverWorkerFailed) return false
+  try {
+    receiverWorker = new ReceiverWorker()
+    receiverWorker.onmessage = handleReceiverWorkerMessage
+    receiverWorker.onerror = (event) => {
+      debugLog(`Worker error: ${event.message || 'unknown'} — falling back to main thread`)
+      teardownReceiverWorker(true)
+    }
+    receiverWorker.onmessageerror = () => {
+      debugLog('Worker message deserialization failed — falling back to main thread')
+      teardownReceiverWorker(true)
+    }
+    debugLog(`Worker mode: ON (${WORKER_MODE})`)
+    return true
+  } catch (err) {
+    debugLog(`Worker construction failed: ${(err && err.message) || err} — falling back to main thread`)
+    teardownReceiverWorker(true)
+    return false
+  }
+}
+
+function teardownReceiverWorker(markFailed = false) {
+  if (receiverWorker) {
+    try { receiverWorker.terminate() } catch (_) { /* ignore */ }
+    receiverWorker = null
+  }
+  receiverWorkerReady = false
+  receiverWorkerPending.clear()
+  // Reject any pending reconstruct requests so callers don't hang forever.
+  for (const { reject } of receiverWorkerReconstructPending.values()) {
+    try { reject(new Error('Worker terminated')) } catch (_) { /* ignore */ }
+  }
+  receiverWorkerReconstructPending.clear()
+  if (markFailed) receiverWorkerFailed = true
+}
+
+function postToWorker(msg, transfer) {
+  if (!receiverWorker) return false
+  try {
+    if (transfer && transfer.length) receiverWorker.postMessage(msg, transfer)
+    else receiverWorker.postMessage(msg)
+    return true
+  } catch (err) {
+    debugLog(`Worker postMessage failed: ${(err && err.message) || err}`)
+    teardownReceiverWorker(true)
+    return false
+  }
+}
+
+function handleReceiverWorkerMessage(event) {
+  const msg = event.data
+  if (!msg || typeof msg !== 'object') return
+  switch (msg.type) {
+    case 'ready':
+      receiverWorkerReady = true
+      debugLog(`Worker ready (protocol v${msg.protocolVersion})`)
+      return
+    case 'hashResult':
+      handleWorkerHashResult(msg)
+      return
+    case 'anchorsResult': {
+      const pending = receiverWorkerPending.get(msg.id)
+      receiverWorkerPending.delete(msg.id)
+      if (pending && pending.resolve) pending.resolve(msg)
+      return
+    }
+    case 'decoderDelta':
+      handleWorkerDecoderDelta(msg)
+      return
+    case 'ingestBatchResult': {
+      const pending = receiverWorkerPending.get(msg.id)
+      receiverWorkerPending.delete(msg.id)
+      // Update the shadow with the delta fields in the same tick as the
+      // caller resolves its promise. This is what makes ?worker=full's
+      // innovation/stall telemetry honest: the main thread gets the
+      // authoritative innovations count from the worker instead of guessing.
+      handleWorkerDecoderDelta(msg)
+      if (pending && pending.resolve) pending.resolve(msg)
+      return
+    }
+    case 'decodeAndIngestResult': {
+      const pending = receiverWorkerPending.get(msg.id)
+      receiverWorkerPending.delete(msg.id)
+      // On CRC-valid, the response also carries shadow-state fields — apply
+      // them to keep the shadow in sync with the worker's post-ingest state.
+      if (msg.decodeResult && msg.decodeResult.crcValid) {
+        handleWorkerDecoderDelta(msg)
+      }
+      if (pending && pending.resolve) pending.resolve(msg)
+      return
+    }
+    case 'reconstructResult': {
+      const pending = receiverWorkerReconstructPending.get(msg.id)
+      receiverWorkerReconstructPending.delete(msg.id)
+      if (pending && pending.resolve) {
+        pending.resolve({
+          data: msg.data ? new Uint8Array(msg.data) : null,
+          error: msg.error || null
+        })
+      }
+      return
+    }
+    case 'error':
+      debugLog(`Worker error message: ${msg.message}`)
+      if (msg.id && receiverWorkerPending.has(msg.id)) {
+        const p = receiverWorkerPending.get(msg.id)
+        receiverWorkerPending.delete(msg.id)
+        if (p && p.reject) p.reject(new Error(msg.message))
+      }
+      if (msg.id && receiverWorkerReconstructPending.has(msg.id)) {
+        const p = receiverWorkerReconstructPending.get(msg.id)
+        receiverWorkerReconstructPending.delete(msg.id)
+        if (p && p.reject) p.reject(new Error(msg.message))
+      }
+      return
+  }
+}
+
+function handleWorkerHashResult(msg) {
+  const probe = receiverWorkerPending.get(msg.id)
+  receiverWorkerPending.delete(msg.id)
+  const probeState = receiverWorkerProbeState
+  probeState.samplesReceived++
+  probeState.lastHash = msg.hash
+  probeState.lastWorkerMs = msg.elapsedMs
+  probeState.lastByteLength = msg.byteLength
+  if (probe) probeState.lastRoundTripMs = performance.now() - probe.sentAtMs
+  if ((probeState.samplesReceived & 3) === 0) {
+    probeState.logsEmitted++
+    debugLog(
+      `Worker probe: hash=0x${msg.hash.toString(16).padStart(8, '0')} ` +
+      `bytes=${msg.byteLength} worker=${msg.elapsedMs.toFixed(2)}ms ` +
+      `rt=${probeState.lastRoundTripMs.toFixed(2)}ms ` +
+      `n=${probeState.samplesReceived}`
+    )
+  }
+}
+
+function handleWorkerDecoderDelta(msg) {
+  const s = receiverWorkerDecoderState
+  if (!s) return
+  if (typeof msg.solved === 'number') s.solved = msg.solved
+  if (typeof msg.solvedTotal === 'number') s.solvedTotal = msg.solvedTotal
+  if (typeof msg.K === 'number') s.K = msg.K
+  if (typeof msg.K_prime === 'number') s.K_prime = msg.K_prime
+  if (typeof msg.blockSize === 'number') s.blockSize = msg.blockSize
+  if (typeof msg.progress === 'number') s.progress = msg.progress
+  if (typeof msg.uniqueSymbols === 'number') s.uniqueSymbols = msg.uniqueSymbols
+  if (typeof msg.pendingSymbolCount === 'number') s.pendingSymbolCount = msg.pendingSymbolCount
+  if (typeof msg.unresolvedSourceCount === 'number') s.unresolvedSourceCount = msg.unresolvedSourceCount
+  if (msg.metadata !== undefined) s.metadata = msg.metadata
+  if (msg.telemetry) s.telemetry = msg.telemetry
+  if (typeof msg.isComplete === 'boolean') s.isComplete = msg.isComplete
+  if (msg.symbolBreakdown) s.symbolBreakdown = msg.symbolBreakdown
+  if (msg.newSessionEvent || msg.newSession) {
+    // Worker detected a new session (sender restart / config change) and
+    // already reset its decoder. Mirror the companion state reset that
+    // main-thread acceptPackets() does on the 'new_session' return.
+    debugLog('New session detected (worker); resetting receiver companion state')
+    state.validFrames = 0
+    state.startTime = Date.now()
+    state.completedFile = null
+    state.completionStarted = false
+    state.progressSamples = []
+    state.expectedPacketCount = 0
+    state.fixedLayout = null
+    state.preferredLayout = null
+    state.lockedLayoutFastPathMisses = 0
+    state.decodeFailCount = 0
+    s.completionHandled = false
+  }
+  if (msg.completionEvent && !s.completionHandled) {
+    s.completionHandled = true
+    // The worker signals completion asynchronously; bubble it into the
+    // existing completion path. handleComplete guards against re-entry.
+    if (!state.completedFile && typeof handleComplete === 'function') {
+      debugLog('=== TRANSFER COMPLETE (via worker decoder) ===')
+      void handleComplete()
+    }
+  }
+}
+
+function maybeProbeReceiverWorker(imageData) {
+  if (!receiverWorker || !receiverWorkerReady) return
+  if (!imageData || !imageData.data) return
+  const probe = receiverWorkerProbeState
+  probe.framesSinceProbe++
+  if (probe.framesSinceProbe < WORKER_PROBE_INTERVAL_FRAMES) return
+  probe.framesSinceProbe = 0
+  // Clone the payload so the main thread keeps working on the original
+  // ImageData. Worst-case cost — a full migration would transfer directly.
+  const copy = new Uint8ClampedArray(imageData.data)
+  const id = receiverWorkerNextId++
+  const sentAtMs = performance.now()
+  receiverWorkerPending.set(id, { sentAtMs })
+  probe.samplesSent++
+  postToWorker({
+    type: 'hash',
+    id,
+    buffer: copy.buffer,
+    width: imageData.width,
+    height: imageData.height
+  }, [copy.buffer])
+}
+
+// Offload a full frame's primary decode + ingest to the worker. Returns
+// the worker's response or null if the worker is unavailable. On a CRC-
+// invalid result the caller should still run the local salvage paths.
+function workerDecodeAndIngest(imageData, width, region, expectedPacketSize) {
+  if (!receiverWorker || !receiverWorkerReady) return Promise.resolve(null)
+  // Transfer the full pixel buffer. The main thread retains `imageData`
+  // (it's the canvas-backed buffer) — we ship a copy so the worker gets
+  // an owned ArrayBuffer without stealing the main thread's next-frame
+  // backing store.
+  const copy = new Uint8ClampedArray(imageData.data)
+  const id = receiverWorkerNextId++
+  return new Promise((resolve) => {
+    receiverWorkerPending.set(id, {
+      resolve: (msg) => resolve(msg),
+      reject: (_err) => resolve(null)
+    })
+    const ok = postToWorker({
+      type: 'decodeAndIngest',
+      id,
+      buffer: copy.buffer,
+      width,
+      region,
+      expectedPacketSize
+    }, [copy.buffer])
+    if (!ok) {
+      receiverWorkerPending.delete(id)
+      resolve(null)
+    }
+  })
+}
+
+// Offload anchor detection to the worker. Returns { anchors, region } or
+// null if worker is unavailable / errored. The caller should fall back to
+// running detectAnchors/dataRegionFromAnchors locally.
+function workerDetectAnchors(imageData, width, height) {
+  if (!receiverWorker || !receiverWorkerReady) return Promise.resolve(null)
+  // Copy the pixel buffer so the main thread's ImageData stays intact for
+  // subsequent locked-layout decode. The copy is ~300 KB for typical ROIs
+  // and cheap compared to detectAnchors cost.
+  const copy = new Uint8ClampedArray(imageData.data)
+  const id = receiverWorkerNextId++
+  return new Promise((resolve) => {
+    receiverWorkerPending.set(id, {
+      resolve: (msg) => resolve(msg),
+      reject: (_err) => resolve(null)
+    })
+    const ok = postToWorker({
+      type: 'detectAnchors',
+      id,
+      buffer: copy.buffer,
+      width,
+      height
+    }, [copy.buffer])
+    if (!ok) {
+      receiverWorkerPending.delete(id)
+      resolve(null)
+    }
+  })
+}
+
+// Create a shadow decoder object that looks like the real createDecoder()
+// return value but forwards ingest/reset/reconstruct to the worker. The
+// shadow state is updated from worker deltas.
+function freshShadowSymbolBreakdown() {
+  return {
+    unique: 0,
+    duplicate: 0,
+    sourceCount: 0,
+    parityCount: 0,
+    fountainCount: 0,
+    metadataCount: 0
+  }
+}
+
+function freshShadowTelemetry() {
+  return {
+    stallFramesSinceLastSolve: 0,
+    paritySweepComplete: 0,
+    parityNoProgressSweeps: 0,
+    tailSolveTriggerCount: 0,
+    pendingSymbolCount: 0
+  }
+}
+
+// Default block size mirrors decoder.js initialization (`let blockSize = 200`)
+// so getExpectedPacketSize() returns a sane value on frame 1 before any delta
+// has arrived. Without this, the first frame would probe 15-byte slots and
+// skip all packets, delaying the first ingest by another frame.
+const WORKER_SHADOW_DEFAULT_BLOCK_SIZE = 200
+
+function createWorkerDecoderShadow() {
+  const s = {
+    solved: 0,
+    solvedTotal: 0,
+    K: null,
+    K_prime: null,
+    blockSize: WORKER_SHADOW_DEFAULT_BLOCK_SIZE,
+    metadata: null,
+    progress: 0,
+    uniqueSymbols: 0,
+    pendingSymbolCount: 0,
+    unresolvedSourceCount: null,
+    isComplete: false,
+    completionHandled: false,
+    symbolBreakdown: freshShadowSymbolBreakdown(),
+    telemetry: freshShadowTelemetry()
+  }
+  receiverWorkerDecoderState = s
+  postToWorker({ type: 'initDecoder' })
+  return {
+    get metadata() { return s.metadata },
+    get solved() { return s.solved },
+    get solvedTotal() { return s.solvedTotal },
+    get K() { return s.K },
+    get K_prime() { return s.K_prime },
+    get blockSize() { return s.blockSize || 0 },
+    get progress() { return s.progress },
+    get uniqueSymbols() { return s.uniqueSymbols },
+    get pendingSymbolCount() { return s.pendingSymbolCount },
+    get unresolvedSourceCount() { return s.unresolvedSourceCount },
+    get symbolBreakdown() { return s.symbolBreakdown },
+    get telemetry() { return s.telemetry },
+    isComplete() { return s.isComplete },
+    // Async batch-ingest used by acceptPackets(). Returns a Promise with the
+    // authoritative { innovations, newSession, isComplete, ... } snapshot.
+    // Innovation count is computed in the worker, so main-thread telemetry
+    // no longer over-counts on duplicate-only frames.
+    ingestBatch(parsedList) {
+      if (!parsedList || parsedList.length === 0) {
+        return Promise.resolve({
+          innovations: 0,
+          accepted: 0,
+          newSession: false,
+          completionEvent: false,
+          isComplete: s.isComplete
+        })
+      }
+      const id = receiverWorkerNextId++
+      return new Promise((resolve) => {
+        receiverWorkerPending.set(id, {
+          resolve: (msg) => resolve(msg),
+          reject: (_err) => resolve({
+            innovations: 0,
+            accepted: 0,
+            newSession: false,
+            completionEvent: false,
+            isComplete: s.isComplete,
+            error: 'worker-unavailable'
+          })
+        })
+        const wireList = parsedList.map(serializeParsedPacket)
+        const ok = postToWorker({
+          type: 'ingestBatch',
+          id,
+          parsedList: wireList
+        })
+        if (!ok) {
+          receiverWorkerPending.delete(id)
+          resolve({
+            innovations: 0,
+            accepted: 0,
+            newSession: false,
+            completionEvent: false,
+            isComplete: s.isComplete,
+            error: 'worker-post-failed'
+          })
+        }
+      })
+    },
+    // Kept for backwards compatibility with the main-thread decoder interface.
+    // In worker mode, acceptPackets uses ingestBatch() and should not call
+    // receiveParsed — but if something does, fall back to posting a
+    // single-packet batch and return false so it doesn't inflate innovation.
+    receiveParsed(parsed) {
+      if (!parsed) return false
+      void this.ingestBatch([parsed])
+      return false
+    },
+    reset() {
+      s.solved = 0
+      s.solvedTotal = 0
+      s.K = null
+      s.K_prime = null
+      s.blockSize = WORKER_SHADOW_DEFAULT_BLOCK_SIZE
+      s.metadata = null
+      s.progress = 0
+      s.uniqueSymbols = 0
+      s.pendingSymbolCount = 0
+      s.unresolvedSourceCount = null
+      s.isComplete = false
+      s.completionHandled = false
+      s.symbolBreakdown = freshShadowSymbolBreakdown()
+      s.telemetry = freshShadowTelemetry()
+      postToWorker({ type: 'resetDecoder' })
+    },
+    noteFrameBoundary() {
+      postToWorker({ type: 'noteFrameBoundary' })
+    },
+    reconstruct() {
+      const id = receiverWorkerNextId++
+      return new Promise((resolve, reject) => {
+        receiverWorkerReconstructPending.set(id, {
+          resolve: (res) => {
+            if (res && res.error) reject(new Error(res.error))
+            else if (res && res.data) resolve(res.data)
+            else reject(new Error('Worker reconstruct returned no data'))
+          },
+          reject
+        })
+        if (!postToWorker({ type: 'reconstruct', id })) {
+          receiverWorkerReconstructPending.delete(id)
+          reject(new Error('Worker unavailable'))
+        }
+      })
+    }
+  }
+}
+
+function serializeParsedPacket(parsed) {
+  // parsePacket returns a flat object with fileId/symbolId/etc. plus a
+  // zero-copy payload subarray. Copy the payload so the worker gets an
+  // owned buffer and the main thread's capture buffer stays reusable.
+  const payload = parsed.payload
+    ? new Uint8Array(parsed.payload.buffer, parsed.payload.byteOffset, parsed.payload.byteLength).slice()
+    : null
+  return {
+    fileId: parsed.fileId,
+    k: parsed.k,
+    symbolId: parsed.symbolId,
+    blockSize: parsed.blockSize,
+    isMetadata: parsed.isMetadata,
+    mode: parsed.mode,
+    payloadCrc: parsed.payloadCrc,
+    payload
+  }
 }
 
 function createPerfWindow() {
@@ -169,9 +667,12 @@ function resetReceiverPerfState() {
   state.rxPerf = createReceiverPerfState()
 }
 
+const CAPTURE_REBENCH_INTERVAL_FRAMES = 2000
+
 function createCaptureTuningState() {
   const canUseVideoFrame = typeof VideoFrame !== 'undefined'
   return {
+    canUseVideoFrame,
     preferredMethod: canUseVideoFrame ? null : 'video',
     benchmarkRemaining: canUseVideoFrame ? CAPTURE_BENCHMARK_SAMPLES_PER_METHOD * 2 : 0,
     videoSampleCount: 0,
@@ -183,8 +684,33 @@ function createCaptureTuningState() {
     roiVideoSampleCount: 0,
     roiVideoSampleTotalMs: 0,
     roiVideoFrameSampleCount: 0,
-    roiVideoFrameSampleTotalMs: 0
+    roiVideoFrameSampleTotalMs: 0,
+    totalFramesSeen: 0
   }
+}
+
+// Periodically invalidate the previous capture-method decision so the receiver
+// adapts when GPU load shifts mid-session. The initial benchmark runs under
+// whatever load was present at start; if the user later launches a game or
+// closes one, the old winner may stop being the faster path.
+function maybeRebenchmarkCaptureMethod() {
+  const tuning = state.captureTuning
+  if (!tuning || !tuning.canUseVideoFrame) return
+  tuning.totalFramesSeen++
+  if (tuning.totalFramesSeen % CAPTURE_REBENCH_INTERVAL_FRAMES !== 0) return
+  tuning.preferredMethod = null
+  tuning.benchmarkRemaining = CAPTURE_BENCHMARK_SAMPLES_PER_METHOD * 2
+  tuning.videoSampleCount = 0
+  tuning.videoSampleTotalMs = 0
+  tuning.videoFrameSampleCount = 0
+  tuning.videoFrameSampleTotalMs = 0
+  tuning.roiPreferredMethod = null
+  tuning.roiBenchmarkRemaining = CAPTURE_BENCHMARK_SAMPLES_PER_METHOD * 2
+  tuning.roiVideoSampleCount = 0
+  tuning.roiVideoSampleTotalMs = 0
+  tuning.roiVideoFrameSampleCount = 0
+  tuning.roiVideoFrameSampleTotalMs = 0
+  debugLog('Capture-method benchmark re-entered (periodic)')
 }
 
 function resetCaptureTuningState() {
@@ -285,6 +811,7 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
   recordPerfSample(perf.totalMs, performance.now() - frameStartMs)
   perf.framesSinceLog++
   perf.lastCaptureMethod = captureMethod || perf.lastCaptureMethod
+  maybeRebenchmarkCaptureMethod()
 
   if (perf.framesSinceLog < RX_PERF_LOG_INTERVAL_FRAMES) return
 
@@ -637,10 +1164,15 @@ function readLayoutPacketsExact(imageData, width, region, layout, payloadLength,
 
 function ensureDecoder() {
   if (!state.decoder) {
-    state.decoder = createDecoder()
+    if (WORKER_FULL_ENABLED && receiverWorker && receiverWorkerReady) {
+      state.decoder = createWorkerDecoderShadow()
+      debugLog('Decoder created (worker-backed shadow)')
+    } else {
+      state.decoder = createDecoder()
+      debugLog('Decoder created')
+    }
     state.startTime = Date.now()
     showReceivingStatus()
-    debugLog('Decoder created')
   }
 }
 
@@ -695,7 +1227,7 @@ function tryFixedLayoutPackets(imageData, width, region) {
   return best.probe?.packets || []
 }
 
-function tryLockedLayoutFastPath(imageData, width, region) {
+async function tryLockedLayoutFastPath(imageData, width, region) {
   const activeMode = state.detectedMode ?? state.fixedLayout?.frameMode ?? state.preferredLayout?.frameMode
   if (
     activeMode !== HDMI_MODE.COMPAT_4 &&
@@ -723,7 +1255,7 @@ function tryLockedLayoutFastPath(imageData, width, region) {
   )
   const exactPackets = exact?.probe?.packets || []
   if (exactPackets.length > 0) {
-    if (acceptPackets(exactPackets, state.frameCount, true, state.expectedPacketCount)) {
+    if (await acceptPackets(exactPackets, state.frameCount, true, state.expectedPacketCount)) {
       state.lockedLayoutFastPathMisses = 0
       if (exact.layout) {
         state.fixedLayout = { ...exact.layout }
@@ -759,7 +1291,7 @@ function tryLockedLayoutFastPath(imageData, width, region) {
     state.preferredLayout = { ...best.layout }
   }
 
-  if (acceptPackets(packets, state.frameCount, true, state.expectedPacketCount)) {
+  if (await acceptPackets(packets, state.frameCount, true, state.expectedPacketCount)) {
     state.lockedLayoutFastPathMisses = 0
     if (state.decoder?.isComplete()) return true
     scheduleNextFrame()
@@ -769,57 +1301,110 @@ function tryLockedLayoutFastPath(imageData, width, region) {
   return false
 }
 
-function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expectedFramePacketCount = packets.length) {
+async function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expectedFramePacketCount = packets.length, preIngestedResult = null) {
   const acceptStartMs = performance.now()
   let accepted = false
   let innovationCount = 0
 
   try {
-    if (packets.length === 0) return false
+    if (!preIngestedResult && packets.length === 0) return false
 
     ensureDecoder()
     const decoder = state.decoder
 
     let lastParsed = null
-    for (const packet of packets) {
-      const parsed = parsePacket(packet)
-      if (!parsed) continue
-      lastParsed = parsed
-      let result = typeof decoder.receiveParsed === 'function'
-        ? decoder.receiveParsed(parsed)
-        : decoder.receive(packet)
-      // Sender restarted — reset in-flight session state and re-ingest the packet.
-      if (result === 'new_session') {
-        debugLog('New session detected (sender restart / config change); resetting decoder state')
-        decoder.reset()
-        state.validFrames = 0
-        // Reseed the rate clock — ensureDecoder() only runs when state.decoder
-        // is null, so it won't fire again for the reused decoder object.
-        state.startTime = Date.now()
-        state.completedFile = null
-        state.completionStarted = false
-        state.progressSamples = []
-        state.expectedPacketCount = 0
-        state.fixedLayout = null
-        state.preferredLayout = null
-        state.lockedLayoutFastPathMisses = 0
-        state.decodeFailCount = 0
-        result = decoder.receiveParsed(parsed)
+    const parsedList = []
+    // Count of packets the ingest stage actually accepted this frame. For the
+    // non-worker path this is parsedList.length (pre-dedup); for the worker
+    // path we trust the worker's reported `accepted`. Drives progress/UI
+    // displays and the "did we make real progress" guard.
+    let acceptedPacketCount = 0
+    if (preIngestedResult) {
+      // The worker already decoded and ingested this frame's packets in a
+      // single round trip (see workerDecodeAndIngest). If the decode came
+      // back CRC-valid but zero inner packets parsed, treat the same as an
+      // empty-packets frame on the non-worker path — no progress, don't
+      // count as valid, don't clear decodeFailCount. Otherwise relock
+      // heuristics stall while the receiver happily counts useless frames.
+      acceptedPacketCount = preIngestedResult.accepted || 0
+      if (acceptedPacketCount === 0) return false
+      innovationCount = preIngestedResult.innovations || 0
+      if (preIngestedResult.header) {
+        lastParsed = { symbolId: preIngestedResult.header.symbolId }
+      } else {
+        lastParsed = { symbolId: fallbackSymbolId }
       }
-      // receiveParsed returns true for new symbols, false for duplicates
-      // (dedup at decoder.js:190). Only `true` counts as innovation.
-      if (result === true) innovationCount++
+    } else {
+      for (const packet of packets) {
+        const parsed = parsePacket(packet)
+        if (!parsed) continue
+        lastParsed = parsed
+        parsedList.push(parsed)
+      }
+      if (!lastParsed) return false
+      acceptedPacketCount = parsedList.length
+    }
+
+    if (preIngestedResult) {
+      // Worker already did the ingest — nothing more to do here. Fall
+      // through to the bookkeeping block below.
+    } else if (WORKER_FULL_ENABLED && receiverWorker && receiverWorkerReady &&
+        typeof decoder.ingestBatch === 'function') {
+      // Worker ingests the whole frame's batch and returns the authoritative
+      // innovation count — main-thread telemetry stays honest for
+      // duplicate-only frames.
+      const batchResult = await decoder.ingestBatch(parsedList)
+      if (batchResult && batchResult.error) {
+        // Worker went away (postMessage failed, terminated, etc.). Treat
+        // the frame as a failure so relock/decodeFailCount can respond;
+        // subsequent frames will fall through to the main-thread path.
+        debugLog(`Worker ingestBatch failed: ${batchResult.error} — frame dropped`)
+        return false
+      }
+      innovationCount = batchResult.innovations || 0
+      // Trust the worker's accepted count — it reflects packets the decoder
+      // actually took (post-dedup). Our local parsedList count overstates
+      // that for duplicate-only frames.
+      if (typeof batchResult.accepted === 'number') {
+        acceptedPacketCount = batchResult.accepted
+      }
+      if (acceptedPacketCount === 0) return false
+      // Companion state reset still runs from the delta handler on
+      // newSessionEvent; don't re-run it here to avoid double-reset.
+    } else {
+      for (const parsed of parsedList) {
+        let result = decoder.receiveParsed(parsed)
+        // Sender restarted — reset in-flight session state and re-ingest the packet.
+        if (result === 'new_session') {
+          debugLog('New session detected (sender restart / config change); resetting decoder state')
+          decoder.reset()
+          state.validFrames = 0
+          // Reseed the rate clock — ensureDecoder() only runs when state.decoder
+          // is null, so it won't fire again for the reused decoder object.
+          state.startTime = Date.now()
+          state.completedFile = null
+          state.completionStarted = false
+          state.progressSamples = []
+          state.expectedPacketCount = 0
+          state.fixedLayout = null
+          state.preferredLayout = null
+          state.lockedLayoutFastPathMisses = 0
+          state.decodeFailCount = 0
+          result = decoder.receiveParsed(parsed)
+        }
+        // receiveParsed returns true for new symbols, false for duplicates
+        // (dedup at decoder.js:190). Only `true` counts as innovation.
+        if (result === true) innovationCount++
+      }
     }
     const anyInnovation = innovationCount > 0
-
-    if (!lastParsed) return false
 
     if (countAsValidFrame) {
       state.validFrames++
       state.decodeFailCount = 0
     }
 
-    state.expectedPacketCount = Math.max(packets.length, expectedFramePacketCount || 0)
+    state.expectedPacketCount = Math.max(acceptedPacketCount, expectedFramePacketCount || 0)
     recordProgressSample()
 
     const nowMs = performance.now()
@@ -846,7 +1431,7 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
         `meta=${symbolBreakdown.metadataCount ?? '?'} ` +
         `pending=${decoder.pendingSymbolCount ?? '?'} ` +
         `missing=${decoder.unresolvedSourceCount ?? '?'} ` +
-        `sym=${lastParsed.symbolId ?? fallbackSymbolId} pkts=${packets.length}` +
+        `sym=${lastParsed.symbolId ?? fallbackSymbolId} pkts=${acceptedPacketCount}` +
         rateSuffix
       )
     }
@@ -854,7 +1439,7 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
     if (shouldRefreshUi) {
       debugCurrent(
         `#${state.validFrames} sym=${lastParsed.symbolId ?? fallbackSymbolId} ` +
-        `${getDisplayProgressPercent(decoder)}% x${packets.length}`
+        `${getDisplayProgressPercent(decoder)}% x${acceptedPacketCount}`
       )
       updateProgress()
       state.lastReceivingUiUpdateMs = nowMs
@@ -1791,6 +2376,11 @@ async function processFrame(now, metadata) {
     captureMs,
     captureMethod.endsWith('ROI')
   )
+  // Phase 5 sub-phase 1 diagnostic: the hash probe clones the full
+  // ImageData buffer every 30 frames, which pollutes worker-vs-nonworker
+  // A/B numbers. Restrict it to the dedicated ?worker=hash mode so anchors
+  // and full runs give clean measurements.
+  if (WORKER_MODE === 'hash') maybeProbeReceiverWorker(imageData)
 
   // Capture-only benchmark mode: once anchors are locked (so lockedCapture
   // drove the ROI capture this frame), skip all decode work and just record
@@ -1946,10 +2536,25 @@ async function processFrame(now, metadata) {
 
   if (!region) {
     const anchorStartMs = performance.now()
-    const anchors = detectAnchors(imageData.data, frameWidth, frameHeight)
+    let anchors = null
+    if (WORKER_ANCHORS_ENABLED && receiverWorker && receiverWorkerReady) {
+      const workerResult = await workerDetectAnchors(imageData, frameWidth, frameHeight)
+      if (workerResult) {
+        anchors = workerResult.anchors || []
+        // Prefer the worker-computed region when present; it used the same
+        // dataRegionFromAnchors locally. Fall back to null so the
+        // length-gate below handles insufficient anchors cleanly.
+        if (anchors.length >= 2 && workerResult.region) {
+          candidateRegion = workerResult.region
+        }
+      }
+    }
+    if (!anchors) {
+      anchors = detectAnchors(imageData.data, frameWidth, frameHeight)
+    }
     anchorMs += performance.now() - anchorStartMs
     if (anchors.length >= 2) {
-      candidateRegion = dataRegionFromAnchors(anchors)
+      if (!candidateRegion) candidateRegion = dataRegionFromAnchors(anchors)
       if (candidateRegion) {
         setTentativeAnchorRegion(candidateRegion, frameWidth, frameHeight, anchors)
         region = candidateRegion
@@ -1973,7 +2578,7 @@ async function processFrame(now, metadata) {
   }
 
   const fastPathStartMs = performance.now()
-  const fastPathAccepted = tryLockedLayoutFastPath(imageData, frameWidth, region)
+  const fastPathAccepted = await tryLockedLayoutFastPath(imageData, frameWidth, region)
   fastPathMs += performance.now() - fastPathStartMs
   if (fastPathAccepted) {
     finalizeFramePerf()
@@ -1982,9 +2587,50 @@ async function processFrame(now, metadata) {
 
   // === DECODE DATA REGION ===
   region.preferredLayout = state.preferredLayout
-  const decodeStartMs = performance.now()
-  const result = decodeDataRegion(imageData.data, frameWidth, region)
-  decodeMs += performance.now() - decodeStartMs
+  let result = null
+  let workerDecodedFrame = false
+  let workerDecodedResp = null
+
+  if (WORKER_FULL_ENABLED && receiverWorker && receiverWorkerReady) {
+    // Worker runs decodeDataRegion + (on CRC-valid) the ingest batch in one
+    // round-trip. This is the real Phase 5 frame-pump offload — on CRC-valid
+    // frames the main thread spends decodeMs on transport + bookkeeping only.
+    const expectedPacketSize = getExpectedPacketSize()
+    const decodeStartMs = performance.now()
+    const resp = await workerDecodeAndIngest(imageData, frameWidth, region, expectedPacketSize)
+    decodeMs += performance.now() - decodeStartMs
+    if (resp && resp.decodeResult) {
+      workerDecodedResp = resp
+      const dr = resp.decodeResult
+      if (dr.crcValid) {
+        // Worker already ingested; synthesize the `result` shape the
+        // downstream code expects without shipping the full payload back.
+        result = {
+          crcValid: true,
+          header: dr.header,
+          payload: null,
+          _diag: dr._diag || null
+        }
+        workerDecodedFrame = true
+      } else {
+        // CRC-invalid: worker shipped payload back as an ArrayBuffer so the
+        // salvage paths can try it locally. Rehydrate into a Uint8Array so
+        // the existing local code reads it the same way.
+        result = {
+          crcValid: false,
+          header: dr.header,
+          payload: dr.payload ? new Uint8Array(dr.payload) : null,
+          _diag: dr._diag || null
+        }
+      }
+    }
+  }
+
+  if (!result) {
+    const decodeStartMs = performance.now()
+    result = decodeDataRegion(imageData.data, frameWidth, region)
+    decodeMs += performance.now() - decodeStartMs
+  }
 
   if (result && result.crcValid) {
     noteSignalDetected(result.header.mode, {
@@ -1992,11 +2638,31 @@ async function processFrame(now, metadata) {
       height: result.header.height
     })
 
-    const expectedPacketSize = getExpectedPacketSize()
-    const totalFramePackets = getFramePacketSlotCount(result.payload, expectedPacketSize)
-    const packets = extractFramePackets(result.payload, expectedPacketSize)
+    let frameAccepted = false
+    if (workerDecodedFrame && workerDecodedResp) {
+      // Worker already ingested — run the bookkeeping via the preIngested
+      // path. Synthesize totalFramePackets from the worker's reported slot
+      // count so downstream progress logs stay accurate.
+      const totalFramePackets = workerDecodedResp.decodeResult.slotCount || workerDecodedResp.accepted || 0
+      frameAccepted = await acceptPackets(
+        [],
+        result.header.symbolId,
+        true,
+        totalFramePackets,
+        {
+          header: result.header,
+          accepted: workerDecodedResp.accepted || 0,
+          innovations: workerDecodedResp.innovations || 0
+        }
+      )
+    } else {
+      const expectedPacketSize = getExpectedPacketSize()
+      const totalFramePackets = getFramePacketSlotCount(result.payload, expectedPacketSize)
+      const packets = extractFramePackets(result.payload, expectedPacketSize)
+      frameAccepted = await acceptPackets(packets, result.header.symbolId, true, totalFramePackets)
+    }
 
-    if (acceptPackets(packets, result.header.symbolId, true, totalFramePackets)) {
+    if (frameAccepted) {
       if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
         lockAnchorRegion(
           candidateRegion || state.tentativeAnchorBounds,
@@ -2011,6 +2677,22 @@ async function processFrame(now, metadata) {
         finalizeFramePerf()
         return
       }
+    } else {
+      // CRC-valid outer frame but zero inner packets accepted (wrong block
+      // size, CRC-loss on every slot, worker transport failure, etc.). Drive
+      // the same relock path the CRC-fail branches use so repeated bad
+      // frames don't silently keep the lock and starve progress.
+      state.decodeFailCount++
+      if (isDiagFrame) {
+        const expectedPacketSize = getExpectedPacketSize()
+        const slotCount = workerDecodedResp?.decodeResult?.slotCount ?? null
+        debugLog(
+          `Frame ${state.frameCount}: CRC-valid outer but 0 packets ingested ` +
+          `(expectedPkt=${formatMaybeInt(expectedPacketSize)} slots=${formatMaybeInt(slotCount)} ` +
+          `worker=${workerDecodedFrame ? 'yes' : 'no'})`
+        )
+      }
+      debugCurrent(`#${state.frameCount} empty CRC-valid`)
     }
   } else if (result && !result.crcValid) {
     noteReceiverCrcFailFrame()
@@ -2034,7 +2716,7 @@ async function processFrame(now, metadata) {
       getLayoutProbeOptions(result._diag || state.fixedLayout || state.preferredLayout)
     )
     const phasePackets = phaseProbe?.probe?.packets || []
-    if (acceptPackets(salvagedPackets, result.header.symbolId, true, totalFramePackets)) {
+    if (await acceptPackets(salvagedPackets, result.header.symbolId, true, totalFramePackets)) {
       noteSignalDetected(result.header.mode)
       noteReceiverRecovery('salvage', salvagedPackets.length)
       if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
@@ -2058,7 +2740,7 @@ async function processFrame(now, metadata) {
       finalizeFramePerf()
       return
     }
-    if (acceptPackets(phasePackets, result.header.symbolId, true, phaseProbe?.probe?.slotCount || totalFramePackets)) {
+    if (await acceptPackets(phasePackets, result.header.symbolId, true, phaseProbe?.probe?.slotCount || totalFramePackets)) {
       noteSignalDetected(phaseProbe?.layout?.frameMode ?? result.header.mode)
       noteReceiverRecovery('phase', phasePackets.length)
       if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
@@ -2082,7 +2764,7 @@ async function processFrame(now, metadata) {
       finalizeFramePerf()
       return
     }
-    if (acceptPackets(fixedPackets, result.header.symbolId, true, state.expectedPacketCount)) {
+    if (await acceptPackets(fixedPackets, result.header.symbolId, true, state.expectedPacketCount)) {
       noteSignalDetected(state.fixedLayout?.frameMode ?? result.header.mode)
       noteReceiverRecovery('fixed', fixedPackets.length)
       if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
@@ -2121,7 +2803,7 @@ async function processFrame(now, metadata) {
     debugCurrent(`#${state.frameCount} CRC fail`)
   } else {
     const fixedPackets = tryFixedLayoutPackets(imageData.data, frameWidth, region)
-    if (acceptPackets(fixedPackets, state.frameCount, true, state.expectedPacketCount)) {
+    if (await acceptPackets(fixedPackets, state.frameCount, true, state.expectedPacketCount)) {
       noteReceiverRecovery('headerless', fixedPackets.length)
       if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
         lockAnchorRegion(
@@ -2269,7 +2951,9 @@ async function handleComplete() {
   const decoder = state.decoder
   const meta = decoder.metadata
 
-  const fileData = decoder.reconstruct()
+  // In worker mode reconstruct() returns a Promise; awaiting a non-Promise
+  // value is a no-op, so this handles both the main-thread and worker paths.
+  const fileData = await decoder.reconstruct()
 
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', fileData))
   const hashMatch = hash.every((b, i) => b === meta.hash[i])
@@ -2355,6 +3039,15 @@ function resetReceiver() {
   resetReceiverPerfState()
   resetCaptureTuningState()
   resetCimbarSink()
+  // Keep the worker alive across transfers, but reset the probe counters so
+  // each transfer's telemetry starts from zero. Pending probes from a prior
+  // transfer are dropped (their hashResult messages will be ignored because
+  // the id is gone from the pending map).
+  receiverWorkerPending.clear()
+  receiverWorkerProbeState.framesSinceProbe = 0
+  receiverWorkerProbeState.samplesReceived = 0
+  receiverWorkerProbeState.samplesSent = 0
+  receiverWorkerProbeState.logsEmitted = 0
 
   elements.statFrames.textContent = '0 frames'
   elements.statusScanning.classList.remove('hidden')
@@ -2369,6 +3062,7 @@ function resetReceiver() {
 
 function startScanning() {
   state.isScanning = true
+  initReceiverWorker()
   scheduleNextFrame()
 }
 
@@ -2407,6 +3101,7 @@ export function resetHdmiUvcReceiver() {
   }
 
   imageCapture = null
+  teardownReceiverWorker()
 
   elements.signalStatus.textContent = 'Waiting for signal...'
   elements.signalStatus.classList.remove('connected')
