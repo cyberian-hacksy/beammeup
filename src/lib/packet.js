@@ -69,7 +69,13 @@ export function parsePacket(data) {
   }
 
   const flags = versionAndFlags & 0x07
-  const payload = data.slice(PACKET_HEADER_SIZE)
+  // subarray() — zero-copy view into the caller's buffer. Callers that store
+  // the payload past this call (decoder.ingestParsedPacket) make their own
+  // defensive copy via new Uint8Array(parsed.payload); callers that only
+  // validate (hdmi-uvc-receiver probe paths) discard `parsed` immediately and
+  // retain the input buffer themselves. Previously slice() made a redundant
+  // copy that the decoder then copied again.
+  const payload = data.subarray(PACKET_HEADER_SIZE)
   const blockSize = payload.length
   if (blockSize < 1) return null
 

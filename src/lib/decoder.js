@@ -24,6 +24,13 @@ export function createDecoder() {
   let paritySweepComplete = false          // True once the full parity-symbol-id sweep (K+1..K_prime) has been received (latches)
   let uniqueParitySymbolsSeen = 0          // Count of distinct parity symbolIds received (K < symbolId <= K_prime)
   let parityNoProgressSweeps = 0           // Count of parityRecovery() calls that swept the full map without recovering anything
+  // Incremental symbol-type counters. Maintained on each accepted symbolId to
+  // avoid a receivedSymbols scan from the getter; rebuilt in the metadata
+  // branch once K/K_prime are finalized.
+  let metadataSymbolCount = 0
+  let sourceSymbolCount = 0
+  let paritySymbolCount = 0
+  let fountainSymbolCount = 0
   let stallFramesSinceLastSolve = 0        // Frames signalled via noteFrameBoundary() since last source solve
   let tailSolveTriggerCount = 0            // How many times the GF(2) fallback has been invoked (Phase 1)
   let lastSolvedSourceCount = 0            // Tracking value for stall detection
@@ -268,6 +275,20 @@ export function createDecoder() {
       uniqueParitySymbolsSeen++
     }
 
+    // Incrementally update the symbol-type breakdown. Before K is known,
+    // symbols in (K_prime_header, ∞) are still identifiable as fountain, but
+    // source and parity collapse into source — the metadata branch rebuilds
+    // the breakdown when K arrives.
+    if (parsed.symbolId === 0) {
+      metadataSymbolCount++
+    } else if (K_prime !== null && parsed.symbolId > K_prime) {
+      fountainSymbolCount++
+    } else if (K !== null && parsed.symbolId > K) {
+      paritySymbolCount++
+    } else {
+      sourceSymbolCount++
+    }
+
     // Handle metadata - extract K and set up parity
     if (parsed.isMetadata || parsed.symbolId === 0) {
       if (!metadata) {
@@ -303,10 +324,19 @@ export function createDecoder() {
           }
         }
 
-        // Backfill parity-symbol-id count from previously received symbols.
+        // Backfill parity-symbol-id count and the symbol-type breakdown from
+        // previously received symbols. Both require a rescan because before
+        // metadata we could not distinguish source from parity.
         uniqueParitySymbolsSeen = 0
+        sourceSymbolCount = 0
+        paritySymbolCount = 0
+        fountainSymbolCount = 0
         for (const sid of receivedSymbols) {
+          if (sid === 0) continue
           if (sid > K && sid <= K_prime) uniqueParitySymbolsSeen++
+          if (sid > K_prime) fountainSymbolCount++
+          else if (sid > K) paritySymbolCount++
+          else sourceSymbolCount++
         }
 
         // Seed event-driven parity bookkeeping from whatever state
@@ -342,13 +372,36 @@ export function createDecoder() {
       }
     }
 
-    // Add to pending and propagate
-    pendingSymbols.push({ indices, payload: new Uint8Array(parsed.payload) })
-    propagate()
+    // Fast path for degree-1 (systematic symbols and degree-1 fountain): install
+    // the block directly into decodedBlocks, skipping the reduce/propagate cycle
+    // for this symbol. Other pending symbols still need propagate() below so
+    // they can peel against the newly-known block. Replays of degree-1 symbols
+    // whose block was already decoded are dropped — no state change means there
+    // is nothing for propagate()/parityRecovery() to do.
+    let stateChanged = false
+    if (indices.length === 1) {
+      const idx = indices[0]
+      if (!decodedBlocks[idx]) {
+        decodedBlocks[idx] = new Uint8Array(parsed.payload)
+        solved++
+        if (K !== null) {
+          if (idx < K) {
+            solvedSource++
+            markSourceSolved(idx)
+          } else {
+            markParitySolved(idx - K)
+          }
+        }
+        stateChanged = true
+      }
+    } else {
+      pendingSymbols.push({ indices, payload: new Uint8Array(parsed.payload) })
+      stateChanged = true
+    }
 
-    // Try parity recovery after each symbol if we have metadata
-    if (!this.isComplete() && parityMap) {
-      parityRecovery()
+    if (stateChanged) {
+      propagate()
+      if (!this.isComplete() && parityMap) parityRecovery()
     }
 
     // Latch parity-sweep-complete once we've received the whole (K, K_prime]
@@ -418,24 +471,12 @@ export function createDecoder() {
   }
 
   function getReceivedSymbolBreakdown() {
-    let metadataCount = 0
-    let sourceCount = 0
-    let parityCount = 0
-    let fountainCount = 0
-
-    for (const symbolId of receivedSymbols) {
-      if (symbolId === 0) {
-        metadataCount++
-      } else if (K_prime !== null && symbolId > K_prime) {
-        fountainCount++
-      } else if (K !== null && symbolId > K) {
-        parityCount++
-      } else {
-        sourceCount++
-      }
+    return {
+      metadataCount: metadataSymbolCount,
+      sourceCount: sourceSymbolCount,
+      parityCount: paritySymbolCount,
+      fountainCount: fountainSymbolCount
     }
-
-    return { metadataCount, sourceCount, parityCount, fountainCount }
   }
 
   return {
@@ -483,6 +524,10 @@ export function createDecoder() {
       paritySweepComplete = false
       uniqueParitySymbolsSeen = 0
       parityNoProgressSweeps = 0
+      metadataSymbolCount = 0
+      sourceSymbolCount = 0
+      paritySymbolCount = 0
+      fountainSymbolCount = 0
       stallFramesSinceLastSolve = 0
       tailSolveTriggerCount = 0
       lastSolvedSourceCount = 0
@@ -519,7 +564,7 @@ export function createDecoder() {
         const block = decodedBlocks[i]
         const start = i * blockSize
         const end = Math.min(start + blockSize, metadata.fileSize)
-        result.set(block.slice(0, end - start), start)
+        result.set(block.subarray(0, end - start), start)
       }
 
       return result

@@ -16,9 +16,16 @@ import { detectAnchors, dataRegionFromAnchors, decodeDataRegion, readPayloadWith
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
 const MAX_DEBUG_LINES = 500
-const RX_PERF_LOG_INTERVAL_FRAMES = 60
-const DEBUG_RENDER_INTERVAL_MS = 120
-const RECEIVER_UI_UPDATE_INTERVAL_MS = 120
+// ?perf=1 (or just ?perf) turns down logging and UI refresh cadence on the
+// receiver so the display doesn't compete with capture+decode for main-thread
+// time. The constants below fan out from this flag so every throttled path
+// (RX perf log, per-frame progress log, DOM refresh) stays coherent.
+const PERF_MODE = typeof location !== 'undefined' &&
+  new URLSearchParams(location.search).has('perf')
+const RX_PERF_LOG_INTERVAL_FRAMES = PERF_MODE ? 240 : 60
+const RX_PROGRESS_LOG_INTERVAL_FRAMES = PERF_MODE ? 40 : 10
+const DEBUG_RENDER_INTERVAL_MS = PERF_MODE ? 480 : 120
+const RECEIVER_UI_UPDATE_INTERVAL_MS = PERF_MODE ? 500 : 120
 const LOCKED_LAYOUT_RECOVERY_PROBE_INTERVAL_FRAMES = 8
 const DEBUG_CONSOLE = false
 const CAPTURE_BENCHMARK_SAMPLES_PER_METHOD = 6
@@ -823,7 +830,7 @@ function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expe
       elements.statFrames.textContent = state.validFrames + ' valid frames'
     }
 
-    if (state.validFrames % 10 === 0) {
+    if (state.validFrames % RX_PROGRESS_LOG_INTERVAL_FRAMES === 0) {
       const throughput = getThroughputStats()
       const symbolBreakdown = decoder.symbolBreakdown || {}
       const rateSuffix = throughput
@@ -1403,6 +1410,13 @@ async function startCapture(deviceId) {
 
   try {
     debugLog(`Starting capture, deviceId: ${deviceId || '(default)'}`)
+    if (PERF_MODE) {
+      debugLog(
+        `Perf mode on: rxPerfLog=${RX_PERF_LOG_INTERVAL_FRAMES}f ` +
+        `progressLog=${RX_PROGRESS_LOG_INTERVAL_FRAMES}f ` +
+        `uiUpdate=${RECEIVER_UI_UPDATE_INTERVAL_MS}ms`
+      )
+    }
 
     const constraints = {
       video: {
