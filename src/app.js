@@ -24,7 +24,13 @@ import { checkCompatibility } from './lib/cimbar/cimbar-loader.js'
 
 // Import HDMI-UVC modules
 import { initHdmiUvcSender, resetHdmiUvcSender } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
-import { initHdmiUvcReceiver, resetHdmiUvcReceiver, autoStartHdmiUvcReceiver } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
+import {
+  initHdmiUvcReceiver,
+  resetHdmiUvcReceiver,
+  autoStartHdmiUvcReceiver,
+  testReceiverFrameAcceptSignals,
+  testStallCounterTicksOnDuplicateFrames
+} from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
 import { testCrc32 } from './lib/hdmi-uvc/crc32.js'
 import {
   testHeaderRoundtrip,
@@ -57,6 +63,8 @@ window.testHdmiHeaderRoundtrip = testHeaderRoundtrip
 window.testHdmiAnchorRoundtrip = testAnchorRoundtrip
 window.testHdmiFrameRoundtrip = testFrameRoundtrip
 window.testHdmiAnchorOffset = testAnchorDetectionWithOffset
+window.testReceiverFrameAcceptSignals = testReceiverFrameAcceptSignals
+window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
 
 // ============ ERROR HANDLING ============
 function showError(message) {
@@ -183,7 +191,9 @@ async function runAllTests() {
     hdmiHeader: testHeaderRoundtrip(),
     hdmiAnchor: testAnchorRoundtrip(),
     hdmiFrame: testFrameRoundtrip(),
-    hdmiAnchorOffset: testAnchorDetectionWithOffset()
+    hdmiAnchorOffset: testAnchorDetectionWithOffset(),
+    receiverFrameSignals: testReceiverFrameAcceptSignals(),
+    stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames()
   }
 
   const passed = Object.values(results).every(r => r)

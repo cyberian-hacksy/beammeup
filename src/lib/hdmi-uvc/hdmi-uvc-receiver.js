@@ -1454,12 +1454,17 @@ async function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true
       handleComplete()
     }
 
-    // Signal this frame delivered at least one new symbol to the decoder, so
-    // finalizeFramePerf() will tick the stall counter via noteFrameBoundary().
-    // Duplicate-only frames (all symbols previously seen) do not count as
-    // innovation and therefore do not advance stallFramesSinceLastSolve —
-    // matching the feedback's "30–60 accepted frames" heuristic.
-    if (anyInnovation) state.frameAcceptedThisFrame = true
+    // Signal this frame was accepted. The stall counter (noteFrameBoundary) must
+    // tick on *every* accepted frame, including duplicate-only frames, so the
+    // tail solver fires in the replay-heavy endgame. Innovation is tracked
+    // separately for telemetry only. Delegates to updateFrameAcceptSignals so
+    // the rule stays in sync with testReceiverFrameAcceptSignals.
+    const nextSignals = updateFrameAcceptSignals(state, {
+      acceptedAnyPacket: true,
+      innovationCount
+    })
+    state.frameAcceptedThisFrame = nextSignals.frameAcceptedThisFrame
+    state.frameInnovatedThisFrame = nextSignals.frameInnovatedThisFrame
     accepted = true
     return true
   } finally {
@@ -2193,11 +2198,10 @@ async function processFrame(now, metadata) {
   let fastPathMs = 0
   let decodeMs = 0
   let framePerfFinalized = false
-  // Reset per-frame accept signal; acceptPackets() flips this true on success.
-  // stall= must count *accepted* frames (feedback's heuristic), not merely
-  // processed frames — otherwise no-region / decode-fail frames dilute the
-  // signal into receiver miss rate.
+  // Reset per-frame accept signals. frameAcceptedThisFrame drives
+  // noteFrameBoundary; frameInnovatedThisFrame drives innovation stats only.
   state.frameAcceptedThisFrame = false
+  state.frameInnovatedThisFrame = false
   const finalizeFramePerf = () => {
     if (framePerfFinalized) return
     framePerfFinalized = true
@@ -3162,4 +3166,84 @@ export function initHdmiUvcReceiver(errorHandler) {
     }
   }
   debugLog('HDMI-UVC Receiver initialized')
+}
+
+// Pure helper extracted so Phase 1's stall-counter contract is unit-testable
+// without standing up a DOM/video pipeline. Mirrors the signalling rules used
+// in acceptPackets + finalizeFramePerf: the frame-accepted flag ticks on any
+// accepted packet, the innovated flag only when innovation occurred.
+export function updateFrameAcceptSignals(prev, { acceptedAnyPacket, innovationCount }) {
+  return {
+    frameAcceptedThisFrame: prev.frameAcceptedThisFrame || !!acceptedAnyPacket,
+    frameInnovatedThisFrame: prev.frameInnovatedThisFrame || innovationCount > 0
+  }
+}
+
+export function testReceiverFrameAcceptSignals() {
+  const zero = { frameAcceptedThisFrame: false, frameInnovatedThisFrame: false }
+
+  // A duplicate-only frame: accepted but no innovation.
+  const dup = updateFrameAcceptSignals(zero, { acceptedAnyPacket: true, innovationCount: 0 })
+  if (!dup.frameAcceptedThisFrame || dup.frameInnovatedThisFrame) {
+    console.log('FAIL dup:', dup); return false
+  }
+
+  // An innovating frame: both flags on.
+  const innov = updateFrameAcceptSignals(zero, { acceptedAnyPacket: true, innovationCount: 2 })
+  if (!innov.frameAcceptedThisFrame || !innov.frameInnovatedThisFrame) {
+    console.log('FAIL innov:', innov); return false
+  }
+
+  // A frame that didn't accept anything: both flags stay false.
+  const empty = updateFrameAcceptSignals(zero, { acceptedAnyPacket: false, innovationCount: 0 })
+  if (empty.frameAcceptedThisFrame || empty.frameInnovatedThisFrame) {
+    console.log('FAIL empty:', empty); return false
+  }
+
+  // Flags are sticky within a frame: once true they stay true even if a later
+  // inner call reports the opposite. (The per-frame reset happens in the
+  // caller, finalizeFramePerf, not in this helper.)
+  const sticky = updateFrameAcceptSignals(
+    { frameAcceptedThisFrame: true, frameInnovatedThisFrame: true },
+    { acceptedAnyPacket: false, innovationCount: 0 }
+  )
+  if (!sticky.frameAcceptedThisFrame || !sticky.frameInnovatedThisFrame) {
+    console.log('FAIL sticky:', sticky); return false
+  }
+
+  console.log('Receiver frame-accept signals test: PASS')
+  return true
+}
+
+export async function testStallCounterTicksOnDuplicateFrames() {
+  const { createDecoder } = await import('../decoder.js')
+  const { createEncoder } = await import('../encoder.js')
+
+  const fileSize = 6000
+  const data = new Uint8Array(fileSize)
+  for (let i = 0; i < fileSize; i++) data[i] = (i * 7 + 3) & 0xff
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', data))
+  const enc = createEncoder(data.buffer, 's.bin', 'application/octet-stream', hash)
+  const dec = createDecoder()
+
+  dec.receive(enc.generateSymbol(0))          // metadata
+  for (let id = 1; id <= enc.K - 2; id++) {   // feed all but the last two source blocks
+    dec.receive(enc.generateSymbol(id))
+  }
+  // At this point the decoder should be stuck with 2 missing source blocks.
+  const missingBefore = dec.unresolvedSourceCount
+  if (missingBefore < 2) { console.log('FAIL setup: missing=', missingBefore); return false }
+
+  // Now send 60 "frames" that are all duplicates of symbol 1 (already received).
+  // The decoder must see noteFrameBoundary() ticks so stallFramesSinceLastSolve
+  // climbs past 30 and triggers the GF(2) tail solver.
+  const dupSym = enc.generateSymbol(1)
+  for (let f = 0; f < 60; f++) {
+    dec.receive(dupSym)
+    dec.noteFrameBoundary()
+  }
+  const tel = dec.telemetry
+  const pass = tel.stallFramesSinceLastSolve >= 60 && tel.tailSolveTriggerCount >= 1
+  console.log('Duplicate-frame stall test:', pass ? 'PASS' : 'FAIL', tel)
+  return pass
 }
