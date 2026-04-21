@@ -4,7 +4,18 @@ import {
   FRAME_MAGIC, HEADER_SIZE, ANCHOR_SIZE, MARGIN_SIZE, BLOCK_SIZE,
   ANCHOR_PATTERN, HDMI_MODE, getModeBitsPerBlock, getModeDataBlockSize
 } from './hdmi-uvc-constants.js'
-import { crc32 } from './crc32.js'
+// crc32WithFallback prefers the WASM kernel (Phase 4) once loaded and
+// transparently falls back to the JS implementation before instantiation.
+// scanBrightRunsWithFallback offloads the anchor-detection inner loop the
+// same way. Both expose a JS-compatible signature so callers need not know
+// which backend ran.
+import {
+  crc32WithFallback as crc32,
+  scanBrightRunsWithFallback,
+  isHdmiUvcWasmActive,
+  wasmClassifyCompat4Cells,
+  wasmClassifyLuma2Cells
+} from './hdmi-uvc-wasm.js'
 
 // --- Binary modulation (1 bit per block) ---
 // Each byte is encoded as 8 blocks (MSB first): bit=1 → white (255), bit=0 → black (0).
@@ -971,29 +982,19 @@ function verifyAnchorAt(imageData, width, height, originX, originY) {
 }
 
 // Find an anchor by scanning a corner for a bright rectangle, then verifying
-// with a lightweight 2-point check (black ring + white center).
+// with a lightweight 2-point check (black ring + white center). The per-row
+// bright-run scan delegates to scanBrightRunsWithFallback so the WASM kernel
+// takes over once loaded. Scan order (yDir, row-by-row, left-to-right within
+// a row) is preserved so the JS verifyBrightRun short-circuit still fires on
+// the same first match as the pre-refactor loop.
 function findCornerAnchor(imageData, width, height, xStart, xEnd, yStart, yEnd, yDir, corner) {
-  // Scan row by row in yDir direction for a horizontal bright run.
-  for (let y = yStart; y !== yEnd; y += yDir) {
-    if (y < 0 || y >= height) continue
-    let runStart = -1, runLen = 0
-    for (let x = xStart; x < xEnd; x++) {
-      if (imageData[(y * width + x) * 4] > 200) {
-        if (runStart < 0) runStart = x
-        runLen++
-      } else {
-        if (runLen >= 15 && runLen <= 50) {
-          const anchor = verifyBrightRun(imageData, width, height, runStart, y, runLen, yDir, corner)
-          if (anchor) return anchor
-        }
-        runStart = -1
-        runLen = 0
-      }
-    }
-    if (runLen >= 15 && runLen <= 50) {
-      const anchor = verifyBrightRun(imageData, width, height, runStart, y, runLen, yDir, corner)
-      if (anchor) return anchor
-    }
+  const runs = scanBrightRunsWithFallback(
+    imageData, width, height, xStart, xEnd, yStart, yEnd, yDir, 15, 50, 200
+  )
+  for (let i = 0; i < runs.length; i++) {
+    const { runX, runY, runLen } = runs[i]
+    const anchor = verifyBrightRun(imageData, width, height, runX, runY, runLen, yDir, corner)
+    if (anchor) return anchor
   }
   return null
 }
@@ -1253,12 +1254,40 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
   const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
   const height = imageData.length / (width * 4)
 
+  // Phase 4 Task 4.3: batch classify COMPAT_4 (binary) and LUMA_2 cells in
+  // WASM when the module is loaded. The per-cell JS branches stay as the
+  // fallback for other modes (RAW_RGB, GLYPH_5, CODEBOOK_3, RAW_GRAY) and
+  // whenever the WASM kernel throws. `preComputedSymbols` is a Uint8Array of
+  // length (payloadCells.length - reservedPayloadCells); index 0 corresponds
+  // to cellIdx = reservedPayloadCells.
+  const isCompat4Binary = bitsPerBlock === 1 &&
+    header.mode !== HDMI_MODE.RAW_RGB &&
+    header.mode !== HDMI_MODE.GLYPH_5 &&
+    header.mode !== HDMI_MODE.CODEBOOK_3 &&
+    header.mode !== HDMI_MODE.LUMA_2
+  const isLuma2 = header.mode === HDMI_MODE.LUMA_2
+  let preComputedSymbols = null
+  if ((isCompat4Binary || isLuma2) && isHdmiUvcWasmActive()) {
+    preComputedSymbols = batchClassifyPayloadCells({
+      imageData, width, height,
+      payloadCells, reservedPayloadCells,
+      rx, ry, stepX, stepY, bs,
+      mode: isCompat4Binary ? 'compat4' : 'luma2',
+      levels, pilotField
+    })
+  }
+
   for (let cellIdx = reservedPayloadCells; cellIdx < payloadCells.length && decodeState.index < header.payloadLength; cellIdx++) {
     const { bx, by } = payloadCells[cellIdx]
     const px = rx + Math.round(bx * stepX)
     const py = ry + Math.round(by * stepY)
     let symbol = 0
-    if (px >= 0 && px < width && py >= 0 && py < height) {
+    if (preComputedSymbols) {
+      // WASM already handled sampling + classification. The per-cell bounds
+      // check is baked into sample2x2R / sampleQuadrants which return 0 for
+      // out-of-bounds centers — matching the JS default-symbol-0 behavior.
+      symbol = preComputedSymbols[cellIdx - reservedPayloadCells]
+    } else if (px >= 0 && px < width && py >= 0 && py < height) {
       if (header.mode === HDMI_MODE.RAW_RGB) {
         const rgb = sampleBlockRgbAt(imageData, width, px, py, bs)
         symbol = decodeRgb3(rgb, levels?.blackLevels, levels?.whiteLevels, levels?.rgbPalette)
@@ -1288,6 +1317,50 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
 
   const actualCrc = crc32(payload)
   return { header, payload, crcValid: actualCrc === header.payloadCrc, levels }
+}
+
+// Pre-compute per-cell symbols for COMPAT_4 (binary) or LUMA_2 (4-level) by
+// batching into the WASM classifier. Returns a Uint8Array or null on failure.
+// Index 0 corresponds to payloadCells[reservedPayloadCells]; out-of-bounds
+// cells are handled by the WASM sampler returning 0 (matches JS default).
+function batchClassifyPayloadCells({
+  imageData, width, height, payloadCells, reservedPayloadCells,
+  rx, ry, stepX, stepY, bs, mode, levels, pilotField
+}) {
+  const n = payloadCells.length - reservedPayloadCells
+  if (n <= 0) return null
+  const cells = new Array(n)
+  if (mode === 'compat4') {
+    for (let i = 0; i < n; i++) {
+      const cell = payloadCells[reservedPayloadCells + i]
+      const px = rx + Math.round(cell.bx * stepX)
+      const py = ry + Math.round(cell.by * stepY)
+      const localLevels = pilotField
+        ? estimateBinaryPilotLevelsAt(pilotField, cell.bx, cell.by, levels?.blackLevel, levels?.whiteLevel)
+        : levels
+      const threshold = ((localLevels?.blackLevel ?? 0) + (localLevels?.whiteLevel ?? 255)) * 0.5
+      cells[i] = [px, py, bs, threshold]
+    }
+    try {
+      return wasmClassifyCompat4Cells(imageData, width, height, cells)
+    } catch (_) {
+      return null
+    }
+  }
+  // mode === 'luma2'
+  const black = levels?.blackLevel ?? 0
+  const white = levels?.whiteLevel ?? 255
+  for (let i = 0; i < n; i++) {
+    const cell = payloadCells[reservedPayloadCells + i]
+    const px = rx + Math.round(cell.bx * stepX)
+    const py = ry + Math.round(cell.by * stepY)
+    cells[i] = [px, py, bs, black, white]
+  }
+  try {
+    return wasmClassifyLuma2Cells(imageData, width, height, cells)
+  } catch (_) {
+    return null
+  }
 }
 
 // Read a fixed payload length from a known-good grid layout without relying on a

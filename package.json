@@ -6,13 +6,16 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:wasm": "asc wasm/hdmi-uvc/src/index.ts --config wasm/hdmi-uvc/asconfig.json --target release",
+    "build:wasm:debug": "asc wasm/hdmi-uvc/src/index.ts --config wasm/hdmi-uvc/asconfig.json --target debug"
   },
   "dependencies": {
     "jsqr": "^1.4.0",
     "qrcode-generator": "^2.0.4"
   },
   "devDependencies": {
+    "assemblyscript": "^0.28.14",
     "terser": "^5.44.1",
     "vite": "^7.3.0",
     "vite-plugin-singlefile": "^2.3.0"

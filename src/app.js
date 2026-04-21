@@ -48,6 +48,14 @@ import {
   testComputeLockedCaptureRect
 } from './lib/hdmi-uvc/hdmi-uvc-receiver-capture.js'
 import { testIngestCapturedFrame } from './lib/hdmi-uvc/hdmi-uvc-capture-pump.js'
+import {
+  testWasmCrc32MatchesJs,
+  testFrameCrcWasmIntegration,
+  testWasmScanBrightRunsMatchesJs,
+  testWasmClassifiersMatchJs,
+  testWasmVsJsDetectAnchorsEquivalent,
+  testWasmVsJsDecodeDataRegionEquivalent
+} from './lib/hdmi-uvc/hdmi-uvc-wasm.js'
 
 // Make libraries available globally
 window.jsQR = jsQR
@@ -80,6 +88,12 @@ window.testParitySweepCounter = testParitySweepCounter
 window.testCaptureMethodDecision = testCaptureMethodDecision
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
 window.testIngestCapturedFrame = testIngestCapturedFrame
+window.testWasmCrc32MatchesJs = testWasmCrc32MatchesJs
+window.testFrameCrcWasmIntegration = testFrameCrcWasmIntegration
+window.testWasmScanBrightRunsMatchesJs = testWasmScanBrightRunsMatchesJs
+window.testWasmClassifiersMatchJs = testWasmClassifiersMatchJs
+window.testWasmVsJsDetectAnchorsEquivalent = testWasmVsJsDetectAnchorsEquivalent
+window.testWasmVsJsDecodeDataRegionEquivalent = testWasmVsJsDecodeDataRegionEquivalent
 
 // ============ ERROR HANDLING ============
 function showError(message) {
@@ -213,7 +227,13 @@ async function runAllTests() {
     paritySweepCounter: testParitySweepCounter(),
     captureMethodDecision: testCaptureMethodDecision(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
-    ingestCapturedFrame: await testIngestCapturedFrame()
+    ingestCapturedFrame: await testIngestCapturedFrame(),
+    wasmCrc32: await testWasmCrc32MatchesJs(),
+    frameCrcWasmIntegration: await testFrameCrcWasmIntegration(),
+    wasmScanBrightRuns: await testWasmScanBrightRunsMatchesJs(),
+    wasmClassifiers: await testWasmClassifiersMatchJs(),
+    wasmVsJsDetectAnchors: await testWasmVsJsDetectAnchorsEquivalent(),
+    wasmVsJsDecodeDataRegion: await testWasmVsJsDecodeDataRegionEquivalent()
   }
 
   const passed = Object.values(results).every(r => r)

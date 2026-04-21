@@ -18,6 +18,12 @@ import {
   chooseCaptureMethod,
   computeLockedCaptureRect
 } from './hdmi-uvc-receiver-capture.js'
+import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
+
+// Kick off WASM instantiation on the main thread so the ?capture=main fallback
+// path (which runs decodeDataRegion on the main thread) uses the WASM CRC32
+// from the first decoded frame. Swallowed errors fall back to JS crc32.
+loadHdmiUvcWasm().catch(() => {})
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
@@ -174,6 +180,16 @@ function initReceiverWorker() {
     receiverWorker.onmessageerror = () => {
       debugLog('Worker message deserialization failed — falling back to main thread')
       teardownReceiverWorker(true)
+    }
+    // Resolve the WASM URL on the main thread (document.baseURI) and hand it
+    // to the worker. The inline worker's own self.location is a blob:/data:
+    // URL that URL resolution rejects as a base, so without this the worker
+    // silently falls back to the JS crc32/scanBrightRuns implementations.
+    try {
+      const wasmUrl = new URL('hdmi-uvc/hdmi_uvc.wasm', document.baseURI).href
+      receiverWorker.postMessage({ type: 'configureWasm', url: wasmUrl })
+    } catch (err) {
+      debugLog(`Failed to post WASM URL to worker: ${err?.message || err}`)
     }
     debugLog(`Worker mode: ON (${WORKER_MODE})`)
     return true
@@ -483,6 +499,9 @@ function handleReceiverWorkerMessage(event) {
         if (CAPTURE_METHOD === 'worker') startWorkerCapture()
         else if (CAPTURE_METHOD === 'offscreen') startOffscreenCapture()
       }
+      return
+    case 'wasmReady':
+      debugLog('Worker WASM kernels loaded')
       return
     case 'hashResult':
       handleWorkerHashResult(msg)

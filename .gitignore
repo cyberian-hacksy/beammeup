@@ -29,3 +29,7 @@ dist-ssr
 # OS-specific
 .DS_Store
 Thumbs.db
+
+# WASM debug builds (release variant is checked in, debug is per-developer)
+src/public/hdmi-uvc/hdmi_uvc.debug.wasm
+src/public/hdmi-uvc/hdmi_uvc.debug.wat

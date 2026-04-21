@@ -14,6 +14,12 @@ import {
   DEFAULT_RENDER_SIZE_PRESET
 } from './hdmi-uvc-constants.js'
 import { buildFrame, createFrameBuffer, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.js'
+import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
+
+// Kick off WASM instantiation when the sender module loads so buildFrame's
+// payload CRC uses the WASM kernel from the first transmitted frame. Errors
+// fall through to the JS crc32 fallback in frame.js.
+loadHdmiUvcWasm().catch(() => {})
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true

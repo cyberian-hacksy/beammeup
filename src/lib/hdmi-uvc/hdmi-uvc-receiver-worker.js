@@ -37,6 +37,14 @@ import { createDecoder } from '../decoder.js'
 import { parsePacket, PACKET_HEADER_SIZE } from '../packet.js'
 import { ingestCapturedFrame } from './hdmi-uvc-capture-pump.js'
 import { computeLockedCaptureRect } from './hdmi-uvc-receiver-capture.js'
+import { loadHdmiUvcWasm, setHdmiUvcWasmUrl } from './hdmi-uvc-wasm.js'
+
+// WASM loading is driven by the main thread rather than at module boot:
+// Vite's ?worker&inline bootstraps the worker from a blob: (dev) or data:
+// (single-file prod) URL, and the URL spec rejects both as a base for relative
+// resolution. The main thread computes an absolute URL from document.baseURI
+// and posts `{ type: 'configureWasm', url }`; the handler below calls
+// setHdmiUvcWasmUrl() + loadHdmiUvcWasm() and errors are surfaced back.
 
 const WORKER_PROTOCOL_VERSION = 2
 
@@ -754,6 +762,19 @@ self.onmessage = (event) => {
     switch (msg.type) {
       case 'ping':
         reply = { type: 'pong', id: msg.id }
+        break
+      case 'configureWasm':
+        // Main thread hands us an absolute URL derived from document.baseURI.
+        // Without this the inline worker's blob:/data: self.location is
+        // unusable as a base and WASM silently falls back to JS.
+        if (typeof msg.url === 'string' && msg.url.length > 0) {
+          setHdmiUvcWasmUrl(msg.url)
+          loadHdmiUvcWasm()
+            .then(() => self.postMessage({ type: 'wasmReady' }))
+            .catch((err) => self.postMessage({
+              type: 'error', message: 'wasm load: ' + (err?.message || err)
+            }))
+        }
         break
       case 'hash': {
         reply = handleHash(msg)

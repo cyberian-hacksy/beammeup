@@ -15,6 +15,9 @@ importers:
         specifier: ^2.0.4
         version: 2.0.4
     devDependencies:
+      assemblyscript:
+        specifier: ^0.28.14
+        version: 0.28.14
       terser:
         specifier: ^5.44.1
         version: 5.44.1
@@ -332,6 +335,15 @@ packages:
     engines: {node: '>=0.4.0'}
     hasBin: true
 
+  assemblyscript@0.28.14:
+    resolution: {integrity: sha512-YcFSCNhjvHdvjjqdfc1PyiA60AYalmDH2FDMF9LNmYJjoKf8c826xw3zkOD83PGoyz8RNH9KDt8FYMtkIOJNPw==}
+    engines: {node: '>=20', npm: '>=10'}
+    hasBin: true
+
+  binaryen@123.0.0-nightly.20250530:
+    resolution: {integrity: sha512-d1zPHBN5YlOd3Ff+OUxvVExuFeh8heSnqe+X3bjItFxGLvn4VGBKmrvv7pgy/cRhrIUGuPW138iaWfDhwjyDqg==}
+    hasBin: true
+
   braces@3.0.3:
     resolution: {integrity: sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA==}
     engines: {node: '>=8'}
@@ -371,6 +383,9 @@ packages:
 
   jsqr@1.4.0:
     resolution: {integrity: sha512-dxLob7q65Xg2DvstYkRpkYtmKm2sPJ9oFhrhmudT1dZvNFFTlroai3AWSpLey/w5vMcLBXRgOJsbXpdN9HzU/A==}
+
+  long@5.3.2:
+    resolution: {integrity: sha512-mNAgZ1GmyNhD7AuqnTG3/VQ26o760+ZYBPKjPvugO8+nLbYfX6TVpJPseBvopbdY+qpZ/lKUnmEc1LeZYS3QAA==}
 
   micromatch@4.0.8:
     resolution: {integrity: sha512-PXwfBhYu0hBCPw8Dn0E+WDYb7af3dSLVWKi3HGv84IdF4TyFoC0ysxFd0Goxw7nSv4T/PzEJQxsYsEiFCKo2BA==}
@@ -653,6 +668,13 @@ snapshots:
 
   acorn@8.15.0: {}
 
+  assemblyscript@0.28.14:
+    dependencies:
+      binaryen: 123.0.0-nightly.20250530
+      long: 5.3.2
+
+  binaryen@123.0.0-nightly.20250530: {}
+
   braces@3.0.3:
     dependencies:
       fill-range: 7.1.1
@@ -704,6 +726,8 @@ snapshots:
   is-number@7.0.0: {}
 
   jsqr@1.4.0: {}
+
+  long@5.3.2: {}
 
   micromatch@4.0.8:
     dependencies:

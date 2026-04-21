@@ -1,0 +1,34 @@
+{
+  "targets": {
+    "release": {
+      "outFile": "../../src/public/hdmi-uvc/hdmi_uvc.wasm",
+      "textFile": "../../src/public/hdmi-uvc/hdmi_uvc.wat",
+      "optimizeLevel": 3,
+      "shrinkLevel": 0,
+      "converge": false,
+      "noAssert": true,
+      "runtime": "stub",
+      "exportRuntime": false,
+      "debug": false,
+      "sourceMap": false,
+      "initialMemory": 1,
+      "maximumMemory": 256
+    },
+    "debug": {
+      "outFile": "../../src/public/hdmi-uvc/hdmi_uvc.debug.wasm",
+      "textFile": "../../src/public/hdmi-uvc/hdmi_uvc.debug.wat",
+      "optimizeLevel": 0,
+      "shrinkLevel": 0,
+      "runtime": "stub",
+      "exportRuntime": false,
+      "debug": true,
+      "sourceMap": false,
+      "initialMemory": 1,
+      "maximumMemory": 256
+    }
+  },
+  "options": {
+    "bindings": "raw"
+  },
+  "entries": ["src/index.ts"]
+}
