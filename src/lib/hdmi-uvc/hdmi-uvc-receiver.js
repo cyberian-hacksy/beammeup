@@ -13,6 +13,11 @@ import {
 } from './hdmi-uvc-constants.js'
 import { detectAnchors, dataRegionFromAnchors, decodeDataRegion, readPayloadWithLayout } from './hdmi-uvc-frame.js'
 import ReceiverWorker from './hdmi-uvc-receiver-worker.js?worker&inline'
+import {
+  detectCaptureCapabilities,
+  chooseCaptureMethod,
+  computeLockedCaptureRect
+} from './hdmi-uvc-receiver-capture.js'
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
@@ -51,6 +56,15 @@ const WORKER_MODE = (() => {
 })()
 const WORKER_ANCHORS_ENABLED = WORKER_MODE === 'anchors' || WORKER_MODE === 'full'
 const WORKER_FULL_ENABLED = WORKER_MODE === 'full'
+// ?capture selects the capture pipeline. Default: feature-detect. Explicit:
+// 'main' (current drawImage/getImageData path), 'worker' (MediaStreamTrack-
+// Processor + VideoFrame.copyTo in worker), 'offscreen' (OffscreenCanvas /
+// createImageBitmap transferred to worker). 'main' is the safe fallback at
+// every decision.
+const CAPTURE_MODE_RAW = typeof location !== 'undefined'
+  ? new URLSearchParams(location.search).get('capture') : null
+const CAPTURE_CAPABILITIES = detectCaptureCapabilities()
+const CAPTURE_METHOD = chooseCaptureMethod(CAPTURE_CAPABILITIES, CAPTURE_MODE_RAW)
 // Frames between diagnostic hash probes. Probing every frame is wasteful for
 // a pure diagnostic; every ~30 frames is enough to confirm transport.
 const WORKER_PROBE_INTERVAL_FRAMES = 30
@@ -143,7 +157,11 @@ let receiverWorkerDecoderState = null
 const receiverWorkerReconstructPending = new Map()
 
 function initReceiverWorker() {
-  if (WORKER_MODE === 'off') return false
+  // Worker is needed for either a decode-pump mode (?worker=...) or a
+  // worker-side capture path (CAPTURE_METHOD='worker'/'offscreen'). Off
+  // only when both are disabled.
+  const captureNeedsWorker = CAPTURE_METHOD === 'worker' || CAPTURE_METHOD === 'offscreen'
+  if (WORKER_MODE === 'off' && !captureNeedsWorker) return false
   if (receiverWorker) return true
   if (receiverWorkerFailed) return false
   try {
@@ -172,13 +190,273 @@ function teardownReceiverWorker(markFailed = false) {
     receiverWorker = null
   }
   receiverWorkerReady = false
+  // If worker-driven capture was active when the worker died, clear the
+  // flags so scheduleNextFrame falls back to the main-thread processFrame
+  // path instead of silently dropping frames.
+  const wasWorkerCapturing = state.workerCaptureActive ||
+    state.workerCapturePending ||
+    state.offscreenCaptureActive
+  state.workerCaptureActive = false
+  state.workerCapturePending = false
+  state.offscreenCaptureActive = false
+  state.workerCaptureStartPendingAfterStop = false
+  state.workerCaptureStopRequested = false
   receiverWorkerPending.clear()
+  if (wasWorkerCapturing && state.isScanning) {
+    // Kick the main-thread loop so the user doesn't freeze on a dead worker.
+    scheduleNextFrame()
+  }
   // Reject any pending reconstruct requests so callers don't hang forever.
   for (const { reject } of receiverWorkerReconstructPending.values()) {
     try { reject(new Error('Worker terminated')) } catch (_) { /* ignore */ }
   }
   receiverWorkerReconstructPending.clear()
   if (markFailed) receiverWorkerFailed = true
+}
+
+// === Phase 3.4: worker-side capture orchestration ============================
+// When CAPTURE_METHOD === 'worker', the main thread hands a MediaStreamTrack
+// clone to the worker and stops scheduling its own processFrame loop. The
+// worker self-acquires anchors and pumps captureFrame messages back; the
+// main thread updates the shadow decoder + UI from those deltas.
+
+// Arm a short safety timeout: if the worker never posts captureStarted
+// (silent crash, handler exception before the ack), clear the pending flag
+// and fall back to the main-thread loop instead of wedging scanning.
+const WORKER_CAPTURE_START_TIMEOUT_MS = 2000
+function armWorkerCaptureStartTimeout() {
+  if (state.workerCaptureStartDeadlineId) {
+    clearTimeout(state.workerCaptureStartDeadlineId)
+  }
+  state.workerCaptureStartDeadlineId = setTimeout(() => {
+    state.workerCaptureStartDeadlineId = null
+    if (state.workerCaptureActive) return
+    if (!state.workerCapturePending) return
+    debugLog(
+      `Worker capture startup timed out after ${WORKER_CAPTURE_START_TIMEOUT_MS}ms — ` +
+      `falling back to main-thread processFrame`
+    )
+    fallBackFromWorkerCapture()
+  }, WORKER_CAPTURE_START_TIMEOUT_MS)
+}
+
+function clearWorkerCaptureStartTimeout() {
+  if (state.workerCaptureStartDeadlineId) {
+    clearTimeout(state.workerCaptureStartDeadlineId)
+    state.workerCaptureStartDeadlineId = null
+  }
+}
+
+function fallBackFromWorkerCapture() {
+  clearWorkerCaptureStartTimeout()
+  const wasActive = state.workerCaptureActive || state.offscreenCaptureActive || state.workerCapturePending
+  state.workerCapturePending = false
+  state.workerCaptureActive = false
+  state.offscreenCaptureActive = false
+  state.workerCaptureSourceRect = null
+  state.offscreenBitmapInFlightAt = null
+  // If a restart was deferred behind a stopCapture ack, fall-back means
+  // we're abandoning worker mode for this session — drop the pending start
+  // so captureStopped doesn't try to resume into it.
+  state.workerCaptureStartPendingAfterStop = false
+  // startWorkerCapture / startOffscreenCapture create a worker-backed shadow
+  // decoder before the worker ack arrives. On fallback, the shadow's
+  // receiveParsed() returns false synchronously and only queues async
+  // ingestBatch work — breaking the main-thread acceptPackets path on
+  // non-?worker=full sessions. Clear it so ensureDecoder() rebuilds a fresh
+  // decoder that matches the current WORKER_FULL_ENABLED state (native when
+  // off, a new shadow when on).
+  state.decoder = null
+  receiverWorkerDecoderState = null
+  // Tell the worker to halt its pump if it got far enough to start one.
+  // Set stopRequested so the captureStopped response doesn't trigger a
+  // nested fallback (we're already falling back).
+  if (wasActive && !state.workerCaptureStopRequested) {
+    state.workerCaptureStopRequested = true
+    postToWorker({ type: 'stopCapture' })
+  }
+  if (state.isScanning) scheduleNextFrame()
+}
+
+function startWorkerCapture() {
+  if (CAPTURE_METHOD !== 'worker') return false
+  if (!state.stream) return false
+  if (state.workerCaptureActive) return true
+  if (!receiverWorker) {
+    if (!initReceiverWorker()) return false
+  }
+  // A stopCapture posted earlier in the same tick (resetReceiver +
+  // handleReceiveAnother, etc.) hasn't been ack'd yet. The worker's track
+  // pump is still draining, so starting now would race against the "already
+  // active" check and trigger a spurious fallback. Defer until the
+  // captureStopped message arrives.
+  if (state.workerCaptureStopRequested) {
+    state.workerCaptureStartPendingAfterStop = true
+    return false
+  }
+  if (!receiverWorkerReady) {
+    // Defer until the worker posts 'ready' — the ready handler fires this
+    // again when the pending flag is set.
+    state.workerCapturePending = true
+    return false
+  }
+
+  const track = state.stream.getVideoTracks()[0]
+  if (!track) return false
+
+  // Clone the track so the main thread's <video> element keeps a live
+  // source; transferring the original would end it on the main realm.
+  let workerTrack
+  try {
+    workerTrack = track.clone()
+  } catch (err) {
+    debugLog(`Worker capture: track.clone() failed (${err?.message || err}) — falling back`)
+    return false
+  }
+
+  // Shadow decoder creation is deferred to the captureStarted handler so a
+  // startup timeout or error never leaves state.decoder pointing at a
+  // worker-backed shadow that the main-thread fallback path can't use
+  // synchronously. See ensureWorkerCaptureShadowDecoder().
+  // Pending until we receive captureStarted from the worker; only then flip
+  // workerCaptureActive. scheduleNextFrame gates on either flag, so the main
+  // loop stays suppressed during startup.
+  state.workerCapturePending = true
+  const ok = postToWorker({
+    type: 'startCaptureWithTrack',
+    track: workerTrack,
+    region: null,
+    expectedPacketSize: getExpectedPacketSize() || null
+  }, [workerTrack])
+  if (!ok) {
+    state.workerCapturePending = false
+    try { workerTrack.stop() } catch (_) { /* ignore */ }
+    return false
+  }
+  armWorkerCaptureStartTimeout()
+  debugLog('Worker capture requested (awaiting captureStarted)')
+  return true
+}
+
+function stopWorkerCapture() {
+  if (
+    !state.workerCaptureActive &&
+    !state.workerCapturePending &&
+    !state.offscreenCaptureActive
+  ) return
+  clearWorkerCaptureStartTimeout()
+  state.workerCapturePending = false
+  state.workerCaptureActive = false
+  state.offscreenCaptureActive = false
+  state.workerCaptureSourceRect = null
+  state.offscreenBitmapInFlightAt = null
+  // Mark this as an expected stop so the captureStopped response handler
+  // treats it as a normal teardown rather than an unexpected worker exit.
+  state.workerCaptureStopRequested = true
+  postToWorker({ type: 'stopCapture' })
+}
+
+// Phase 3.5: offscreen mode keeps the main-thread frame loop but replaces
+// drawImage/getImageData with createImageBitmap + transferable postMessage.
+// The worker does the readback locally.
+function startOffscreenCapture() {
+  if (CAPTURE_METHOD !== 'offscreen') return false
+  if (!state.stream) return false
+  if (state.offscreenCaptureActive) return true
+  if (!receiverWorker) {
+    if (!initReceiverWorker()) return false
+  }
+  if (state.workerCaptureStopRequested) {
+    // Symmetry with startWorkerCapture: if a stopCapture is in flight,
+    // wait for its ack before starting a new session.
+    state.workerCaptureStartPendingAfterStop = true
+    return false
+  }
+  if (!receiverWorkerReady) {
+    state.workerCapturePending = true
+    return false
+  }
+  // As with the track path: defer shadow creation until captureStarted so
+  // a start failure doesn't leave a stale shadow around.
+  // Offscreen mode has the same ack semantics as the track mode. Mark
+  // pending and activate only when captureStarted arrives; worker errors
+  // from the start handler will trip the fallback path.
+  state.workerCapturePending = true
+  const ok = postToWorker({
+    type: 'startCaptureWithOffscreen',
+    region: null,
+    expectedPacketSize: getExpectedPacketSize() || null
+  })
+  if (!ok) {
+    state.workerCapturePending = false
+    return false
+  }
+  armWorkerCaptureStartTimeout()
+  debugLog('Worker capture requested (offscreen/createImageBitmap, awaiting captureStarted)')
+  return true
+}
+
+function processFrameForOffscreen() {
+  if (!state.isScanning || !state.stream || !state.offscreenCaptureActive) return
+  // Don't bump state.frameCount here — backpressure-dropped frames would
+  // inflate the counter, and worker-driven frames are already counted in
+  // handleWorkerCaptureFrame when the worker reports the captureFrame.
+  // Keeping a single source of truth aligns offscreen and track modes so
+  // diagnostics keyed off frameCount stay comparable.
+  const video = elements.video
+  if (!video.videoWidth || !video.videoHeight) {
+    scheduleNextFrame()
+    return
+  }
+
+  // Backpressure: if a bitmap is already in flight to the worker, drop this
+  // frame and let rVFC/rAF fire again. Under load the worker can lag behind
+  // the main thread, and queuing bitmaps just wastes memory and latency.
+  // The 1-second cap lets us recover if captureFrame never arrives (worker
+  // stall or missed ack).
+  const nowMs = performance.now()
+  if (state.offscreenBitmapInFlightAt != null &&
+      (nowMs - state.offscreenBitmapInFlightAt) < 1000) {
+    scheduleNextFrame()
+    return
+  }
+
+  // Narrow to the locked ROI once the worker has reported it — that turns
+  // the captureBitmap path into a proper ROI fallback instead of shipping
+  // full-frame pixels every time.
+  const roi = state.workerCaptureSourceRect
+  const vw = video.videoWidth
+  const vh = video.videoHeight
+  const bitmapPromise = roi &&
+    roi.x >= 0 && roi.y >= 0 &&
+    roi.w > 0 && roi.h > 0 &&
+    (roi.x + roi.w) <= vw && (roi.y + roi.h) <= vh
+    ? createImageBitmap(video, roi.x, roi.y, roi.w, roi.h)
+    : createImageBitmap(video)
+
+  state.offscreenBitmapInFlightAt = nowMs
+  bitmapPromise
+    .then((bitmap) => {
+      if (!state.offscreenCaptureActive) {
+        state.offscreenBitmapInFlightAt = null
+        try { bitmap.close() } catch (_) { /* ignore */ }
+        return
+      }
+      const ok = postToWorker({
+        type: 'captureBitmap',
+        bitmap,
+        expectedPacketSize: getExpectedPacketSize() || null
+      }, [bitmap])
+      if (!ok) {
+        state.offscreenBitmapInFlightAt = null
+        try { bitmap.close() } catch (_) { /* ignore */ }
+      }
+    })
+    .catch((err) => {
+      state.offscreenBitmapInFlightAt = null
+      debugLog(`createImageBitmap failed: ${err?.message || err}`)
+    })
+  scheduleNextFrame()
 }
 
 function postToWorker(msg, transfer) {
@@ -201,6 +479,10 @@ function handleReceiverWorkerMessage(event) {
     case 'ready':
       receiverWorkerReady = true
       debugLog(`Worker ready (protocol v${msg.protocolVersion})`)
+      if (state.workerCapturePending) {
+        if (CAPTURE_METHOD === 'worker') startWorkerCapture()
+        else if (CAPTURE_METHOD === 'offscreen') startOffscreenCapture()
+      }
       return
     case 'hashResult':
       handleWorkerHashResult(msg)
@@ -247,8 +529,101 @@ function handleReceiverWorkerMessage(event) {
       }
       return
     }
-    case 'error':
+    case 'captureStarted': {
+      // Ack of startCaptureWithTrack / startCaptureWithOffscreen. Only now
+      // is it safe to declare the worker the authoritative capture owner.
+      clearWorkerCaptureStartTimeout()
+      state.workerCapturePending = false
+      if (msg.method === 'track') state.workerCaptureActive = true
+      else if (msg.method === 'offscreen') state.offscreenCaptureActive = true
+      // Create the shadow decoder now — not at post time — so a start
+      // failure never leaves state.decoder pointing at a worker-backed
+      // shadow that the non-?worker=full fallback path can't drive via
+      // synchronous receiveParsed().
+      if (!state.decoder) {
+        state.decoder = createWorkerDecoderShadow()
+        state.startTime = Date.now()
+        showReceivingStatus()
+        debugLog(`Decoder created (worker capture shadow, ${msg.method || 'unknown'})`)
+      }
+      debugLog(`Worker capture started (${msg.method || 'unknown'})`)
+      // Offscreen mode is main-thread-driven; kick the loop now that the
+      // worker is ready to receive bitmaps.
+      if (msg.method === 'offscreen' && state.isScanning) scheduleNextFrame()
+      return
+    }
+    case 'captureAnchorsLocked':
+      // The worker has a cached data region and an ROI crop rect. Stash the
+      // rect so processFrameForOffscreen can narrow createImageBitmap to
+      // just the ROI — that's the main win of Finding 1.
+      if (msg.sourceRect && typeof msg.sourceRect.x === 'number') {
+        state.workerCaptureSourceRect = msg.sourceRect
+        debugLog(
+          `Worker anchors locked — ROI ` +
+          `(${msg.sourceRect.x},${msg.sourceRect.y}) ` +
+          `${msg.sourceRect.w}x${msg.sourceRect.h}`
+        )
+      } else {
+        state.workerCaptureSourceRect = null
+        debugLog('Worker anchors locked (no ROI rect provided)')
+      }
+      return
+    case 'captureFrame':
+      handleWorkerCaptureFrame(msg)
+      return
+    case 'captureStopped': {
+      const wasRequested = state.workerCaptureStopRequested
+      state.workerCaptureStopRequested = false
+      if (wasRequested) {
+        // Clean teardown (stopWorkerCapture / fallBackFromWorkerCapture /
+        // resetReceiver). The initiator already cleared the relevant flags
+        // before posting stopCapture.
+        state.workerCaptureActive = false
+        state.offscreenCaptureActive = false
+        debugLog('Worker capture stopped (expected)')
+        // If a restart was requested during the stop window, fire it now
+        // that the worker has confirmed teardown — this is what keeps
+        // Reset / Receive-another from silently downgrading a healthy
+        // worker-capture session to the main-thread path.
+        if (state.workerCaptureStartPendingAfterStop) {
+          state.workerCaptureStartPendingAfterStop = false
+          if (state.isScanning) {
+            if (CAPTURE_METHOD === 'worker') startWorkerCapture()
+            else if (CAPTURE_METHOD === 'offscreen') startOffscreenCapture()
+            scheduleNextFrame()
+          }
+        }
+        return
+      }
+      // Unexpected: worker pump exited without our asking — track ended,
+      // reader drained, VideoFrame allocation failed, etc. If we only
+      // cleared workerCaptureActive here the main thread would stay
+      // suppressed by scheduleNextFrame's gate and scanning would go idle.
+      // Route through the fallback path so processFrame picks up.
+      debugLog('Worker capture stopped unexpectedly — falling back to main-thread processFrame')
+      fallBackFromWorkerCapture()
+      return
+    }
+    case 'error': {
       debugLog(`Worker error message: ${msg.message}`)
+      // Capture-side errors come without an id and prefix the failed handler
+      // name — map those to a clean fallback so a browser/worker feature
+      // mismatch doesn't freeze scanning.
+      const text = typeof msg.message === 'string' ? msg.message : ''
+      const captureStartFailed =
+        text.startsWith('startCaptureWithTrack:') ||
+        text.startsWith('startCaptureWithOffscreen:')
+      const captureLoopFailed =
+        text.startsWith('capture loop:') ||
+        text.startsWith('captureBitmap:')
+      if (captureStartFailed) {
+        debugLog('Worker capture startup failed — falling back to main-thread processFrame')
+        fallBackFromWorkerCapture()
+      } else if (captureLoopFailed) {
+        // Runtime pump error — worker may have already posted captureStopped;
+        // if it didn't, we still want a clean fallback next tick.
+        fallBackFromWorkerCapture()
+      }
       if (msg.id && receiverWorkerPending.has(msg.id)) {
         const p = receiverWorkerPending.get(msg.id)
         receiverWorkerPending.delete(msg.id)
@@ -260,6 +635,7 @@ function handleReceiverWorkerMessage(event) {
         if (p && p.reject) p.reject(new Error(msg.message))
       }
       return
+    }
   }
 }
 
@@ -325,6 +701,80 @@ function handleWorkerDecoderDelta(msg) {
       void handleComplete()
     }
   }
+}
+
+// Worker capture pump posts one captureFrame per video frame. The worker has
+// already done capture, decode, and decoder-ingest; this handler just updates
+// the main-thread UI and validFrames bookkeeping that acceptPackets would have
+// handled in the main-thread path.
+function handleWorkerCaptureFrame(msg) {
+  // Release the offscreen backpressure slot — one bitmap round-trip is done,
+  // the main thread can create the next.
+  state.offscreenBitmapInFlightAt = null
+  state.frameCount++
+  // Apply decoder deltas first so completion / newSession are handled by the
+  // existing delta path (which already owns those transitions).
+  handleWorkerDecoderDelta(msg)
+
+  if (msg.scanning) {
+    // Worker hasn't locked anchors yet — nothing more to do; UI stays in
+    // "Connected - scanning..." state.
+    return
+  }
+
+  if (msg.accepted > 0) {
+    state.validFrames++
+    state.decodeFailCount = 0
+    state.frameAcceptedThisFrame = true
+    if (msg.innovations > 0) state.frameInnovatedThisFrame = true
+    recordProgressSample()
+  } else {
+    state.decodeFailCount++
+  }
+
+  const nowMs = performance.now()
+  const shadow = state.decoder
+  const isComplete = shadow && typeof shadow.isComplete === 'function' && shadow.isComplete()
+  const forceUiUpdate = isComplete || state.validFrames <= 1
+  const shouldRefreshUi = shouldUpdateReceiverUi(state.lastReceivingUiUpdateMs, nowMs, forceUiUpdate)
+
+  if (msg.accepted > 0 && shouldRefreshUi) {
+    elements.statFrames.textContent = state.validFrames + ' valid frames'
+  }
+
+  if (msg.accepted > 0 && state.validFrames > 0 && state.validFrames % RX_PROGRESS_LOG_INTERVAL_FRAMES === 0) {
+    const breakdown = msg.symbolBreakdown || {}
+    const throughput = getThroughputStats()
+    const rateSuffix = throughput
+      ? ` rate=${formatBytes(throughput.average)}/s recent=${formatBytes(throughput.recent ?? throughput.average)}/s`
+      : ''
+    debugLog(
+      `Progress: ${getDisplayProgressPercent(shadow)}% ` +
+      `solved=${msg.solved ?? shadow?.solved ?? 0}/${msg.K ?? shadow?.K ?? '?'} ` +
+      `unique=${shadow?.uniqueSymbols ?? 0} ` +
+      `src=${breakdown.sourceCount ?? '?'} ` +
+      `par=${breakdown.parityCount ?? '?'} ` +
+      `fou=${breakdown.fountainCount ?? '?'} ` +
+      `meta=${breakdown.metadataCount ?? '?'} ` +
+      `pending=${shadow?.pendingSymbolCount ?? '?'} ` +
+      `missing=${shadow?.unresolvedSourceCount ?? '?'} ` +
+      `pkts=${msg.accepted}` +
+      rateSuffix
+    )
+  }
+
+  if (shouldRefreshUi) {
+    updateProgress()
+    state.lastReceivingUiUpdateMs = nowMs
+  }
+
+  // Stall counter — the delta handler doesn't know about frame boundaries;
+  // drive it from here so the GF(2) tail solver can still fire.
+  if (state.frameAcceptedThisFrame && shadow && typeof shadow.noteFrameBoundary === 'function') {
+    shadow.noteFrameBoundary()
+  }
+  state.frameAcceptedThisFrame = false
+  state.frameInnovatedThisFrame = false
 }
 
 function maybeProbeReceiverWorker(imageData) {
@@ -1539,7 +1989,17 @@ const state = {
   progressSamples: [],
   lastReceivingUiUpdateMs: 0,
   rxPerf: createReceiverPerfState(),
-  captureTuning: createCaptureTuningState()
+  captureTuning: createCaptureTuningState(),
+  workerCaptureActive: false,
+  workerCapturePending: false,
+  offscreenCaptureActive: false,
+  workerCaptureSourceRect: null,
+  offscreenBitmapInFlightAt: null,
+  workerCaptureStartDeadlineId: null,
+  workerCaptureStopRequested: false,
+  workerCaptureStartPendingAfterStop: false,
+  frameAcceptedThisFrame: false,
+  frameInnovatedThisFrame: false
 }
 
 const CIMBAR_MODE_LABELS = {
@@ -2079,15 +2539,26 @@ async function startCapture(deviceId) {
 
 function scheduleNextFrame() {
   if (!state.isScanning || !state.stream) return
+  // Full-handoff worker capture mode pumps frames inside the worker via
+  // MediaStreamTrackProcessor — main thread must not schedule its own
+  // processFrame, since that would re-enable the drawImage/getImageData
+  // path we just moved off.
+  if (state.workerCaptureActive || state.workerCapturePending) return
+  // During a reset→restart in worker mode, we've posted stopCapture and are
+  // waiting for the ack before reissuing startCaptureWithTrack. Don't let
+  // the main-thread loop quietly take over that window — scanning resumes
+  // via the deferred start once captureStopped arrives.
+  if (state.workerCaptureStartPendingAfterStop) return
 
   const video = elements.video
+  const callback = state.offscreenCaptureActive ? processFrameForOffscreen : processFrame
 
   if (hasVideoFrameCallback) {
     // Use requestVideoFrameCallback for accurate frame timing
-    state.callbackId = video.requestVideoFrameCallback(processFrame)
+    state.callbackId = video.requestVideoFrameCallback(callback)
   } else {
     // Fallback to requestAnimationFrame
-    state.animationId = requestAnimationFrame(processFrame)
+    state.animationId = requestAnimationFrame(callback)
   }
 }
 
@@ -2117,26 +2588,15 @@ function captureImageDataToCanvas(source, canvas, ctx, width, height, sourceRect
 }
 
 function getLockedCaptureRegion(region, sourceWidth, sourceHeight) {
-  if (!region) return null
-
-  const padX = Math.max(4, Math.ceil(region.stepX || BLOCK_SIZE))
-  const padY = Math.max(4, Math.ceil(region.stepY || BLOCK_SIZE))
-  const x = Math.max(0, Math.floor(region.x - padX))
-  const y = Math.max(0, Math.floor(region.y - padY))
-  const w = Math.max(1, Math.min(sourceWidth - x, Math.ceil(region.w + padX * 2)))
-  const h = Math.max(1, Math.min(sourceHeight - y, Math.ceil(region.h + padY * 2)))
-
+  const base = computeLockedCaptureRect(region, sourceWidth, sourceHeight, BLOCK_SIZE)
+  if (!base) return null
+  // Main-thread callers also read sourceWidth / sourceHeight off the result
+  // (see processFrame's ROI freshness check) — tack them on here without
+  // polluting the shared pure helper.
   return {
-    sourceRect: { x, y, w, h },
+    ...base,
     sourceWidth,
-    sourceHeight,
-    width: w,
-    height: h,
-    region: {
-      ...region,
-      x: region.x - x,
-      y: region.y - y
-    }
+    sourceHeight
   }
 }
 
@@ -3009,6 +3469,7 @@ function cancelNextFrame() {
 
 function resetReceiver() {
   state.isScanning = false
+  stopWorkerCapture()
 
   cancelNextFrame()
 
@@ -3067,6 +3528,14 @@ function resetReceiver() {
 function startScanning() {
   state.isScanning = true
   initReceiverWorker()
+  // Worker-capture modes take over (or intercept) the frame pump. Attempt
+  // the handoff here; if the worker isn't ready yet, the start function
+  // sets state.workerCapturePending and the 'ready' handler retries.
+  // scheduleNextFrame is still called so the appropriate callback kicks in
+  // (worker-full mode no-ops, offscreen uses processFrameForOffscreen, main
+  // falls through to the existing processFrame path).
+  if (CAPTURE_METHOD === 'worker') startWorkerCapture()
+  else if (CAPTURE_METHOD === 'offscreen') startOffscreenCapture()
   scheduleNextFrame()
 }
 
@@ -3166,6 +3635,10 @@ export function initHdmiUvcReceiver(errorHandler) {
     }
   }
   debugLog('HDMI-UVC Receiver initialized')
+  debugLog(
+    `Capture method chosen: ${CAPTURE_METHOD} ` +
+    `(capabilities=${JSON.stringify(CAPTURE_CAPABILITIES)})`
+  )
 }
 
 // Pure helper extracted so Phase 1's stall-counter contract is unit-testable

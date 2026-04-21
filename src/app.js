@@ -43,6 +43,11 @@ import {
   testFrameRoundtrip,
   testAnchorDetectionWithOffset
 } from './lib/hdmi-uvc/hdmi-uvc-frame.js'
+import {
+  testCaptureMethodDecision,
+  testComputeLockedCaptureRect
+} from './lib/hdmi-uvc/hdmi-uvc-receiver-capture.js'
+import { testIngestCapturedFrame } from './lib/hdmi-uvc/hdmi-uvc-capture-pump.js'
 
 // Make libraries available globally
 window.jsQR = jsQR
@@ -72,6 +77,9 @@ window.testReceiverFrameAcceptSignals = testReceiverFrameAcceptSignals
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
 window.testPass2TwoStageSchedule = testPass2TwoStageSchedule
 window.testParitySweepCounter = testParitySweepCounter
+window.testCaptureMethodDecision = testCaptureMethodDecision
+window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
+window.testIngestCapturedFrame = testIngestCapturedFrame
 
 // ============ ERROR HANDLING ============
 function showError(message) {
@@ -202,7 +210,10 @@ async function runAllTests() {
     receiverFrameSignals: testReceiverFrameAcceptSignals(),
     stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames(),
     twoStagePass2Schedule: testPass2TwoStageSchedule(),
-    paritySweepCounter: testParitySweepCounter()
+    paritySweepCounter: testParitySweepCounter(),
+    captureMethodDecision: testCaptureMethodDecision(),
+    computeLockedCaptureRect: testComputeLockedCaptureRect(),
+    ingestCapturedFrame: await testIngestCapturedFrame()
   }
 
   const passed = Object.values(results).every(r => r)

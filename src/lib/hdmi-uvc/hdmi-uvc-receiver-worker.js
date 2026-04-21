@@ -13,6 +13,11 @@
 //   { type: 'resetDecoder' }                             // sub-phase 3
 //   { type: 'noteFrameBoundary', id? }                   // sub-phase 3
 //   { type: 'reconstruct', id }                          // sub-phase 3
+//   { type: 'startCaptureWithTrack', track, region, expectedPacketSize }   // Phase 3.3
+//   { type: 'startCaptureWithOffscreen', region, expectedPacketSize }      // Phase 3.5
+//   { type: 'captureBitmap', bitmap, expectedPacketSize }                  // Phase 3.5
+//   { type: 'updateCaptureRegion', region, expectedPacketSize }            // Phase 3.3
+//   { type: 'stopCapture' }                                                // Phase 3.3
 //
 // Protocol (worker → main):
 //   { type: 'ready', protocolVersion }
@@ -21,11 +26,17 @@
 //   { type: 'anchorsResult', id, anchors, region, elapsedMs }
 //   { type: 'decoderDelta', ... }   // emitted on every ingest/reset
 //   { type: 'reconstructResult', id, data?, error? }
+//   { type: 'captureStarted', method: 'track'|'offscreen' }                // Phase 3.3
+//   { type: 'captureFrame', decodeResult, innovations, accepted, newSession,
+//     completionEvent, solved, K, K_prime, symbolBreakdown, ... }          // Phase 3.3
+//   { type: 'captureStopped' }                                             // Phase 3.3
 //   { type: 'error', id?, message }
 
 import { detectAnchors, dataRegionFromAnchors, decodeDataRegion } from './hdmi-uvc-frame.js'
 import { createDecoder } from '../decoder.js'
 import { parsePacket, PACKET_HEADER_SIZE } from '../packet.js'
+import { ingestCapturedFrame } from './hdmi-uvc-capture-pump.js'
+import { computeLockedCaptureRect } from './hdmi-uvc-receiver-capture.js'
 
 const WORKER_PROTOCOL_VERSION = 2
 
@@ -391,6 +402,349 @@ function handleReconstruct(msg) {
   }
 }
 
+// === Phase 3.3: worker-side capture pump =====================================
+// captureState holds the reader + config for the active pump loop. Exactly one
+// pump may run at a time; stopCapture sets `stopped` so the loop exits on its
+// next iteration.
+let captureState = null
+
+function postCaptureStopped() {
+  self.postMessage({ type: 'captureStopped' })
+}
+
+function buildCaptureFrameMessage(result) {
+  const d = decoder
+  const isComplete = d && typeof d.isComplete === 'function' ? d.isComplete() : false
+  const dr = result.decodeResult
+  return {
+    type: 'captureFrame',
+    decodeResult: dr ? {
+      crcValid: !!dr.crcValid,
+      header: serializeDecodeHeader(dr.header),
+      payloadLength: dr.payload ? dr.payload.length : 0,
+      _diag: dr._diag || null
+    } : null,
+    innovations: result.innovations,
+    accepted: result.accepted,
+    newSession: result.newSession,
+    completionEvent: isComplete,
+    solved: d ? d.solved : 0,
+    solvedTotal: d ? d.solvedTotal : 0,
+    K: d ? (d.K ?? null) : null,
+    K_prime: d ? (d.K_prime ?? null) : null,
+    blockSize: d ? (d.blockSize ?? 0) : 0,
+    progress: d ? (d.progress ?? 0) : 0,
+    uniqueSymbols: d ? (d.uniqueSymbols ?? 0) : 0,
+    pendingSymbolCount: d ? (d.pendingSymbolCount ?? 0) : 0,
+    unresolvedSourceCount: d ? (d.unresolvedSourceCount ?? null) : null,
+    metadata: d ? (d.metadata ?? null) : null,
+    telemetry: d ? (d.telemetry ?? null) : null,
+    isComplete,
+    symbolBreakdown: currentSymbolBreakdown()
+  }
+}
+
+function ensurePumpPixelBuffer(pixelCount) {
+  const required = pixelCount * 4
+  if (!captureState.pixelBuffer || captureState.pixelBuffer.length !== required) {
+    captureState.pixelBuffer = new Uint8ClampedArray(required)
+  }
+  return captureState.pixelBuffer
+}
+
+async function captureLoopWithTrack(reader) {
+  try {
+    while (!captureState.stopped) {
+      const { value: frame, done } = await reader.read()
+      if (done) break
+      if (!frame) continue
+      try {
+        await processCapturedVideoFrame(frame)
+      } catch (err) {
+        self.postMessage({
+          type: 'error',
+          message: 'capture loop: ' + ((err && err.message) ? err.message : String(err))
+        })
+      } finally {
+        frame.close()
+      }
+    }
+  } finally {
+    try { reader.cancel() } catch (_) { /* ignore */ }
+    captureState = null
+    postCaptureStopped()
+  }
+}
+
+// Single-frame processing path. Owns anchor acquisition so the worker does
+// not depend on the main thread to discover a locked ROI first — that closes
+// Finding 2 of the 2026-04-21 review: the stated Phase 3 goal is "anchor
+// detection + decode entirely off-main-thread."
+//
+// Strategy: full-frame copy every frame until dataRegionFromAnchors succeeds,
+// then cache the region in captureState.region and reuse it for subsequent
+// frames. The cached region is cleared by `stopCapture` or by the main thread
+// posting `updateCaptureRegion` with { region: null }.
+// Pump logic for a single pixel buffer. Supports two incoming shapes:
+//   * pre-lock: pixelBuffer is the full frame (width/height match the full
+//     frame). runCapturePumpOnBuffer detects anchors, caches the narrowed
+//     sourceRect + translated region for subsequent frames, and decodes the
+//     current frame against the *un*translated region so the first frame
+//     post-lock isn't wasted.
+//   * post-lock: pixelBuffer is the ROI crop (width/height match
+//     captureState.region.sourceRect). The translated region is used
+//     directly; no anchor detection.
+//
+// fullFrameWidth/fullFrameHeight are needed for ROI computation (clamping
+// sourceRect against the true source dimensions). When the caller can't
+// distinguish (offscreen path), they fall back to width/height.
+function runCapturePumpOnBuffer(pixelBuffer, width, height, fullFrameWidth, fullFrameHeight) {
+  const cached = captureState.region
+  let decodeRegion = null
+  let newlyLocked = false
+
+  if (cached && cached.region) {
+    // Post-lock. Pick the right region based on whether the buffer we got is
+    // the cropped ROI (track path steady state) or still full-frame (a
+    // captureBitmap that was in flight before the main thread received
+    // captureAnchorsLocked).
+    if (
+      cached.sourceRect &&
+      width === cached.sourceRect.w &&
+      height === cached.sourceRect.h
+    ) {
+      decodeRegion = cached.region
+    } else {
+      decodeRegion = cached.regionFull || cached.region
+    }
+  } else {
+    const anchors = detectAnchors(pixelBuffer, width, height)
+    if (anchors && anchors.length >= 2) {
+      const candidate = dataRegionFromAnchors(anchors)
+      if (candidate) {
+        // Decode this frame against the full-frame candidate (coords match
+        // pixelBuffer). Cache the narrowed ROI + translated region so
+        // subsequent frames can stay on the hot path.
+        decodeRegion = candidate
+        const srcW = fullFrameWidth || width
+        const srcH = fullFrameHeight || height
+        const locked = computeLockedCaptureRect(candidate, srcW, srcH)
+        captureState.region = locked
+          ? {
+              sourceRect: locked.sourceRect,
+              region: locked.region,
+              regionFull: candidate
+            }
+          : { sourceRect: null, region: candidate, regionFull: candidate }
+        newlyLocked = true
+      }
+    }
+  }
+
+  if (!decodeRegion) {
+    self.postMessage({
+      type: 'captureFrame',
+      scanning: true,
+      decodeResult: null,
+      innovations: 0,
+      accepted: 0,
+      newSession: false,
+      completionEvent: false,
+      symbolBreakdown: currentSymbolBreakdown()
+    })
+    return
+  }
+
+  if (newlyLocked) {
+    self.postMessage({
+      type: 'captureAnchorsLocked',
+      region: serializeRegion(captureState.region.region),
+      sourceRect: captureState.region.sourceRect || null
+    })
+  }
+
+  const result = ingestCapturedFrame({
+    pixelBuffer,
+    width,
+    region: decodeRegion,
+    expectedPacketSize: captureState.expectedPacketSize,
+    decoder: ensureDecoder(),
+    decodeDataRegionFn: decodeDataRegion,
+    extractFn: extractValidPacketsFromPayload
+  })
+
+  self.postMessage(buildCaptureFrameMessage(result))
+}
+
+async function processCapturedVideoFrame(frame) {
+  const frameWidth = frame.displayWidth || frame.codedWidth
+  const frameHeight = frame.displayHeight || frame.codedHeight
+  if (!frameWidth || !frameHeight) return
+
+  const cached = captureState.region
+  const sourceRect = cached && cached.sourceRect ? cached.sourceRect : null
+  const copyRect = sourceRect
+    ? { x: sourceRect.x, y: sourceRect.y, width: sourceRect.w, height: sourceRect.h }
+    : { x: 0, y: 0, width: frameWidth, height: frameHeight }
+
+  const bufWidth = copyRect.width
+  const bufHeight = copyRect.height
+  const pixelBuffer = ensurePumpPixelBuffer(bufWidth * bufHeight)
+
+  await frame.copyTo(pixelBuffer, {
+    rect: copyRect,
+    format: 'RGBA',
+    colorSpace: 'srgb'
+  })
+
+  runCapturePumpOnBuffer(pixelBuffer, bufWidth, bufHeight, frameWidth, frameHeight)
+}
+
+// Phase 3.5 offscreen fallback: the main thread ships an ImageBitmap (via
+// createImageBitmap(video), transferable) and the worker does the getImageData
+// + anchor + decode locally. Slower than the track path (one extra copy +
+// readback) but portable — MediaStreamTrackProcessor isn't available on every
+// platform, while createImageBitmap + OffscreenCanvas is near-universal.
+let offscreenPumpCanvas = null
+let offscreenPumpCtx = null
+function ensureOffscreenPumpCanvas(width, height) {
+  if (!offscreenPumpCanvas) {
+    offscreenPumpCanvas = new OffscreenCanvas(width, height)
+    offscreenPumpCtx = offscreenPumpCanvas.getContext('2d', {
+      willReadFrequently: true,
+      alpha: false,
+      colorSpace: 'srgb'
+    })
+  } else if (offscreenPumpCanvas.width !== width || offscreenPumpCanvas.height !== height) {
+    offscreenPumpCanvas.width = width
+    offscreenPumpCanvas.height = height
+  }
+  return offscreenPumpCtx
+}
+
+function handleCaptureBitmap(msg) {
+  const bitmap = msg && msg.bitmap
+  if (!bitmap) return
+  if (!captureState || captureState.method !== 'offscreen') {
+    try { bitmap.close() } catch (_) { /* ignore */ }
+    return
+  }
+  if (captureState.stopped) {
+    try { bitmap.close() } catch (_) { /* ignore */ }
+    return
+  }
+  if (msg.expectedPacketSize != null) {
+    captureState.expectedPacketSize = msg.expectedPacketSize
+  }
+  try {
+    const ctx = ensureOffscreenPumpCanvas(bitmap.width, bitmap.height)
+    if (!ctx) throw new Error('OffscreenCanvas 2d context unavailable')
+    ctx.drawImage(bitmap, 0, 0)
+    const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height)
+    // For the offscreen path the main thread may have already narrowed the
+    // bitmap to the ROI (once it's received sourceRect via
+    // captureAnchorsLocked). Either way, width/height always match the
+    // incoming bitmap; runCapturePumpOnBuffer handles both cases.
+    runCapturePumpOnBuffer(imageData.data, bitmap.width, bitmap.height, bitmap.width, bitmap.height)
+  } catch (err) {
+    self.postMessage({
+      type: 'error',
+      message: 'captureBitmap: ' + ((err && err.message) ? err.message : String(err))
+    })
+  } finally {
+    try { bitmap.close() } catch (_) { /* ignore */ }
+  }
+}
+
+function handleStartCaptureWithTrack(msg) {
+  if (captureState) {
+    self.postMessage({
+      type: 'error',
+      message: 'startCaptureWithTrack: capture already active'
+    })
+    return
+  }
+  if (typeof MediaStreamTrackProcessor === 'undefined') {
+    self.postMessage({
+      type: 'error',
+      message: 'startCaptureWithTrack: MediaStreamTrackProcessor unavailable in worker'
+    })
+    return
+  }
+  if (!msg.track) {
+    self.postMessage({
+      type: 'error',
+      message: 'startCaptureWithTrack: missing track'
+    })
+    return
+  }
+  let processor
+  try {
+    processor = new MediaStreamTrackProcessor({ track: msg.track })
+  } catch (err) {
+    self.postMessage({
+      type: 'error',
+      message: 'startCaptureWithTrack: ' + ((err && err.message) ? err.message : String(err))
+    })
+    return
+  }
+  const reader = processor.readable.getReader()
+  captureState = {
+    method: 'track',
+    reader,
+    region: msg.region || null,
+    expectedPacketSize: msg.expectedPacketSize || null,
+    stopped: false,
+    pixelBuffer: null
+  }
+  self.postMessage({ type: 'captureStarted', method: 'track' })
+  // Run the loop detached; errors post via the error channel.
+  void captureLoopWithTrack(reader)
+}
+
+function handleStartCaptureWithOffscreen(msg) {
+  // Phase 3.5: main thread drives frames via createImageBitmap and pushes
+  // captureBitmap messages; worker reads, detects anchors, and pumps.
+  if (captureState) {
+    self.postMessage({
+      type: 'error',
+      message: 'startCaptureWithOffscreen: capture already active'
+    })
+    return
+  }
+  captureState = {
+    method: 'offscreen',
+    region: msg.region || null,
+    expectedPacketSize: msg.expectedPacketSize || null,
+    stopped: false,
+    pixelBuffer: null
+  }
+  self.postMessage({ type: 'captureStarted', method: 'offscreen' })
+}
+
+function handleUpdateCaptureRegion(msg) {
+  if (!captureState) return
+  // Explicit null/false clears the cached region — main thread uses this to
+  // force worker re-acquisition (e.g., after a decode-failure streak or a
+  // receive-another reset). Undefined leaves the cache alone.
+  if ('region' in msg) captureState.region = msg.region || null
+  if (msg.expectedPacketSize != null) captureState.expectedPacketSize = msg.expectedPacketSize
+}
+
+function handleStopCapture() {
+  if (!captureState) {
+    postCaptureStopped()
+    return
+  }
+  captureState.stopped = true
+  // For the offscreen stub there's no loop to exit; emit the done signal now.
+  if (captureState.method === 'offscreen') {
+    captureState = null
+    postCaptureStopped()
+  }
+  // For the track pump the loop's finally block posts captureStopped.
+}
+
 self.onmessage = (event) => {
   const msg = event.data
   if (!msg || typeof msg !== 'object') return
@@ -433,6 +787,21 @@ self.onmessage = (event) => {
         else reply = res
         break
       }
+      case 'startCaptureWithTrack':
+        handleStartCaptureWithTrack(msg)
+        break
+      case 'startCaptureWithOffscreen':
+        handleStartCaptureWithOffscreen(msg)
+        break
+      case 'captureBitmap':
+        handleCaptureBitmap(msg)
+        break
+      case 'updateCaptureRegion':
+        handleUpdateCaptureRegion(msg)
+        break
+      case 'stopCapture':
+        handleStopCapture()
+        break
       default:
         reply = {
           type: 'error',
