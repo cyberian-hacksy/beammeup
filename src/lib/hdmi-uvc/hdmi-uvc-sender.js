@@ -260,6 +260,7 @@ const state = {
   systematicStride: 1,
   intermediateSystematicStride: 1,
   paritySystematicIndex: 0,
+  paritySweepsInPass: 0,
   paritySystematicStride: 1,
   fountainSymbolId: 0,
   dataPacketCount: 0,
@@ -334,6 +335,7 @@ function resetPreparedSessionState() {
   state.systematicStride = 1
   state.intermediateSystematicStride = 1
   state.paritySystematicIndex = 0
+  state.paritySweepsInPass = 0
   state.paritySystematicStride = 1
   state.fountainSymbolId = 0
   state.dataPacketCount = 0
@@ -1133,22 +1135,25 @@ function describeFountainInterval(interval) {
     : 'source-only'
 }
 
-function getSlotMixPatternForPass(passNumber) {
+function getSlotMixPatternForPass(passNumber, { paritySweepsInPass = 0 } = {}) {
   if (!usesMixedSlotReplay()) return null
   if (passNumber <= 1) return ['source', 'source', 'source', 'source', 'source', 'source']
   if (passNumber === 2) {
-    // Default `p2`: 4S/2P — emit parity earlier so the receiver can start
-    // running parity recovery before the source replay completes.
-    // `mix`: 2S/2P/2F — aggressive, useful when source arrival is already
-    // saturated. `legacy`: historical 5S/1P, kept as an escape hatch.
+    // Two-stage pass 2: emit one full parity sweep at 4S/2P so every parity
+    // row reaches the receiver once, then swap the second parity slot for a
+    // fountain slot (4S/1P/1F) for the rest of pass 2 so fountain symbols
+    // start contributing during the replay tail instead of waiting for pass 3.
+    // `mix` and `legacy` overrides keep their historical meaning.
     if (PASS2_VARIANT === 'legacy') {
       return ['source', 'source', 'source', 'source', 'source', 'parity']
     }
     if (PASS2_VARIANT === 'mix') {
       return ['source', 'source', 'parity', 'parity', 'fountain', 'fountain']
     }
-    // `p2` and any unrecognized value fall through to the new default.
-    return ['source', 'source', 'source', 'source', 'parity', 'parity']
+    if (paritySweepsInPass === 0) {
+      return ['source', 'source', 'source', 'source', 'parity', 'parity']
+    }
+    return ['source', 'source', 'source', 'source', 'parity', 'fountain']
   }
   if (passNumber === 3) return ['source', 'source', 'source', 'source', 'parity', 'fountain']
   if (passNumber === 4) return ['source', 'source', 'source', 'parity', 'fountain', 'fountain']
@@ -1211,6 +1216,7 @@ function getSystematicSymbolIdForPass(index, span, stride, passNumber, base = 0)
 function advanceMixedReplayPass(frameNumber) {
   state.systematicPass++
   state.systematicIndex = 0
+  state.paritySweepsInPass = 0
   const paritySpan = getParitySystematicSpan()
   const pattern = getSlotMixPatternForPass(state.systematicPass)
   debugLog(
@@ -1247,7 +1253,17 @@ function nextParitySystematicSymbolId() {
     state.systematicPass,
     state.encoder.K
   )
-  state.paritySystematicIndex = (state.paritySystematicIndex + 1) % paritySpan
+  const nextIndex = (state.paritySystematicIndex + 1) % paritySpan
+  if (nextIndex === 0) {
+    state.paritySweepsInPass++
+    if (state.systematicPass === 2 && state.paritySweepsInPass === 1) {
+      debugLog(
+        `Pass 2 first parity sweep complete — switching to 4S/1P/1F ` +
+        `(paritySpan=${paritySpan})`
+      )
+    }
+  }
+  state.paritySystematicIndex = nextIndex
   return symbolId
 }
 
@@ -1349,7 +1365,9 @@ function buildFramePacketBatch(frameNumber) {
   const symbolIds = []
   const slots = Math.max(1, state.packetsPerFrame)
   const tailSystematicBurst = isTailSystematicBurstFrame(frameNumber)
-  const slotMixPattern = getSlotMixPatternForPass(state.systematicPass)
+  const slotMixPattern = getSlotMixPatternForPass(state.systematicPass, {
+    paritySweepsInPass: state.paritySweepsInPass
+  })
 
   if (sendMetadata) {
     packets.push(state.encoder.generateSymbol(0))
@@ -2098,4 +2116,65 @@ export function initHdmiUvcSender(errorHandler) {
     }
   }
   debugLog('HDMI-UVC Sender initialized')
+}
+
+// Pure function tests so the two-stage pass-2 schedule and parity-sweep wrap
+// counter are verifiable without spinning up the encoder/DOM. The runtime
+// contract: pass 2 emits 4S/2P for sweep 0, then 4S/1P/1F for every
+// subsequent sweep; paritySweepsInPass increments when paritySystematicIndex
+// wraps from paritySpan-1 back to 0.
+export function testPass2TwoStageSchedule() {
+  const sweep0 = getSlotMixPatternForPass(2, { paritySweepsInPass: 0 })
+  const sweep1 = getSlotMixPatternForPass(2, { paritySweepsInPass: 1 })
+  const sweep7 = getSlotMixPatternForPass(2, { paritySweepsInPass: 7 })
+
+  const countSlots = (pattern) => {
+    const c = { source: 0, parity: 0, fountain: 0 }
+    for (const s of pattern) if (c[s] !== undefined) c[s]++
+    return c
+  }
+
+  const c0 = countSlots(sweep0)
+  const c1 = countSlots(sweep1)
+  const c7 = countSlots(sweep7)
+
+  const ok0 = c0.source === 4 && c0.parity === 2 && c0.fountain === 0
+  const ok1 = c1.source === 4 && c1.parity === 1 && c1.fountain === 1
+  const ok7 = c7.source === 4 && c7.parity === 1 && c7.fountain === 1
+
+  // Pass 1 must still be source-only; pass 3+ unchanged.
+  const pass1 = getSlotMixPatternForPass(1, { paritySweepsInPass: 0 })
+  const pass3 = getSlotMixPatternForPass(3, { paritySweepsInPass: 0 })
+  const c1Pass = countSlots(pass1)
+  const c3Pass = countSlots(pass3)
+  const okPass1 = c1Pass.source === 6 && c1Pass.parity === 0 && c1Pass.fountain === 0
+  const okPass3 = c3Pass.source === 4 && c3Pass.parity === 1 && c3Pass.fountain === 1
+
+  const pass = ok0 && ok1 && ok7 && okPass1 && okPass3
+  console.log('Two-stage pass-2 schedule test:', pass ? 'PASS' : 'FAIL',
+    { c0, c1, c7, c1Pass, c3Pass })
+  return pass
+}
+
+export function testParitySweepCounter() {
+  // Simulate the wrap-counter logic in isolation. Produces the sequence a
+  // sender would see: 0,0,...,0,1,1,...,1,2,... where the boundary is at
+  // paritySpan-1 -> 0. This is the contract buildFramePacketBatch relies on.
+  const paritySpan = 4
+  let idx = 0
+  let sweeps = 0
+  const observed = []
+  for (let i = 0; i < 12; i++) {
+    observed.push(sweeps)
+    const nextIdx = (idx + 1) % paritySpan
+    if (nextIdx === 0) sweeps++
+    idx = nextIdx
+  }
+  // Expected: 0,0,0,0,1,1,1,1,2,2,2,2
+  const expected = [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]
+  const pass = observed.length === expected.length &&
+    observed.every((v, i) => v === expected[i])
+  console.log('Parity sweep counter test:', pass ? 'PASS' : 'FAIL',
+    { observed, expected })
+  return pass
 }

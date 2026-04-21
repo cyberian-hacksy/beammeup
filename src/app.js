@@ -23,7 +23,12 @@ import { initCimbarReceiver, resetCimbarReceiver, autoStartCimbarReceiver } from
 import { checkCompatibility } from './lib/cimbar/cimbar-loader.js'
 
 // Import HDMI-UVC modules
-import { initHdmiUvcSender, resetHdmiUvcSender } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
+import {
+  initHdmiUvcSender,
+  resetHdmiUvcSender,
+  testPass2TwoStageSchedule,
+  testParitySweepCounter
+} from './lib/hdmi-uvc/hdmi-uvc-sender.js'
 import {
   initHdmiUvcReceiver,
   resetHdmiUvcReceiver,
@@ -65,6 +70,8 @@ window.testHdmiFrameRoundtrip = testFrameRoundtrip
 window.testHdmiAnchorOffset = testAnchorDetectionWithOffset
 window.testReceiverFrameAcceptSignals = testReceiverFrameAcceptSignals
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
+window.testPass2TwoStageSchedule = testPass2TwoStageSchedule
+window.testParitySweepCounter = testParitySweepCounter
 
 // ============ ERROR HANDLING ============
 function showError(message) {
@@ -193,7 +200,9 @@ async function runAllTests() {
     hdmiFrame: testFrameRoundtrip(),
     hdmiAnchorOffset: testAnchorDetectionWithOffset(),
     receiverFrameSignals: testReceiverFrameAcceptSignals(),
-    stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames()
+    stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames(),
+    twoStagePass2Schedule: testPass2TwoStageSchedule(),
+    paritySweepCounter: testParitySweepCounter()
   }
 
   const passed = Object.values(results).every(r => r)
