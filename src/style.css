@@ -384,6 +384,101 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
 .action-buttons button:disabled { opacity: 0.5; cursor: not-allowed; }
 .action-buttons button.secondary { background: #444; color: #eee; }
 
+/* Diagnostics Panel (HDMI-UVC A/B testing) */
+.hdmi-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 8px;
+  padding: 0.6rem 0.75rem;
+  background: #13131f;
+  border: 1px solid #333;
+  border-radius: 6px;
+}
+.hdmi-diagnostics-title {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #666;
+  margin-bottom: 0.1rem;
+}
+.hdmi-diagnostics-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.hdmi-diagnostics-label {
+  flex: 0 0 auto;
+  width: 88px;
+  font-size: 0.75rem;
+  color: #aaa;
+  text-align: right;
+}
+.hdmi-diagnostics-buttons {
+  flex: 1;
+  display: flex;
+  border: 1px solid #333;
+  border-radius: 4px;
+  overflow: hidden;
+  min-height: 24px;
+}
+.hdmi-diagnostics-buttons button {
+  flex: 1;
+  padding: 0.25rem 0.4rem;
+  background: #1a1a2e;
+  color: #888;
+  border: none;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+}
+.hdmi-diagnostics-buttons button:not(:last-child) {
+  border-right: 1px solid #333;
+}
+.hdmi-diagnostics-buttons button:hover {
+  background: #242440;
+  color: #bbb;
+}
+.hdmi-diagnostics-buttons button.active {
+  background: #00d4ff;
+  color: #0a0a1a;
+}
+.hdmi-diagnostics-hint {
+  flex: 0 0 auto;
+  font-size: 0.65rem;
+  color: #f80;
+  letter-spacing: 0.04em;
+}
+.hdmi-diagnostics-badge {
+  align-self: flex-end;
+  font-size: 0.7rem;
+  color: #ffb347;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid #f80;
+  border-radius: 3px;
+  background: rgba(255,136,0,0.08);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.hdmi-diagnostics-badge:hover {
+  background: rgba(255,136,0,0.2);
+}
+@media (max-width: 500px) {
+  .hdmi-diagnostics-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.25rem;
+  }
+  .hdmi-diagnostics-label {
+    text-align: left;
+    width: auto;
+  }
+  .hdmi-diagnostics-buttons button {
+    font-size: 0.7rem;
+  }
+}
+
 .mode-buttons button:disabled {
   opacity: 0.4;
   cursor: not-allowed;

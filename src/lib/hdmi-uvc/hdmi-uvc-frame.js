@@ -16,6 +16,20 @@ import {
   wasmClassifyCompat4Cells,
   wasmClassifyLuma2Cells
 } from './hdmi-uvc-wasm.js'
+import { getWasmClassifierEnabled } from './hdmi-uvc-diagnostics.js'
+
+// Per-decode timing accumulator for the WASM payload-cell classifier.
+// The receiver resets this before each decodeDataRegion call and reads it
+// after so the frame perf log can attribute classifier cost separately
+// from the rest of decode. Main thread and worker each see their own
+// module copy — neither can read the other's. The receiver wires only
+// the main-thread accumulator into its frame perf telemetry today.
+let classifierMsAccumulator = 0
+export function resetClassifierPerfAccumulator() { classifierMsAccumulator = 0 }
+export function getClassifierPerfAccumulator() { return classifierMsAccumulator }
+const classifierPerfNow = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+  ? () => performance.now()
+  : () => Date.now()
 
 // --- Binary modulation (1 bit per block) ---
 // Each byte is encoded as 8 blocks (MSB first): bit=1 → white (255), bit=0 → black (0).
@@ -1320,46 +1334,54 @@ function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, block
 }
 
 // Pre-compute per-cell symbols for COMPAT_4 (binary) or LUMA_2 (4-level) by
-// batching into the WASM classifier. Returns a Uint8Array or null on failure.
-// Index 0 corresponds to payloadCells[reservedPayloadCells]; out-of-bounds
-// cells are handled by the WASM sampler returning 0 (matches JS default).
+// batching into the WASM classifier. Returns a Uint8Array or null on failure
+// (or when the diagnostic toggle is off). Index 0 corresponds to
+// payloadCells[reservedPayloadCells]; out-of-bounds cells are handled by the
+// WASM sampler returning 0 (matches JS default). Total wall time is added
+// to classifierMsAccumulator so the receiver can surface it in perf logs.
 function batchClassifyPayloadCells({
   imageData, width, height, payloadCells, reservedPayloadCells,
   rx, ry, stepX, stepY, bs, mode, levels, pilotField
 }) {
+  if (!getWasmClassifierEnabled()) return null
   const n = payloadCells.length - reservedPayloadCells
   if (n <= 0) return null
-  const cells = new Array(n)
-  if (mode === 'compat4') {
+  const start = classifierPerfNow()
+  try {
+    const cells = new Array(n)
+    if (mode === 'compat4') {
+      for (let i = 0; i < n; i++) {
+        const cell = payloadCells[reservedPayloadCells + i]
+        const px = rx + Math.round(cell.bx * stepX)
+        const py = ry + Math.round(cell.by * stepY)
+        const localLevels = pilotField
+          ? estimateBinaryPilotLevelsAt(pilotField, cell.bx, cell.by, levels?.blackLevel, levels?.whiteLevel)
+          : levels
+        const threshold = ((localLevels?.blackLevel ?? 0) + (localLevels?.whiteLevel ?? 255)) * 0.5
+        cells[i] = [px, py, bs, threshold]
+      }
+      try {
+        return wasmClassifyCompat4Cells(imageData, width, height, cells)
+      } catch (_) {
+        return null
+      }
+    }
+    // mode === 'luma2'
+    const black = levels?.blackLevel ?? 0
+    const white = levels?.whiteLevel ?? 255
     for (let i = 0; i < n; i++) {
       const cell = payloadCells[reservedPayloadCells + i]
       const px = rx + Math.round(cell.bx * stepX)
       const py = ry + Math.round(cell.by * stepY)
-      const localLevels = pilotField
-        ? estimateBinaryPilotLevelsAt(pilotField, cell.bx, cell.by, levels?.blackLevel, levels?.whiteLevel)
-        : levels
-      const threshold = ((localLevels?.blackLevel ?? 0) + (localLevels?.whiteLevel ?? 255)) * 0.5
-      cells[i] = [px, py, bs, threshold]
+      cells[i] = [px, py, bs, black, white]
     }
     try {
-      return wasmClassifyCompat4Cells(imageData, width, height, cells)
+      return wasmClassifyLuma2Cells(imageData, width, height, cells)
     } catch (_) {
       return null
     }
-  }
-  // mode === 'luma2'
-  const black = levels?.blackLevel ?? 0
-  const white = levels?.whiteLevel ?? 255
-  for (let i = 0; i < n; i++) {
-    const cell = payloadCells[reservedPayloadCells + i]
-    const px = rx + Math.round(cell.bx * stepX)
-    const py = ry + Math.round(cell.by * stepY)
-    cells[i] = [px, py, bs, black, white]
-  }
-  try {
-    return wasmClassifyLuma2Cells(imageData, width, height, cells)
-  } catch (_) {
-    return null
+  } finally {
+    classifierMsAccumulator += classifierPerfNow() - start
   }
 }
 

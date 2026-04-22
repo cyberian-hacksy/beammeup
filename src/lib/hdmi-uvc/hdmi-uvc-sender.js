@@ -15,6 +15,7 @@ import {
 } from './hdmi-uvc-constants.js'
 import { buildFrame, createFrameBuffer, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
+import { getPass2Variant, renderDiagnosticsPanel } from './hdmi-uvc-diagnostics.js'
 
 // Kick off WASM instantiation when the sender module loads so buildFrame's
 // payload CRC uses the WASM kernel from the first transmitted frame. Errors
@@ -23,14 +24,11 @@ loadHdmiUvcWasm().catch(() => {})
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
-// Pass-2 slot-mix variant. Default is `p2` (4S/2P) per the clean-run feedback:
-// the old 5S/1P schedule reached 97% with par=0, i.e. the source replay
-// starved parity too long. Emit parity earlier to shorten the tail.
-// Overrides: `?pass2=legacy` (5S/1P historical), `?pass2=mix` (2S/2P/2F
-// aggressive). See docs/plans/2026-04-17-hdmi-tail-solver-and-rx-hardening.md
-// Phase 3.
-const PASS2_VARIANT = (typeof location !== 'undefined'
-  ? new URLSearchParams(location.search).get('pass2') : null) || 'p2'
+// Pass-2 slot-mix variant lives in the diagnostics module: default `p2` (4S/2P)
+// per the clean-run feedback, with `legacy` (5S/1P historical) and `mix`
+// (2S/2P/2F aggressive) available via the sender diagnostics panel. The
+// value is read per-pass so changes apply on the next TX session without a
+// reload. See docs/plans/2026-04-17-hdmi-tail-solver-and-rx-hardening.md Phase 3.
 const CIMBAR_MAX_FILE_SIZE = 33 * 1024 * 1024
 const HDMI_CIMBAR_MODE = 68
 const HDMI_CIMBAR_VARIANT_NAME = 'B'
@@ -1128,7 +1126,7 @@ function getHybridScheduleDescription() {
     }
     return (
       `Hybrid schedule: source-only pass 1, then mixed ${modeName} slot replay ` +
-      `(pass2=${PASS2_VARIANT}; ${passDescs.join(', ')})`
+      `(pass2=${getPass2Variant()}; ${passDescs.join(', ')})`
     )
   }
 
@@ -1150,10 +1148,11 @@ function getSlotMixPatternForPass(passNumber, { paritySweepsInPass = 0 } = {}) {
     // fountain slot (4S/1P/1F) for the rest of pass 2 so fountain symbols
     // start contributing during the replay tail instead of waiting for pass 3.
     // `mix` and `legacy` overrides keep their historical meaning.
-    if (PASS2_VARIANT === 'legacy') {
+    const variant = getPass2Variant()
+    if (variant === 'legacy') {
       return ['source', 'source', 'source', 'source', 'source', 'parity']
     }
-    if (PASS2_VARIANT === 'mix') {
+    if (variant === 'mix') {
       return ['source', 'source', 'parity', 'parity', 'fountain', 'fountain']
     }
     if (paritySweepsInPass === 0) {
@@ -1716,7 +1715,7 @@ async function startSending() {
     blockSize = bestBlockSize
 
     debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
-    debugLog(`Pass-2 variant: ${PASS2_VARIANT}`)
+    debugLog(`Pass-2 variant: ${getPass2Variant()}`)
     debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
     debugLog(
       `Batch profile: maxPackets=${maxPacketsPerFrame}, ` +
@@ -2121,7 +2120,13 @@ export function initHdmiUvcSender(errorHandler) {
       }
     }
   }
+  const diagPanel = document.getElementById('hdmi-uvc-sender-diagnostics')
+  if (diagPanel) {
+    renderDiagnosticsPanel(diagPanel, ['pass2'], { title: 'Diagnostics (sender)' })
+  }
+
   debugLog('HDMI-UVC Sender initialized')
+  debugLog(`Pass-2 variant: ${getPass2Variant()}`)
 }
 
 // Pure function tests so the two-stage pass-2 schedule and parity-sweep wrap

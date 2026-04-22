@@ -11,7 +11,14 @@ import {
   HEADER_SIZE,
   getModeDataBlockSize
 } from './hdmi-uvc-constants.js'
-import { detectAnchors, dataRegionFromAnchors, decodeDataRegion, readPayloadWithLayout } from './hdmi-uvc-frame.js'
+import {
+  detectAnchors,
+  dataRegionFromAnchors,
+  decodeDataRegion,
+  readPayloadWithLayout,
+  resetClassifierPerfAccumulator,
+  getClassifierPerfAccumulator
+} from './hdmi-uvc-frame.js'
 import ReceiverWorker from './hdmi-uvc-receiver-worker.js?worker&inline'
 import {
   detectCaptureCapabilities,
@@ -19,6 +26,12 @@ import {
   computeLockedCaptureRect
 } from './hdmi-uvc-receiver-capture.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
+import {
+  isPerfMode,
+  getWorkerMode,
+  getCaptureMethod as getCaptureMethodSetting,
+  renderDiagnosticsPanel
+} from './hdmi-uvc-diagnostics.js'
 
 // Kick off WASM instantiation on the main thread so the ?capture=main fallback
 // path (which runs decodeDataRegion on the main thread) uses the WASM CRC32
@@ -28,12 +41,11 @@ loadHdmiUvcWasm().catch(() => {})
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
 const MAX_DEBUG_LINES = 500
-// ?perf=1 (or just ?perf) turns down logging and UI refresh cadence on the
-// receiver so the display doesn't compete with capture+decode for main-thread
-// time. The constants below fan out from this flag so every throttled path
-// (RX perf log, per-frame progress log, DOM refresh) stays coherent.
-const PERF_MODE = typeof location !== 'undefined' &&
-  new URLSearchParams(location.search).has('perf')
+// All three come from the diagnostics module (which reads URL → localStorage
+// → default). Captured at init time because each controls an interval or
+// pipeline baked in for the session; the diagnostics panel shows a Reload
+// prompt when the user changes one so the next load picks it up cleanly.
+const PERF_MODE = isPerfMode()
 const RX_PERF_LOG_INTERVAL_FRAMES = PERF_MODE ? 240 : 60
 const RX_PROGRESS_LOG_INTERVAL_FRAMES = PERF_MODE ? 40 : 10
 const DEBUG_RENDER_INTERVAL_MS = PERF_MODE ? 480 : 120
@@ -43,34 +55,23 @@ const DEBUG_CONSOLE = false
 const CAPTURE_BENCHMARK_SAMPLES_PER_METHOD = 6
 const CAPTURE_BENCH_ONLY = typeof location !== 'undefined' &&
   new URLSearchParams(location.search).has('captureBench')
-// ?worker selects the decode-pump mode (Phase 5). Missing = off; '1'/'hash'
-// runs a diagnostic hash probe only (sub-phase 1); 'anchors' offloads anchor
-// detection (sub-phase 2); 'full' offloads anchor + decoder ingest + tail
-// work (sub-phase 3). On any construction/runtime error the receiver falls
-// back to the main-thread path for the session.
-const WORKER_MODE_RAW = typeof location !== 'undefined'
-  ? new URLSearchParams(location.search).get('worker') : null
-const WORKER_MODE_SET = typeof location !== 'undefined' &&
-  new URLSearchParams(location.search).has('worker')
-const WORKER_MODE = (() => {
-  if (!WORKER_MODE_SET) return 'off'
-  const raw = (WORKER_MODE_RAW || '').toLowerCase()
-  if (raw === '' || raw === '1' || raw === 'hash' || raw === 'true') return 'hash'
-  if (raw === 'anchors') return 'anchors'
-  if (raw === 'full') return 'full'
-  return 'hash'
-})()
+// Worker decode-pump mode: 'off' | 'hash' (diagnostic round-trip) | 'anchors'
+// (offload anchor detection) | 'full' (anchor + decoder ingest + tail). On
+// any worker error the receiver falls back to the main-thread path for the
+// session.
+const WORKER_MODE = getWorkerMode()
 const WORKER_ANCHORS_ENABLED = WORKER_MODE === 'anchors' || WORKER_MODE === 'full'
 const WORKER_FULL_ENABLED = WORKER_MODE === 'full'
-// ?capture selects the capture pipeline. Default: feature-detect. Explicit:
-// 'main' (current drawImage/getImageData path), 'worker' (MediaStreamTrack-
-// Processor + VideoFrame.copyTo in worker), 'offscreen' (OffscreenCanvas /
-// createImageBitmap transferred to worker). 'main' is the safe fallback at
-// every decision.
-const CAPTURE_MODE_RAW = typeof location !== 'undefined'
-  ? new URLSearchParams(location.search).get('capture') : null
+// Capture pipeline: 'main' (drawImage/getImageData on main thread), 'worker'
+// (MediaStreamTrackProcessor + VideoFrame.copyTo in worker), 'offscreen'
+// (createImageBitmap + OffscreenCanvas transferred to worker). 'main' is the
+// safe fallback at every branch. Diagnostic setting 'auto' → feature-detect.
 const CAPTURE_CAPABILITIES = detectCaptureCapabilities()
-const CAPTURE_METHOD = chooseCaptureMethod(CAPTURE_CAPABILITIES, CAPTURE_MODE_RAW)
+const CAPTURE_METHOD = (() => {
+  const setting = getCaptureMethodSetting()
+  const preferred = setting === 'auto' ? null : setting
+  return chooseCaptureMethod(CAPTURE_CAPABILITIES, preferred)
+})()
 // Frames between diagnostic hash probes. Probing every frame is wasteful for
 // a pure diagnostic; every ~30 frames is enough to confirm transport.
 const WORKER_PROBE_INTERVAL_FRAMES = 30
@@ -1090,6 +1091,7 @@ function createReceiverPerfState() {
     anchorMs: createPerfWindow(),
     fastPathMs: createPerfWindow(),
     decodeMs: createPerfWindow(),
+    classifierMs: createPerfWindow(),
     totalMs: createPerfWindow(),
     intervalMs: createPerfWindow(),
     acceptMs: createPerfWindow(),
@@ -1115,6 +1117,7 @@ function clearReceiverPerfSamples(perf) {
   resetPerfWindow(perf.anchorMs)
   resetPerfWindow(perf.fastPathMs)
   resetPerfWindow(perf.decodeMs)
+  resetPerfWindow(perf.classifierMs)
   resetPerfWindow(perf.totalMs)
   resetPerfWindow(perf.intervalMs)
   resetPerfWindow(perf.acceptMs)
@@ -1264,7 +1267,7 @@ function noteReceiverRecovery(kind, packetCount) {
   }
 }
 
-function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs) {
+function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs, classifierMs = 0) {
   const perf = state.rxPerf
   if (!perf) return
 
@@ -1277,6 +1280,7 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
   recordPerfSample(perf.anchorMs, anchorMs)
   recordPerfSample(perf.fastPathMs, fastPathMs)
   recordPerfSample(perf.decodeMs, decodeMs)
+  recordPerfSample(perf.classifierMs, classifierMs)
   recordPerfSample(perf.totalMs, performance.now() - frameStartMs)
   perf.framesSinceLog++
   perf.lastCaptureMethod = captureMethod || perf.lastCaptureMethod
@@ -1307,6 +1311,7 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `anchor=${averagePerfWindow(perf.anchorMs).toFixed(2)}ms ` +
     `fast=${averagePerfWindow(perf.fastPathMs).toFixed(2)}ms ` +
     `decode=${averagePerfWindow(perf.decodeMs).toFixed(2)}ms ` +
+    `cls=${averagePerfWindow(perf.classifierMs).toFixed(2)}ms ` +
     `acceptCall=${averagePerfWindow(perf.acceptMs).toFixed(2)}ms ` +
     `total=${averagePerfWindow(perf.totalMs).toFixed(2)}ms ` +
     `acceptCalls=${avgAcceptCalls.toFixed(2)}/frame pkts=${avgAcceptedPackets.toFixed(2)}/frame ` +
@@ -2676,6 +2681,7 @@ async function processFrame(now, metadata) {
   let anchorMs = 0
   let fastPathMs = 0
   let decodeMs = 0
+  let classifierMs = 0
   let framePerfFinalized = false
   // Reset per-frame accept signals. frameAcceptedThisFrame drives
   // noteFrameBoundary; frameInnovatedThisFrame drives innovation stats only.
@@ -2684,7 +2690,7 @@ async function processFrame(now, metadata) {
   const finalizeFramePerf = () => {
     if (framePerfFinalized) return
     framePerfFinalized = true
-    noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs)
+    noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs, classifierMs)
     if (state.frameAcceptedThisFrame &&
         typeof state.decoder?.noteFrameBoundary === 'function') {
       state.decoder.noteFrameBoundary()
@@ -3110,9 +3116,11 @@ async function processFrame(now, metadata) {
   }
 
   if (!result) {
+    resetClassifierPerfAccumulator()
     const decodeStartMs = performance.now()
     result = decodeDataRegion(imageData.data, frameWidth, region)
     decodeMs += performance.now() - decodeStartMs
+    classifierMs += getClassifierPerfAccumulator()
   }
 
   if (result && result.crcValid) {
@@ -3653,10 +3661,23 @@ export function initHdmiUvcReceiver(errorHandler) {
       debugLog(`Frame count at clear: ${state.frameCount}`)
     }
   }
+  const diagPanel = document.getElementById('hdmi-uvc-receiver-diagnostics')
+  if (diagPanel) {
+    renderDiagnosticsPanel(
+      diagPanel,
+      ['captureMethod', 'wasmClassifier', 'perf', 'worker'],
+      { title: 'Diagnostics (receiver)' }
+    )
+  }
+
   debugLog('HDMI-UVC Receiver initialized')
   debugLog(
     `Capture method chosen: ${CAPTURE_METHOD} ` +
     `(capabilities=${JSON.stringify(CAPTURE_CAPABILITIES)})`
+  )
+  debugLog(
+    `Worker mode: ${WORKER_MODE} ` +
+    `perf=${PERF_MODE ? 'on' : 'off'}`
   )
 }
 
