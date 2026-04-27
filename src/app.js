@@ -41,7 +41,10 @@ import {
   testHeaderRoundtrip,
   testAnchorRoundtrip,
   testFrameRoundtrip,
-  testAnchorDetectionWithOffset
+  testAnchorDetectionWithOffset,
+  testNativeGeometryGuidance,
+  testNative1080pGeometryCheck,
+  testClassifyStep
 } from './lib/hdmi-uvc/hdmi-uvc-frame.js'
 import {
   testCaptureMethodDecision,
@@ -81,6 +84,9 @@ window.testHdmiHeaderRoundtrip = testHeaderRoundtrip
 window.testHdmiAnchorRoundtrip = testAnchorRoundtrip
 window.testHdmiFrameRoundtrip = testFrameRoundtrip
 window.testHdmiAnchorOffset = testAnchorDetectionWithOffset
+window.testNativeGeometryGuidance = testNativeGeometryGuidance
+window.testNative1080pGeometryCheck = testNative1080pGeometryCheck
+window.testClassifyStep = testClassifyStep
 window.testReceiverFrameAcceptSignals = testReceiverFrameAcceptSignals
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
 window.testPass2TwoStageSchedule = testPass2TwoStageSchedule
@@ -221,6 +227,9 @@ async function runAllTests() {
     hdmiAnchor: testAnchorRoundtrip(),
     hdmiFrame: testFrameRoundtrip(),
     hdmiAnchorOffset: testAnchorDetectionWithOffset(),
+    hdmiNativeGeometryGuidance: testNativeGeometryGuidance(),
+    hdmiNative1080pGeometryCheck: testNative1080pGeometryCheck(),
+    hdmiClassifyStep: testClassifyStep(),
     receiverFrameSignals: testReceiverFrameAcceptSignals(),
     stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames(),
     twoStagePass2Schedule: testPass2TwoStageSchedule(),

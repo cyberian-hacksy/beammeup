@@ -13,7 +13,14 @@ import {
   RENDER_SIZE_PRESETS,
   DEFAULT_RENDER_SIZE_PRESET
 } from './hdmi-uvc-constants.js'
-import { buildFrame, createFrameBuffer, getDataRegion, getPayloadCapacity } from './hdmi-uvc-frame.js'
+import {
+  buildFrame,
+  buildNativeGeometryGuidance,
+  createFrameBuffer,
+  getDataRegion,
+  getPayloadCapacity,
+  isNative1080pGeometry
+} from './hdmi-uvc-frame.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
 import { getPass2Variant, renderDiagnosticsPanel } from './hdmi-uvc-diagnostics.js'
 
@@ -492,7 +499,8 @@ function getCanvasViewportMetrics() {
     innerHeight,
     screenWidth,
     screenHeight,
-    devicePixelRatio: window.devicePixelRatio || 1
+    devicePixelRatio: window.devicePixelRatio || 1,
+    fullscreenActive: !!document.fullscreenElement
   }
 }
 
@@ -787,14 +795,30 @@ function measureAndApplyCanvasSize(viewportMetrics = getCanvasViewportMetrics())
   return { metrics, capacity }
 }
 
-function getRenderScaleIssue(metrics) {
+function getNativeGeometryIssue(metrics) {
+  if (isNative1080pGeometry(metrics)) return null
+  const width = metrics ? `${metrics.width}x${metrics.height}` : 'unknown'
+  const display = metrics ? `${metrics.displayWidth}x${metrics.displayHeight}` : 'unknown'
+  const scale = metrics?.displayScale?.toFixed ? metrics.displayScale.toFixed(3) : 'unknown'
+  const fullscreen = metrics?.fullscreenActive ? 'yes' : 'no'
+  return (
+    `Dense HDMI modes require native 1080p, but current canvas=${width}, ` +
+    `display=${display}, scale=${scale}, fullscreen=${fullscreen}, ` +
+    `preset=${metrics?.renderPresetName || metrics?.renderPresetId || 'unknown'}. ` +
+    buildNativeGeometryGuidance()
+  )
+}
+
+function getRenderScaleIssue(metrics, { requireNative1080p = false } = {}) {
+  if (requireNative1080p) return getNativeGeometryIssue(metrics)
   if (!metrics || metrics.renderPresetId === 'viewport') return null
   if (Math.abs(metrics.displayScale - 1) <= 0.001) return null
 
   return (
     `Render preset ${metrics.renderPresetName} requires 1:1 presentation, but the active display path ` +
     `would resample it to ${metrics.displayWidth}x${metrics.displayHeight} ` +
-    `(scale=${metrics.displayScale.toFixed(3)}). Use Viewport mode or change browser/display scaling.`
+    `(scale=${metrics.displayScale.toFixed(3)}). ` +
+    buildNativeGeometryGuidance()
   )
 }
 

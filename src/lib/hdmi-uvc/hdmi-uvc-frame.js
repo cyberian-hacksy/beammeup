@@ -461,6 +461,47 @@ export function getPayloadCapacity(width, height, mode = HDMI_MODE.COMPAT_4) {
   return Math.max(0, Math.floor((payloadBlocks * bitsPerBlock) / BITS_PER_BYTE))
 }
 
+// Native-geometry guidance string used by the sender's resample warning. Tested
+// here because hdmi-uvc-frame.js is the module that test runners import.
+export function buildNativeGeometryGuidance() {
+  return [
+    'Native 1080p required for dense modes. Checklist:',
+    '  1. Sender display mode: 1920x1080 @ 60',
+    '  2. Browser fullscreen: real 1920x1080',
+    '  3. Canvas internal: 1920x1080',
+    '  4. Canvas CSS size: 1920x1080',
+    '  5. Browser zoom: 100%',
+    '  6. OS display scaling: off / true 1080p output',
+    '  7. No CSS transform on canvas',
+    '  8. image-rendering: pixelated'
+  ].join('\n')
+}
+
+export function isNative1080pGeometry(metrics) {
+  return !!metrics &&
+    metrics.renderPresetId === '1080p' &&
+    metrics.width === 1920 &&
+    metrics.height === 1080 &&
+    metrics.displayWidth === 1920 &&
+    metrics.displayHeight === 1080 &&
+    Math.abs(metrics.displayScale - 1) <= 0.001 &&
+    (metrics.displayX || 0) === 0 &&
+    (metrics.displayY || 0) === 0 &&
+    metrics.fullscreenActive === true
+}
+
+export function classifyStep(stepX, stepY) {
+  const nearestX = Math.round(stepX)
+  const nearestY = Math.round(stepY)
+  const driftX = Math.abs(stepX - nearestX)
+  const driftY = Math.abs(stepY - nearestY)
+  const skew = Math.abs(stepX - stepY)
+
+  if (skew > 0.10) return 'skewed'
+  if (driftX > 0.05 || driftY > 0.05) return 'fractional'
+  return 'integer'
+}
+
 function getBinaryPilotConfig(mode) {
   if (!ENABLE_BINARY_PILOTS || mode !== HDMI_MODE.COMPAT_4) return null
   return {
@@ -2062,7 +2103,7 @@ export function decodeDataRegion(imageData, width, region) {
 
           if (!region._logged) {
             region._logged = true
-            console.log(`[HDMI-RX] Header: probeBs=${dataBlockSize} mode=${header.mode} dataBs=${dataBs.toFixed(2)} step=${stepX.toFixed(2)}/${stepY.toFixed(2)} grid=${blocksX}x${blocksY} len=${header.payloadLength} cap=${payloadCapacity} off=(${xOff},${yOff}) crc=${result.crcValid}`)
+            console.log(`[HDMI-RX] Header: probeBs=${dataBlockSize} mode=${header.mode} dataBs=${dataBs.toFixed(2)} step=${stepX.toFixed(2)}/${stepY.toFixed(2)} step-class=${classifyStep(stepX, stepY)} grid=${blocksX}x${blocksY} len=${header.payloadLength} cap=${payloadCapacity} off=(${xOff},${yOff}) crc=${result.crcValid}`)
           }
 
           if (result.crcValid) return result
@@ -2152,6 +2193,62 @@ export function testModeCapacityOrdering() {
     'Mode capacity ordering test:',
     pass ? `PASS (${cap4}; Luma2=${luma2Cap}; legacy 16x16 disabled)` : 'FAIL'
   )
+  return pass
+}
+
+export function testNativeGeometryGuidance() {
+  const text = buildNativeGeometryGuidance().toLowerCase()
+  const required = [
+    '1920x1080',
+    '@ 60',
+    'browser fullscreen',
+    'canvas internal',
+    'canvas css',
+    'browser zoom',
+    'display scaling',
+    'css transform',
+    'pixelated'
+  ]
+  const missing = required.filter((token) => !text.includes(token.toLowerCase()))
+  const pass = missing.length === 0
+  console.log('Native geometry guidance test:', pass ? 'PASS' : `FAIL (missing: ${missing.join(', ')})`)
+  return pass
+}
+
+export function testNative1080pGeometryCheck() {
+  const ok = {
+    renderPresetId: '1080p',
+    width: 1920,
+    height: 1080,
+    displayWidth: 1920,
+    displayHeight: 1080,
+    displayScale: 1,
+    displayX: 0,
+    displayY: 0,
+    fullscreenActive: true
+  }
+  const viewport = { ...ok, renderPresetId: 'viewport' }
+  const scaled = { ...ok, displayWidth: 1728, displayHeight: 972, displayScale: 0.9 }
+  const notFullscreen = { ...ok, fullscreenActive: false }
+  const pass = isNative1080pGeometry(ok) &&
+    !isNative1080pGeometry(viewport) &&
+    !isNative1080pGeometry(scaled) &&
+    !isNative1080pGeometry(notFullscreen)
+  console.log('Native 1080p geometry check test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testClassifyStep() {
+  const cases = [
+    { sx: 3.00, sy: 3.00, expected: 'integer' },
+    { sx: 3.02, sy: 3.01, expected: 'integer' },
+    { sx: 3.20, sy: 3.20, expected: 'fractional' },
+    { sx: 3.00, sy: 3.20, expected: 'skewed' },
+    { sx: 4.00, sy: 4.00, expected: 'integer' }
+  ]
+  const fail = cases.find(({ sx, sy, expected }) => classifyStep(sx, sy) !== expected)
+  const pass = !fail
+  console.log('classifyStep test:', pass ? 'PASS' : `FAIL on ${JSON.stringify(fail)}`)
   return pass
 }
 
