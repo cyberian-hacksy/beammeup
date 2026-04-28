@@ -478,16 +478,35 @@ export function buildNativeGeometryGuidance() {
 }
 
 export function isNative1080pGeometry(metrics) {
+  if (!hasEffectiveOneToOnePresentation(metrics)) return false
   return !!metrics &&
     metrics.renderPresetId === '1080p' &&
     metrics.width === 1920 &&
     metrics.height === 1080 &&
-    metrics.displayWidth === 1920 &&
-    metrics.displayHeight === 1080 &&
-    Math.abs(metrics.displayScale - 1) <= 0.001 &&
     (metrics.displayX || 0) === 0 &&
     (metrics.displayY || 0) === 0 &&
     metrics.fullscreenActive === true
+}
+
+export function hasEffectiveOneToOnePresentation(metrics) {
+  const dpr = metrics?.devicePixelRatio || 1
+  const physicalWidth = Number.isFinite(metrics?.physicalDisplayWidth)
+    ? metrics.physicalDisplayWidth
+    : Math.round((metrics?.displayWidth || 0) * dpr)
+  const physicalHeight = Number.isFinite(metrics?.physicalDisplayHeight)
+    ? metrics.physicalDisplayHeight
+    : Math.round((metrics?.displayHeight || 0) * dpr)
+  const effectiveScale = Number.isFinite(metrics?.effectiveDisplayScale)
+    ? metrics.effectiveDisplayScale
+    : Math.min(
+      metrics?.width ? physicalWidth / metrics.width : 0,
+      metrics?.height ? physicalHeight / metrics.height : 0
+    )
+
+  return !!metrics &&
+    Math.abs(physicalWidth - metrics.width) <= 2 &&
+    Math.abs(physicalHeight - metrics.height) <= 2 &&
+    Math.abs(effectiveScale - 1) <= 0.002
 }
 
 export function classifyStep(stepX, stepY) {
@@ -2229,12 +2248,47 @@ export function testNative1080pGeometryCheck() {
   }
   const viewport = { ...ok, renderPresetId: 'viewport' }
   const scaled = { ...ok, displayWidth: 1728, displayHeight: 972, displayScale: 0.9 }
+  const hidpiExternal = {
+    ...ok,
+    displayWidth: 1652,
+    displayHeight: 929,
+    displayScale: 0.86,
+    devicePixelRatio: 1080 / 929,
+    physicalDisplayWidth: 1920,
+    physicalDisplayHeight: 1080,
+    effectiveDisplayScale: 1
+  }
   const notFullscreen = { ...ok, fullscreenActive: false }
   const pass = isNative1080pGeometry(ok) &&
+    isNative1080pGeometry(hidpiExternal) &&
     !isNative1080pGeometry(viewport) &&
     !isNative1080pGeometry(scaled) &&
     !isNative1080pGeometry(notFullscreen)
   console.log('Native 1080p geometry check test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testEffectiveOneToOnePresentationCheck() {
+  const cssScaledButPhysicalNative = {
+    width: 1920,
+    height: 1080,
+    displayWidth: 1652,
+    displayHeight: 929,
+    displayScale: 0.86,
+    devicePixelRatio: 1080 / 929,
+    physicalDisplayWidth: 1920,
+    physicalDisplayHeight: 1080,
+    effectiveDisplayScale: 1
+  }
+  const physicallyScaled = {
+    ...cssScaledButPhysicalNative,
+    physicalDisplayWidth: 1652,
+    physicalDisplayHeight: 929,
+    effectiveDisplayScale: 0.86
+  }
+  const pass = hasEffectiveOneToOnePresentation(cssScaledButPhysicalNative) &&
+    !hasEffectiveOneToOnePresentation(physicallyScaled)
+  console.log('Effective one-to-one presentation check test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

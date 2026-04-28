@@ -27,7 +27,13 @@ import {
   initHdmiUvcSender,
   resetHdmiUvcSender,
   testPass2TwoStageSchedule,
-  testParitySweepCounter
+  testParitySweepCounter,
+  testPresentationScreenSelection,
+  testPresentationWindowFeatures,
+  testExternalDisplayReadiness,
+  testExternalPresentationNativeMetrics,
+  testExternalFullscreenUsesSelectedScreen,
+  testExternalFullscreenFailureStopsBeforeMainFallback
 } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
 import {
   initHdmiUvcReceiver,
@@ -44,6 +50,7 @@ import {
   testAnchorDetectionWithOffset,
   testNativeGeometryGuidance,
   testNative1080pGeometryCheck,
+  testEffectiveOneToOnePresentationCheck,
   testClassifyStep
 } from './lib/hdmi-uvc/hdmi-uvc-frame.js'
 import {
@@ -86,11 +93,18 @@ window.testHdmiFrameRoundtrip = testFrameRoundtrip
 window.testHdmiAnchorOffset = testAnchorDetectionWithOffset
 window.testNativeGeometryGuidance = testNativeGeometryGuidance
 window.testNative1080pGeometryCheck = testNative1080pGeometryCheck
+window.testEffectiveOneToOnePresentationCheck = testEffectiveOneToOnePresentationCheck
 window.testClassifyStep = testClassifyStep
 window.testReceiverFrameAcceptSignals = testReceiverFrameAcceptSignals
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
 window.testPass2TwoStageSchedule = testPass2TwoStageSchedule
 window.testParitySweepCounter = testParitySweepCounter
+window.testPresentationScreenSelection = testPresentationScreenSelection
+window.testPresentationWindowFeatures = testPresentationWindowFeatures
+window.testExternalDisplayReadiness = testExternalDisplayReadiness
+window.testExternalPresentationNativeMetrics = testExternalPresentationNativeMetrics
+window.testExternalFullscreenUsesSelectedScreen = testExternalFullscreenUsesSelectedScreen
+window.testExternalFullscreenFailureStopsBeforeMainFallback = testExternalFullscreenFailureStopsBeforeMainFallback
 window.testCaptureMethodDecision = testCaptureMethodDecision
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
 window.testIngestCapturedFrame = testIngestCapturedFrame
@@ -229,11 +243,18 @@ async function runAllTests() {
     hdmiAnchorOffset: testAnchorDetectionWithOffset(),
     hdmiNativeGeometryGuidance: testNativeGeometryGuidance(),
     hdmiNative1080pGeometryCheck: testNative1080pGeometryCheck(),
+    hdmiEffectiveOneToOnePresentation: testEffectiveOneToOnePresentationCheck(),
     hdmiClassifyStep: testClassifyStep(),
     receiverFrameSignals: testReceiverFrameAcceptSignals(),
     stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames(),
     twoStagePass2Schedule: testPass2TwoStageSchedule(),
     paritySweepCounter: testParitySweepCounter(),
+    presentationScreenSelection: testPresentationScreenSelection(),
+    presentationWindowFeatures: testPresentationWindowFeatures(),
+    externalDisplayReadiness: testExternalDisplayReadiness(),
+    externalPresentationNativeMetrics: testExternalPresentationNativeMetrics(),
+    externalFullscreenUsesSelectedScreen: testExternalFullscreenUsesSelectedScreen(),
+    externalFullscreenFailureStopsBeforeMainFallback: await testExternalFullscreenFailureStopsBeforeMainFallback(),
     captureMethodDecision: testCaptureMethodDecision(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
     ingestCapturedFrame: await testIngestCapturedFrame(),

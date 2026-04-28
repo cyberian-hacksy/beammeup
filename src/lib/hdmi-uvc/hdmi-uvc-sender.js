@@ -19,6 +19,7 @@ import {
   createFrameBuffer,
   getDataRegion,
   getPayloadCapacity,
+  hasEffectiveOneToOnePresentation,
   isNative1080pGeometry
 } from './hdmi-uvc-frame.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
@@ -107,7 +108,9 @@ function getHdmiCimbarLayout(width, height) {
 function debugLog(text) {
   if (!DEBUG_MODE) return
 
-  const el = document.getElementById('hdmi-uvc-sender-debug-log')
+  const el = typeof document !== 'undefined'
+    ? document.getElementById('hdmi-uvc-sender-debug-log')
+    : null
   if (el) {
     const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })
     el.textContent += timestamp + ' ' + text + '\n'
@@ -267,6 +270,7 @@ const state = {
   isSending: false,
   isPaused: false,
   isAwaitingStart: false,
+  armedStartTimerId: null,
   systematicIndex: 0,
   systematicStride: 1,
   intermediateSystematicStride: 1,
@@ -292,11 +296,177 @@ const state = {
   frameImageData: null,
   frameBufferWidth: 0,
   frameBufferHeight: 0,
+  presentation: null,
+  useExternalDisplay: true,
   txPerf: createSenderPerfState()
 }
 
 let elements = null
 let showError = (msg) => console.error(msg)
+
+function screenDimension(screen, primary, fallback = 0) {
+  const value = screen?.[primary]
+  if (Number.isFinite(value)) return Math.round(value)
+  const fallbackValue = screen?.[fallback]
+  return Number.isFinite(fallbackValue) ? Math.round(fallbackValue) : 0
+}
+
+function screenLeft(screen) {
+  return screenDimension(screen, 'availLeft', 'left')
+}
+
+function screenTop(screen) {
+  return screenDimension(screen, 'availTop', 'top')
+}
+
+function screenWidth(screen) {
+  return screenDimension(screen, 'availWidth', 'width')
+}
+
+function screenHeight(screen) {
+  return screenDimension(screen, 'availHeight', 'height')
+}
+
+function screenHasUsableBounds(screen) {
+  return screenWidth(screen) > 0 && screenHeight(screen) > 0
+}
+
+function screenArea(screen) {
+  return screenWidth(screen) * screenHeight(screen)
+}
+
+function sameScreen(a, b) {
+  if (!a || !b) return false
+  return screenLeft(a) === screenLeft(b) &&
+    screenTop(a) === screenTop(b) &&
+    screenWidth(a) === screenWidth(b) &&
+    screenHeight(a) === screenHeight(b)
+}
+
+export function chooseExternalPresentationScreen(screens, currentScreen = null) {
+  const candidates = Array.from(screens || []).filter((screen) =>
+    screen && !sameScreen(screen, currentScreen)
+  )
+  if (candidates.length === 0) return null
+
+  const ranked = candidates.slice().sort((a, b) => {
+    const aUsable = screenHasUsableBounds(a) ? 1 : 0
+    const bUsable = screenHasUsableBounds(b) ? 1 : 0
+    if (aUsable !== bUsable) return bUsable - aUsable
+
+    const aExact1080 = screenWidth(a) === 1920 && screenHeight(a) === 1080 ? 1 : 0
+    const bExact1080 = screenWidth(b) === 1920 && screenHeight(b) === 1080 ? 1 : 0
+    if (aExact1080 !== bExact1080) return bExact1080 - aExact1080
+
+    const aPrimary = a.isPrimary ? 1 : 0
+    const bPrimary = b.isPrimary ? 1 : 0
+    if (aPrimary !== bPrimary) return aPrimary - bPrimary
+
+    return screenArea(b) - screenArea(a)
+  })
+
+  return ranked[0]
+}
+
+function rawScreenDimension(screen, key) {
+  const value = screen?.[key]
+  return Number.isFinite(value) ? Math.round(value) : 'n/a'
+}
+
+function describeScreen(screen) {
+  if (!screen) return 'none'
+  const label = typeof screen.label === 'string' && screen.label
+    ? ` label="${screen.label}"`
+    : ''
+  const dpr = Number.isFinite(screen.devicePixelRatio)
+    ? ` dpr=${Number(screen.devicePixelRatio).toFixed(3)}`
+    : ''
+  return (
+    `${screenWidth(screen)}x${screenHeight(screen)}@(${screenLeft(screen)},${screenTop(screen)}) ` +
+    `raw=avail(${rawScreenDimension(screen, 'availWidth')}x${rawScreenDimension(screen, 'availHeight')}@` +
+    `${rawScreenDimension(screen, 'availLeft')},${rawScreenDimension(screen, 'availTop')}) ` +
+    `screen(${rawScreenDimension(screen, 'width')}x${rawScreenDimension(screen, 'height')}@` +
+    `${rawScreenDimension(screen, 'left')},${rawScreenDimension(screen, 'top')}) ` +
+    `primary=${screen.isPrimary === true} internal=${screen.isInternal === true}${dpr}${label}`
+  )
+}
+
+function describeScreenList(screens) {
+  return Array.from(screens || [])
+    .map((screen, index) => `${index}:${describeScreen(screen)}`)
+    .join('; ')
+}
+
+export function buildPresentationWindowFeatures(screen) {
+  const left = screenLeft(screen)
+  const top = screenTop(screen)
+  const width = screenWidth(screen) || 1920
+  const height = screenHeight(screen) || 1080
+  return [
+    'popup=yes',
+    'toolbar=no',
+    'location=no',
+    'menubar=no',
+    'status=no',
+    'scrollbars=no',
+    'resizable=no',
+    `left=${left}`,
+    `top=${top}`,
+    `width=${width}`,
+    `height=${height}`
+  ].join(',')
+}
+
+export function getExternalDisplayReadiness(useExternalDisplay, preparedScreen, hasScreenDetails = true) {
+  if (!useExternalDisplay) return null
+  if (!hasScreenDetails) {
+    return 'External display requires Chrome/Edge with Window Management API support. Uncheck External screen to use this window.'
+  }
+  return null
+}
+
+export function buildPresentationFullscreenOptions(target) {
+  const options = { navigationUI: 'hide' }
+  if (target?.external && target.screen) {
+    options.screen = target.screen
+  }
+  return options
+}
+
+function getLocalPresentationTarget() {
+  return {
+    external: false,
+    win: window,
+    doc: document,
+    container: elements.container,
+    canvas: elements.canvas,
+    frameCount: elements.frameCount,
+    progressDisplay: elements.progressDisplay
+  }
+}
+
+function getPresentationTarget() {
+  return state.presentation || getLocalPresentationTarget()
+}
+
+function cancelArmedStartTimer() {
+  if (!state.armedStartTimerId) return
+  clearTimeout(state.armedStartTimerId)
+  state.armedStartTimerId = null
+}
+
+function closeExternalPresentationWindow() {
+  const presentation = state.presentation
+  state.presentation = null
+  if (!presentation?.external) return
+  try {
+    if (presentation.win && presentation.win !== window && !presentation.win.closed) {
+      presentation.win.close()
+    }
+  } catch (_) {
+    // Ignore cross-window cleanup failures; the next start creates a fresh window.
+  }
+}
 
 function resetCanvasStyles() {
   if (!elements?.canvas) return
@@ -330,12 +500,17 @@ function resetCanvasStyles() {
 }
 
 function setSignalLive(isLive) {
-  if (!elements?.container) return
-  elements.container.classList.toggle('signal-live', isLive)
-  document.body?.classList.toggle('hdmi-uvc-signal-live', isLive)
+  const presentation = getPresentationTarget()
+  const usesMainDocument = presentation.doc === document
+  presentation.container?.classList.toggle('signal-live', isLive)
+  if (presentation.container !== elements?.container) {
+    elements?.container?.classList.toggle('signal-live', false)
+  }
+  document.body?.classList.toggle('hdmi-uvc-signal-live', isLive && usesMainDocument)
 }
 
 function resetPreparedSessionState() {
+  cancelArmedStartTimer()
   state.encoder = null
   state.packetSize = 0
   state.packetsPerFrame = 1
@@ -370,6 +545,7 @@ async function restoreSenderReadyState() {
   setSignalLive(false)
   resetCanvasStyles()
   await exitFullscreenSafely()
+  closeExternalPresentationWindow()
   elements.overlay.classList.add('hidden')
   elements.placeholder.style.display = 'flex'
   if (state.fileData) {
@@ -385,28 +561,29 @@ async function restoreSenderReadyState() {
   updateRenderSizeSelector()
 }
 
-function applyFullscreenCanvasStyles() {
-  elements.container.classList.add('fullscreen')
-  elements.canvas.style.display = 'block'
-  elements.canvas.style.position = 'absolute'
-  elements.canvas.style.top = '0'
-  elements.canvas.style.left = '0'
-  elements.canvas.style.zIndex = '0'
-  elements.canvas.style.imageRendering = 'pixelated'
-  elements.canvas.style.background = '#000'
-  elements.canvas.style.width = '100%'
-  elements.canvas.style.height = '100%'
+function applyFullscreenCanvasStyles(target = getPresentationTarget()) {
+  target.container?.classList.add('fullscreen')
+  target.canvas.style.display = 'block'
+  target.canvas.style.position = 'absolute'
+  target.canvas.style.top = '0'
+  target.canvas.style.left = '0'
+  target.canvas.style.zIndex = '0'
+  target.canvas.style.imageRendering = 'pixelated'
+  target.canvas.style.background = '#000'
+  target.canvas.style.width = '100%'
+  target.canvas.style.height = '100%'
 }
 
 function clearSenderCanvasToBlack() {
-  if (!elements?.canvas?.width || !elements?.canvas?.height) return
-  const ctx = elements.canvas.getContext('2d')
+  const canvas = getPresentationTarget().canvas
+  if (!canvas?.width || !canvas?.height) return
+  const ctx = canvas.getContext('2d')
   if (!ctx) return
   ctx.fillStyle = '#000'
-  ctx.fillRect(0, 0, elements.canvas.width, elements.canvas.height)
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
 }
 
-function showArmedStartPrompt() {
+function showArmedStartPrompt(autoStartDelayMs = 0) {
   elements.overlay.classList.add('hidden')
   elements.placeholder.style.display = 'flex'
   elements.placeholder.style.position = 'relative'
@@ -414,11 +591,14 @@ function showArmedStartPrompt() {
   elements.placeholder.style.textAlign = 'center'
   elements.placeholder.style.padding = '1.5rem'
   elements.placeholderIcon.textContent = '>'
-  elements.placeholderText.textContent = 'Fullscreen ready. Wait for the browser tip to disappear, then press Space or Enter to start.'
-  debugCurrent('ARMED - press Space or Enter to start')
+  elements.placeholderText.textContent = autoStartDelayMs > 0
+    ? 'External display ready. Transmission starts after the fullscreen tip clears.'
+    : 'Fullscreen ready. Wait for the browser tip to disappear, then press Space or Enter to start.'
+  debugCurrent(autoStartDelayMs > 0 ? 'ARMED - auto-starting external display' : 'ARMED - press Space or Enter to start')
 }
 
-function waitForLayoutFrames(count = 2) {
+function waitForLayoutFrames(count = 2, targetWindow = window) {
+  const raf = targetWindow?.requestAnimationFrame?.bind(targetWindow) || requestAnimationFrame
   return new Promise((resolve) => {
     const step = () => {
       if (count <= 0) {
@@ -426,9 +606,9 @@ function waitForLayoutFrames(count = 2) {
         return
       }
       count--
-      requestAnimationFrame(step)
+      raf(step)
     }
-    requestAnimationFrame(step)
+    raf(step)
   })
 }
 
@@ -442,13 +622,13 @@ function viewportMetricsEqual(a, b, tolerance = 1) {
   )
 }
 
-async function waitForStableViewport(stableFrames = 3, maxFrames = 30) {
+async function waitForStableViewport(stableFrames = 3, maxFrames = 30, target = getPresentationTarget()) {
   let last = null
   let stableCount = 0
 
   for (let frame = 0; frame < maxFrames; frame++) {
-    await waitForLayoutFrames(1)
-    const current = getCanvasViewportMetrics()
+    await waitForLayoutFrames(1, target.win)
+    const current = getCanvasViewportMetrics(target)
     if (viewportMetricsEqual(current, last)) {
       stableCount++
       if (stableCount >= stableFrames) {
@@ -460,26 +640,28 @@ async function waitForStableViewport(stableFrames = 3, maxFrames = 30) {
     last = current
   }
 
-  return last || getCanvasViewportMetrics()
+  return last || getCanvasViewportMetrics(target)
 }
 
-function getCanvasViewportMetrics() {
-  const presentationEl = document.fullscreenElement || elements.container || elements.canvas
+function getCanvasViewportMetrics(target = getPresentationTarget()) {
+  const targetWindow = target.win || window
+  const targetDocument = target.doc || document
+  const presentationEl = targetDocument.fullscreenElement || target.container || target.canvas
   const rect = presentationEl.getBoundingClientRect()
-  const visual = window.visualViewport
+  const visual = targetWindow.visualViewport
 
   const rectWidth = Math.round(rect.width)
   const rectHeight = Math.round(rect.height)
   const visualWidth = visual ? Math.round(visual.width) : 0
   const visualHeight = visual ? Math.round(visual.height) : 0
-  const innerWidth = Math.round(window.innerWidth)
-  const innerHeight = Math.round(window.innerHeight)
-  const screenWidth = Math.round(window.screen.width || 0)
-  const screenHeight = Math.round(window.screen.height || 0)
+  const innerWidth = Math.round(targetWindow.innerWidth)
+  const innerHeight = Math.round(targetWindow.innerHeight)
+  const screenWidth = Math.round(targetWindow.screen.width || 0)
+  const screenHeight = Math.round(targetWindow.screen.height || 0)
 
   let width = rectWidth
   let height = rectHeight
-  let source = document.fullscreenElement ? 'fullscreenRect' : 'containerRect'
+  let source = targetDocument.fullscreenElement ? 'fullscreenRect' : 'containerRect'
 
   if (!width || !height) {
     width = visualWidth || innerWidth
@@ -499,8 +681,8 @@ function getCanvasViewportMetrics() {
     innerHeight,
     screenWidth,
     screenHeight,
-    devicePixelRatio: window.devicePixelRatio || 1,
-    fullscreenActive: !!document.fullscreenElement
+    devicePixelRatio: targetWindow.devicePixelRatio || 1,
+    fullscreenActive: !!targetDocument.fullscreenElement
   }
 }
 
@@ -537,6 +719,7 @@ function resolveHdmiCanvasMetrics(viewportMetrics = getCanvasViewportMetrics()) 
   const preset = getRenderSizePreset()
   const viewportWidth = Math.max(1, viewportMetrics.width)
   const viewportHeight = Math.max(1, viewportMetrics.height)
+  const devicePixelRatio = viewportMetrics.devicePixelRatio || 1
 
   if (preset.id === 'viewport') {
     return {
@@ -552,7 +735,10 @@ function resolveHdmiCanvasMetrics(viewportMetrics = getCanvasViewportMetrics()) 
       displayHeight: viewportHeight,
       displayX: 0,
       displayY: 0,
-      displayScale: 1
+      displayScale: 1,
+      physicalDisplayWidth: Math.round(viewportWidth * devicePixelRatio),
+      physicalDisplayHeight: Math.round(viewportHeight * devicePixelRatio),
+      effectiveDisplayScale: 1
     }
   }
 
@@ -573,8 +759,25 @@ function resolveHdmiCanvasMetrics(viewportMetrics = getCanvasViewportMetrics()) 
     displayHeight: fitted.height,
     displayX: fitted.x,
     displayY: fitted.y,
-    displayScale: fitted.scale
+    displayScale: fitted.scale,
+    physicalDisplayWidth: Math.round(fitted.width * devicePixelRatio),
+    physicalDisplayHeight: Math.round(fitted.height * devicePixelRatio),
+    effectiveDisplayScale: Math.min(
+      internalWidth ? Math.round(fitted.width * devicePixelRatio) / internalWidth : 0,
+      internalHeight ? Math.round(fitted.height * devicePixelRatio) / internalHeight : 0
+    )
   }
+}
+
+export function normalizeExternalPresentationMetrics(metrics, target = getPresentationTarget()) {
+  if (!target?.external || metrics?.renderPresetId !== '1080p') return metrics
+  if (metrics.width !== 1920 || metrics.height !== 1080) return metrics
+
+  metrics.physicalDisplayWidth = metrics.width
+  metrics.physicalDisplayHeight = metrics.height
+  metrics.effectiveDisplayScale = 1
+  metrics.externalNativePresentation = true
+  return metrics
 }
 
 function isCimbarMode() {
@@ -754,15 +957,28 @@ function scaleCimbarCanvasToViewport(metrics = getCanvasViewportMetrics()) {
   )
 }
 
-function measureAndApplyCanvasSize(viewportMetrics = getCanvasViewportMetrics()) {
+function measureAndApplyCanvasSize(viewportMetrics = getCanvasViewportMetrics(), target = getPresentationTarget()) {
   const metrics = resolveHdmiCanvasMetrics(viewportMetrics)
+  if (target.external && target.screen && metrics.renderPresetId !== 'viewport') {
+    const physicalWidth = screenWidth(target.screen)
+    const physicalHeight = screenHeight(target.screen)
+    if (physicalWidth > 0 && physicalHeight > 0) {
+      metrics.physicalDisplayWidth = physicalWidth
+      metrics.physicalDisplayHeight = physicalHeight
+      metrics.effectiveDisplayScale = Math.min(
+        metrics.width ? physicalWidth / metrics.width : 0,
+        metrics.height ? physicalHeight / metrics.height : 0
+      )
+    }
+  }
+  normalizeExternalPresentationMetrics(metrics, target)
 
-  elements.canvas.width = metrics.width
-  elements.canvas.height = metrics.height
-  elements.canvas.style.setProperty('width', `${metrics.displayWidth}px`, 'important')
-  elements.canvas.style.setProperty('height', `${metrics.displayHeight}px`, 'important')
-  elements.canvas.style.left = `${metrics.displayX}px`
-  elements.canvas.style.top = `${metrics.displayY}px`
+  target.canvas.width = metrics.width
+  target.canvas.height = metrics.height
+  target.canvas.style.setProperty('width', `${metrics.displayWidth}px`, 'important')
+  target.canvas.style.setProperty('height', `${metrics.displayHeight}px`, 'important')
+  target.canvas.style.left = `${metrics.displayX}px`
+  target.canvas.style.top = `${metrics.displayY}px`
 
   const capacity = getPayloadCapacity(metrics.width, metrics.height, state.mode)
   const dataRegion = getDataRegion(metrics.width, metrics.height)
@@ -781,8 +997,11 @@ function measureAndApplyCanvasSize(viewportMetrics = getCanvasViewportMetrics())
   debugLog(
     `Canvas: internal ${metrics.width}x${metrics.height} (${metrics.source}, preset=${metrics.renderPresetName}), ` +
     `display ${metrics.displayWidth}x${metrics.displayHeight}@(${metrics.displayX},${metrics.displayY}) ` +
+    `physical ${metrics.physicalDisplayWidth}x${metrics.physicalDisplayHeight} ` +
     `within viewport ${metrics.viewportWidth}x${metrics.viewportHeight}, ` +
-    `scale=${metrics.displayScale.toFixed(3)}, data region ${dataWidth}x${dataHeight} (${dataUtil}% of frame)`
+    `scale=${metrics.displayScale.toFixed(3)}, effective=${metrics.effectiveDisplayScale.toFixed(3)}` +
+    `${metrics.externalNativePresentation ? ', external-native=assumed' : ''}, ` +
+    `data region ${dataWidth}x${dataHeight} (${dataUtil}% of frame)`
   )
   if (metrics.renderPresetId !== 'viewport' && Math.abs(metrics.displayScale - 1) > 0.001) {
     debugLog(
@@ -799,11 +1018,13 @@ function getNativeGeometryIssue(metrics) {
   if (isNative1080pGeometry(metrics)) return null
   const width = metrics ? `${metrics.width}x${metrics.height}` : 'unknown'
   const display = metrics ? `${metrics.displayWidth}x${metrics.displayHeight}` : 'unknown'
+  const physical = metrics ? `${metrics.physicalDisplayWidth || 'unknown'}x${metrics.physicalDisplayHeight || 'unknown'}` : 'unknown'
   const scale = metrics?.displayScale?.toFixed ? metrics.displayScale.toFixed(3) : 'unknown'
+  const effective = metrics?.effectiveDisplayScale?.toFixed ? metrics.effectiveDisplayScale.toFixed(3) : 'unknown'
   const fullscreen = metrics?.fullscreenActive ? 'yes' : 'no'
   return (
     `Dense HDMI modes require native 1080p, but current canvas=${width}, ` +
-    `display=${display}, scale=${scale}, fullscreen=${fullscreen}, ` +
+    `display=${display}, physical=${physical}, scale=${scale}, effective=${effective}, fullscreen=${fullscreen}, ` +
     `preset=${metrics?.renderPresetName || metrics?.renderPresetId || 'unknown'}. ` +
     buildNativeGeometryGuidance()
   )
@@ -812,14 +1033,198 @@ function getNativeGeometryIssue(metrics) {
 function getRenderScaleIssue(metrics, { requireNative1080p = false } = {}) {
   if (requireNative1080p) return getNativeGeometryIssue(metrics)
   if (!metrics || metrics.renderPresetId === 'viewport') return null
+  if (hasEffectiveOneToOnePresentation(metrics)) return null
   if (Math.abs(metrics.displayScale - 1) <= 0.001) return null
 
   return (
     `Render preset ${metrics.renderPresetName} requires 1:1 presentation, but the active display path ` +
     `would resample it to ${metrics.displayWidth}x${metrics.displayHeight} ` +
-    `(scale=${metrics.displayScale.toFixed(3)}). ` +
+    `(scale=${metrics.displayScale.toFixed(3)}, physical=${metrics.physicalDisplayWidth || 'unknown'}x${metrics.physicalDisplayHeight || 'unknown'}, ` +
+    `effective=${metrics.effectiveDisplayScale?.toFixed ? metrics.effectiveDisplayScale.toFixed(3) : 'unknown'}). ` +
     buildNativeGeometryGuidance()
   )
+}
+
+function writeExternalPresentationDocument(popup, screen) {
+  const doc = popup.document
+  doc.open()
+  doc.write(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Beam Me Up HDMI-UVC Display</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+    #presentation-container {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      background: #000;
+      overflow: hidden;
+      cursor: none;
+    }
+    #presentation-canvas {
+      display: block;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+      background: #000;
+    }
+    #presentation-overlay {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      color: #00d4ff;
+      background: rgba(0, 0, 0, 0.7);
+      font: 12px monospace;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div id="presentation-container">
+    <canvas id="presentation-canvas"></canvas>
+    <div id="presentation-overlay"><span id="presentation-frame-count">0</span> <span id="presentation-progress">0%</span></div>
+  </div>
+</body>
+</html>`)
+  doc.close()
+
+  return {
+    external: true,
+    screen,
+    win: popup,
+    doc,
+    container: doc.getElementById('presentation-container'),
+    canvas: doc.getElementById('presentation-canvas'),
+    frameCount: doc.getElementById('presentation-frame-count'),
+    progressDisplay: doc.getElementById('presentation-progress')
+  }
+}
+
+async function openExternalPresentationTarget() {
+  const readiness = getExternalDisplayReadiness(
+    state.useExternalDisplay,
+    null,
+    !!window.getScreenDetails
+  )
+  if (readiness) throw new Error(readiness)
+
+  const details = await window.getScreenDetails()
+  const screen = chooseExternalPresentationScreen(details.screens, details.currentScreen)
+  if (!screen) {
+    throw new Error('No external display found. Connect UGREEN as an extended display, then try again.')
+  }
+
+  closeExternalPresentationWindow()
+  const popup = window.open('', 'beammeup-hdmi-uvc-presentation', buildPresentationWindowFeatures(screen))
+  if (!popup) {
+    throw new Error('External presentation window was blocked after screen permission. Allow popups for this page and click Start again.')
+  }
+  popup.document.write('<!doctype html><title>Beam Me Up HDMI-UVC Display</title><body style="margin:0;background:#000"></body>')
+  popup.document.close()
+
+  const features = buildPresentationWindowFeatures(screen)
+  debugLog(`External presentation features: ${features}`)
+
+  try {
+    popup.moveTo(screenLeft(screen), screenTop(screen))
+    popup.resizeTo(screenWidth(screen) || 1920, screenHeight(screen) || 1080)
+    popup.focus()
+  } catch (_) {
+    // Some browsers ignore scripted move/resize even after permission.
+  }
+
+  const target = writeExternalPresentationDocument(popup, screen)
+  state.presentation = target
+  debugLog(
+    `External presentation window: screen=${screenWidth(screen)}x${screenHeight(screen)}@(${screenLeft(screen)},${screenTop(screen)})`
+  )
+  return target
+}
+
+async function prepareExternalFullscreenTarget() {
+  const readiness = getExternalDisplayReadiness(
+    state.useExternalDisplay,
+    null,
+    !!window.getScreenDetails
+  )
+  if (readiness) throw new Error(readiness)
+
+  const details = await window.getScreenDetails()
+  debugLog(`Screen details: current=${describeScreen(details.currentScreen)} screens=[${describeScreenList(details.screens)}]`)
+
+  const screen = chooseExternalPresentationScreen(details.screens, details.currentScreen)
+  if (!screen) {
+    throw new Error('No external display found. Connect UGREEN as an extended display, then try again.')
+  }
+
+  const target = {
+    ...getLocalPresentationTarget(),
+    external: true,
+    screen
+  }
+  state.presentation = target
+  debugLog(`External fullscreen target: screen=${describeScreen(screen)}`)
+  return target
+}
+
+async function preparePresentationTarget() {
+  if (state.useExternalDisplay && !isCimbarMode()) {
+    return prepareExternalFullscreenTarget()
+  }
+  state.presentation = null
+  return getLocalPresentationTarget()
+}
+
+async function requestPresentationFullscreen(target) {
+  const container = target.container
+  if (!container?.requestFullscreen) {
+    if (target.external) {
+      throw new Error('External fullscreen is unavailable in this browser window. Transfer was not started on the main screen.')
+    }
+    debugLog('Fullscreen unavailable: falling back to window bounds')
+    return
+  }
+
+  try {
+    await container.requestFullscreen(buildPresentationFullscreenOptions(target))
+    debugLog(target.external ? 'External fullscreen: OK (selected screen)' : 'Fullscreen: OK')
+  } catch (e) {
+    if (target.external) {
+      throw new Error(
+        `External fullscreen failed on selected screen (${describeScreen(target.screen)}): ${e.message}. ` +
+        'Transfer was not started on the main screen.'
+      )
+    }
+    try {
+      await container.requestFullscreen()
+      debugLog(target.external ? 'External fullscreen: OK (default navigation UI)' : 'Fullscreen: OK (default navigation UI)')
+    } catch (fallbackErr) {
+      debugLog(`Fullscreen failed: ${fallbackErr.message}, falling back to fixed window`)
+    }
+  }
+}
+
+async function preparePresentationForTransmission() {
+  const target = await preparePresentationTarget()
+  applyFullscreenCanvasStyles(target)
+  await requestPresentationFullscreen(target)
+  return {
+    target,
+    stableMetrics: await waitForStableViewport(3, 30, target)
+  }
 }
 
 function cancelScheduledRender() {
@@ -947,6 +1352,22 @@ function updateRenderSizeSelector() {
   elements.renderSizeSelect.value = getRenderSizePreset().id
   elements.renderSizeSelect.disabled = state.isSending || state.isPaused || state.isAwaitingStart || isCimbarMode()
   updateEstimateSummary()
+  updatePresentationControls()
+}
+
+function updatePresentationControls() {
+  if (!elements?.externalDisplayToggle) return
+  elements.externalDisplayToggle.checked = state.useExternalDisplay
+  elements.externalDisplayToggle.disabled = state.isSending || state.isPaused || state.isAwaitingStart
+  if (elements.presentationStatus) {
+    if (!state.useExternalDisplay) {
+      elements.presentationStatus.textContent = 'Current window'
+    } else if (window.getScreenDetails) {
+      elements.presentationStatus.textContent = 'Start selects screen'
+    } else {
+      elements.presentationStatus.textContent = 'Chrome/Edge only'
+    }
+  }
 }
 
 // Once the HDMI-UVC decode path is stable, repeating every symbol wastes most
@@ -1472,8 +1893,10 @@ function renderFrame() {
   if (!state.encoder) return
 
   const fps = getFps()
-  const cw = elements.canvas.width
-  const ch = elements.canvas.height
+  const presentation = getPresentationTarget()
+  const canvas = presentation.canvas
+  const cw = canvas.width
+  const ch = canvas.height
 
   try {
     const nextFrameNumber = state.frameCount + 1
@@ -1485,16 +1908,22 @@ function renderFrame() {
     buildFrame(batch.payload, state.mode, cw, ch, fps.fps, batch.outerSymbolId, state.frameBuffer)
     const buildDoneMs = performance.now()
 
-    const ctx = elements.canvas.getContext('2d')
+    const ctx = canvas.getContext('2d')
     ctx.putImageData(frameImageData, 0, 0)
     const blitDoneMs = performance.now()
 
     state.frameCount = nextFrameNumber
     elements.frameCount.textContent = state.frameCount
+    if (presentation.frameCount && presentation.frameCount !== elements.frameCount) {
+      presentation.frameCount.textContent = state.frameCount
+    }
 
     const systematicSpan = Math.max(1, getCurrentSystematicSpan())
     const progress = Math.min(100, Math.round((state.systematicIndex / systematicSpan) * 100))
     elements.progressDisplay.textContent = progress + '%'
+    if (presentation.progressDisplay && presentation.progressDisplay !== elements.progressDisplay) {
+      presentation.progressDisplay.textContent = progress + '%'
+    }
     const dataSymbols = batch.symbolIds.filter(id => id !== 0)
     const firstData = dataSymbols[0]
     const lastData = dataSymbols[dataSymbols.length - 1]
@@ -1532,20 +1961,29 @@ function renderFrame() {
   }
 }
 
-function armPreparedStart() {
+function armPreparedStart(autoStartDelayMs = 0) {
+  cancelArmedStartTimer()
   state.isAwaitingStart = true
   state.isSending = false
   state.isPaused = false
   state.nextFrameDueMs = 0
   clearSenderCanvasToBlack()
-  showArmedStartPrompt()
+  showArmedStartPrompt(autoStartDelayMs)
   setSignalLive(false)
 
   elements.fpsSlider.disabled = true
   updateActionButton()
   updateModeSelector()
   updateRenderSizeSelector()
-  debugLog('Sender armed: wait for the fullscreen tip to clear, then press Space or Enter to begin transmission')
+  if (autoStartDelayMs > 0) {
+    state.armedStartTimerId = setTimeout(() => {
+      state.armedStartTimerId = null
+      beginPreparedStart()
+    }, autoStartDelayMs)
+    debugLog(`Sender armed: external display auto-start in ${autoStartDelayMs}ms`)
+  } else {
+    debugLog('Sender armed: wait for the fullscreen tip to clear, then press Space or Enter to begin transmission')
+  }
 }
 
 function beginPreparedStart() {
@@ -1558,6 +1996,7 @@ function beginPreparedStart() {
   }
 
   debugLog('=== START SENDING ===')
+  cancelArmedStartTimer()
   state.isAwaitingStart = false
   state.isSending = true
   state.isPaused = false
@@ -1587,29 +2026,9 @@ async function startSending() {
     debugLog('=== ARMING FULLSCREEN START ===')
     const selectedFps = getFps()
 
-    // Go fullscreen to eliminate browser chrome from the HDMI output.
-    // This ensures anchors are at the true corners with no toolbar artifacts.
-    applyFullscreenCanvasStyles()
-
-    try {
-      await elements.container.requestFullscreen({ navigationUI: 'hide' })
-      debugLog('Fullscreen: OK')
-    } catch (e) {
-      if (elements.container.requestFullscreen) {
-        try {
-          await elements.container.requestFullscreen()
-          debugLog('Fullscreen: OK (default navigation UI)')
-        } catch (fallbackErr) {
-          debugLog(`Fullscreen failed: ${fallbackErr.message}, falling back to fixed overlay`)
-        }
-      } else {
-        debugLog(`Fullscreen failed: ${e.message}, falling back to fixed overlay`)
-      }
-    }
-
     // Fullscreen layout can settle a frame or two after the promise resolves.
     // Measure the actual fullscreen element box instead of trusting window.inner*.
-    const stableMetrics = await waitForStableViewport()
+    const { target, stableMetrics } = await preparePresentationForTransmission()
     debugLog(`Sender FPS: ${selectedFps.name} (${selectedFps.interval}ms interval)`)
 
     if (isCimbarMode()) {
@@ -1661,7 +2080,7 @@ async function startSending() {
       return
     }
 
-    const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics)
+    const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics, target)
     const renderScaleIssue = getRenderScaleIssue(metrics)
     if (renderScaleIssue) {
       throw new Error(renderScaleIssue)
@@ -1792,7 +2211,7 @@ async function startSending() {
       )
     }
     debugLog(getHybridScheduleDescription())
-    armPreparedStart()
+    armPreparedStart(target.external ? 2500 : 0)
 
   } catch (err) {
     console.error('HDMI-UVC start error:', err)
@@ -1808,6 +2227,7 @@ async function pauseSending() {
 
   resetCanvasStyles()
   await exitFullscreenSafely()
+  closeExternalPresentationWindow()
   elements.overlay.classList.add('hidden')
   elements.placeholder.style.display = 'flex'
   elements.placeholderIcon.textContent = '⏸'
@@ -1822,38 +2242,14 @@ async function pauseSending() {
 async function resumeSending() {
   try {
     state.isPaused = false
-    setSignalLive(true)
-
-    elements.container.classList.add('fullscreen')
-    elements.canvas.style.display = 'block'
-    elements.canvas.style.position = 'absolute'
-    elements.canvas.style.top = '0'
-    elements.canvas.style.left = '0'
-    elements.canvas.style.imageRendering = 'pixelated'
-    elements.canvas.style.background = '#000'
-    elements.canvas.style.width = '100%'
-    elements.canvas.style.height = '100%'
     elements.placeholder.style.display = 'none'
 
-    try {
-      await elements.container.requestFullscreen({ navigationUI: 'hide' })
-    } catch (e) {
-      if (elements.container.requestFullscreen) {
-        try {
-          await elements.container.requestFullscreen()
-        } catch (fallbackErr) {
-          debugLog(`Resume fullscreen failed: ${fallbackErr.message}, falling back to fixed overlay`)
-        }
-      } else {
-        debugLog(`Resume fullscreen failed: ${e.message}, falling back to fixed overlay`)
-      }
-    }
-
-    const stableMetrics = await waitForStableViewport()
+    const { target, stableMetrics } = await preparePresentationForTransmission()
+    setSignalLive(true)
     if (isCimbarMode()) {
       scaleCimbarCanvasToViewport(stableMetrics)
     } else {
-      const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics)
+      const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics, target)
       const renderScaleIssue = getRenderScaleIssue(metrics)
       if (renderScaleIssue) {
         throw new Error(renderScaleIssue)
@@ -1891,6 +2287,7 @@ async function stopSending() {
 
   resetCanvasStyles()
   await exitFullscreenSafely()
+  closeExternalPresentationWindow()
   elements.placeholder.style.display = 'flex'
   elements.overlay.classList.add('hidden')
   elements.placeholderIcon.textContent = '+'
@@ -2032,6 +2429,13 @@ function handleRenderSizeChange(e) {
   debugLog(`Render size selected: ${preset.name}`)
 }
 
+function handleExternalDisplayChange(e) {
+  if (state.isSending || state.isPaused || state.isAwaitingStart) return
+  state.useExternalDisplay = !!e.target.checked
+  updatePresentationControls()
+  debugLog(`External display ${state.useExternalDisplay ? 'enabled' : 'disabled'}`)
+}
+
 function handleKeydown(e) {
   if (state.isAwaitingStart) {
     if (e.code === 'Space' || e.key === ' ' || e.key === 'Enter') {
@@ -2063,6 +2467,14 @@ function handleFullscreenChange() {
 }
 
 async function exitFullscreenSafely() {
+  const presentationDoc = state.presentation?.doc
+  if (presentationDoc?.fullscreenElement) {
+    try {
+      await presentationDoc.exitFullscreen()
+    } catch {
+      // Ignore fullscreen exit failures during cleanup.
+    }
+  }
   if (!document.fullscreenElement) return
   try {
     await document.exitFullscreen()
@@ -2090,6 +2502,8 @@ export function initHdmiUvcSender(errorHandler) {
     progressDisplay: document.getElementById('hdmi-uvc-progress'),
     modeSelector: document.getElementById('hdmi-uvc-mode-selector'),
     renderSizeSelect: document.getElementById('hdmi-uvc-render-size-select'),
+    externalDisplayToggle: document.getElementById('hdmi-uvc-external-display-toggle'),
+    presentationStatus: document.getElementById('hdmi-uvc-presentation-status'),
     fpsSlider: document.getElementById('hdmi-uvc-fps-slider'),
     fpsDisplay: document.getElementById('hdmi-uvc-fps-display'),
     fileInfo: document.getElementById('hdmi-uvc-file-info'),
@@ -2103,6 +2517,9 @@ export function initHdmiUvcSender(errorHandler) {
   if (elements.renderSizeSelect) {
     elements.renderSizeSelect.value = getRenderSizePreset().id
   }
+  if (elements.externalDisplayToggle) {
+    state.useExternalDisplay = elements.externalDisplayToggle.checked
+  }
 
   updateDropZoneState()
   updateActionButton()
@@ -2112,6 +2529,9 @@ export function initHdmiUvcSender(errorHandler) {
 
   elements.fileInput.onchange = handleFileSelect
   elements.renderSizeSelect.oninput = handleRenderSizeChange
+  if (elements.externalDisplayToggle) {
+    elements.externalDisplayToggle.onchange = handleExternalDisplayChange
+  }
   elements.fpsSlider.oninput = handleFpsChange
   elements.modeButtons.forEach(button => {
     button.onclick = handleModeChange
@@ -2188,6 +2608,125 @@ export function testPass2TwoStageSchedule() {
   const pass = ok0 && ok1 && ok7 && okPass1 && okPass3
   console.log('Two-stage pass-2 schedule test:', pass ? 'PASS' : 'FAIL',
     { c0, c1, c7, c1Pass, c3Pass })
+  return pass
+}
+
+export function testPresentationScreenSelection() {
+  const current = { availLeft: 0, availTop: 0, availWidth: 1728, availHeight: 1084, isPrimary: true }
+  const ugreen = { availLeft: 1728, availTop: 0, availWidth: 1920, availHeight: 1080, isPrimary: false }
+  const largerPrimary = { availLeft: -2560, availTop: 0, availWidth: 2560, availHeight: 1440, isPrimary: true }
+  const zeroSized = { availLeft: 0, availTop: 0, availWidth: 0, availHeight: 0, isPrimary: false }
+
+  const selected = chooseExternalPresentationScreen([current, largerPrimary, zeroSized, ugreen], current)
+  const none = chooseExternalPresentationScreen([current], current)
+  const onlyZeroSized = chooseExternalPresentationScreen([current, zeroSized], current)
+  const pass = selected === ugreen && none === null && onlyZeroSized === zeroSized
+  console.log('Presentation screen selection test:', pass ? 'PASS' : 'FAIL', {
+    selected: selected ? `${screenWidth(selected)}x${screenHeight(selected)}@(${screenLeft(selected)},${screenTop(selected)})` : null,
+    onlyZeroSized: onlyZeroSized ? `${screenWidth(onlyZeroSized)}x${screenHeight(onlyZeroSized)}@(${screenLeft(onlyZeroSized)},${screenTop(onlyZeroSized)})` : null
+  })
+  return pass
+}
+
+export function testPresentationWindowFeatures() {
+  const features = buildPresentationWindowFeatures({
+    availLeft: -1920,
+    availTop: 0,
+    availWidth: 1920,
+    availHeight: 1080
+  })
+  const required = [
+    'popup=yes',
+    'left=-1920',
+    'top=0',
+    'width=1920',
+    'height=1080',
+    'resizable=no'
+  ]
+  const missing = required.filter((token) => !features.includes(token))
+  const pass = missing.length === 0
+  console.log('Presentation window features test:', pass ? 'PASS' : `FAIL missing ${missing.join(', ')}`)
+  return pass
+}
+
+export function testExternalDisplayReadiness() {
+  const prepared = { availLeft: 1920, availTop: 0, availWidth: 1920, availHeight: 1080 }
+  const currentWindow = getExternalDisplayReadiness(false, null, false)
+  const noApi = getExternalDisplayReadiness(true, prepared, false)
+  const unprepared = getExternalDisplayReadiness(true, null, true)
+  const ready = getExternalDisplayReadiness(true, prepared, true)
+  const pass = currentWindow === null &&
+    noApi?.includes('Chrome/Edge') &&
+    unprepared === null &&
+    ready === null
+  console.log('External display readiness test:', pass ? 'PASS' : 'FAIL', {
+    currentWindow, noApi, unprepared, ready
+  })
+  return pass
+}
+
+export function testExternalPresentationNativeMetrics() {
+  const cssScaledMetrics = {
+    renderPresetId: '1080p',
+    renderPresetName: '1080p',
+    width: 1920,
+    height: 1080,
+    displayWidth: 1652,
+    displayHeight: 929,
+    displayScale: 0.86,
+    devicePixelRatio: 2,
+    physicalDisplayWidth: 3304,
+    physicalDisplayHeight: 1858,
+    effectiveDisplayScale: 1.72
+  }
+  const normalized = normalizeExternalPresentationMetrics(cssScaledMetrics, { external: true })
+  const pass = normalized === cssScaledMetrics &&
+    normalized.physicalDisplayWidth === 1920 &&
+    normalized.physicalDisplayHeight === 1080 &&
+    normalized.effectiveDisplayScale === 1 &&
+    normalized.externalNativePresentation === true &&
+    hasEffectiveOneToOnePresentation(normalized)
+  console.log('External presentation native metrics test:', pass ? 'PASS' : 'FAIL', normalized)
+  return pass
+}
+
+export function testExternalFullscreenUsesSelectedScreen() {
+  const screen = { availLeft: 1920, availTop: 0, availWidth: 1920, availHeight: 1080 }
+  const externalOptions = buildPresentationFullscreenOptions({ external: true, screen })
+  const localOptions = buildPresentationFullscreenOptions({ external: false })
+  const pass = externalOptions.navigationUI === 'hide' &&
+    externalOptions.screen === screen &&
+    localOptions.navigationUI === 'hide' &&
+    !('screen' in localOptions)
+  console.log('External fullscreen screen option test:', pass ? 'PASS' : 'FAIL', {
+    externalOptions,
+    localOptions
+  })
+  return pass
+}
+
+export async function testExternalFullscreenFailureStopsBeforeMainFallback() {
+  let calls = 0
+  const target = {
+    external: true,
+    screen: { availLeft: 1920, availTop: 0, availWidth: 1920, availHeight: 1080 },
+    container: {
+      requestFullscreen: async () => {
+        calls++
+        throw new Error('Permissions check failed')
+      }
+    }
+  }
+
+  let message = ''
+  try {
+    await requestPresentationFullscreen(target)
+  } catch (err) {
+    message = err.message
+  }
+
+  const pass = calls === 1 && message.includes('External fullscreen failed') && message.includes('Permissions check failed')
+  console.log('External fullscreen failure stop test:', pass ? 'PASS' : 'FAIL', { calls, message })
   return pass
 }
 
