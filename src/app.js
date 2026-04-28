@@ -51,7 +51,15 @@ import {
   testNativeGeometryGuidance,
   testNative1080pGeometryCheck,
   testEffectiveOneToOnePresentationCheck,
-  testClassifyStep
+  testClassifyStep,
+  testHeaderAndPayloadBlockSizesMatchForExistingModes,
+  testFrameRefactorPreservesCompat4Bytes,
+  testFrameRefactorPreservesRawGrayBytes,
+  testFrameRefactorPreservesRawRgbBytes,
+  testFrameRefactorPreservesLuma2Bytes,
+  testFrameRefactorPreservesCodebook3Bytes,
+  testFrameRefactorPreservesGlyph5Bytes,
+  testDecodeDataRegionRoundtripsAllModes
 } from './lib/hdmi-uvc/hdmi-uvc-frame.js'
 import {
   testCaptureMethodDecision,
@@ -95,6 +103,14 @@ window.testNativeGeometryGuidance = testNativeGeometryGuidance
 window.testNative1080pGeometryCheck = testNative1080pGeometryCheck
 window.testEffectiveOneToOnePresentationCheck = testEffectiveOneToOnePresentationCheck
 window.testClassifyStep = testClassifyStep
+window.testHeaderAndPayloadBlockSizesMatchForExistingModes = testHeaderAndPayloadBlockSizesMatchForExistingModes
+window.testFrameRefactorPreservesCompat4Bytes = testFrameRefactorPreservesCompat4Bytes
+window.testFrameRefactorPreservesRawGrayBytes = testFrameRefactorPreservesRawGrayBytes
+window.testFrameRefactorPreservesRawRgbBytes = testFrameRefactorPreservesRawRgbBytes
+window.testFrameRefactorPreservesLuma2Bytes = testFrameRefactorPreservesLuma2Bytes
+window.testFrameRefactorPreservesCodebook3Bytes = testFrameRefactorPreservesCodebook3Bytes
+window.testFrameRefactorPreservesGlyph5Bytes = testFrameRefactorPreservesGlyph5Bytes
+window.testDecodeDataRegionRoundtripsAllModes = testDecodeDataRegionRoundtripsAllModes
 window.testReceiverFrameAcceptSignals = testReceiverFrameAcceptSignals
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
 window.testPass2TwoStageSchedule = testPass2TwoStageSchedule
@@ -245,6 +261,14 @@ async function runAllTests() {
     hdmiNative1080pGeometryCheck: testNative1080pGeometryCheck(),
     hdmiEffectiveOneToOnePresentation: testEffectiveOneToOnePresentationCheck(),
     hdmiClassifyStep: testClassifyStep(),
+    hdmiHeaderPayloadBlockSizes: testHeaderAndPayloadBlockSizesMatchForExistingModes(),
+    hdmiFrameRefactorCompat4: testFrameRefactorPreservesCompat4Bytes(),
+    hdmiFrameRefactorRawGray: testFrameRefactorPreservesRawGrayBytes(),
+    hdmiFrameRefactorRawRgb: testFrameRefactorPreservesRawRgbBytes(),
+    hdmiFrameRefactorLuma2: testFrameRefactorPreservesLuma2Bytes(),
+    hdmiFrameRefactorCodebook3: testFrameRefactorPreservesCodebook3Bytes(),
+    hdmiFrameRefactorGlyph5: testFrameRefactorPreservesGlyph5Bytes(),
+    hdmiDecodeDataRegionAllModes: testDecodeDataRegionRoundtripsAllModes(),
     receiverFrameSignals: testReceiverFrameAcceptSignals(),
     stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames(),
     twoStagePass2Schedule: testPass2TwoStageSchedule(),

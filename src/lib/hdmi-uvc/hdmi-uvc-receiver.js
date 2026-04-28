@@ -9,7 +9,7 @@ import {
   HDMI_MODE,
   HDMI_MODE_NAMES,
   HEADER_SIZE,
-  getModeDataBlockSize
+  getModeHeaderBlockSize
 } from './hdmi-uvc-constants.js'
 import {
   detectAnchors,
@@ -1560,7 +1560,10 @@ function probeLayoutPackets(imageData, width, region, layout, payloadLength, exp
           yOff: (layout.yOff || 0) + yAdjust,
           stepX: layout.stepX * scale,
           stepY: layout.stepY * scale,
-          dataBs: layout.dataBs * scale
+          dataBs: layout.dataBs * scale,
+          headerStepX: layout.headerStepX ? layout.headerStepX * scale : undefined,
+          headerStepY: layout.headerStepY ? layout.headerStepY * scale : undefined,
+          headerBs: layout.headerBs ? layout.headerBs * scale : undefined
         }
         const payload = readPayloadWithLayout(imageData, width, region, candidateLayout, payloadLength)
         if (!payload) continue
@@ -3324,10 +3327,10 @@ async function processFrame(now, metadata) {
         `fixedLayout=${state.fixedLayout ? 'yes' : 'no'} ` +
         `expectedSlots=${formatMaybeInt(state.expectedPacketCount)} fixed=${fixedPackets.length}`
       )
-      // Sample first data block values for diagnosis using the actual mode's
-      // payload block size instead of assuming a fixed anchor-to-data ratio.
+      // Sample first header block values for diagnosis using the actual mode's
+      // header block size instead of assuming a fixed anchor-to-data ratio.
       const anchorBs = region.blockSize || BLOCK_SIZE
-      const modeBlockSize = getModeDataBlockSize(state.detectedMode ?? HDMI_MODE.COMPAT_4) || 4
+      const modeBlockSize = getModeHeaderBlockSize(state.detectedMode ?? HDMI_MODE.COMPAT_4) || 4
       const dataScale = modeBlockSize / BLOCK_SIZE
       const bs = anchorBs * dataScale
       const stepX = (region.stepX || anchorBs) * dataScale

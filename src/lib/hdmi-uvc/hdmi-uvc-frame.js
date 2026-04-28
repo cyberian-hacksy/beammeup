@@ -2,7 +2,8 @@
 
 import {
   FRAME_MAGIC, HEADER_SIZE, ANCHOR_SIZE, MARGIN_SIZE, BLOCK_SIZE,
-  ANCHOR_PATTERN, HDMI_MODE, getModeBitsPerBlock, getModeDataBlockSize
+  ANCHOR_PATTERN, HDMI_MODE, getModeBitsPerBlock, getModeDataBlockSize,
+  getModeHeaderBlockSize, getModePayloadBlockSize
 } from './hdmi-uvc-constants.js'
 // crc32WithFallback prefers the WASM kernel (Phase 4) once loaded and
 // transparently falls back to the JS implementation before instantiation.
@@ -451,7 +452,7 @@ export function getDataRegion(width, height) {
 
 // Calculate payload capacity in bytes (binary modulation: 8 data-blocks per byte)
 export function getPayloadCapacity(width, height, mode = HDMI_MODE.COMPAT_4) {
-  const dataBlockSize = getModeDataBlockSize(mode)
+  const dataBlockSize = getModePayloadBlockSize(mode)
   const bitsPerBlock = getModeBitsPerBlock(mode)
   if (!dataBlockSize || !bitsPerBlock) return 0
   const dr = getDataRegion(width, height)
@@ -645,7 +646,7 @@ export function parseHeader(data) {
   }
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
   const mode = view.getUint8(4)
-  if (!getModeDataBlockSize(mode)) return null
+  if (!getModeHeaderBlockSize(mode) || !getModePayloadBlockSize(mode)) return null
   const width = view.getUint16(5, false)
   const height = view.getUint16(7, false)
   if (width < 100 || width > 8000 || height < 100 || height > 8000) return null
@@ -687,9 +688,11 @@ export function createFrameBuffer(width, height) {
 // When `targetBuffer` is provided, it must already contain the initialized static
 // frame base (black background, alpha=255, anchors).
 export function buildFrame(payload, mode, width, height, fps, symbolId, targetBuffer = null) {
-  const dataBlockSize = getModeDataBlockSize(mode)
+  const headerBlockSize = getModeHeaderBlockSize(mode)
+  const payloadBlockSize = getModePayloadBlockSize(mode)
+  const dataBlockSize = payloadBlockSize
   const bitsPerBlock = getModeBitsPerBlock(mode)
-  if (!dataBlockSize || !bitsPerBlock) {
+  if (!headerBlockSize || !payloadBlockSize || !bitsPerBlock) {
     throw new Error(`Unsupported HDMI-UVC mode: ${mode}`)
   }
   const payloadCrc = crc32(payload)
@@ -739,9 +742,10 @@ export function buildFrame(payload, mode, width, height, fps, symbolId, targetBu
       }
 
       // Fill the mode-specific data block.
-      const startX = dr.x + bx * dataBlockSize
-      const startY = dr.y + by * dataBlockSize
-      fillBlockSolid(imageData, width, startX, startY, dataBlockSize, r, g, b)
+      const blockSize = blockIdx < HEADER_BLOCKS ? headerBlockSize : payloadBlockSize
+      const startX = dr.x + bx * blockSize
+      const startY = dr.y + by * blockSize
+      fillBlockSolid(imageData, width, startX, startY, blockSize, r, g, b)
       blockIdx++
     }
   }
@@ -1313,14 +1317,60 @@ export function dataRegionFromAnchors(anchors) {
 // --- Data region decoding (receiver) ---
 
 // Read payload using binary modulation (8 blocks per byte, threshold at 128).
-function readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, expectedBlocksY = null) {
+function readPayloadAt(
+  imageData,
+  width,
+  region,
+  rx,
+  ry,
+  stepX,
+  stepY,
+  bs,
+  blocksX,
+  header,
+  expectedBlocksY = null,
+  headerLayout = null
+) {
   const blocksY = expectedBlocksY ?? Math.floor(region.h / stepY)
   const bitsPerBlock = getModeBitsPerBlock(header.mode) || 1
   const payloadCells = getPayloadCellOrder(header.mode, blocksX, blocksY)
   const reservedPayloadCells = getReservedPayloadCells(header.mode)
+  const headerSamplingLayout = headerLayout || {
+    rx,
+    ry,
+    stepX,
+    stepY,
+    bs,
+    blocksX,
+    blocksY
+  }
   const levels = header.mode === HDMI_MODE.RAW_RGB
-    ? estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
-    : estimatePayloadLevelsFromHeader(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, header, blocksY)
+    ? estimateRgbPayloadLevelsFromHeader(
+      imageData,
+      width,
+      region,
+      headerSamplingLayout.rx,
+      headerSamplingLayout.ry,
+      headerSamplingLayout.stepX,
+      headerSamplingLayout.stepY,
+      headerSamplingLayout.bs,
+      headerSamplingLayout.blocksX,
+      header,
+      headerSamplingLayout.blocksY
+    )
+    : estimatePayloadLevelsFromHeader(
+      imageData,
+      width,
+      region,
+      headerSamplingLayout.rx,
+      headerSamplingLayout.ry,
+      headerSamplingLayout.stepX,
+      headerSamplingLayout.stepY,
+      headerSamplingLayout.bs,
+      headerSamplingLayout.blocksX,
+      header,
+      headerSamplingLayout.blocksY
+    )
   const pilotField = bitsPerBlock === 1
     ? sampleBinaryPilotField(imageData, width, region, rx, ry, stepX, stepY, bs, blocksX, blocksY, header.mode)
     : null
@@ -1758,20 +1808,29 @@ function estimateRgbPayloadLevelsFromHeader(imageData, width, region, rx, ry, st
 function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hypothesis = 'base') {
   if (!region.frameW || !region.frameH) return null
   if (header.width < 100 || header.height < 100) return null
-  const dataBlockSize = getModeDataBlockSize(header.mode)
+  const headerBlockSize = getModeHeaderBlockSize(header.mode)
+  const payloadBlockSize = getModePayloadBlockSize(header.mode)
   const bitsPerBlock = getModeBitsPerBlock(header.mode)
-  if (!dataBlockSize || !bitsPerBlock) return null
+  if (!headerBlockSize || !payloadBlockSize || !bitsPerBlock) return null
 
-  const blocksX = Math.floor((header.width - 2 * MARGIN_SIZE) / dataBlockSize)
-  const blocksY = Math.floor((header.height - 2 * MARGIN_SIZE) / dataBlockSize)
-  if (blocksX * blocksY < HEADER_BLOCKS + BITS_PER_BYTE) return null
+  const headerBlocksX = Math.floor((header.width - 2 * MARGIN_SIZE) / headerBlockSize)
+  const headerBlocksY = Math.floor((header.height - 2 * MARGIN_SIZE) / headerBlockSize)
+  if (headerBlocksX * headerBlocksY < HEADER_BLOCKS) return null
 
-  const stepX = (region.frameW / header.width) * dataBlockSize
-  const stepY = (region.frameH / header.height) * dataBlockSize
-  const dataBs = Math.min(stepX, stepY)
-  const minStep = dataBlockSize === 4 ? 3 : dataBlockSize === 8 ? 6 : 12
-  const maxStep = dataBlockSize === 4 ? 6 : dataBlockSize === 8 ? 10 : 20
-  if (stepX < minStep || stepX > maxStep || stepY < minStep || stepY > maxStep) return null
+  const payloadBlocksX = Math.floor((header.width - 2 * MARGIN_SIZE) / payloadBlockSize)
+  const payloadBlocksY = Math.floor((header.height - 2 * MARGIN_SIZE) / payloadBlockSize)
+  if (payloadBlocksX * payloadBlocksY < HEADER_BLOCKS + BITS_PER_BYTE) return null
+
+  const headerStepX = (region.frameW / header.width) * headerBlockSize
+  const headerStepY = (region.frameH / header.height) * headerBlockSize
+  const headerBs = Math.min(headerStepX, headerStepY)
+  const payloadScale = payloadBlockSize / headerBlockSize
+  const payloadStepX = headerStepX * payloadScale
+  const payloadStepY = headerStepY * payloadScale
+  const payloadBs = headerBs * payloadScale
+  const minStep = headerBlockSize === 4 ? 3 : headerBlockSize === 8 ? 6 : 12
+  const maxStep = headerBlockSize === 4 ? 6 : headerBlockSize === 8 ? 10 : 20
+  if (headerStepX < minStep || headerStepX > maxStep || headerStepY < minStep || headerStepY > maxStep) return null
 
   const yOffsets = [0, -1, 1, -2, 2]
   let bestResult = null
@@ -1783,25 +1842,60 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
       const refinedRy = ry + yAdjust
 
       const refinedHeader = probeHeaderBinary(
-        imageData, width, region, refinedRx, refinedRy, stepX, stepY, dataBs, blocksX, blocksY
+        imageData,
+        width,
+        region,
+        refinedRx,
+        refinedRy,
+        headerStepX,
+        headerStepY,
+        headerBs,
+        headerBlocksX,
+        headerBlocksY
       )
       if (!refinedHeader) continue
 
-      const payloadBlocks = getUsablePayloadBlocks(refinedHeader.mode, blocksX, blocksY)
+      const payloadBlocks = getUsablePayloadBlocks(refinedHeader.mode, payloadBlocksX, payloadBlocksY)
       const payloadCapacity = Math.floor((payloadBlocks * bitsPerBlock) / BITS_PER_BYTE)
       if (payloadCapacity < refinedHeader.payloadLength) continue
 
       const result = readPayloadAt(
-        imageData, width, region, refinedRx, refinedRy, stepX, stepY, dataBs, blocksX, refinedHeader, blocksY
+        imageData,
+        width,
+        region,
+        refinedRx,
+        refinedRy,
+        payloadStepX,
+        payloadStepY,
+        payloadBs,
+        payloadBlocksX,
+        refinedHeader,
+        payloadBlocksY,
+        {
+          rx: refinedRx,
+          ry: refinedRy,
+          stepX: headerStepX,
+          stepY: headerStepY,
+          bs: headerBs,
+          blocksX: headerBlocksX,
+          blocksY: headerBlocksY
+        }
       )
       result._diag = {
-        dataBs,
-        dataBlockSize,
+        dataBs: payloadBs,
+        headerBs,
+        dataBlockSize: payloadBlockSize,
+        headerBlockSize,
+        payloadBlockSize,
         bitsPerBlock,
-        stepX,
-        stepY,
-        blocksX,
-        blocksY,
+        stepX: payloadStepX,
+        stepY: payloadStepY,
+        headerStepX,
+        headerStepY,
+        blocksX: payloadBlocksX,
+        blocksY: payloadBlocksY,
+        headerBlocksX,
+        headerBlocksY,
         frameMode: refinedHeader.mode,
         xOff: refinedRx - region.x,
         yOff: refinedRy - region.y,
@@ -1898,11 +1992,17 @@ function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout) 
   if (!layout) return null
 
   const frameMode = layout.frameMode
-  const dataBlockSize = getModeDataBlockSize(frameMode)
+  const headerBlockSize = getModeHeaderBlockSize(frameMode)
+  const payloadBlockSize = getModePayloadBlockSize(frameMode)
   const bitsPerBlock = getModeBitsPerBlock(frameMode)
   const blocksX = layout.blocksX
   const blocksY = layout.blocksY ?? Math.floor(region.h / layout.stepY)
-  if (!dataBlockSize || !bitsPerBlock || !blocksX || !blocksY) return null
+  const headerBlocksX = layout.headerBlocksX ?? blocksX
+  const headerStepX = layout.headerStepX ?? layout.stepX
+  const headerStepY = layout.headerStepY ?? layout.stepY
+  const headerBs = layout.headerBs ?? layout.dataBs
+  const headerBlocksY = layout.headerBlocksY ?? Math.floor(region.h / headerStepY)
+  if (!headerBlockSize || !payloadBlockSize || !bitsPerBlock || !blocksX || !blocksY || !headerBlocksX || !headerBlocksY) return null
 
   const xAdjustments = [0, -1, 1, -2, 2]
   const yAdjustments = [0, -1, 1, -2, 2]
@@ -1919,11 +2019,11 @@ function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout) 
         region,
         rx,
         ry,
-        layout.stepX,
-        layout.stepY,
-        layout.dataBs,
-        blocksX,
-        blocksY
+        headerStepX,
+        headerStepY,
+        headerBs,
+        headerBlocksX,
+        headerBlocksY
       )
       if (!header) continue
       if (header.mode !== frameMode) continue
@@ -1935,13 +2035,25 @@ function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout) 
 
       const result = readPayloadAt(
         imageData, width, region, rx, ry,
-        layout.stepX, layout.stepY, layout.dataBs, blocksX, header, blocksY
+        layout.stepX, layout.stepY, layout.dataBs, blocksX, header, blocksY,
+        {
+          rx,
+          ry,
+          stepX: headerStepX,
+          stepY: headerStepY,
+          bs: headerBs,
+          blocksX: headerBlocksX,
+          blocksY: headerBlocksY
+        }
       )
       result._diag = {
         ...layout,
         modeProbe: frameMode,
-        probeDataBlockSize: dataBlockSize,
-        dataBlockSize,
+        probeDataBlockSize: headerBlockSize,
+        dataBlockSize: payloadBlockSize,
+        headerBlockSize,
+        payloadBlockSize,
+        headerBs,
         bitsPerBlock: payloadBitsPerBlock,
         payloadCapacity,
         xOff: (layout.xOff || 0) + xAdjust,
@@ -1983,7 +2095,7 @@ export function decodeDataRegion(imageData, width, region) {
   const baseBs = region.blockSize || BLOCK_SIZE
   const yOffsets = [0, -1, 1, -2, 2, -3, 3, -4, 4]
   const bsAdjustments = [0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.5, -0.5]
-  const candidateBlockSizes = [4, 8]
+  const candidateHeaderBlockSizes = [4, 8]
 
   let bestResult = null
   let bestScore = -1
@@ -1991,11 +2103,11 @@ export function decodeDataRegion(imageData, width, region) {
   const preferredResult = tryPreferredExperimentalLayoutDecode(imageData, width, region, region.preferredLayout)
   if (preferredResult) return preferredResult
 
-  for (const dataBlockSize of candidateBlockSizes) {
-    const dataScale = dataBlockSize / BLOCK_SIZE
-    const baseStepX = (region.stepX || baseBs) * dataScale
-    const baseStepY = (region.stepY || baseBs) * dataScale
-    const baseDataBs = baseBs * dataScale
+  for (const headerBlockSize of candidateHeaderBlockSizes) {
+    const headerScale = headerBlockSize / BLOCK_SIZE
+    const baseStepX = (region.stepX || baseBs) * headerScale
+    const baseStepY = (region.stepY || baseBs) * headerScale
+    const baseHeaderBs = baseBs * headerScale
     const baseDataStep = Math.max(1, Math.round(baseStepX))
     const offsets = []
     for (let coarse = -2; coarse <= 2; coarse++) {
@@ -2011,37 +2123,78 @@ export function decodeDataRegion(imageData, width, region) {
       const scale = anchorBs / baseBs
       const stepX = baseStepX * scale
       const stepY = baseStepY * scale
-      const dataBs = baseDataBs * scale
+      const headerBs = baseHeaderBs * scale
 
-      const blocksX = Math.floor(region.w / stepX)
-      const totalBlocksY = Math.floor(region.h / stepY)
-      if (blocksX * totalBlocksY < HEADER_BLOCKS + BITS_PER_BYTE) continue
+      const headerBlocksX = Math.floor(region.w / stepX)
+      const headerBlocksY = Math.floor(region.h / stepY)
+      if (headerBlocksX * headerBlocksY < HEADER_BLOCKS) continue
 
       for (const xOff of offsets) {
         for (const yOff of yOffsets) {
           const rx = region.x + xOff
           const ry = region.y + yOff
 
-          const header = probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, dataBs, blocksX)
+          const header = probeHeaderBinary(imageData, width, region, rx, ry, stepX, stepY, headerBs, headerBlocksX)
           if (!header) continue
 
-          const payloadBitsPerBlock = getModeBitsPerBlock(header.mode) || bitsPerBlock
-          const blocksY = Math.floor(region.h / stepY)
-          const payloadBlocks = getUsablePayloadBlocks(header.mode, blocksX, blocksY)
+          const resolvedHeaderBlockSize = getModeHeaderBlockSize(header.mode)
+          const payloadBlockSize = getModePayloadBlockSize(header.mode)
+          const payloadBitsPerBlock = getModeBitsPerBlock(header.mode)
+          if (!resolvedHeaderBlockSize || !payloadBlockSize || !payloadBitsPerBlock) continue
+          if (resolvedHeaderBlockSize !== headerBlockSize) continue
+
+          const payloadScale = payloadBlockSize / resolvedHeaderBlockSize
+          const payloadStepX = stepX * payloadScale
+          const payloadStepY = stepY * payloadScale
+          const payloadBs = headerBs * payloadScale
+          const payloadBlocksX = Math.floor(region.w / payloadStepX)
+          const payloadBlocksY = Math.floor(region.h / payloadStepY)
+          if (payloadBlocksX * payloadBlocksY < HEADER_BLOCKS + BITS_PER_BYTE) continue
+
+          const payloadBlocks = getUsablePayloadBlocks(header.mode, payloadBlocksX, payloadBlocksY)
           const payloadCapacity = Math.floor((payloadBlocks * payloadBitsPerBlock) / BITS_PER_BYTE)
           if (payloadCapacity < header.payloadLength) continue
 
-          const baseResult = readPayloadAt(imageData, width, region, rx, ry, stepX, stepY, dataBs, blocksX, header)
-          baseResult._diag = {
-            modeProbe: header.mode,
-            probeDataBlockSize: dataBlockSize,
-            dataBlockSize,
-            bitsPerBlock: payloadBitsPerBlock,
-            dataBs,
+          const headerLayout = {
+            rx,
+            ry,
             stepX,
             stepY,
-            blocksX,
-            blocksY,
+            bs: headerBs,
+            blocksX: headerBlocksX,
+            blocksY: headerBlocksY
+          }
+          const baseResult = readPayloadAt(
+            imageData,
+            width,
+            region,
+            rx,
+            ry,
+            payloadStepX,
+            payloadStepY,
+            payloadBs,
+            payloadBlocksX,
+            header,
+            payloadBlocksY,
+            headerLayout
+          )
+          baseResult._diag = {
+            modeProbe: header.mode,
+            probeDataBlockSize: headerBlockSize,
+            dataBlockSize: payloadBlockSize,
+            headerBlockSize,
+            payloadBlockSize,
+            bitsPerBlock: payloadBitsPerBlock,
+            dataBs: payloadBs,
+            headerBs,
+            stepX: payloadStepX,
+            stepY: payloadStepY,
+            headerStepX: stepX,
+            headerStepY: stepY,
+            blocksX: payloadBlocksX,
+            blocksY: payloadBlocksY,
+            headerBlocksX,
+            headerBlocksY,
             frameMode: header.mode,
             xOff,
             yOff,
@@ -2122,7 +2275,7 @@ export function decodeDataRegion(imageData, width, region) {
 
           if (!region._logged) {
             region._logged = true
-            console.log(`[HDMI-RX] Header: probeBs=${dataBlockSize} mode=${header.mode} dataBs=${dataBs.toFixed(2)} step=${stepX.toFixed(2)}/${stepY.toFixed(2)} step-class=${classifyStep(stepX, stepY)} grid=${blocksX}x${blocksY} len=${header.payloadLength} cap=${payloadCapacity} off=(${xOff},${yOff}) crc=${result.crcValid}`)
+            console.log(`[HDMI-RX] Header: probeBs=${headerBlockSize} mode=${header.mode} dataBs=${payloadBs.toFixed(2)} step=${payloadStepX.toFixed(2)}/${payloadStepY.toFixed(2)} step-class=${classifyStep(payloadStepX, payloadStepY)} grid=${payloadBlocksX}x${payloadBlocksY} len=${header.payloadLength} cap=${payloadCapacity} off=(${xOff},${yOff}) crc=${result.crcValid}`)
           }
 
           if (result.crcValid) return result
@@ -2173,7 +2326,7 @@ export function testFrameRoundtrip() {
   const payload = new Uint8Array(400)
   for (let i = 0; i < payload.length; i++) payload[i] = i % 256
 
-  const width = 640, height = 480
+  const width = 640, height = 407
   const frame = buildFrame(payload, HDMI_MODE.COMPAT_4, width, height, 30, 42)
 
   // Detect anchors
@@ -2212,6 +2365,114 @@ export function testModeCapacityOrdering() {
     'Mode capacity ordering test:',
     pass ? `PASS (${cap4}; Luma2=${luma2Cap}; legacy 16x16 disabled)` : 'FAIL'
   )
+  return pass
+}
+
+export function testHeaderAndPayloadBlockSizesMatchForExistingModes() {
+  const modes = [
+    HDMI_MODE.COMPAT_4,
+    HDMI_MODE.RAW_GRAY,
+    HDMI_MODE.RAW_RGB,
+    HDMI_MODE.LUMA_2,
+    HDMI_MODE.CODEBOOK_3,
+    HDMI_MODE.GLYPH_5
+  ]
+  const fail = modes.find((mode) =>
+    getModeHeaderBlockSize(mode) !== getModeDataBlockSize(mode) ||
+    getModePayloadBlockSize(mode) !== getModeDataBlockSize(mode)
+  )
+  const pass = !fail
+  console.log('Header/payload block size accessors test:', pass ? 'PASS' : `FAIL on mode ${fail}`)
+  return pass
+}
+
+function frameRefactorChecksum(mode, payloadLength, multiplier) {
+  const payload = new Uint8Array(payloadLength)
+  for (let i = 0; i < payload.length; i++) payload[i] = (i * multiplier) & 0xFF
+
+  const width = 640
+  const height = 480
+  const frame = buildFrame(payload, mode, width, height, 30, 42)
+  const view = new Uint8Array(frame.buffer, frame.byteOffset, frame.byteLength)
+  return crc32(view)
+}
+
+function testPinnedFrameBytes(label, mode, payloadLength, multiplier, expected) {
+  const checksum = frameRefactorChecksum(mode, payloadLength, multiplier)
+  const pass = checksum === expected
+  console.log(`${label} frame refactor byte-equality test: ${pass ? 'PASS' : 'FAIL'} (crc=${checksum.toString(16)}, expected=${expected.toString(16)})`)
+  return pass
+}
+
+export function testFrameRefactorPreservesCompat4Bytes() {
+  return testPinnedFrameBytes('Compat4', HDMI_MODE.COMPAT_4, 400, 73, 0x29e01f8b)
+}
+
+export function testFrameRefactorPreservesRawGrayBytes() {
+  return testPinnedFrameBytes('RawGray', HDMI_MODE.RAW_GRAY, 401, 37, 0x5899e33b)
+}
+
+export function testFrameRefactorPreservesRawRgbBytes() {
+  return testPinnedFrameBytes('RawRgb', HDMI_MODE.RAW_RGB, 401, 53, 0xdd629520)
+}
+
+export function testFrameRefactorPreservesLuma2Bytes() {
+  return testPinnedFrameBytes('Luma2', HDMI_MODE.LUMA_2, 401, 31, 0xe338dccd)
+}
+
+export function testFrameRefactorPreservesCodebook3Bytes() {
+  return testPinnedFrameBytes('Tile3', HDMI_MODE.CODEBOOK_3, 401, 29, 0xd862dd50)
+}
+
+export function testFrameRefactorPreservesGlyph5Bytes() {
+  return testPinnedFrameBytes('Glyph5', HDMI_MODE.GLYPH_5, 402, 41, 0x1fc74de1)
+}
+
+export function testDecodeDataRegionRoundtripsAllModes() {
+  const modes = [
+    HDMI_MODE.COMPAT_4,
+    HDMI_MODE.RAW_GRAY,
+    HDMI_MODE.RAW_RGB,
+    HDMI_MODE.LUMA_2,
+    HDMI_MODE.CODEBOOK_3,
+    HDMI_MODE.GLYPH_5
+  ]
+  const width = 640
+  const height = 407
+  const failures = []
+
+  for (const mode of modes) {
+    const payload = new Uint8Array(getPayloadCapacity(width, height, mode))
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 17 + mode) & 0xFF
+
+    const frame = buildFrame(payload, mode, width, height, 30, 42)
+    const anchors = detectAnchors(frame, width, height)
+    if (anchors.length < 2) {
+      failures.push(`${mode}: anchors`)
+      continue
+    }
+    const region = dataRegionFromAnchors(anchors)
+    if (!region) {
+      failures.push(`${mode}: region`)
+      continue
+    }
+    const result = decodeDataRegion(frame, width, region)
+    if (!result || !result.crcValid) {
+      failures.push(`${mode}: crc`)
+      continue
+    }
+    if (result.payload.length !== payload.length) {
+      failures.push(`${mode}: len`)
+      continue
+    }
+    if (!result.payload.every((v, i) => v === payload[i])) {
+      failures.push(`${mode}: bytes`)
+      continue
+    }
+  }
+
+  const pass = failures.length === 0
+  console.log('decodeDataRegion all-modes roundtrip test:', pass ? 'PASS' : `FAIL ${failures.join(', ')}`)
   return pass
 }
 

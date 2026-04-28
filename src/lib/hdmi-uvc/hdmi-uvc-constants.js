@@ -82,6 +82,19 @@ export function getModeBitsPerBlock(mode) {
   }
 }
 
+// Header block size: the cell pitch used to encode the 22-byte frame header.
+// Current modes match getModeDataBlockSize; BINARY_3 will keep this at 4 while
+// shrinking only the payload cells.
+export function getModeHeaderBlockSize(mode) {
+  return getModeDataBlockSize(mode)
+}
+
+// Payload block size: the cell pitch used to encode file payload bits. Current
+// modes match getModeDataBlockSize; BINARY_3 will return 3 here.
+export function getModePayloadBlockSize(mode) {
+  return getModeDataBlockSize(mode)
+}
+
 // Frame rate presets
 export const FPS_PRESETS = [
   { name: '30 fps', fps: 30, interval: 33 },
