@@ -4,6 +4,14 @@
 // feeds real decodeDataRegion/extract functions and the shadow decoder; tests
 // feed fakes.
 
+function getDecoderPacketSession(decoder) {
+  if (!decoder) return null
+  const fileId = decoder.fileId
+  const k = decoder.K_prime
+  if (fileId == null && k == null) return null
+  return { fileId, k }
+}
+
 export function ingestCapturedFrame({
   pixelBuffer,
   width,
@@ -22,7 +30,10 @@ export function ingestCapturedFrame({
       newSession: false
     }
   }
-  const extract = extractFn(decodeResult.payload, expectedPacketSize)
+  const extract = extractFn(decodeResult.payload, expectedPacketSize, {
+    confidence: decodeResult.confidence || null,
+    session: getDecoderPacketSession(decoder)
+  })
   let innovations = 0
   let newSession = false
   for (const parsed of extract.packets) {
@@ -39,7 +50,8 @@ export function ingestCapturedFrame({
     decodeResult,
     innovations,
     accepted: extract.packets.length,
-    newSession
+    newSession,
+    salvaged: extract.salvaged || 0
   }
 }
 

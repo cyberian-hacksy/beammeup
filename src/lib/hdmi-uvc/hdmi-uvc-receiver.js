@@ -41,8 +41,6 @@ import {
   noteBinary3UnrecoveredCrcFailure
 } from './hdmi-uvc-binary3-lock.js'
 import {
-  extractFramePackets,
-  getFramePacketSlotCount,
   probeFramePackets
 } from './hdmi-uvc-packet-probe.js'
 
@@ -722,6 +720,7 @@ function handleWorkerDecoderDelta(msg) {
   if (!s) return
   if (typeof msg.solved === 'number') s.solved = msg.solved
   if (typeof msg.solvedTotal === 'number') s.solvedTotal = msg.solvedTotal
+  if ('fileId' in msg) s.fileId = typeof msg.fileId === 'number' ? msg.fileId : null
   if (typeof msg.K === 'number') s.K = msg.K
   if (typeof msg.K_prime === 'number') s.K_prime = msg.K_prime
   if (typeof msg.blockSize === 'number') s.blockSize = msg.blockSize
@@ -793,6 +792,7 @@ function handleWorkerCaptureFrame(msg) {
     state.decodeFailCount = 0
     state.frameAcceptedThisFrame = true
     if (msg.innovations > 0) state.frameInnovatedThisFrame = true
+    if (msg.salvaged > 0) noteReceiverRecovery('salvage', msg.salvaged)
     recordProgressSample()
   } else {
     state.decodeFailCount++
@@ -824,7 +824,8 @@ function handleWorkerCaptureFrame(msg) {
       `meta=${breakdown.metadataCount ?? '?'} ` +
       `pending=${shadow?.pendingSymbolCount ?? '?'} ` +
       `missing=${shadow?.unresolvedSourceCount ?? '?'} ` +
-      `pkts=${msg.accepted}` +
+      `pkts=${msg.accepted} ` +
+      `salvaged=${msg.salvaged || 0}` +
       rateSuffix
     )
   }
@@ -960,6 +961,7 @@ function createWorkerDecoderShadow() {
   const s = {
     solved: 0,
     solvedTotal: 0,
+    fileId: null,
     K: null,
     K_prime: null,
     blockSize: WORKER_SHADOW_DEFAULT_BLOCK_SIZE,
@@ -977,6 +979,7 @@ function createWorkerDecoderShadow() {
   postToWorker({ type: 'initDecoder' })
   return {
     get metadata() { return s.metadata },
+    get fileId() { return s.fileId },
     get solved() { return s.solved },
     get solvedTotal() { return s.solvedTotal },
     get K() { return s.K },
@@ -1047,6 +1050,7 @@ function createWorkerDecoderShadow() {
     reset() {
       s.solved = 0
       s.solvedTotal = 0
+      s.fileId = null
       s.K = null
       s.K_prime = null
       s.blockSize = WORKER_SHADOW_DEFAULT_BLOCK_SIZE
@@ -1653,6 +1657,25 @@ function getExpectedPacketSize() {
   return state.decoder ? state.decoder.blockSize + PACKET_HEADER_SIZE : null
 }
 
+function getReceiverPacketSession() {
+  const decoder = state.decoder
+  if (!decoder) return null
+  const fileId = decoder.fileId
+  const k = decoder.K_prime
+  if (fileId == null && k == null) return null
+  return { fileId, k }
+}
+
+function getPacketProbeOptions(result) {
+  if (result?.header?.mode !== HDMI_MODE.BINARY_3 || !(result.confidence instanceof Uint8Array)) {
+    return {}
+  }
+  return {
+    confidence: result.confidence,
+    session: getReceiverPacketSession()
+  }
+}
+
 function tryFixedLayoutPackets(imageData, width, region) {
   const expectedPacketSize = getExpectedPacketSize()
   if (!expectedPacketSize || !state.fixedLayout || state.expectedPacketCount < 1) return []
@@ -1747,10 +1770,18 @@ async function tryLockedLayoutFastPath(imageData, width, region) {
   return false
 }
 
-async function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true, expectedFramePacketCount = packets.length, preIngestedResult = null) {
+async function acceptPackets(
+  packets,
+  fallbackSymbolId,
+  countAsValidFrame = true,
+  expectedFramePacketCount = packets.length,
+  preIngestedResult = null,
+  packetStats = null
+) {
   const acceptStartMs = performance.now()
   let accepted = false
   let innovationCount = 0
+  const softSalvagedPacketCount = (packetStats?.salvaged || preIngestedResult?.salvaged || 0)
 
   try {
     if (!preIngestedResult && packets.length === 0) return false
@@ -1878,7 +1909,8 @@ async function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true
         `meta=${symbolBreakdown.metadataCount ?? '?'} ` +
         `pending=${decoder.pendingSymbolCount ?? '?'} ` +
         `missing=${decoder.unresolvedSourceCount ?? '?'} ` +
-        `sym=${lastParsed.symbolId ?? fallbackSymbolId} pkts=${acceptedPacketCount}` +
+        `sym=${lastParsed.symbolId ?? fallbackSymbolId} pkts=${acceptedPacketCount} ` +
+        `salvaged=${softSalvagedPacketCount}` +
         rateSuffix
       )
     }
@@ -3164,6 +3196,7 @@ async function processFrame(now, metadata) {
           crcValid: false,
           header: dr.header,
           payload: dr.payload ? new Uint8Array(dr.payload) : null,
+          confidence: dr.confidence ? new Uint8Array(dr.confidence) : null,
           _diag: dr._diag || null
         }
       }
@@ -3186,6 +3219,7 @@ async function processFrame(now, metadata) {
     })
 
     let frameAccepted = false
+    let softSalvagedPacketCount = 0
     if (workerDecodedFrame && workerDecodedResp) {
       // Worker already ingested — run the bookkeeping via the preIngested
       // path. Synthesize totalFramePackets from the worker's reported slot
@@ -3199,17 +3233,30 @@ async function processFrame(now, metadata) {
         {
           header: result.header,
           accepted: workerDecodedResp.accepted || 0,
-          innovations: workerDecodedResp.innovations || 0
-        }
+          innovations: workerDecodedResp.innovations || 0,
+          salvaged: workerDecodedResp.salvaged || 0
+        },
+        { salvaged: workerDecodedResp.salvaged || 0 }
       )
+      softSalvagedPacketCount = workerDecodedResp.salvaged || 0
     } else {
       const expectedPacketSize = getExpectedPacketSize()
-      const totalFramePackets = getFramePacketSlotCount(result.payload, expectedPacketSize)
-      const packets = extractFramePackets(result.payload, expectedPacketSize)
-      frameAccepted = await acceptPackets(packets, result.header.symbolId, true, totalFramePackets)
+      const packetProbe = probeFramePackets(result.payload, expectedPacketSize, getPacketProbeOptions(result))
+      const totalFramePackets = packetProbe.slotCount
+      const packets = packetProbe.packets
+      softSalvagedPacketCount = packetProbe.salvaged || 0
+      frameAccepted = await acceptPackets(
+        packets,
+        result.header.symbolId,
+        true,
+        totalFramePackets,
+        null,
+        { salvaged: packetProbe.salvaged || 0 }
+      )
     }
 
     if (frameAccepted) {
+      if (softSalvagedPacketCount > 0) noteReceiverRecovery('salvage', softSalvagedPacketCount)
       if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
         lockAnchorRegion(
           candidateRegion || state.tentativeAnchorBounds,
@@ -3246,7 +3293,7 @@ async function processFrame(now, metadata) {
     noteReceiverCrcFailFrame()
     if (result._diag) state.preferredLayout = { ...result._diag }
     const expectedPacketSize = getExpectedPacketSize()
-    const salvageProbe = probeFramePackets(result.payload, expectedPacketSize)
+    const salvageProbe = probeFramePackets(result.payload, expectedPacketSize, getPacketProbeOptions(result))
     const totalFramePackets = salvageProbe.slotCount
     const salvagedPackets = salvageProbe.packets
     const fixedPackets = tryFixedLayoutPackets(imageData.data, frameWidth, region)
@@ -3264,7 +3311,14 @@ async function processFrame(now, metadata) {
       getLayoutProbeOptions(result._diag || state.fixedLayout || state.preferredLayout)
     )
     const phasePackets = phaseProbe?.probe?.packets || []
-    if (await acceptPackets(salvagedPackets, result.header.symbolId, true, totalFramePackets)) {
+    if (await acceptPackets(
+      salvagedPackets,
+      result.header.symbolId,
+      true,
+      totalFramePackets,
+      null,
+      { salvaged: salvageProbe.salvaged || 0 }
+    )) {
       noteSignalDetected(result.header.mode)
       noteReceiverRecovery('salvage', salvagedPackets.length)
       if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
@@ -3279,7 +3333,10 @@ async function processFrame(now, metadata) {
       if (result._diag) state.preferredLayout = { ...result._diag }
       applyBinary3Lock(result, region)
       if (isDiagFrame) {
-        debugLog(`Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) from CRC-fail frame`)
+        debugLog(
+          `Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) ` +
+          `from CRC-fail frame (soft=${salvageProbe.salvaged || 0})`
+        )
       }
       if (state.decoder?.isComplete()) {
         finalizeFramePerf()

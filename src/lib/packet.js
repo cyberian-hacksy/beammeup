@@ -94,6 +94,34 @@ export function parsePacket(data) {
   }
 }
 
+export function parsePacketHeaderUnchecked(data) {
+  if (data.length < PACKET_HEADER_SIZE) return null
+
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+  const versionAndFlags = view.getUint8(0)
+  const version = versionAndFlags >> 3
+
+  if (version !== PROTOCOL_VERSION) {
+    return null
+  }
+
+  const flags = versionAndFlags & 0x07
+  const payloadLength = data.length - PACKET_HEADER_SIZE
+  if (payloadLength < 1) return null
+
+  return {
+    fileId: view.getUint32(1, false),
+    k: readUint24(view, 5),
+    symbolId: readUint24(view, 8),
+    blockSize: payloadLength,
+    isMetadata: (flags & 1) === 1,
+    mode: (flags >> 1) & 0x03,
+    payloadCrc: view.getUint32(11, false),
+    payloadOffset: PACKET_HEADER_SIZE,
+    payloadLength
+  }
+}
+
 // Test packet serialization roundtrip
 export function testPacketRoundtrip() {
   const payload = new Uint8Array([1, 2, 3, 4, 5])

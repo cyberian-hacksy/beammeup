@@ -141,6 +141,7 @@ function decoderDelta(extra = {}) {
     type: 'decoderDelta',
     solved: d.solved,
     solvedTotal: d.solvedTotal,
+    fileId: d.fileId ?? null,
     K: d.K ?? null,
     K_prime: d.K_prime ?? null,
     blockSize: d.blockSize ?? 0,
@@ -179,6 +180,14 @@ function serializeDecodeHeader(header) {
   }
 }
 
+function decoderPacketSession(d = decoder) {
+  if (!d) return null
+  const fileId = d.fileId
+  const k = d.K_prime
+  if (fileId == null && k == null) return null
+  return { fileId, k }
+}
+
 function handleDecodeAndIngest(msg) {
   const start = performance.now()
   const bytes = new Uint8ClampedArray(msg.buffer)
@@ -202,6 +211,8 @@ function handleDecodeAndIngest(msg) {
   if (!decodeResult.crcValid) {
     const p = decodeResult.payload
     const buf = p ? p.buffer.slice(p.byteOffset, p.byteOffset + p.byteLength) : null
+    const c = decodeResult.confidence
+    const confidenceBuf = c ? c.buffer.slice(c.byteOffset, c.byteOffset + c.byteLength) : null
     const reply = {
       type: 'decodeAndIngestResult',
       id: msg.id,
@@ -209,15 +220,20 @@ function handleDecodeAndIngest(msg) {
         crcValid: false,
         header: serializeDecodeHeader(decodeResult.header),
         payload: buf,
+        confidence: confidenceBuf,
         _diag: decodeResult._diag || null
       },
       elapsedMs: performance.now() - start
     }
-    return buf ? { reply, transfer: [buf] } : reply
+    const transfer = [buf, confidenceBuf].filter(Boolean)
+    return transfer.length ? { reply, transfer } : reply
   }
 
   const d = ensureDecoder()
-  const extract = extractValidPacketsFromPayload(decodeResult.payload, msg.expectedPacketSize)
+  const extract = extractValidPacketsFromPayload(decodeResult.payload, msg.expectedPacketSize, {
+    confidence: decodeResult.confidence || null,
+    session: decoderPacketSession(d)
+  })
   const parsedList = extract.packets
   let innovations = 0
   let newSession = false
@@ -251,6 +267,7 @@ function handleDecodeAndIngest(msg) {
     completionEvent: isComplete,
     solved: d.solved,
     solvedTotal: d.solvedTotal,
+    fileId: d.fileId ?? null,
     K: d.K ?? null,
     K_prime: d.K_prime ?? null,
     blockSize: d.blockSize ?? 0,
@@ -262,6 +279,7 @@ function handleDecodeAndIngest(msg) {
     telemetry: d.telemetry ?? null,
     isComplete,
     symbolBreakdown: currentSymbolBreakdown(),
+    salvaged: extract.salvaged || 0,
     elapsedMs: performance.now() - start
   }
 }
@@ -293,6 +311,7 @@ function handleIngestBatch(msg) {
     // the same tick as innovation accounting — no dual-channel staleness.
     solved: d.solved,
     solvedTotal: d.solvedTotal,
+    fileId: d.fileId ?? null,
     K: d.K ?? null,
     K_prime: d.K_prime ?? null,
     blockSize: d.blockSize ?? 0,
@@ -398,6 +417,7 @@ function buildCaptureFrameMessage(result) {
     completionEvent: isComplete,
     solved: d ? d.solved : 0,
     solvedTotal: d ? d.solvedTotal : 0,
+    fileId: d ? (d.fileId ?? null) : null,
     K: d ? (d.K ?? null) : null,
     K_prime: d ? (d.K_prime ?? null) : null,
     blockSize: d ? (d.blockSize ?? 0) : 0,
@@ -408,7 +428,8 @@ function buildCaptureFrameMessage(result) {
     metadata: d ? (d.metadata ?? null) : null,
     telemetry: d ? (d.telemetry ?? null) : null,
     isComplete,
-    symbolBreakdown: currentSymbolBreakdown()
+    symbolBreakdown: currentSymbolBreakdown(),
+    salvaged: result.salvaged || 0
   }
 }
 
