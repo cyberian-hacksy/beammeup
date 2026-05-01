@@ -786,6 +786,11 @@ export function normalizeExternalPresentationMetrics(metrics, target = getPresen
   if (!target?.external || metrics?.renderPresetId !== '1080p') return metrics
   if (metrics.width !== 1920 || metrics.height !== 1080) return metrics
 
+  metrics.displayWidth = metrics.width
+  metrics.displayHeight = metrics.height
+  metrics.displayX = 0
+  metrics.displayY = 0
+  metrics.displayScale = 1
   metrics.physicalDisplayWidth = metrics.width
   metrics.physicalDisplayHeight = metrics.height
   metrics.effectiveDisplayScale = 1
@@ -2753,15 +2758,24 @@ export function testExternalPresentationNativeMetrics() {
     devicePixelRatio: 2,
     physicalDisplayWidth: 3304,
     physicalDisplayHeight: 1858,
-    effectiveDisplayScale: 1.72
+    effectiveDisplayScale: 1.72,
+    displayX: 0,
+    displayY: 11,
+    fullscreenActive: true
   }
   const normalized = normalizeExternalPresentationMetrics(cssScaledMetrics, { external: true })
   const pass = normalized === cssScaledMetrics &&
+    normalized.displayWidth === 1920 &&
+    normalized.displayHeight === 1080 &&
+    normalized.displayScale === 1 &&
+    normalized.displayX === 0 &&
+    normalized.displayY === 0 &&
     normalized.physicalDisplayWidth === 1920 &&
     normalized.physicalDisplayHeight === 1080 &&
     normalized.effectiveDisplayScale === 1 &&
     normalized.externalNativePresentation === true &&
-    hasEffectiveOneToOnePresentation(normalized)
+    hasEffectiveOneToOnePresentation(normalized) &&
+    isNative1080pGeometry(normalized)
   console.log('External presentation native metrics test:', pass ? 'PASS' : 'FAIL', normalized)
   return pass
 }
