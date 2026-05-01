@@ -35,10 +35,10 @@
 
 import { detectAnchors, dataRegionFromAnchors, decodeDataRegion } from './hdmi-uvc-frame.js'
 import { createDecoder } from '../decoder.js'
-import { parsePacket, PACKET_HEADER_SIZE } from '../packet.js'
 import { ingestCapturedFrame } from './hdmi-uvc-capture-pump.js'
 import { computeLockedCaptureRect, getWorkerCaptureCopyRect } from './hdmi-uvc-receiver-capture.js'
 import { loadHdmiUvcWasm, setHdmiUvcWasmUrl } from './hdmi-uvc-wasm.js'
+import { extractParsedFramePackets as extractValidPacketsFromPayload } from './hdmi-uvc-packet-probe.js'
 
 // WASM loading is driven by the main thread rather than at module boot:
 // Vite's ?worker&inline bootstraps the worker from a blob: (dev) or data:
@@ -159,62 +159,6 @@ function decoderDelta(extra = {}) {
 function handleInitDecoder() {
   decoder = createDecoder()
   return decoderDelta()
-}
-
-// Slice a CRC-valid frame payload into packets, parse each, and return the
-// list that survived CRC. Mirrors probeFramePackets() in the receiver
-// module: try the expected packet size first, then fall back to the
-// equal-chunk probe so first-frame/preset-change cases where blockSize
-// hasn't synced still surface valid packets.
-function extractFromExpectedSize(framePayload, expectedPacketSize) {
-  if (!expectedPacketSize || expectedPacketSize < PACKET_HEADER_SIZE) return []
-  if (framePayload.length % expectedPacketSize !== 0) return []
-  const out = []
-  for (let offset = 0; offset < framePayload.length; offset += expectedPacketSize) {
-    const slice = framePayload.subarray(offset, offset + expectedPacketSize)
-    const parsed = parsePacket(slice)
-    if (parsed) out.push(parsed)
-  }
-  return out
-}
-
-function tryEqualChunkExtract(framePayload, maxPackets = 16) {
-  let best = null
-  for (let slotCount = 2; slotCount <= maxPackets; slotCount++) {
-    if (framePayload.length % slotCount !== 0) continue
-    const packetSize = framePayload.length / slotCount
-    if (packetSize < PACKET_HEADER_SIZE) continue
-    const packets = []
-    for (let offset = 0; offset < framePayload.length; offset += packetSize) {
-      const slice = framePayload.subarray(offset, offset + packetSize)
-      const parsed = parsePacket(slice)
-      if (parsed) packets.push(parsed)
-    }
-    if (packets.length === 0) continue
-    const validBytes = packets.length * packetSize
-    if (
-      !best ||
-      packets.length > best.packets.length ||
-      (packets.length === best.packets.length && validBytes > best.validBytes)
-    ) {
-      best = { packets, slotCount, packetSize, validBytes }
-    }
-  }
-  return best
-}
-
-function extractValidPacketsFromPayload(framePayload, expectedPacketSize) {
-  if (!framePayload) return { packets: [], slotCount: 0 }
-  const expectedHit = extractFromExpectedSize(framePayload, expectedPacketSize)
-  if (expectedHit.length > 0) {
-    return {
-      packets: expectedHit,
-      slotCount: Math.floor(framePayload.length / expectedPacketSize)
-    }
-  }
-  const equal = tryEqualChunkExtract(framePayload)
-  if (equal) return { packets: equal.packets, slotCount: equal.slotCount }
-  return { packets: [], slotCount: 0 }
 }
 
 function serializeDecodeHeader(header) {

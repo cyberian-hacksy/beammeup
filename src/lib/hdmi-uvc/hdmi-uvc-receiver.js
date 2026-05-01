@@ -35,6 +35,11 @@ import {
   getCaptureMethod as getCaptureMethodSetting,
   renderDiagnosticsPanel
 } from './hdmi-uvc-diagnostics.js'
+import {
+  extractFramePackets,
+  getFramePacketSlotCount,
+  probeFramePackets
+} from './hdmi-uvc-packet-probe.js'
 
 // Kick off WASM instantiation on the main thread so the ?capture=main fallback
 // path (which runs decodeDataRegion on the main thread) uses the WASM CRC32
@@ -1472,88 +1477,6 @@ function getThroughputStats() {
   return { average, recent }
 }
 
-function tryVariableFramePackets(framePayload) {
-  // HDMI-UVC batching uses equal-sized packets inside each frame payload.
-  // Keep the variable-path disabled so bootstrap salvage relies on the more
-  // reliable equal-chunk probe instead of stale block-size header offsets.
-  return []
-}
-
-function tryEqualChunkFramePackets(framePayload, maxPackets = 16) {
-  let best = null
-
-  for (let slotCount = 2; slotCount <= maxPackets; slotCount++) {
-    if (framePayload.length % slotCount !== 0) continue
-
-    const packetSize = framePayload.length / slotCount
-    if (packetSize < PACKET_HEADER_SIZE) continue
-
-    const packets = []
-    for (let offset = 0; offset < framePayload.length; offset += packetSize) {
-      const packet = framePayload.slice(offset, offset + packetSize)
-      if (parsePacket(packet)) packets.push(packet)
-    }
-
-    if (packets.length === 0) continue
-
-    const validBytes = packets.length * packetSize
-    if (
-      !best ||
-      packets.length > best.packets.length ||
-      (packets.length === best.packets.length && validBytes > best.validBytes) ||
-      (packets.length === best.packets.length && validBytes === best.validBytes && slotCount > best.slotCount)
-    ) {
-      best = { packets, slotCount, packetSize, validBytes }
-    }
-  }
-
-  return best
-}
-
-function probeFramePackets(framePayload, expectedPacketSize = null) {
-  if (expectedPacketSize && expectedPacketSize >= PACKET_HEADER_SIZE) {
-    if (framePayload.length % expectedPacketSize !== 0) {
-      return { packets: [], slotCount: null, packetSize: expectedPacketSize, strategy: 'expected' }
-    }
-
-    const packets = []
-    for (let offset = 0; offset < framePayload.length; offset += expectedPacketSize) {
-      const packet = framePayload.slice(offset, offset + expectedPacketSize)
-      if (parsePacket(packet)) {
-        packets.push(packet)
-      }
-    }
-    return {
-      packets,
-      slotCount: Math.floor(framePayload.length / expectedPacketSize),
-      packetSize: expectedPacketSize,
-      strategy: 'expected'
-    }
-  }
-
-  const variablePackets = tryVariableFramePackets(framePayload)
-  if (variablePackets.length > 0) {
-    return {
-      packets: variablePackets,
-      slotCount: variablePackets.length,
-      packetSize: variablePackets[0]?.length ?? null,
-      strategy: 'variable'
-    }
-  }
-
-  const equalChunk = tryEqualChunkFramePackets(framePayload)
-  if (equalChunk) {
-    return {
-      packets: equalChunk.packets,
-      slotCount: equalChunk.slotCount,
-      packetSize: equalChunk.packetSize,
-      strategy: 'equal'
-    }
-  }
-
-  return { packets: [], slotCount: null, packetSize: expectedPacketSize, strategy: 'none' }
-}
-
 function isBetterPacketProbe(candidate, best) {
   if (!candidate) return false
   if (!best) return true
@@ -1657,14 +1580,6 @@ function getLockedLayoutProbeOptions(layout) {
     default:
       return {}
   }
-}
-
-function extractFramePackets(framePayload, expectedPacketSize = null) {
-  return probeFramePackets(framePayload, expectedPacketSize).packets
-}
-
-function getFramePacketSlotCount(framePayload, expectedPacketSize = null) {
-  return probeFramePackets(framePayload, expectedPacketSize).slotCount
 }
 
 function readLayoutPacketsExact(imageData, width, region, layout, payloadLength, expectedPacketSize = null) {

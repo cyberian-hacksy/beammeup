@@ -79,6 +79,7 @@ import {
   testLabFrameTapBypassesLockedCaptureRegion
 } from './lib/hdmi-uvc/hdmi-uvc-receiver-capture.js'
 import { testIngestCapturedFrame } from './lib/hdmi-uvc/hdmi-uvc-capture-pump.js'
+import { testEqualChunkProbeFinds24PacketFrame } from './lib/hdmi-uvc/hdmi-uvc-packet-probe.js'
 import {
   testWasmCrc32MatchesJs,
   testFrameCrcWasmIntegration,
@@ -165,6 +166,7 @@ window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
 window.testLabFrameTapUsesFullCaptureRect = testLabFrameTapUsesFullCaptureRect
 window.testLabFrameTapBypassesLockedCaptureRegion = testLabFrameTapBypassesLockedCaptureRegion
 window.testIngestCapturedFrame = testIngestCapturedFrame
+window.testEqualChunkProbeFinds24PacketFrame = testEqualChunkProbeFinds24PacketFrame
 window.testWasmCrc32MatchesJs = testWasmCrc32MatchesJs
 window.testFrameCrcWasmIntegration = testFrameCrcWasmIntegration
 window.testWasmScanBrightRunsMatchesJs = testWasmScanBrightRunsMatchesJs
@@ -350,6 +352,7 @@ async function runAllTests() {
     labFrameTapFullCaptureRect: testLabFrameTapUsesFullCaptureRect(),
     labFrameTapBypassesLockedCapture: testLabFrameTapBypassesLockedCaptureRegion(),
     ingestCapturedFrame: await testIngestCapturedFrame(),
+    equalChunkProbe24PacketFrame: testEqualChunkProbeFinds24PacketFrame(),
     wasmCrc32: await testWasmCrc32MatchesJs(),
     frameCrcWasmIntegration: await testFrameCrcWasmIntegration(),
     wasmScanBrightRuns: await testWasmScanBrightRunsMatchesJs(),
