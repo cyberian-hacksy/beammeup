@@ -34,7 +34,9 @@ import {
   testExternalPresentationNativeMetrics,
   testExternalFullscreenUsesSelectedScreen,
   testExternalFullscreenFailureStopsBeforeMainFallback,
-  testLabCardFullscreenExitRequiresReadyRestore
+  testLabCardFullscreenExitRequiresReadyRestore,
+  testBinary3BatchingProfile,
+  testBinary3StrictGeometryGate
 } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
 import {
   initHdmiUvcReceiver,
@@ -55,6 +57,13 @@ import {
   testEffectiveOneToOnePresentationCheck,
   testClassifyStep,
   testHeaderAndPayloadBlockSizesMatchForExistingModes,
+  testBinary3ConstantsRegistered,
+  testBinary3FrameRoundtrip,
+  testDecodeDataRegionPropagatesBinary3Levels,
+  testBinary3LockedLayoutMatchesBlindSweep,
+  testBinary3PrecomputedOffsetsMatchUncached,
+  testDecodeDataRegionConfidence,
+  testDecodeDataRegionConfidenceCompat4,
   testFrameRefactorPreservesCompat4Bytes,
   testFrameRefactorPreservesRawGrayBytes,
   testFrameRefactorPreservesRawRgbBytes,
@@ -124,6 +133,13 @@ window.testNative1080pGeometryCheck = testNative1080pGeometryCheck
 window.testEffectiveOneToOnePresentationCheck = testEffectiveOneToOnePresentationCheck
 window.testClassifyStep = testClassifyStep
 window.testHeaderAndPayloadBlockSizesMatchForExistingModes = testHeaderAndPayloadBlockSizesMatchForExistingModes
+window.testBinary3ConstantsRegistered = testBinary3ConstantsRegistered
+window.testBinary3FrameRoundtrip = testBinary3FrameRoundtrip
+window.testDecodeDataRegionPropagatesBinary3Levels = testDecodeDataRegionPropagatesBinary3Levels
+window.testBinary3LockedLayoutMatchesBlindSweep = testBinary3LockedLayoutMatchesBlindSweep
+window.testBinary3PrecomputedOffsetsMatchUncached = testBinary3PrecomputedOffsetsMatchUncached
+window.testDecodeDataRegionConfidence = testDecodeDataRegionConfidence
+window.testDecodeDataRegionConfidenceCompat4 = testDecodeDataRegionConfidenceCompat4
 window.testFrameRefactorPreservesCompat4Bytes = testFrameRefactorPreservesCompat4Bytes
 window.testFrameRefactorPreservesRawGrayBytes = testFrameRefactorPreservesRawGrayBytes
 window.testFrameRefactorPreservesRawRgbBytes = testFrameRefactorPreservesRawRgbBytes
@@ -142,6 +158,8 @@ window.testExternalPresentationNativeMetrics = testExternalPresentationNativeMet
 window.testExternalFullscreenUsesSelectedScreen = testExternalFullscreenUsesSelectedScreen
 window.testExternalFullscreenFailureStopsBeforeMainFallback = testExternalFullscreenFailureStopsBeforeMainFallback
 window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
+window.testBinary3BatchingProfile = testBinary3BatchingProfile
+window.testBinary3StrictGeometryGate = testBinary3StrictGeometryGate
 window.testCaptureMethodDecision = testCaptureMethodDecision
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
 window.testLabFrameTapUsesFullCaptureRect = testLabFrameTapUsesFullCaptureRect
@@ -300,6 +318,13 @@ async function runAllTests() {
     hdmiEffectiveOneToOnePresentation: testEffectiveOneToOnePresentationCheck(),
     hdmiClassifyStep: testClassifyStep(),
     hdmiHeaderPayloadBlockSizes: testHeaderAndPayloadBlockSizesMatchForExistingModes(),
+    hdmiBinary3Constants: testBinary3ConstantsRegistered(),
+    hdmiBinary3FrameRoundtrip: testBinary3FrameRoundtrip(),
+    hdmiBinary3LevelsPropagation: testDecodeDataRegionPropagatesBinary3Levels(),
+    hdmiBinary3LockedLayout: testBinary3LockedLayoutMatchesBlindSweep(),
+    hdmiBinary3PrecomputedOffsets: testBinary3PrecomputedOffsetsMatchUncached(),
+    hdmiDecodeConfidenceBinary3: testDecodeDataRegionConfidence(),
+    hdmiDecodeConfidenceCompat4: testDecodeDataRegionConfidenceCompat4(),
     hdmiFrameRefactorCompat4: testFrameRefactorPreservesCompat4Bytes(),
     hdmiFrameRefactorRawGray: testFrameRefactorPreservesRawGrayBytes(),
     hdmiFrameRefactorRawRgb: testFrameRefactorPreservesRawRgbBytes(),
@@ -318,6 +343,8 @@ async function runAllTests() {
     externalFullscreenUsesSelectedScreen: testExternalFullscreenUsesSelectedScreen(),
     externalFullscreenFailureStopsBeforeMainFallback: await testExternalFullscreenFailureStopsBeforeMainFallback(),
     labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),
+    binary3BatchingProfile: testBinary3BatchingProfile(),
+    binary3StrictGeometryGate: testBinary3StrictGeometryGate(),
     captureMethodDecision: testCaptureMethodDecision(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
     labFrameTapFullCaptureRect: testLabFrameTapUsesFullCaptureRect(),

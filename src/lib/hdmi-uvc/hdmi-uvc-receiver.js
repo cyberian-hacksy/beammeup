@@ -15,6 +15,7 @@ import {
   detectAnchors,
   dataRegionFromAnchors,
   decodeDataRegion,
+  precomputeBinary3SampleOffsets,
   readPayloadWithLayout,
   resetClassifierPerfAccumulator,
   getClassifierPerfAccumulator
@@ -53,6 +54,8 @@ const RX_PROGRESS_LOG_INTERVAL_FRAMES = PERF_MODE ? 40 : 10
 const DEBUG_RENDER_INTERVAL_MS = PERF_MODE ? 480 : 120
 const RECEIVER_UI_UPDATE_INTERVAL_MS = PERF_MODE ? 500 : 120
 const LOCKED_LAYOUT_RECOVERY_PROBE_INTERVAL_FRAMES = 8
+const LOCKED_BINARY3_INVALIDATE_AFTER_FAILS = 5
+const BINARY3_CONFIDENCE_LOG_INTERVAL_FRAMES = PERF_MODE ? 120 : 30
 const DEBUG_CONSOLE = false
 const CAPTURE_BENCHMARK_SAMPLES_PER_METHOD = 6
 const CAPTURE_BENCH_ONLY = typeof location !== 'undefined' &&
@@ -733,6 +736,7 @@ function handleWorkerDecoderDelta(msg) {
     state.expectedPacketCount = 0
     state.fixedLayout = null
     state.preferredLayout = null
+    clearBinary3Lock()
     state.lockedLayoutFastPathMisses = 0
     state.decodeFailCount = 0
     s.completionHandled = false
@@ -1624,6 +1628,10 @@ function getLayoutProbeOptions(layout) {
       return {
         offsets: [0, -1, 1, -2, 2]
       }
+    case HDMI_MODE.BINARY_3:
+      return {
+        offsets: [0, -1, 1]
+      }
     default:
       return {}
   }
@@ -1637,6 +1645,7 @@ function getLockedLayoutProbeOptions(layout) {
     case HDMI_MODE.RAW_GRAY:
     case HDMI_MODE.RAW_RGB:
     case HDMI_MODE.LUMA_2:
+    case HDMI_MODE.BINARY_3:
       return {
         offsets: [0, -1, 1]
       }
@@ -1661,7 +1670,14 @@ function getFramePacketSlotCount(framePayload, expectedPacketSize = null) {
 function readLayoutPacketsExact(imageData, width, region, layout, payloadLength, expectedPacketSize = null) {
   if (!layout || !payloadLength || payloadLength <= 0) return null
 
-  const payload = readPayloadWithLayout(imageData, width, region, layout, payloadLength)
+  const payload = readPayloadWithLayout(
+    imageData,
+    width,
+    region,
+    layout,
+    payloadLength,
+    layout.frameMode === HDMI_MODE.BINARY_3 ? (layout.precomputedOffsets || state.lockedBinary3Offsets || null) : null
+  )
   if (!payload) return null
 
   return {
@@ -1743,7 +1759,8 @@ async function tryLockedLayoutFastPath(imageData, width, region) {
     activeMode !== HDMI_MODE.RAW_GRAY &&
     activeMode !== HDMI_MODE.RAW_RGB &&
     activeMode !== HDMI_MODE.LUMA_2 &&
-    activeMode !== HDMI_MODE.CODEBOOK_3
+    activeMode !== HDMI_MODE.CODEBOOK_3 &&
+    activeMode !== HDMI_MODE.BINARY_3
   ) {
     return false
   }
@@ -1897,6 +1914,7 @@ async function acceptPackets(packets, fallbackSymbolId, countAsValidFrame = true
           state.expectedPacketCount = 0
           state.fixedLayout = null
           state.preferredLayout = null
+          clearBinary3Lock()
           state.lockedLayoutFastPathMisses = 0
           state.decodeFailCount = 0
           result = decoder.receiveParsed(parsed)
@@ -2044,6 +2062,10 @@ const state = {
   fixedLayout: null,
   expectedPacketCount: 0,
   preferredLayout: null,
+  lockedBinary3Layout: null,
+  lockedBinary3Offsets: null,
+  binary3LockFailStreak: 0,
+  lastBinary3ConfidenceLogFrame: 0,
   lockedLayoutFastPathMisses: 0,
   progressSamples: [],
   lastReceivingUiUpdateMs: 0,
@@ -2702,6 +2724,83 @@ function lockAnchorRegion(region, sourceWidth, sourceHeight, anchors = null) {
   }
 }
 
+function clearBinary3Lock() {
+  state.lockedBinary3Layout = null
+  state.lockedBinary3Offsets = null
+  state.binary3LockFailStreak = 0
+}
+
+function applyBinary3Lock(result, currentRegion) {
+  if (!result?._diag || result._diag.frameMode !== HDMI_MODE.BINARY_3) return
+
+  if (!result.crcValid) {
+    state.binary3LockFailStreak++
+    if (state.binary3LockFailStreak >= LOCKED_BINARY3_INVALIDATE_AFTER_FAILS) {
+      clearBinary3Lock()
+      debugLog(`[HDMI-RX] BINARY_3 layout invalidated after ${LOCKED_BINARY3_INVALIDATE_AFTER_FAILS} CRC fails - re-sweeping next frame`)
+    }
+    return
+  }
+
+  state.binary3LockFailStreak = 0
+  const wasLocked = !!state.lockedBinary3Layout
+  const diag = result._diag
+  const layout = {
+    blocksX: diag.blocksX,
+    blocksY: diag.blocksY,
+    headerBlocksX: diag.headerBlocksX,
+    headerBlocksY: diag.headerBlocksY,
+    frameMode: HDMI_MODE.BINARY_3,
+    bitsPerBlock: 1,
+    stepX: diag.stepX,
+    stepY: diag.stepY,
+    dataBs: diag.dataBs,
+    headerStepX: diag.headerStepX,
+    headerStepY: diag.headerStepY,
+    headerBs: diag.headerBs,
+    xOff: diag.xOff,
+    yOff: diag.yOff,
+    blackLevel: diag.blackLevel,
+    whiteLevel: diag.whiteLevel,
+    frameWidth: result.header.width,
+    frameHeight: result.header.height,
+    fps: result.header.fps
+  }
+  const { offsets } = precomputeBinary3SampleOffsets(layout, currentRegion)
+  layout.precomputedOffsets = offsets
+  state.lockedBinary3Layout = layout
+  state.lockedBinary3Offsets = offsets
+  state.fixedLayout = { ...layout }
+  state.preferredLayout = { ...layout }
+
+  if (!wasLocked) {
+    debugLog(
+      `[HDMI-RX] BINARY_3 layout locked: ` +
+      `step=${layout.stepX.toFixed(2)}/${layout.stepY.toFixed(2)} ` +
+      `grid=${layout.blocksX}x${layout.blocksY}`
+    )
+  }
+}
+
+function logBinary3Confidence(result) {
+  if (result?.header?.mode !== HDMI_MODE.BINARY_3 || !(result.confidence instanceof Uint8Array)) return
+  if (
+    state.lastBinary3ConfidenceLogFrame > 0 &&
+    state.frameCount - state.lastBinary3ConfidenceLogFrame < BINARY3_CONFIDENCE_LOG_INTERVAL_FRAMES
+  ) {
+    return
+  }
+  state.lastBinary3ConfidenceLogFrame = state.frameCount
+
+  const values = Array.from(result.confidence).sort((a, b) => a - b)
+  if (values.length === 0) return
+  const pick = (p) => values[Math.min(values.length - 1, Math.max(0, Math.floor((values.length - 1) * p)))]
+  let sum = 0
+  for (const value of values) sum += value
+  const mean = sum / values.length
+  debugLog(`[HDMI-RX] BINARY_3 confidence: p10=${pick(0.10)} p50=${pick(0.50)} p90=${pick(0.90)} mean=${mean.toFixed(1)}`)
+}
+
 function setTentativeAnchorRegion(region, sourceWidth, sourceHeight, anchors = null) {
   if (!region || state.anchorBounds) return
 
@@ -3134,7 +3233,7 @@ async function processFrame(now, metadata) {
   }
 
   // === DECODE DATA REGION ===
-  region.preferredLayout = state.preferredLayout
+  region.preferredLayout = state.lockedBinary3Layout || state.preferredLayout
   let result = null
   let workerDecodedFrame = false
   let workerDecodedResp = null
@@ -3181,6 +3280,7 @@ async function processFrame(now, metadata) {
     decodeMs += performance.now() - decodeStartMs
     classifierMs += getClassifierPerfAccumulator()
   }
+  logBinary3Confidence(result)
 
   if (result && result.crcValid) {
     noteSignalDetected(result.header.mode, {
@@ -3223,6 +3323,7 @@ async function processFrame(now, metadata) {
       }
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
+      applyBinary3Lock(result, region)
       if (state.decoder?.isComplete()) {
         finalizeFramePerf()
         return
@@ -3246,6 +3347,7 @@ async function processFrame(now, metadata) {
     }
   } else if (result && !result.crcValid) {
     noteReceiverCrcFailFrame()
+    applyBinary3Lock(result, region)
     if (result._diag) state.preferredLayout = { ...result._diag }
     const expectedPacketSize = getExpectedPacketSize()
     const salvageProbe = probeFramePackets(result.payload, expectedPacketSize)
@@ -3279,6 +3381,7 @@ async function processFrame(now, metadata) {
       }
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
+      applyBinary3Lock(result, region)
       if (isDiagFrame) {
         debugLog(`Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) from CRC-fail frame`)
       }
@@ -3437,6 +3540,7 @@ async function processFrame(now, metadata) {
     clearTentativeAnchorRegion()
     state.fixedLayout = null
     state.preferredLayout = null
+    clearBinary3Lock()
     state.expectedPacketCount = 0
     state.lockedLayoutFastPathMisses = 0
     state.decodeFailCount = 0
@@ -3583,6 +3687,7 @@ function resetReceiver() {
   state.activeCaptureMethod = null
   state.fixedLayout = null
   state.preferredLayout = null
+  clearBinary3Lock()
   state.lockedLayoutFastPathMisses = 0
   state.expectedPacketCount = 0
   state.progressSamples = []

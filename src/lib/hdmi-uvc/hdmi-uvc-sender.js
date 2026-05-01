@@ -802,6 +802,10 @@ function isCimbarMode() {
   return state.mode === HDMI_MODE.CIMBAR
 }
 
+function modeRequiresNative1080p(mode) {
+  return mode === HDMI_MODE.BINARY_3
+}
+
 function normalizeHdmiCimbarVariant(value) {
   return HDMI_CIMBAR_VARIANTS.includes(value) ? value : HDMI_CIMBAR_MODE
 }
@@ -1501,6 +1505,25 @@ function getBatchingProfile(mode) {
         maxBlockSize: MAX_BLOCK_SIZE,
         maxUsedBytes: null
       }
+    case HDMI_MODE.BINARY_3:
+      // Initial profile: 512-1024 B packets so one bad cell costs little.
+      //
+      // Preconditions to raise maxBlockSize toward 1536 / 2048 B:
+      //   (a) Phase 2 lab confirms sustained BINARY_3 SER below the derived
+      //       threshold in the Phase 3 pass-condition table.
+      //   (b) Phase 4 packet salvage is wired into the receiver and measured
+      //       on real-channel runs.
+      //
+      // Both gates are required because there is no backward channel and dense
+      // modes need soft-decision recovery before larger packets are safe.
+      return {
+        minPacketsPerFrame: 4,
+        fixedPacketsPerFrame: null,
+        maxPacketsPerFrame: 32,
+        targetFrameFill: 0.90,
+        maxBlockSize: 1024,
+        maxUsedBytes: null
+      }
     case HDMI_MODE.CODEBOOK_3:
       // Binary quadrant glyphs keep the payload alphabet black/white while
       // increasing density over plain 4x4. Use many small shards and keep the
@@ -2148,7 +2171,9 @@ async function startSending() {
     }
 
     const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics, target)
-    const renderScaleIssue = getRenderScaleIssue(metrics)
+    const renderScaleIssue = getRenderScaleIssue(metrics, {
+      requireNative1080p: modeRequiresNative1080p(state.mode)
+    })
     if (renderScaleIssue) {
       throw new Error(renderScaleIssue)
     }
@@ -2317,7 +2342,9 @@ async function resumeSending() {
       scaleCimbarCanvasToViewport(stableMetrics)
     } else {
       const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics, target)
-      const renderScaleIssue = getRenderScaleIssue(metrics)
+      const renderScaleIssue = getRenderScaleIssue(metrics, {
+        requireNative1080p: modeRequiresNative1080p(state.mode)
+      })
       if (renderScaleIssue) {
         throw new Error(renderScaleIssue)
       }
@@ -2464,7 +2491,8 @@ function getRecommendedFpsPreset(mode = state.mode) {
   return mode === HDMI_MODE.CIMBAR ||
     mode === HDMI_MODE.COMPAT_4 ||
     mode === HDMI_MODE.RAW_RGB ||
-    mode === HDMI_MODE.LUMA_2
+    mode === HDMI_MODE.LUMA_2 ||
+    mode === HDMI_MODE.BINARY_3
     ? '1'
     : String(DEFAULT_FPS_PRESET)
 }
@@ -2855,4 +2883,54 @@ export function testParitySweepCounter() {
   console.log('Parity sweep counter test:', pass ? 'PASS' : 'FAIL',
     { observed, expected })
   return pass
+}
+
+export function testBinary3BatchingProfile() {
+  const profile = getBatchingProfile(HDMI_MODE.BINARY_3)
+  const pass = profile.maxBlockSize <= 1024 &&
+    profile.minPacketsPerFrame >= 4 &&
+    profile.maxPacketsPerFrame >= profile.minPacketsPerFrame &&
+    profile.targetFrameFill >= 0.85
+  console.log('BINARY_3 batching profile test:', pass ? 'PASS' : `FAIL ${JSON.stringify(profile)}`)
+  return pass
+}
+
+export function testBinary3StrictGeometryGate() {
+  try {
+    const badViewport = {
+      renderPresetId: 'viewport',
+      renderPresetName: 'Viewport',
+      width: 1728,
+      height: 1084,
+      displayWidth: 1728,
+      displayHeight: 1084,
+      displayX: 0,
+      displayY: 0,
+      displayScale: 1,
+      physicalDisplayWidth: 1728,
+      physicalDisplayHeight: 1084,
+      effectiveDisplayScale: 1,
+      fullscreenActive: true
+    }
+    const native1080 = {
+      ...badViewport,
+      renderPresetId: '1080p',
+      renderPresetName: '1080p',
+      width: 1920,
+      height: 1080,
+      displayWidth: 1920,
+      displayHeight: 1080,
+      physicalDisplayWidth: 1920,
+      physicalDisplayHeight: 1080
+    }
+    const pass = modeRequiresNative1080p(HDMI_MODE.BINARY_3) &&
+      !modeRequiresNative1080p(HDMI_MODE.COMPAT_4) &&
+      !!getRenderScaleIssue(badViewport, { requireNative1080p: modeRequiresNative1080p(HDMI_MODE.BINARY_3) }) &&
+      getRenderScaleIssue(native1080, { requireNative1080p: modeRequiresNative1080p(HDMI_MODE.BINARY_3) }) === null
+    console.log('BINARY_3 strict geometry gate test:', pass ? 'PASS' : 'FAIL')
+    return pass
+  } catch (err) {
+    console.log('BINARY_3 strict geometry gate test: FAIL', err?.message || err)
+    return false
+  }
 }

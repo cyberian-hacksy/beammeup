@@ -36,7 +36,8 @@ export const HDMI_MODE = {
   LUMA_2: 3,
   CODEBOOK_3: 5,
   GLYPH_5: 6,
-  CIMBAR: 7
+  CIMBAR: 7,
+  BINARY_3: 8
 }
 
 export const HDMI_MODE_NAMES = {
@@ -46,7 +47,8 @@ export const HDMI_MODE_NAMES = {
   [HDMI_MODE.LUMA_2]: 'Luma2',
   [HDMI_MODE.CODEBOOK_3]: 'Tile3',
   [HDMI_MODE.GLYPH_5]: 'Glyph5',
-  [HDMI_MODE.CIMBAR]: 'CIMBAR'
+  [HDMI_MODE.CIMBAR]: 'CIMBAR',
+  [HDMI_MODE.BINARY_3]: '3x3'
 }
 
 export function getModeDataBlockSize(mode) {
@@ -56,6 +58,8 @@ export function getModeDataBlockSize(mode) {
     case HDMI_MODE.LUMA_2:
     case HDMI_MODE.CODEBOOK_3:
       return 4
+    case HDMI_MODE.BINARY_3:
+      return 3
     case HDMI_MODE.GLYPH_5:
       return 8
     case HDMI_MODE.COMPAT_4:
@@ -75,6 +79,7 @@ export function getModeBitsPerBlock(mode) {
       return 3
     case HDMI_MODE.GLYPH_5:
       return 5
+    case HDMI_MODE.BINARY_3:
     case HDMI_MODE.COMPAT_4:
       return 1
     default:
@@ -86,6 +91,7 @@ export function getModeBitsPerBlock(mode) {
 // Current modes match getModeDataBlockSize; BINARY_3 will keep this at 4 while
 // shrinking only the payload cells.
 export function getModeHeaderBlockSize(mode) {
+  if (mode === HDMI_MODE.BINARY_3) return 4
   return getModeDataBlockSize(mode)
 }
 
