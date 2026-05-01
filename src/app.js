@@ -36,7 +36,9 @@ import {
   testExternalFullscreenFailureStopsBeforeMainFallback,
   testLabCardFullscreenExitRequiresReadyRestore,
   testBinary3BatchingProfile,
-  testBinary3StrictGeometryGate
+  testBinary3StrictGeometryGate,
+  testBinary3MetadataEveryFrame,
+  testBinary3MetadataSlotRotates
 } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
 import {
   initHdmiUvcReceiver,
@@ -161,6 +163,8 @@ window.testExternalFullscreenFailureStopsBeforeMainFallback = testExternalFullsc
 window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
 window.testBinary3BatchingProfile = testBinary3BatchingProfile
 window.testBinary3StrictGeometryGate = testBinary3StrictGeometryGate
+window.testBinary3MetadataEveryFrame = testBinary3MetadataEveryFrame
+window.testBinary3MetadataSlotRotates = testBinary3MetadataSlotRotates
 window.testCaptureMethodDecision = testCaptureMethodDecision
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
 window.testLabFrameTapUsesFullCaptureRect = testLabFrameTapUsesFullCaptureRect
@@ -347,6 +351,8 @@ async function runAllTests() {
     labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),
     binary3BatchingProfile: testBinary3BatchingProfile(),
     binary3StrictGeometryGate: testBinary3StrictGeometryGate(),
+    binary3MetadataEveryFrame: testBinary3MetadataEveryFrame(),
+    binary3MetadataSlotRotates: testBinary3MetadataSlotRotates(),
     captureMethodDecision: testCaptureMethodDecision(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
     labFrameTapFullCaptureRect: testLabFrameTapUsesFullCaptureRect(),

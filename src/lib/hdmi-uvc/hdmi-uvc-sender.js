@@ -1559,6 +1559,7 @@ function usesMixedSlotReplay() {
 }
 
 function shouldSendMetadata(frameNumber) {
+  if (state.mode === HDMI_MODE.BINARY_3) return true
   if (frameNumber <= METADATA_BURST_FRAMES) return true
   if (
     frameNumber <= BOOTSTRAP_METADATA_WINDOW_FRAMES &&
@@ -1567,6 +1568,25 @@ function shouldSendMetadata(frameNumber) {
     return true
   }
   return frameNumber % state.metadataIntervalFrames === 0
+}
+
+function getMetadataSlotIndex(frameNumber, slots) {
+  if (slots <= 1) return 0
+  if (state.mode === HDMI_MODE.BINARY_3) {
+    return (Math.max(1, frameNumber) - 1) % slots
+  }
+  return 0
+}
+
+function getMetadataScheduleDescription() {
+  if (state.mode === HDMI_MODE.BINARY_3) {
+    return `Metadata schedule: every frame, 1 rotating slot across ${state.packetsPerFrame} packet(s)`
+  }
+  return (
+    `Metadata schedule: burst=${METADATA_BURST_FRAMES} frame(s), ` +
+    `bootstrap=${BOOTSTRAP_METADATA_INTERVAL_FRAMES} frame(s) through frame ${BOOTSTRAP_METADATA_WINDOW_FRAMES}, ` +
+    `interval=${state.metadataIntervalFrames} frame(s)`
+  )
 }
 
 function getFountainPacketInterval() {
@@ -1861,18 +1881,20 @@ function buildFramePacketBatch(frameNumber) {
   const packets = []
   const symbolIds = []
   const slots = Math.max(1, state.packetsPerFrame)
+  const metadataSlotIndex = sendMetadata ? getMetadataSlotIndex(frameNumber, slots) : -1
   const tailSystematicBurst = isTailSystematicBurstFrame(frameNumber)
   const slotMixPattern = getSlotMixPatternForPass(state.systematicPass, {
     paritySweepsInPass: state.paritySweepsInPass
   })
 
-  if (sendMetadata) {
-    packets.push(state.encoder.generateSymbol(0))
-    symbolIds.push(0)
-  }
-
   let dataSlotsBuilt = 0
-  while (packets.length < slots) {
+  for (let slot = 0; slot < slots; slot++) {
+    if (slot === metadataSlotIndex) {
+      packets.push(state.encoder.generateSymbol(0))
+      symbolIds.push(0)
+      continue
+    }
+
     let strategy = tailSystematicBurst ? 'systematic' : 'auto'
     if (slotMixPattern) {
       strategy = slotMixPattern[Math.min(dataSlotsBuilt, slotMixPattern.length - 1)] || 'source'
@@ -1896,7 +1918,7 @@ function buildFramePacketBatch(frameNumber) {
   return {
     payload,
     symbolIds,
-    outerSymbolId: symbolIds[0] ?? 0,
+    outerSymbolId: sendMetadata ? 0 : (symbolIds[0] ?? 0),
     sendMetadata
   }
 }
@@ -2273,11 +2295,7 @@ async function startSending() {
     const utilization = ((batchedBytes / capacity) * 100).toFixed(1)
 
     debugLog(`Encoder: K=${state.encoder.K}, K'=${state.encoder.K_prime}`)
-    debugLog(
-      `Metadata schedule: burst=${METADATA_BURST_FRAMES} frame(s), ` +
-      `bootstrap=${BOOTSTRAP_METADATA_INTERVAL_FRAMES} frame(s) through frame ${BOOTSTRAP_METADATA_WINDOW_FRAMES}, ` +
-      `interval=${state.metadataIntervalFrames} frame(s)`
-    )
+    debugLog(getMetadataScheduleDescription())
     debugLog(`Batching: ${state.packetsPerFrame} packet(s)/frame, packetSize=${state.packetSize}, used=${batchedBytes}/${capacity} bytes (${utilization}%)`)
 
     state.systematicIndex = 0
@@ -2932,5 +2950,84 @@ export function testBinary3StrictGeometryGate() {
   } catch (err) {
     console.log('BINARY_3 strict geometry gate test: FAIL', err?.message || err)
     return false
+  }
+}
+
+export function testBinary3MetadataEveryFrame() {
+  const oldMode = state.mode
+  const oldInterval = state.metadataIntervalFrames
+  try {
+    state.mode = HDMI_MODE.BINARY_3
+    state.metadataIntervalFrames = 90
+    const frames = [1, 2, 5, 89, 181, 270]
+    const observed = frames.map(frame => shouldSendMetadata(frame))
+    const pass = observed.every(Boolean)
+    console.log('BINARY_3 metadata every-frame test:', pass ? 'PASS' : 'FAIL', {
+      frames,
+      observed
+    })
+    return pass
+  } finally {
+    state.mode = oldMode
+    state.metadataIntervalFrames = oldInterval
+  }
+}
+
+export function testBinary3MetadataSlotRotates() {
+  const snapshot = {
+    mode: state.mode,
+    encoder: state.encoder,
+    packetsPerFrame: state.packetsPerFrame,
+    systematicIndex: state.systematicIndex,
+    systematicStride: state.systematicStride,
+    intermediateSystematicIndex: state.intermediateSystematicIndex,
+    intermediateSystematicStride: state.intermediateSystematicStride,
+    paritySystematicIndex: state.paritySystematicIndex,
+    paritySystematicStride: state.paritySystematicStride,
+    paritySweepsInPass: state.paritySweepsInPass,
+    fountainSymbolId: state.fountainSymbolId,
+    dataPacketCount: state.dataPacketCount,
+    systematicPass: state.systematicPass,
+    tailStartFrame: state.tailStartFrame
+  }
+
+  try {
+    state.mode = HDMI_MODE.BINARY_3
+    state.encoder = {
+      K: 100,
+      K_prime: 120,
+      generateSymbol: symbolId => new Uint8Array([symbolId & 0xff])
+    }
+    state.packetsPerFrame = 4
+    state.systematicIndex = 0
+    state.systematicStride = 1
+    state.intermediateSystematicIndex = 0
+    state.intermediateSystematicStride = 1
+    state.paritySystematicIndex = 0
+    state.paritySystematicStride = 1
+    state.paritySweepsInPass = 0
+    state.fountainSymbolId = 121
+    state.dataPacketCount = 0
+    state.systematicPass = 1
+    state.tailStartFrame = 0
+
+    const frame1 = buildFramePacketBatch(1).symbolIds
+    const frame2 = buildFramePacketBatch(2).symbolIds
+    const frame5 = buildFramePacketBatch(5).symbolIds
+    const pass = frame1[0] === 0 &&
+      frame2[1] === 0 &&
+      frame5[0] === 0 &&
+      frame1.filter(id => id === 0).length === 1 &&
+      frame2.filter(id => id === 0).length === 1 &&
+      frame5.filter(id => id === 0).length === 1
+
+    console.log('BINARY_3 metadata slot rotation test:', pass ? 'PASS' : 'FAIL', {
+      frame1,
+      frame2,
+      frame5
+    })
+    return pass
+  } finally {
+    Object.assign(state, snapshot)
   }
 }
