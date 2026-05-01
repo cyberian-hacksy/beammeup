@@ -23,7 +23,9 @@ import ReceiverWorker from './hdmi-uvc-receiver-worker.js?worker&inline'
 import {
   detectCaptureCapabilities,
   chooseCaptureMethod,
-  computeLockedCaptureRect
+  computeLockedCaptureRect,
+  getWorkerCaptureCopyRect,
+  shouldUseLockedCaptureRegion
 } from './hdmi-uvc-receiver-capture.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
 import {
@@ -343,7 +345,8 @@ function startWorkerCapture() {
     type: 'startCaptureWithTrack',
     track: workerTrack,
     region: null,
-    expectedPacketSize: getExpectedPacketSize() || null
+    expectedPacketSize: getExpectedPacketSize() || null,
+    labFrameTapEnabled: state.labFrameTapEnabled
   }, [workerTrack])
   if (!ok) {
     state.workerCapturePending = false
@@ -402,7 +405,8 @@ function startOffscreenCapture() {
   const ok = postToWorker({
     type: 'startCaptureWithOffscreen',
     region: null,
-    expectedPacketSize: getExpectedPacketSize() || null
+    expectedPacketSize: getExpectedPacketSize() || null,
+    labFrameTapEnabled: state.labFrameTapEnabled
   })
   if (!ok) {
     state.workerCapturePending = false
@@ -438,17 +442,22 @@ function processFrameForOffscreen() {
     return
   }
 
-  // Narrow to the locked ROI once the worker has reported it — that turns
-  // the captureBitmap path into a proper ROI fallback instead of shipping
-  // full-frame pixels every time.
+  // Narrow to the locked ROI once the worker has reported it, except while
+  // the lab needs full-frame taps so anchors remain measurable.
   const roi = state.workerCaptureSourceRect
   const vw = video.videoWidth
   const vh = video.videoHeight
-  const bitmapPromise = roi &&
-    roi.x >= 0 && roi.y >= 0 &&
-    roi.w > 0 && roi.h > 0 &&
-    (roi.x + roi.w) <= vw && (roi.y + roi.h) <= vh
-    ? createImageBitmap(video, roi.x, roi.y, roi.w, roi.h)
+  const copyRect = getWorkerCaptureCopyRect(roi ? { sourceRect: roi } : null, vw, vh, state.labFrameTapEnabled)
+  const usesFullFrame = copyRect.x === 0 &&
+    copyRect.y === 0 &&
+    copyRect.width === vw &&
+    copyRect.height === vh
+  const bitmapPromise = !usesFullFrame &&
+    copyRect.x >= 0 && copyRect.y >= 0 &&
+    copyRect.width > 0 && copyRect.height > 0 &&
+    (copyRect.x + copyRect.width) <= vw &&
+    (copyRect.y + copyRect.height) <= vh
+    ? createImageBitmap(video, copyRect.x, copyRect.y, copyRect.width, copyRect.height)
     : createImageBitmap(video)
 
   state.offscreenBitmapInFlightAt = nowMs
@@ -489,6 +498,21 @@ function postToWorker(msg, transfer) {
   }
 }
 
+function postLabFrameTapStateToWorker() {
+  if (!receiverWorker || !receiverWorkerReady) return
+  postToWorker({ type: 'setLabFrameTap', enabled: state.labFrameTapEnabled })
+}
+
+export function setHdmiUvcLabFrameTapEnabled(enabled) {
+  state.labFrameTapEnabled = !!enabled
+  if (state.labFrameTapEnabled) {
+    state.lastImageData = null
+    state.lastImageDataSeq = 0
+    state.lastImageDataCapturedAtMs = 0
+  }
+  postLabFrameTapStateToWorker()
+}
+
 function handleReceiverWorkerMessage(event) {
   const msg = event.data
   if (!msg || typeof msg !== 'object') return
@@ -496,6 +520,7 @@ function handleReceiverWorkerMessage(event) {
     case 'ready':
       receiverWorkerReady = true
       debugLog(`Worker ready (protocol v${msg.protocolVersion})`)
+      postLabFrameTapStateToWorker()
       if (state.workerCapturePending) {
         if (CAPTURE_METHOD === 'worker') startWorkerCapture()
         else if (CAPTURE_METHOD === 'offscreen') startOffscreenCapture()
@@ -728,6 +753,13 @@ function handleWorkerDecoderDelta(msg) {
 // the main-thread UI and validFrames bookkeeping that acceptPackets would have
 // handled in the main-thread path.
 function handleWorkerCaptureFrame(msg) {
+  if (msg.labFrame?.buffer && msg.labFrame.width > 0 && msg.labFrame.height > 0) {
+    rememberCapturedFrame({
+      data: new Uint8ClampedArray(msg.labFrame.buffer),
+      width: msg.labFrame.width,
+      height: msg.labFrame.height
+    })
+  }
   // Release the offscreen backpressure slot — one bitmap round-trip is done,
   // the main thread can create the next.
   state.offscreenBitmapInFlightAt = null
@@ -2026,7 +2058,11 @@ const state = {
   workerCaptureStopRequested: false,
   workerCaptureStartPendingAfterStop: false,
   frameAcceptedThisFrame: false,
-  frameInnovatedThisFrame: false
+  frameInnovatedThisFrame: false,
+  lastImageData: null,
+  lastImageDataSeq: 0,
+  lastImageDataCapturedAtMs: 0,
+  labFrameTapEnabled: false
 }
 
 const CIMBAR_MODE_LABELS = {
@@ -2614,6 +2650,25 @@ function captureImageDataToCanvas(source, canvas, ctx, width, height, sourceRect
   return ctx.getImageData(0, 0, width, height)
 }
 
+function rememberCapturedFrame(imageData) {
+  if (!imageData) return
+  state.lastImageData = imageData
+  state.lastImageDataSeq++
+  state.lastImageDataCapturedAtMs = performance.now()
+}
+
+export function getLastCapturedFrame() {
+  return state.lastImageData
+    ? {
+        data: state.lastImageData.data,
+        width: state.lastImageData.width,
+        height: state.lastImageData.height,
+        seq: state.lastImageDataSeq,
+        capturedAtMs: state.lastImageDataCapturedAtMs
+      }
+    : null
+}
+
 function getLockedCaptureRegion(region, sourceWidth, sourceHeight) {
   const base = computeLockedCaptureRect(region, sourceWidth, sourceHeight, BLOCK_SIZE)
   if (!base) return null
@@ -2719,7 +2774,7 @@ async function processFrame(now, metadata) {
   const useCimbarRoiCapture = state.detectedMode === HDMI_MODE.CIMBAR && !!state.cimbarRoi
   let lockedCapture = null
   const anchorRegionForCapture = state.anchorBounds || state.tentativeAnchorBounds
-  if (anchorRegionForCapture && state.detectedMode !== HDMI_MODE.CIMBAR) {
+  if (shouldUseLockedCaptureRegion(anchorRegionForCapture, state.labFrameTapEnabled) && state.detectedMode !== HDMI_MODE.CIMBAR) {
     const needsLockedCaptureRefresh =
       state.anchorBounds
         ? (
@@ -2863,6 +2918,7 @@ async function processFrame(now, metadata) {
     }
   }
   captureMs = performance.now() - captureStartMs
+  rememberCapturedFrame(imageData)
   noteCaptureTuningSample(
     captureMethod.startsWith('VideoFrame') ? 'VideoFrame' : captureMethod.startsWith('video') ? 'video' : captureMethod,
     captureMs,
@@ -3531,6 +3587,9 @@ function resetReceiver() {
   state.expectedPacketCount = 0
   state.progressSamples = []
   state.lastReceivingUiUpdateMs = 0
+  state.lastImageData = null
+  state.lastImageDataSeq = 0
+  state.lastImageDataCapturedAtMs = 0
   resetReceiverPerfState()
   resetCaptureTuningState()
   resetCimbarSink()

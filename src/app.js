@@ -33,7 +33,8 @@ import {
   testExternalDisplayReadiness,
   testExternalPresentationNativeMetrics,
   testExternalFullscreenUsesSelectedScreen,
-  testExternalFullscreenFailureStopsBeforeMainFallback
+  testExternalFullscreenFailureStopsBeforeMainFallback,
+  testLabCardFullscreenExitRequiresReadyRestore
 } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
 import {
   initHdmiUvcReceiver,
@@ -42,6 +43,7 @@ import {
   testReceiverFrameAcceptSignals,
   testStallCounterTicksOnDuplicateFrames
 } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
+import { initHdmiUvcLabReceiverUi } from './lib/hdmi-uvc/hdmi-uvc-lab-ui.js'
 import { testCrc32 } from './lib/hdmi-uvc/crc32.js'
 import {
   testHeaderRoundtrip,
@@ -63,7 +65,9 @@ import {
 } from './lib/hdmi-uvc/hdmi-uvc-frame.js'
 import {
   testCaptureMethodDecision,
-  testComputeLockedCaptureRect
+  testComputeLockedCaptureRect,
+  testLabFrameTapUsesFullCaptureRect,
+  testLabFrameTapBypassesLockedCaptureRegion
 } from './lib/hdmi-uvc/hdmi-uvc-receiver-capture.js'
 import { testIngestCapturedFrame } from './lib/hdmi-uvc/hdmi-uvc-capture-pump.js'
 import {
@@ -74,6 +78,22 @@ import {
   testWasmVsJsDetectAnchorsEquivalent,
   testWasmVsJsDecodeDataRegionEquivalent
 } from './lib/hdmi-uvc/hdmi-uvc-wasm.js'
+import {
+  testBuildCardBinary4Geometry,
+  testCardSelfDecode,
+  testMeasureCardSerOnUnmodifiedCapture,
+  testMeasureCardSerWithNoise,
+  testMeasureCardSerExposesConfidence,
+  testBuildCardLuma2Geometry,
+  testBuildCardCodebook3Geometry,
+  testBuildCardGlyph5Geometry,
+  testCardSelfDecodeAllKinds,
+  testBuildCardCandidateSeed,
+  testMergeMeasureResults,
+  testMeasureCardSerReportsCoverageAndWorstTile,
+  testEstimatedAnchorsKeepMatchingNativeRegion,
+  testMeasureCardSerReturnsNullWithoutAnchors
+} from './lib/hdmi-uvc/hdmi-uvc-lab.js'
 
 // Make libraries available globally
 window.jsQR = jsQR
@@ -121,8 +141,11 @@ window.testExternalDisplayReadiness = testExternalDisplayReadiness
 window.testExternalPresentationNativeMetrics = testExternalPresentationNativeMetrics
 window.testExternalFullscreenUsesSelectedScreen = testExternalFullscreenUsesSelectedScreen
 window.testExternalFullscreenFailureStopsBeforeMainFallback = testExternalFullscreenFailureStopsBeforeMainFallback
+window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
 window.testCaptureMethodDecision = testCaptureMethodDecision
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
+window.testLabFrameTapUsesFullCaptureRect = testLabFrameTapUsesFullCaptureRect
+window.testLabFrameTapBypassesLockedCaptureRegion = testLabFrameTapBypassesLockedCaptureRegion
 window.testIngestCapturedFrame = testIngestCapturedFrame
 window.testWasmCrc32MatchesJs = testWasmCrc32MatchesJs
 window.testFrameCrcWasmIntegration = testFrameCrcWasmIntegration
@@ -130,6 +153,20 @@ window.testWasmScanBrightRunsMatchesJs = testWasmScanBrightRunsMatchesJs
 window.testWasmClassifiersMatchJs = testWasmClassifiersMatchJs
 window.testWasmVsJsDetectAnchorsEquivalent = testWasmVsJsDetectAnchorsEquivalent
 window.testWasmVsJsDecodeDataRegionEquivalent = testWasmVsJsDecodeDataRegionEquivalent
+window.testBuildCardBinary4Geometry = testBuildCardBinary4Geometry
+window.testCardSelfDecode = testCardSelfDecode
+window.testMeasureCardSerOnUnmodifiedCapture = testMeasureCardSerOnUnmodifiedCapture
+window.testMeasureCardSerWithNoise = testMeasureCardSerWithNoise
+window.testMeasureCardSerExposesConfidence = testMeasureCardSerExposesConfidence
+window.testBuildCardLuma2Geometry = testBuildCardLuma2Geometry
+window.testBuildCardCodebook3Geometry = testBuildCardCodebook3Geometry
+window.testBuildCardGlyph5Geometry = testBuildCardGlyph5Geometry
+window.testCardSelfDecodeAllKinds = testCardSelfDecodeAllKinds
+window.testBuildCardCandidateSeed = testBuildCardCandidateSeed
+window.testMergeMeasureResults = testMergeMeasureResults
+window.testMeasureCardSerReportsCoverageAndWorstTile = testMeasureCardSerReportsCoverageAndWorstTile
+window.testEstimatedAnchorsKeepMatchingNativeRegion = testEstimatedAnchorsKeepMatchingNativeRegion
+window.testMeasureCardSerReturnsNullWithoutAnchors = testMeasureCardSerReturnsNullWithoutAnchors
 
 // ============ ERROR HANDLING ============
 function showError(message) {
@@ -220,6 +257,7 @@ initCimbarReceiver(showError)
 // Initialize HDMI-UVC modules
 initHdmiUvcSender(showError)
 initHdmiUvcReceiver(showError)
+initHdmiUvcLabReceiverUi()
 
 // Check CIMBAR compatibility and disable buttons if not supported
 const compat = checkCompatibility()
@@ -279,15 +317,32 @@ async function runAllTests() {
     externalPresentationNativeMetrics: testExternalPresentationNativeMetrics(),
     externalFullscreenUsesSelectedScreen: testExternalFullscreenUsesSelectedScreen(),
     externalFullscreenFailureStopsBeforeMainFallback: await testExternalFullscreenFailureStopsBeforeMainFallback(),
+    labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),
     captureMethodDecision: testCaptureMethodDecision(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
+    labFrameTapFullCaptureRect: testLabFrameTapUsesFullCaptureRect(),
+    labFrameTapBypassesLockedCapture: testLabFrameTapBypassesLockedCaptureRegion(),
     ingestCapturedFrame: await testIngestCapturedFrame(),
     wasmCrc32: await testWasmCrc32MatchesJs(),
     frameCrcWasmIntegration: await testFrameCrcWasmIntegration(),
     wasmScanBrightRuns: await testWasmScanBrightRunsMatchesJs(),
     wasmClassifiers: await testWasmClassifiersMatchJs(),
     wasmVsJsDetectAnchors: await testWasmVsJsDetectAnchorsEquivalent(),
-    wasmVsJsDecodeDataRegion: await testWasmVsJsDecodeDataRegionEquivalent()
+    wasmVsJsDecodeDataRegion: await testWasmVsJsDecodeDataRegionEquivalent(),
+    labBinary4Geometry: testBuildCardBinary4Geometry(),
+    labCardSelfDecode: testCardSelfDecode(),
+    labSerUnmodified: testMeasureCardSerOnUnmodifiedCapture(),
+    labSerNoise: testMeasureCardSerWithNoise(),
+    labConfidence: testMeasureCardSerExposesConfidence(),
+    labLuma2Geometry: testBuildCardLuma2Geometry(),
+    labCodebook3Geometry: testBuildCardCodebook3Geometry(),
+    labGlyph5Geometry: testBuildCardGlyph5Geometry(),
+    labCandidateSeed: testBuildCardCandidateSeed(),
+    labSelfDecodeAllKinds: testCardSelfDecodeAllKinds(),
+    labMergeResults: testMergeMeasureResults(),
+    labCoverageWorstTile: testMeasureCardSerReportsCoverageAndWorstTile(),
+    labEstimatedAnchorRegion: testEstimatedAnchorsKeepMatchingNativeRegion(),
+    labNoAnchorsNull: testMeasureCardSerReturnsNullWithoutAnchors()
   }
 
   const passed = Object.values(results).every(r => r)

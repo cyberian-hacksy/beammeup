@@ -28,6 +28,22 @@ export function computeLockedCaptureRect(region, sourceWidth, sourceHeight, bloc
   }
 }
 
+export function getWorkerCaptureCopyRect(cachedRegion, frameWidth, frameHeight, labFrameTapEnabled = false) {
+  if (!labFrameTapEnabled && cachedRegion?.sourceRect) {
+    return {
+      x: cachedRegion.sourceRect.x,
+      y: cachedRegion.sourceRect.y,
+      width: cachedRegion.sourceRect.w,
+      height: cachedRegion.sourceRect.h
+    }
+  }
+  return { x: 0, y: 0, width: frameWidth, height: frameHeight }
+}
+
+export function shouldUseLockedCaptureRegion(anchorRegion, labFrameTapEnabled = false) {
+  return !!anchorRegion && !labFrameTapEnabled
+}
+
 export function detectCaptureCapabilities(g = globalThis) {
   return {
     hasVideoFrame: typeof g.VideoFrame !== 'undefined',
@@ -128,5 +144,34 @@ export function testComputeLockedCaptureRect() {
   const pass = okOrigin && okSize && okTranslate && okPreserve && okClampX && okClampY && nullCase
   console.log('computeLockedCaptureRect test:', pass ? 'PASS' : 'FAIL',
     { okOrigin, okSize, okTranslate, okPreserve, okClampX, okClampY, nullCase })
+  return pass
+}
+
+export function testLabFrameTapUsesFullCaptureRect() {
+  const cached = {
+    sourceRect: { x: 20, y: 30, w: 640, h: 360 },
+    region: { x: 4, y: 4, w: 620, h: 340 }
+  }
+  const normal = getWorkerCaptureCopyRect(cached, 1920, 1080, false)
+  const lab = getWorkerCaptureCopyRect(cached, 1920, 1080, true)
+  const pass = normal.x === 20 &&
+    normal.y === 30 &&
+    normal.width === 640 &&
+    normal.height === 360 &&
+    lab.x === 0 &&
+    lab.y === 0 &&
+    lab.width === 1920 &&
+    lab.height === 1080
+  console.log('lab frame tap capture rect test:', pass ? 'PASS' : 'FAIL', { normal, lab })
+  return pass
+}
+
+export function testLabFrameTapBypassesLockedCaptureRegion() {
+  const region = { x: 24, y: 24, w: 1872, h: 1032 }
+  const normal = shouldUseLockedCaptureRegion(region, false)
+  const lab = shouldUseLockedCaptureRegion(region, true)
+  const noRegion = shouldUseLockedCaptureRegion(null, true)
+  const pass = normal === true && lab === false && noRegion === false
+  console.log('lab frame tap locked-region bypass test:', pass ? 'PASS' : 'FAIL', { normal, lab, noRegion })
   return pass
 }

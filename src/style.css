@@ -359,6 +359,53 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   font-size: 0.85rem;
   min-width: 95px;
 }
+
+.lab-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  margin-top: 0.75rem;
+  background: #101827;
+  border: 1px solid #26354d;
+  border-radius: 8px;
+  flex-wrap: wrap;
+}
+
+.lab-panel label {
+  color: #9aa8ba;
+  font-size: 0.85rem;
+}
+
+.lab-panel select,
+.lab-panel input {
+  background: #0b1220;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  color: #eef7ff;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+.lab-panel input[type="number"] {
+  width: 88px;
+}
+
+.lab-results {
+  flex-basis: 100%;
+  width: 100%;
+  max-height: 280px;
+  overflow: auto;
+  margin: 0.25rem 0 0;
+  padding: 0.75rem;
+  background: #05070c;
+  border: 1px solid #26354d;
+  border-radius: 4px;
+  color: #b9f6ca;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
 .file-status {
   flex: 1;
   display: flex;

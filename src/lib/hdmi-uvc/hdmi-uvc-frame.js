@@ -53,7 +53,7 @@ const ENABLE_PAYLOAD_INTERLEAVING = false
 const BINARY_PILOT_SPACING = 16
 const BINARY_PILOT_OFFSET = 8
 const payloadCellOrderCache = new Map()
-const CODEBOOK3_PATTERNS = [
+export const CODEBOOK3_PATTERNS = [
   [0, 0, 0, 0],
   [1, 1, 1, 1],
   [1, 1, 0, 0],
@@ -63,7 +63,7 @@ const CODEBOOK3_PATTERNS = [
   [1, 0, 0, 1],
   [0, 1, 1, 0]
 ]
-const LUMA2_PATTERNS = [
+export const LUMA2_PATTERNS = [
   [1, 1, 0, 0],
   [0, 0, 1, 1],
   [1, 0, 1, 0],
@@ -71,7 +71,7 @@ const LUMA2_PATTERNS = [
 ]
 const GLYPH5_GRID_SIZE = 4
 const GLYPH5_SYMBOL_COUNT = 32
-const GLYPH5_CODEBOOK = buildGlyph5Codebook()
+export const GLYPH5_CODEBOOK = buildGlyph5Codebook()
 
 function popcount16(mask) {
   let value = mask
@@ -279,11 +279,11 @@ function decodeQuadrantCodebook(samples, blackLevel = 0, whiteLevel = 255, patte
   return bestSymbol
 }
 
-function decodeCodebook3(samples, blackLevel = 0, whiteLevel = 255) {
+export function decodeCodebook3(samples, blackLevel = 0, whiteLevel = 255) {
   return decodeQuadrantCodebook(samples, blackLevel, whiteLevel, CODEBOOK3_PATTERNS)
 }
 
-function decodeLuma2(samples, blackLevel = 0, whiteLevel = 255) {
+export function decodeLuma2(samples, blackLevel = 0, whiteLevel = 255) {
   const normalized = samples.map((sample) => normalizeBinarySample(sample, blackLevel, whiteLevel))
   const top = (normalized[0] + normalized[1]) * 0.5
   const bottom = (normalized[2] + normalized[3]) * 0.5
@@ -300,7 +300,7 @@ function decodeLuma2(samples, blackLevel = 0, whiteLevel = 255) {
   return left >= right ? 2 : 3
 }
 
-function decodeGlyph5(samples, blackLevel = 0, whiteLevel = 255) {
+export function decodeGlyph5(samples, blackLevel = 0, whiteLevel = 255) {
   const normalized = samples.map((sample) => normalizeBinarySample(sample, blackLevel, whiteLevel))
   let bestSymbol = 0
   let bestError = Infinity
@@ -356,15 +356,15 @@ function renderQuadrantCodebookBlock(imageData, width, startX, startY, size, pat
   }
 }
 
-function renderCodebook3Block(imageData, width, startX, startY, size, symbol) {
+export function renderCodebook3Block(imageData, width, startX, startY, size, symbol) {
   renderQuadrantCodebookBlock(imageData, width, startX, startY, size, CODEBOOK3_PATTERNS[symbol & 0x7])
 }
 
-function renderLuma2Block(imageData, width, startX, startY, size, symbol) {
+export function renderLuma2Block(imageData, width, startX, startY, size, symbol) {
   renderQuadrantCodebookBlock(imageData, width, startX, startY, size, LUMA2_PATTERNS[symbol & 0x3])
 }
 
-function renderGlyph5Block(imageData, width, startX, startY, size, symbol) {
+export function renderGlyph5Block(imageData, width, startX, startY, size, symbol) {
   const pattern = GLYPH5_CODEBOOK[symbol & 0x1F]
   for (let row = 0; row < GLYPH5_GRID_SIZE; row++) {
     const y0 = startY + Math.floor((row * size) / GLYPH5_GRID_SIZE)
@@ -808,7 +808,7 @@ function samplePixel(imageData, width, x, y) {
 
 // Sample the center of a block at (px, py) with given block size.
 // Averages a 2×2 area around the block center for noise tolerance.
-function sampleBlockAt(imageData, width, px, py, bs) {
+export function sampleBlockAt(imageData, width, px, py, bs) {
   const cx = Math.round(px + bs / 2) - 1
   const cy = Math.round(py + bs / 2) - 1
   let sum = 0
@@ -835,7 +835,7 @@ function sampleBlockRgbAt(imageData, width, px, py, bs) {
   return [sums[0] / 4, sums[1] / 4, sums[2] / 4]
 }
 
-function sampleCodebook3At(imageData, width, px, py, bs) {
+export function sampleCodebook3At(imageData, width, px, py, bs) {
   const xMid = px + bs / 2
   const yMid = py + bs / 2
   const quadrants = [
@@ -862,7 +862,7 @@ function sampleCodebook3At(imageData, width, px, py, bs) {
   })
 }
 
-function sampleGlyph5At(imageData, width, px, py, bs) {
+export function sampleGlyph5At(imageData, width, px, py, bs) {
   const imgHeight = imageData.length / (width * 4)
   const samples = new Array(GLYPH5_GRID_SIZE * GLYPH5_GRID_SIZE)
 

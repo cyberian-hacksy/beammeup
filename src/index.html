@@ -305,6 +305,20 @@
           <button id="btn-hdmi-uvc-stop" class="secondary" disabled>Stop</button>
         </div>
       </div>
+      <div id="hdmi-uvc-lab-controls" class="lab-panel">
+        <label for="hdmi-uvc-lab-card-select">Lab card</label>
+        <select id="hdmi-uvc-lab-card-select">
+          <option value="">Off</option>
+          <option value="binary4">Card 1: 4x4 binary baseline</option>
+          <option value="binary3">Card 2: 3x3 binary</option>
+          <option value="binary2">Card 3: 2x2 binary diagnostic</option>
+          <option value="luma2">Card 4: LUMA_2</option>
+          <option value="codebook3">Card 5: CODEBOOK_3</option>
+          <option value="glyph5">Card 6: GLYPH_5</option>
+          <option value="candidate">Card 7: low-frequency candidate</option>
+        </select>
+        <button id="btn-hdmi-uvc-lab-render" class="secondary">Render card</button>
+      </div>
       <div id="hdmi-uvc-sender-diagnostics" class="hdmi-diagnostics"></div>
       <div id="hdmi-uvc-sender-debug" style="margin-top:8px;border:2px solid #00d4ff;border-radius:4px;">
         <div style="display:flex;align-items:center;background:#16213e;border-bottom:1px solid #333;">
@@ -328,6 +342,25 @@
       <div class="device-selector">
         <label for="hdmi-uvc-device-dropdown">Capture Device</label>
         <select id="hdmi-uvc-device-dropdown"></select>
+      </div>
+      <div id="hdmi-uvc-lab-receiver-controls" class="lab-panel">
+        <label for="hdmi-uvc-lab-rx-card">Expected card</label>
+        <select id="hdmi-uvc-lab-rx-card">
+          <option value="binary4">Card 1: 4x4 binary</option>
+          <option value="binary3">Card 2: 3x3 binary</option>
+          <option value="binary2">Card 3: 2x2 binary</option>
+          <option value="luma2">Card 4: LUMA_2</option>
+          <option value="codebook3">Card 5: CODEBOOK_3</option>
+          <option value="glyph5">Card 6: GLYPH_5</option>
+          <option value="candidate">Card 7: low-frequency candidate</option>
+        </select>
+        <label for="hdmi-uvc-lab-rx-sender-w">Sender W</label>
+        <input id="hdmi-uvc-lab-rx-sender-w" type="number" value="1920" min="320" max="3840" step="1">
+        <label for="hdmi-uvc-lab-rx-sender-h">Sender H</label>
+        <input id="hdmi-uvc-lab-rx-sender-h" type="number" value="1080" min="240" max="2160" step="1">
+        <button id="btn-hdmi-uvc-lab-rx-start" class="secondary">Start accumulation</button>
+        <button id="btn-hdmi-uvc-lab-rx-stop" class="secondary" disabled>Stop</button>
+        <pre id="hdmi-uvc-lab-rx-results" class="lab-results"></pre>
       </div>
       <div id="hdmi-uvc-receiver-diagnostics" class="hdmi-diagnostics"></div>
       <div id="hdmi-uvc-receiver-debug" style="margin-top:8px;border:2px solid #00d4ff;border-radius:4px;">

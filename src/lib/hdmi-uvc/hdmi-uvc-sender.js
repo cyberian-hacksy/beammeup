@@ -22,6 +22,7 @@ import {
   hasEffectiveOneToOnePresentation,
   isNative1080pGeometry
 } from './hdmi-uvc-frame.js'
+import { buildCard, CARD_KIND } from './hdmi-uvc-lab.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
 import { getPass2Variant, renderDiagnosticsPanel } from './hdmi-uvc-diagnostics.js'
 
@@ -270,6 +271,7 @@ const state = {
   isSending: false,
   isPaused: false,
   isAwaitingStart: false,
+  labCardActive: false,
   armedStartTimerId: null,
   systematicIndex: 0,
   systematicStride: 1,
@@ -303,6 +305,16 @@ const state = {
 
 let elements = null
 let showError = (msg) => console.error(msg)
+
+const LAB_CARD_KIND_BY_VALUE = {
+  binary4: CARD_KIND.BINARY_4,
+  binary3: CARD_KIND.BINARY_3,
+  binary2: CARD_KIND.BINARY_2,
+  luma2: CARD_KIND.LUMA_2,
+  codebook3: CARD_KIND.CODEBOOK_3,
+  glyph5: CARD_KIND.GLYPH_5,
+  candidate: CARD_KIND.CANDIDATE
+}
 
 function screenDimension(screen, primary, fallback = 0) {
   const value = screen?.[primary]
@@ -517,6 +529,7 @@ function resetPreparedSessionState() {
   state.isSending = false
   state.isPaused = false
   state.isAwaitingStart = false
+  state.labCardActive = false
   state.systematicIndex = 0
   state.systematicStride = 1
   state.intermediateSystematicStride = 1
@@ -1351,6 +1364,12 @@ function updateRenderSizeSelector() {
   if (!elements?.renderSizeSelect) return
   elements.renderSizeSelect.value = getRenderSizePreset().id
   elements.renderSizeSelect.disabled = state.isSending || state.isPaused || state.isAwaitingStart || isCimbarMode()
+  if (elements.labCardSelect) {
+    elements.labCardSelect.disabled = state.isSending || state.isPaused || state.isAwaitingStart
+  }
+  if (elements.btnLabRender) {
+    elements.btnLabRender.disabled = state.isSending || state.isPaused || state.isAwaitingStart
+  }
   updateEstimateSummary()
   updatePresentationControls()
 }
@@ -2019,6 +2038,49 @@ async function cancelArmedStart(reason = 'Armed start cancelled') {
   await restoreSenderReadyState()
 }
 
+async function renderLabCard(kind) {
+  try {
+    resetRenderSchedule()
+    resetHdmiFrameResources()
+    resetPreparedSessionState()
+    debugLog(`=== RENDER LAB CARD ${kind} ===`)
+
+    const { target, stableMetrics } = await preparePresentationForTransmission()
+    const { metrics } = measureAndApplyCanvasSize(stableMetrics, target)
+    const issue = getRenderScaleIssue(metrics, {
+      requireNative1080p: kind === CARD_KIND.BINARY_3 || kind === CARD_KIND.BINARY_4
+    })
+    if (issue) throw new Error(issue)
+
+    const card = buildCard(kind, metrics.width, metrics.height)
+    const imageData = new ImageData(new Uint8ClampedArray(card.imageData), metrics.width, metrics.height)
+    const ctx = target.canvas.getContext('2d')
+    ctx.putImageData(imageData, 0, 0)
+
+    elements.placeholder.style.display = 'none'
+    elements.overlay.classList.add('hidden')
+    setSignalLive(true)
+    state.labCardActive = true
+    window.__hdmiUvcCurrentCard = { kind, width: metrics.width, height: metrics.height }
+    debugLog(`Lab card rendered: ${kind} at ${metrics.width}x${metrics.height}`)
+    debugCurrent(`LAB ${kind} ${metrics.width}x${metrics.height}`)
+  } catch (err) {
+    console.error('HDMI-UVC lab render error:', err)
+    await restoreSenderReadyState()
+    showError('Failed to render lab card: ' + err.message)
+  }
+}
+
+function handleLabRenderClick() {
+  if (state.isSending || state.isPaused || state.isAwaitingStart) return
+  const kind = LAB_CARD_KIND_BY_VALUE[elements.labCardSelect?.value]
+  if (!kind) {
+    void restoreSenderReadyState()
+    return
+  }
+  void renderLabCard(kind)
+}
+
 async function startSending() {
   if (!state.fileData || !state.fileHash) return
 
@@ -2460,10 +2522,21 @@ function handleFullscreenChange() {
     void cancelArmedStart('Fullscreen exited before transmission started')
     return
   }
+  if (shouldRestoreLabCardOnFullscreenExit(state, document.fullscreenElement)) {
+    void restoreSenderReadyState()
+    return
+  }
   // If we were sending and fullscreen was exited (e.g. by pressing Escape), pause
   if (state.isSending && !state.isPaused && !document.fullscreenElement) {
     pauseSending()
   }
+}
+
+function shouldRestoreLabCardOnFullscreenExit(senderState, fullscreenElement) {
+  return !!senderState?.labCardActive &&
+    !fullscreenElement &&
+    !senderState.isSending &&
+    !senderState.isAwaitingStart
 }
 
 async function exitFullscreenSafely() {
@@ -2509,7 +2582,9 @@ export function initHdmiUvcSender(errorHandler) {
     fileInfo: document.getElementById('hdmi-uvc-file-info'),
     estimate: document.getElementById('hdmi-uvc-estimate'),
     btnAction: document.getElementById('btn-hdmi-uvc-action'),
-    btnStop: document.getElementById('btn-hdmi-uvc-stop')
+    btnStop: document.getElementById('btn-hdmi-uvc-stop'),
+    labCardSelect: document.getElementById('hdmi-uvc-lab-card-select'),
+    btnLabRender: document.getElementById('btn-hdmi-uvc-lab-render')
   }
   elements.modeButtons = Array.from(elements.modeSelector?.querySelectorAll('.mode-btn') || [])
 
@@ -2538,6 +2613,7 @@ export function initHdmiUvcSender(errorHandler) {
   })
   elements.btnAction.onclick = handleActionClick
   elements.btnStop.onclick = stopSending
+  if (elements.btnLabRender) elements.btnLabRender.onclick = handleLabRenderClick
 
   elements.container.onclick = handleDropZoneClick
   elements.container.ondragover = handleDragOver
@@ -2727,6 +2803,20 @@ export async function testExternalFullscreenFailureStopsBeforeMainFallback() {
 
   const pass = calls === 1 && message.includes('External fullscreen failed') && message.includes('Permissions check failed')
   console.log('External fullscreen failure stop test:', pass ? 'PASS' : 'FAIL', { calls, message })
+  return pass
+}
+
+export function testLabCardFullscreenExitRequiresReadyRestore() {
+  const activeLab = { labCardActive: true, isSending: false, isAwaitingStart: false }
+  const sending = { labCardActive: true, isSending: true, isAwaitingStart: false }
+  const armed = { labCardActive: true, isSending: false, isAwaitingStart: true }
+  const inactive = { labCardActive: false, isSending: false, isAwaitingStart: false }
+  const pass = shouldRestoreLabCardOnFullscreenExit(activeLab, null) === true &&
+    shouldRestoreLabCardOnFullscreenExit(activeLab, {}) === false &&
+    shouldRestoreLabCardOnFullscreenExit(sending, null) === false &&
+    shouldRestoreLabCardOnFullscreenExit(armed, null) === false &&
+    shouldRestoreLabCardOnFullscreenExit(inactive, null) === false
+  console.log('Lab card fullscreen exit restore test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

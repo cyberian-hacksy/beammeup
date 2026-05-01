@@ -17,6 +17,7 @@
 //   { type: 'startCaptureWithOffscreen', region, expectedPacketSize }      // Phase 3.5
 //   { type: 'captureBitmap', bitmap, expectedPacketSize }                  // Phase 3.5
 //   { type: 'updateCaptureRegion', region, expectedPacketSize }            // Phase 3.3
+//   { type: 'setLabFrameTap', enabled }                                    // Phase 2 lab
 //   { type: 'stopCapture' }                                                // Phase 3.3
 //
 // Protocol (worker → main):
@@ -36,7 +37,7 @@ import { detectAnchors, dataRegionFromAnchors, decodeDataRegion } from './hdmi-u
 import { createDecoder } from '../decoder.js'
 import { parsePacket, PACKET_HEADER_SIZE } from '../packet.js'
 import { ingestCapturedFrame } from './hdmi-uvc-capture-pump.js'
-import { computeLockedCaptureRect } from './hdmi-uvc-receiver-capture.js'
+import { computeLockedCaptureRect, getWorkerCaptureCopyRect } from './hdmi-uvc-receiver-capture.js'
 import { loadHdmiUvcWasm, setHdmiUvcWasmUrl } from './hdmi-uvc-wasm.js'
 
 // WASM loading is driven by the main thread rather than at module boot:
@@ -415,9 +416,24 @@ function handleReconstruct(msg) {
 // pump may run at a time; stopCapture sets `stopped` so the loop exits on its
 // next iteration.
 let captureState = null
+let labFrameTapEnabled = false
 
 function postCaptureStopped() {
   self.postMessage({ type: 'captureStopped' })
+}
+
+function postCaptureFrameMessage(message, pixelBuffer, width, height) {
+  if (captureState?.labFrameTapEnabled && pixelBuffer && width > 0 && height > 0) {
+    const copy = new Uint8ClampedArray(pixelBuffer)
+    message.labFrame = {
+      buffer: copy.buffer,
+      width,
+      height
+    }
+    self.postMessage(message, [copy.buffer])
+    return
+  }
+  self.postMessage(message)
 }
 
 function buildCaptureFrameMessage(result) {
@@ -550,7 +566,7 @@ function runCapturePumpOnBuffer(pixelBuffer, width, height, fullFrameWidth, full
   }
 
   if (!decodeRegion) {
-    self.postMessage({
+    postCaptureFrameMessage({
       type: 'captureFrame',
       scanning: true,
       decodeResult: null,
@@ -559,7 +575,7 @@ function runCapturePumpOnBuffer(pixelBuffer, width, height, fullFrameWidth, full
       newSession: false,
       completionEvent: false,
       symbolBreakdown: currentSymbolBreakdown()
-    })
+    }, pixelBuffer, width, height)
     return
   }
 
@@ -581,7 +597,7 @@ function runCapturePumpOnBuffer(pixelBuffer, width, height, fullFrameWidth, full
     extractFn: extractValidPacketsFromPayload
   })
 
-  self.postMessage(buildCaptureFrameMessage(result))
+  postCaptureFrameMessage(buildCaptureFrameMessage(result), pixelBuffer, width, height)
 }
 
 async function processCapturedVideoFrame(frame) {
@@ -590,10 +606,7 @@ async function processCapturedVideoFrame(frame) {
   if (!frameWidth || !frameHeight) return
 
   const cached = captureState.region
-  const sourceRect = cached && cached.sourceRect ? cached.sourceRect : null
-  const copyRect = sourceRect
-    ? { x: sourceRect.x, y: sourceRect.y, width: sourceRect.w, height: sourceRect.h }
-    : { x: 0, y: 0, width: frameWidth, height: frameHeight }
+  const copyRect = getWorkerCaptureCopyRect(cached, frameWidth, frameHeight, captureState.labFrameTapEnabled)
 
   const bufWidth = copyRect.width
   const bufHeight = copyRect.height
@@ -702,6 +715,7 @@ function handleStartCaptureWithTrack(msg) {
     reader,
     region: msg.region || null,
     expectedPacketSize: msg.expectedPacketSize || null,
+    labFrameTapEnabled: !!msg.labFrameTapEnabled || labFrameTapEnabled,
     stopped: false,
     pixelBuffer: null
   }
@@ -724,6 +738,7 @@ function handleStartCaptureWithOffscreen(msg) {
     method: 'offscreen',
     region: msg.region || null,
     expectedPacketSize: msg.expectedPacketSize || null,
+    labFrameTapEnabled: !!msg.labFrameTapEnabled || labFrameTapEnabled,
     stopped: false,
     pixelBuffer: null
   }
@@ -737,6 +752,11 @@ function handleUpdateCaptureRegion(msg) {
   // receive-another reset). Undefined leaves the cache alone.
   if ('region' in msg) captureState.region = msg.region || null
   if (msg.expectedPacketSize != null) captureState.expectedPacketSize = msg.expectedPacketSize
+}
+
+function handleSetLabFrameTap(msg) {
+  labFrameTapEnabled = !!msg.enabled
+  if (captureState) captureState.labFrameTapEnabled = labFrameTapEnabled
 }
 
 function handleStopCapture() {
@@ -819,6 +839,9 @@ self.onmessage = (event) => {
         break
       case 'updateCaptureRegion':
         handleUpdateCaptureRegion(msg)
+        break
+      case 'setLabFrameTap':
+        handleSetLabFrameTap(msg)
         break
       case 'stopCapture':
         handleStopCapture()
