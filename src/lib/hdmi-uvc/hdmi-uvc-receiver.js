@@ -15,7 +15,6 @@ import {
   detectAnchors,
   dataRegionFromAnchors,
   decodeDataRegion,
-  precomputeBinary3SampleOffsets,
   readPayloadWithLayout,
   resetClassifierPerfAccumulator,
   getClassifierPerfAccumulator
@@ -35,6 +34,12 @@ import {
   getCaptureMethod as getCaptureMethodSetting,
   renderDiagnosticsPanel
 } from './hdmi-uvc-diagnostics.js'
+import {
+  clearBinary3LockState,
+  lockBinary3LayoutFromDecodeResult,
+  lockBinary3LayoutState,
+  noteBinary3UnrecoveredCrcFailure
+} from './hdmi-uvc-binary3-lock.js'
 import {
   extractFramePackets,
   getFramePacketSlotCount,
@@ -2640,61 +2645,38 @@ function lockAnchorRegion(region, sourceWidth, sourceHeight, anchors = null) {
 }
 
 function clearBinary3Lock() {
-  state.lockedBinary3Layout = null
-  state.lockedBinary3Offsets = null
-  state.binary3LockFailStreak = 0
+  clearBinary3LockState(state)
 }
 
 function applyBinary3Lock(result, currentRegion) {
-  if (!result?._diag || result._diag.frameMode !== HDMI_MODE.BINARY_3) return
+  const outcome = lockBinary3LayoutFromDecodeResult(state, result, currentRegion)
+  logBinary3LockOutcome(outcome)
+}
 
-  if (!result.crcValid) {
-    state.binary3LockFailStreak++
-    if (state.binary3LockFailStreak >= LOCKED_BINARY3_INVALIDATE_AFTER_FAILS) {
-      clearBinary3Lock()
-      debugLog(`[HDMI-RX] BINARY_3 layout invalidated after ${LOCKED_BINARY3_INVALIDATE_AFTER_FAILS} CRC fails - re-sweeping next frame`)
-    }
-    return
-  }
+function applyBinary3RecoveredLayout(layout, header, currentRegion) {
+  const outcome = lockBinary3LayoutState(state, layout, currentRegion, header)
+  logBinary3LockOutcome(outcome)
+}
 
-  state.binary3LockFailStreak = 0
-  const wasLocked = !!state.lockedBinary3Layout
-  const diag = result._diag
-  const layout = {
-    blocksX: diag.blocksX,
-    blocksY: diag.blocksY,
-    headerBlocksX: diag.headerBlocksX,
-    headerBlocksY: diag.headerBlocksY,
-    frameMode: HDMI_MODE.BINARY_3,
-    bitsPerBlock: 1,
-    stepX: diag.stepX,
-    stepY: diag.stepY,
-    dataBs: diag.dataBs,
-    headerStepX: diag.headerStepX,
-    headerStepY: diag.headerStepY,
-    headerBs: diag.headerBs,
-    xOff: diag.xOff,
-    yOff: diag.yOff,
-    blackLevel: diag.blackLevel,
-    whiteLevel: diag.whiteLevel,
-    frameWidth: result.header.width,
-    frameHeight: result.header.height,
-    fps: result.header.fps
+function noteBinary3LockFailure(result) {
+  const outcome = noteBinary3UnrecoveredCrcFailure(
+    state,
+    result,
+    LOCKED_BINARY3_INVALIDATE_AFTER_FAILS
+  )
+  if (outcome.invalidated) {
+    debugLog(`[HDMI-RX] BINARY_3 layout invalidated after ${LOCKED_BINARY3_INVALIDATE_AFTER_FAILS} unrecovered CRC fails - re-sweeping next frame`)
   }
-  const { offsets } = precomputeBinary3SampleOffsets(layout, currentRegion)
-  layout.precomputedOffsets = offsets
-  state.lockedBinary3Layout = layout
-  state.lockedBinary3Offsets = offsets
-  state.fixedLayout = { ...layout }
-  state.preferredLayout = { ...layout }
+}
 
-  if (!wasLocked) {
-    debugLog(
-      `[HDMI-RX] BINARY_3 layout locked: ` +
-      `step=${layout.stepX.toFixed(2)}/${layout.stepY.toFixed(2)} ` +
-      `grid=${layout.blocksX}x${layout.blocksY}`
-    )
-  }
+function logBinary3LockOutcome(outcome) {
+  if (!outcome?.locked || outcome.wasLocked) return
+  const layout = outcome.layout
+  debugLog(
+    `[HDMI-RX] BINARY_3 layout locked: ` +
+    `step=${layout.stepX.toFixed(2)}/${layout.stepY.toFixed(2)} ` +
+    `grid=${layout.blocksX}x${layout.blocksY}`
+  )
 }
 
 function logBinary3Confidence(result) {
@@ -3262,7 +3244,6 @@ async function processFrame(now, metadata) {
     }
   } else if (result && !result.crcValid) {
     noteReceiverCrcFailFrame()
-    applyBinary3Lock(result, region)
     if (result._diag) state.preferredLayout = { ...result._diag }
     const expectedPacketSize = getExpectedPacketSize()
     const salvageProbe = probeFramePackets(result.payload, expectedPacketSize)
@@ -3321,6 +3302,7 @@ async function processFrame(now, metadata) {
       }
       if (phaseProbe?.layout) state.fixedLayout = { ...phaseProbe.layout }
       if (phaseProbe?.layout) state.preferredLayout = { ...phaseProbe.layout }
+      if (phaseProbe?.layout) applyBinary3RecoveredLayout(phaseProbe.layout, result.header, region)
       if (isDiagFrame) {
         debugLog(`Frame ${state.frameCount}: phase-recovered ${phasePackets.length} packet(s) from CRC-fail frame`)
       }
@@ -3346,6 +3328,9 @@ async function processFrame(now, metadata) {
       if (isDiagFrame) {
         debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) via fixed layout`)
       }
+      if (state.fixedLayout?.frameMode === HDMI_MODE.BINARY_3) {
+        applyBinary3RecoveredLayout(state.fixedLayout, result.header, region)
+      }
       if (state.decoder?.isComplete()) {
         finalizeFramePerf()
         return
@@ -3356,6 +3341,7 @@ async function processFrame(now, metadata) {
     }
 
     state.decodeFailCount++
+    noteBinary3LockFailure(result)
     if (isDiagFrame) {
       // Dump full header for diagnosis
       const h = result.header

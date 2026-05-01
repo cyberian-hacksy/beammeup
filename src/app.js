@@ -47,6 +47,7 @@ import {
   testReceiverFrameAcceptSignals,
   testStallCounterTicksOnDuplicateFrames
 } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
+import { testBinary3RecoveredLayoutKeepsLock } from './lib/hdmi-uvc/hdmi-uvc-binary3-lock.js'
 import { initHdmiUvcLabReceiverUi } from './lib/hdmi-uvc/hdmi-uvc-lab-ui.js'
 import { testCrc32 } from './lib/hdmi-uvc/crc32.js'
 import {
@@ -152,6 +153,7 @@ window.testFrameRefactorPreservesGlyph5Bytes = testFrameRefactorPreservesGlyph5B
 window.testDecodeDataRegionRoundtripsAllModes = testDecodeDataRegionRoundtripsAllModes
 window.testReceiverFrameAcceptSignals = testReceiverFrameAcceptSignals
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
+window.testBinary3RecoveredLayoutKeepsLock = testBinary3RecoveredLayoutKeepsLock
 window.testPass2TwoStageSchedule = testPass2TwoStageSchedule
 window.testParitySweepCounter = testParitySweepCounter
 window.testPresentationScreenSelection = testPresentationScreenSelection
@@ -340,6 +342,7 @@ async function runAllTests() {
     hdmiDecodeDataRegionAllModes: testDecodeDataRegionRoundtripsAllModes(),
     receiverFrameSignals: testReceiverFrameAcceptSignals(),
     stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames(),
+    binary3RecoveredLayoutKeepsLock: testBinary3RecoveredLayoutKeepsLock(),
     twoStagePass2Schedule: testPass2TwoStageSchedule(),
     paritySweepCounter: testParitySweepCounter(),
     presentationScreenSelection: testPresentationScreenSelection(),
