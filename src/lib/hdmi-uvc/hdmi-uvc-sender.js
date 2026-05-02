@@ -1559,7 +1559,6 @@ function usesMixedSlotReplay() {
 }
 
 function shouldSendMetadata(frameNumber) {
-  if (state.mode === HDMI_MODE.BINARY_3) return true
   if (frameNumber <= METADATA_BURST_FRAMES) return true
   if (
     frameNumber <= BOOTSTRAP_METADATA_WINDOW_FRAMES &&
@@ -1579,13 +1578,13 @@ function getMetadataSlotIndex(frameNumber, slots) {
 }
 
 function getMetadataScheduleDescription() {
-  if (state.mode === HDMI_MODE.BINARY_3) {
-    return `Metadata schedule: every frame, 1 rotating slot across ${state.packetsPerFrame} packet(s)`
-  }
+  const slotNote = state.mode === HDMI_MODE.BINARY_3
+    ? `, rotating slot across ${state.packetsPerFrame} packet(s)`
+    : ''
   return (
     `Metadata schedule: burst=${METADATA_BURST_FRAMES} frame(s), ` +
     `bootstrap=${BOOTSTRAP_METADATA_INTERVAL_FRAMES} frame(s) through frame ${BOOTSTRAP_METADATA_WINDOW_FRAMES}, ` +
-    `interval=${state.metadataIntervalFrames} frame(s)`
+    `interval=${state.metadataIntervalFrames} frame(s)${slotNote}`
   )
 }
 
@@ -2953,18 +2952,27 @@ export function testBinary3StrictGeometryGate() {
   }
 }
 
-export function testBinary3MetadataEveryFrame() {
+export function testBinary3MetadataUsesSparseSchedule() {
   const oldMode = state.mode
   const oldInterval = state.metadataIntervalFrames
   try {
     state.mode = HDMI_MODE.BINARY_3
     state.metadataIntervalFrames = 90
-    const frames = [1, 2, 5, 89, 181, 270]
-    const observed = frames.map(frame => shouldSendMetadata(frame))
-    const pass = observed.every(Boolean)
-    console.log('BINARY_3 metadata every-frame test:', pass ? 'PASS' : 'FAIL', {
+
+    const frames = [1, 2, 3, 4, 5, 12, 13, 24, 180, 181, 270, 360]
+    const expected = [true, true, true, true, false, true, false, true, true, false, true, true]
+    const binary3Observed = frames.map(frame => shouldSendMetadata(frame))
+
+    state.mode = HDMI_MODE.COMPAT_4
+    const compat4Observed = frames.map(frame => shouldSendMetadata(frame))
+
+    const pass = binary3Observed.every((value, i) => value === expected[i]) &&
+      compat4Observed.every((value, i) => value === expected[i])
+    console.log('BINARY_3 sparse metadata schedule test:', pass ? 'PASS' : 'FAIL', {
       frames,
-      observed
+      expected,
+      binary3Observed,
+      compat4Observed
     })
     return pass
   } finally {
@@ -2973,7 +2981,7 @@ export function testBinary3MetadataEveryFrame() {
   }
 }
 
-export function testBinary3MetadataSlotRotates() {
+export function testBinary3MetadataSlotRotatesOnlyWhenSent() {
   const snapshot = {
     mode: state.mode,
     encoder: state.encoder,
@@ -3013,18 +3021,33 @@ export function testBinary3MetadataSlotRotates() {
 
     const frame1 = buildFramePacketBatch(1).symbolIds
     const frame2 = buildFramePacketBatch(2).symbolIds
+    const frame3 = buildFramePacketBatch(3).symbolIds
+    const frame4 = buildFramePacketBatch(4).symbolIds
     const frame5 = buildFramePacketBatch(5).symbolIds
-    const pass = frame1[0] === 0 &&
+    const frame12 = buildFramePacketBatch(12).symbolIds
+    const frame13 = buildFramePacketBatch(13).symbolIds
+    const pass =
+      frame1[0] === 0 &&
       frame2[1] === 0 &&
-      frame5[0] === 0 &&
+      frame3[2] === 0 &&
+      frame4[3] === 0 &&
+      frame5.every(id => id !== 0) &&
+      frame12[3] === 0 &&
+      frame13.every(id => id !== 0) &&
       frame1.filter(id => id === 0).length === 1 &&
       frame2.filter(id => id === 0).length === 1 &&
-      frame5.filter(id => id === 0).length === 1
+      frame3.filter(id => id === 0).length === 1 &&
+      frame4.filter(id => id === 0).length === 1 &&
+      frame12.filter(id => id === 0).length === 1
 
-    console.log('BINARY_3 metadata slot rotation test:', pass ? 'PASS' : 'FAIL', {
+    console.log('BINARY_3 sparse metadata slot rotation test:', pass ? 'PASS' : 'FAIL', {
       frame1,
       frame2,
-      frame5
+      frame3,
+      frame4,
+      frame5,
+      frame12,
+      frame13
     })
     return pass
   } finally {
