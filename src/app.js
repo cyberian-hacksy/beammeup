@@ -44,6 +44,8 @@ import {
   testBinary3BatchingProfile,
   testBinary3BatchingProfileMath,
   testBinary3BatchingProfileDiagnostic,
+  testBinary3LateMixDiagnostic,
+  testBinary3LateMixPatterns,
   testBinary3StrictGeometryGate,
   testBinary3MetadataUsesSparseSchedule,
   testBinary3MetadataSlotRotatesOnlyWhenSent
@@ -189,6 +191,8 @@ window.testBinary3MixedReplayMetadataReducesDataSlots = testBinary3MixedReplayMe
 window.testBinary3BatchingProfile = testBinary3BatchingProfile
 window.testBinary3BatchingProfileMath = testBinary3BatchingProfileMath
 window.testBinary3BatchingProfileDiagnostic = testBinary3BatchingProfileDiagnostic
+window.testBinary3LateMixDiagnostic = testBinary3LateMixDiagnostic
+window.testBinary3LateMixPatterns = testBinary3LateMixPatterns
 window.testBinary3StrictGeometryGate = testBinary3StrictGeometryGate
 window.testBinary3MetadataUsesSparseSchedule = testBinary3MetadataUsesSparseSchedule
 window.testBinary3MetadataSlotRotatesOnlyWhenSent = testBinary3MetadataSlotRotatesOnlyWhenSent
@@ -391,6 +395,8 @@ async function runAllTests() {
     binary3BatchingProfile: testBinary3BatchingProfile(),
     binary3BatchingProfileMath: testBinary3BatchingProfileMath(),
     binary3BatchingProfileDiagnostic: testBinary3BatchingProfileDiagnostic(),
+    binary3LateMixDiagnostic: testBinary3LateMixDiagnostic(),
+    binary3LateMixPatterns: testBinary3LateMixPatterns(),
     binary3StrictGeometryGate: testBinary3StrictGeometryGate(),
     binary3MetadataSparseSchedule: testBinary3MetadataUsesSparseSchedule(),
     binary3MetadataSlotRotatesOnlyWhenSent: testBinary3MetadataSlotRotatesOnlyWhenSent(),

@@ -12,6 +12,7 @@
 //   worker          'off'|'hash'|'anchors'|'full'        reload  (?worker=)
 //   pass2           'p2'|'legacy'|'mix'                  live    (?pass2=)
 //   binary3Profile  'safe'|'fill99'|'medium'|'large'     live    (?binary3-profile=)
+//   binary3LateMix  'balanced'|'source'                  live    (?binary3-late=)
 //
 // "Live" settings are re-read by the consumer per call; "reload" settings
 // are captured at module init time and the UI surfaces a Reload prompt
@@ -87,6 +88,17 @@ const DEFINITIONS = {
       large: 'large'
     },
     title: 'B3 Batch'
+  },
+  binary3LateMix: {
+    urlKey: 'binary3-late',
+    default: 'source',
+    allowed: ['balanced', 'source'],
+    reloadRequired: false,
+    labels: {
+      balanced: 'balanced',
+      source: 'source'
+    },
+    title: 'B3 Tail'
   }
 }
 
@@ -186,6 +198,7 @@ export function isPerfMode() { return getDiagnostic('perf') === 'on' }
 export function getWorkerMode() { return getDiagnostic('worker') }
 export function getPass2Variant() { return getDiagnostic('pass2') }
 export function getBinary3Profile() { return getDiagnostic('binary3Profile') }
+export function getBinary3LateMix() { return getDiagnostic('binary3LateMix') }
 
 // Render a segmented-button diagnostics panel into `container`. `keys` is
 // the ordered list of setting keys to show — sender uses just ['pass2'],

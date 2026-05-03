@@ -26,6 +26,7 @@ import {
 import { buildCard, CARD_KIND } from './hdmi-uvc-lab.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
 import {
+  getBinary3LateMix,
   getBinary3Profile,
   getDiagnosticDefinition,
   getPass2Variant,
@@ -1813,7 +1814,14 @@ function slotCountsFromRatios(slots, ratios) {
   return Object.fromEntries(entries.map(entry => [entry.key, entry.count]))
 }
 
-function getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass) {
+function getBinary3LateMixRatios(lateMix = getBinary3LateMix()) {
+  if (lateMix === 'source') {
+    return { source: 0.62, parity: 0.08, fountain: 0.30 }
+  }
+  return { source: 0.45, parity: 0.20, fountain: 0.35 }
+}
+
+function getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, lateMix = getBinary3LateMix()) {
   const slotCount = Math.max(0, Math.floor(slots || 0))
   if (passNumber <= 1) {
     return buildSlotMix(slotCount, { source: slotCount })
@@ -1839,17 +1847,18 @@ function getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass) 
       fountain: 0.20
     }))
   }
-  return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
-    source: 0.45,
-    parity: 0.20,
-    fountain: 0.35
-  }))
+  return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, getBinary3LateMixRatios(lateMix)))
 }
 
-function getSlotMixPatternForPass(passNumber, { paritySweepsInPass = 0, slots = 6, mode = state.mode } = {}) {
+function getSlotMixPatternForPass(passNumber, {
+  paritySweepsInPass = 0,
+  slots = 6,
+  mode = state.mode,
+  lateMix = getBinary3LateMix()
+} = {}) {
   if (!usesMixedSlotReplay(mode)) return null
   if (mode === HDMI_MODE.BINARY_3) {
-    return getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass)
+    return getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, lateMix)
   }
   if (passNumber <= 1) return ['source', 'source', 'source', 'source', 'source', 'source']
   if (passNumber === 2) {
@@ -2849,7 +2858,7 @@ export function initHdmiUvcSender(errorHandler) {
   }
   const diagPanel = document.getElementById('hdmi-uvc-sender-diagnostics')
   if (diagPanel) {
-    renderDiagnosticsPanel(diagPanel, ['pass2', 'binary3Profile'], { title: 'Diagnostics (sender)' })
+    renderDiagnosticsPanel(diagPanel, ['pass2', 'binary3Profile', 'binary3LateMix'], { title: 'Diagnostics (sender)' })
   }
 
   debugLog('HDMI-UVC Sender initialized')
@@ -3339,6 +3348,60 @@ export function testBinary3BatchingProfileDiagnostic() {
     definition: def,
     profileById,
     fallbackProfile
+  })
+  return pass
+}
+
+export function testBinary3LateMixDiagnostic() {
+  const diagGetterExists = typeof getBinary3LateMix === 'function'
+  const def = getDiagnosticDefinition('binary3LateMix')
+  const pass = diagGetterExists &&
+    def?.default === 'source' &&
+    def.allowed?.includes('balanced') &&
+    def.allowed?.includes('source')
+  console.log('BINARY_3 late mix diagnostic test:', pass ? 'PASS' : 'FAIL', {
+    diagGetterExists,
+    definition: def
+  })
+  return pass
+}
+
+export function testBinary3LateMixPatterns() {
+  const countSlots = (pattern) => {
+    const counts = { source: 0, parity: 0, fountain: 0 }
+    for (const slot of pattern) if (counts[slot] !== undefined) counts[slot]++
+    return counts
+  }
+
+  const balanced = countSlots(getSlotMixPatternForPass(4, {
+    mode: HDMI_MODE.BINARY_3,
+    slots: 13,
+    lateMix: 'balanced'
+  }) || [])
+  const source = countSlots(getSlotMixPatternForPass(4, {
+    mode: HDMI_MODE.BINARY_3,
+    slots: 13,
+    lateMix: 'source'
+  }) || [])
+  const pass3 = countSlots(getSlotMixPatternForPass(3, {
+    mode: HDMI_MODE.BINARY_3,
+    slots: 13,
+    lateMix: 'source'
+  }) || [])
+
+  const pass = balanced.source === 6 &&
+    balanced.parity === 3 &&
+    balanced.fountain === 4 &&
+    source.source === 8 &&
+    source.parity === 1 &&
+    source.fountain === 4 &&
+    pass3.source === 8 &&
+    pass3.parity === 2 &&
+    pass3.fountain === 3
+  console.log('BINARY_3 late mix pattern test:', pass ? 'PASS' : 'FAIL', {
+    balanced,
+    source,
+    pass3
   })
   return pass
 }
