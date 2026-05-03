@@ -596,7 +596,11 @@ function clearSenderCanvasToBlack() {
   ctx.fillRect(0, 0, canvas.width, canvas.height)
 }
 
-function showArmedStartPrompt(autoStartDelayMs = 0) {
+function getPreparedStartDelayMs(_target) {
+  return 0
+}
+
+function showArmedStartPrompt() {
   elements.overlay.classList.add('hidden')
   elements.placeholder.style.display = 'flex'
   elements.placeholder.style.position = 'relative'
@@ -604,10 +608,8 @@ function showArmedStartPrompt(autoStartDelayMs = 0) {
   elements.placeholder.style.textAlign = 'center'
   elements.placeholder.style.padding = '1.5rem'
   elements.placeholderIcon.textContent = '>'
-  elements.placeholderText.textContent = autoStartDelayMs > 0
-    ? 'External display ready. Transmission starts after the fullscreen tip clears.'
-    : 'Fullscreen ready. Wait for the browser tip to disappear, then press Space or Enter to start.'
-  debugCurrent(autoStartDelayMs > 0 ? 'ARMED - auto-starting external display' : 'ARMED - press Space or Enter to start')
+  elements.placeholderText.textContent = 'Display ready. Wait for the browser fullscreen tip to disappear, then press Space or Enter to start.'
+  debugCurrent('ARMED - press Space or Enter to start')
 }
 
 function waitForLayoutFrames(count = 2, targetWindow = window) {
@@ -1550,11 +1552,12 @@ function getBatchingProfile(mode) {
   }
 }
 
-function usesMixedSlotReplay() {
+function usesMixedSlotReplay(mode = state.mode) {
   return (
-    state.mode === HDMI_MODE.COMPAT_4 ||
-    state.mode === HDMI_MODE.LUMA_2 ||
-    state.mode === HDMI_MODE.CODEBOOK_3
+    mode === HDMI_MODE.COMPAT_4 ||
+    mode === HDMI_MODE.LUMA_2 ||
+    mode === HDMI_MODE.CODEBOOK_3 ||
+    mode === HDMI_MODE.BINARY_3
   )
 }
 
@@ -1619,11 +1622,26 @@ function getHybridScheduleDescription() {
     )
   }
 
-  if (
-    state.mode === HDMI_MODE.COMPAT_4 ||
-    state.mode === HDMI_MODE.LUMA_2 ||
-    state.mode === HDMI_MODE.CODEBOOK_3
-  ) {
+  if (usesMixedSlotReplay()) {
+    if (state.mode === HDMI_MODE.BINARY_3) {
+      const slots = Math.max(1, state.packetsPerFrame || 1)
+      const pass2First = describeSlotMixPattern(getSlotMixPatternForPass(2, {
+        slots,
+        paritySweepsInPass: 0
+      }))
+      const pass2Later = describeSlotMixPattern(getSlotMixPatternForPass(2, {
+        slots,
+        paritySweepsInPass: 1
+      }))
+      const pass3 = describeSlotMixPattern(getSlotMixPatternForPass(3, { slots }))
+      const pass4 = describeSlotMixPattern(getSlotMixPatternForPass(4, { slots }))
+      return (
+        `Hybrid schedule: source-only pass 1, then mixed Binary3 slot replay ` +
+        `(${slots} data slot(s) without metadata; pass2=${pass2First}->${pass2Later}, ` +
+        `pass3=${pass3}, pass4+=${pass4})`
+      )
+    }
+
     const modeName =
       state.mode === HDMI_MODE.LUMA_2
         ? 'Luma2'
@@ -1650,8 +1668,84 @@ function describeFountainInterval(interval) {
     : 'source-only'
 }
 
-function getSlotMixPatternForPass(passNumber, { paritySweepsInPass = 0 } = {}) {
-  if (!usesMixedSlotReplay()) return null
+function buildSlotMix(slots, counts) {
+  const slotCount = Math.max(0, Math.floor(slots || 0))
+  const pattern = []
+  for (let i = 0; i < (counts.source || 0); i++) pattern.push('source')
+  for (let i = 0; i < (counts.parity || 0); i++) pattern.push('parity')
+  for (let i = 0; i < (counts.fountain || 0); i++) pattern.push('fountain')
+  while (pattern.length < slotCount) pattern.push('source')
+  return pattern.slice(0, slotCount)
+}
+
+function slotCountsFromRatios(slots, ratios) {
+  const slotCount = Math.max(0, Math.floor(slots || 0))
+  const keys = ['source', 'parity', 'fountain']
+  const entries = keys.map((key, order) => {
+    const raw = slotCount * (ratios[key] || 0)
+    const count = Math.floor(raw)
+    return { key, order, count, remainder: raw - count }
+  })
+
+  let used = entries.reduce((sum, entry) => sum + entry.count, 0)
+  let remaining = slotCount - used
+  const byLargestRemainder = [...entries].sort((a, b) =>
+    (b.remainder - a.remainder) || (a.order - b.order)
+  )
+  for (let i = 0; remaining > 0; i++, remaining--) {
+    byLargestRemainder[i % byLargestRemainder.length].count++
+  }
+
+  used = entries.reduce((sum, entry) => sum + entry.count, 0)
+  const bySmallestRemainder = [...entries].sort((a, b) =>
+    (a.remainder - b.remainder) || (b.order - a.order)
+  )
+  for (let i = 0; used > slotCount; i++, used--) {
+    const entry = bySmallestRemainder[i % bySmallestRemainder.length]
+    if (entry.count > 0) entry.count--
+  }
+
+  return Object.fromEntries(entries.map(entry => [entry.key, entry.count]))
+}
+
+function getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass) {
+  const slotCount = Math.max(0, Math.floor(slots || 0))
+  if (passNumber <= 1) {
+    return buildSlotMix(slotCount, { source: slotCount })
+  }
+  if (passNumber === 2) {
+    if (paritySweepsInPass === 0) {
+      return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
+        source: 0.75,
+        parity: 0.25,
+        fountain: 0
+      }))
+    }
+    return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
+      source: 0.75,
+      parity: 0.125,
+      fountain: 0.125
+    }))
+  }
+  if (passNumber === 3) {
+    return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
+      source: 0.65,
+      parity: 0.15,
+      fountain: 0.20
+    }))
+  }
+  return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
+    source: 0.45,
+    parity: 0.20,
+    fountain: 0.35
+  }))
+}
+
+function getSlotMixPatternForPass(passNumber, { paritySweepsInPass = 0, slots = 6, mode = state.mode } = {}) {
+  if (!usesMixedSlotReplay(mode)) return null
+  if (mode === HDMI_MODE.BINARY_3) {
+    return getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass)
+  }
   if (passNumber <= 1) return ['source', 'source', 'source', 'source', 'source', 'source']
   if (passNumber === 2) {
     // Two-stage pass 2: emit one full parity sweep at 4S/2P so every parity
@@ -1734,7 +1828,10 @@ function advanceMixedReplayPass(frameNumber) {
   state.systematicIndex = 0
   state.paritySweepsInPass = 0
   const paritySpan = getParitySystematicSpan()
-  const pattern = getSlotMixPatternForPass(state.systematicPass)
+  const pattern = getSlotMixPatternForPass(state.systematicPass, {
+    slots: Math.max(1, state.packetsPerFrame || 1),
+    paritySweepsInPass: state.paritySweepsInPass
+  })
   debugLog(
     `Starting mixed replay pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
     `(mix=${describeSlotMixPattern(pattern)}, ` +
@@ -1773,8 +1870,12 @@ function nextParitySystematicSymbolId() {
   if (nextIndex === 0) {
     state.paritySweepsInPass++
     if (state.systematicPass === 2 && state.paritySweepsInPass === 1) {
+      const nextPattern = getSlotMixPatternForPass(2, {
+        slots: Math.max(1, state.packetsPerFrame || 1),
+        paritySweepsInPass: state.paritySweepsInPass
+      })
       debugLog(
-        `Pass 2 first parity sweep complete — switching to 4S/1P/1F ` +
+        `Pass 2 first parity sweep complete — switching to ${describeSlotMixPattern(nextPattern)} ` +
         `(paritySpan=${paritySpan})`
       )
     }
@@ -1882,8 +1983,10 @@ function buildFramePacketBatch(frameNumber) {
   const slots = Math.max(1, state.packetsPerFrame)
   const metadataSlotIndex = sendMetadata ? getMetadataSlotIndex(frameNumber, slots) : -1
   const tailSystematicBurst = isTailSystematicBurstFrame(frameNumber)
+  const dataSlots = Math.max(0, slots - (sendMetadata ? 1 : 0))
   const slotMixPattern = getSlotMixPatternForPass(state.systematicPass, {
-    paritySweepsInPass: state.paritySweepsInPass
+    paritySweepsInPass: state.paritySweepsInPass,
+    slots: dataSlots
   })
 
   let dataSlotsBuilt = 0
@@ -2036,7 +2139,7 @@ function armPreparedStart(autoStartDelayMs = 0) {
   state.isPaused = false
   state.nextFrameDueMs = 0
   clearSenderCanvasToBlack()
-  showArmedStartPrompt(autoStartDelayMs)
+  showArmedStartPrompt()
   setSignalLive(false)
 
   elements.fpsSlider.disabled = true
@@ -2048,7 +2151,7 @@ function armPreparedStart(autoStartDelayMs = 0) {
       state.armedStartTimerId = null
       beginPreparedStart()
     }, autoStartDelayMs)
-    debugLog(`Sender armed: external display auto-start in ${autoStartDelayMs}ms`)
+    debugLog(`Sender armed: auto-start in ${autoStartDelayMs}ms`)
   } else {
     debugLog('Sender armed: wait for the fullscreen tip to clear, then press Space or Enter to begin transmission')
   }
@@ -2320,7 +2423,7 @@ async function startSending() {
       )
     }
     debugLog(getHybridScheduleDescription())
-    armPreparedStart(target.external ? 2500 : 0)
+    armPreparedStart(getPreparedStartDelayMs(target))
 
   } catch (err) {
     console.error('HDMI-UVC start error:', err)
@@ -2865,6 +2968,21 @@ export async function testExternalFullscreenFailureStopsBeforeMainFallback() {
   return pass
 }
 
+export function testExternalPreparedStartUsesManualGate() {
+  const helperExists = typeof getPreparedStartDelayMs === 'function'
+  const externalDelay = helperExists ? getPreparedStartDelayMs({ external: true }) : null
+  const localDelay = helperExists ? getPreparedStartDelayMs({ external: false }) : null
+  const pass = helperExists &&
+    externalDelay === 0 &&
+    localDelay === 0
+  console.log('External prepared start manual gate test:', pass ? 'PASS' : 'FAIL', {
+    helperExists,
+    externalDelay,
+    localDelay
+  })
+  return pass
+}
+
 export function testLabCardFullscreenExitRequiresReadyRestore() {
   const activeLab = { labCardActive: true, isSending: false, isAwaitingStart: false }
   const sending = { labCardActive: true, isSending: true, isAwaitingStart: false }
@@ -2900,6 +3018,171 @@ export function testParitySweepCounter() {
   console.log('Parity sweep counter test:', pass ? 'PASS' : 'FAIL',
     { observed, expected })
   return pass
+}
+
+function snapshotSchedulerState() {
+  return {
+    mode: state.mode,
+    encoder: state.encoder,
+    packetsPerFrame: state.packetsPerFrame,
+    systematicIndex: state.systematicIndex,
+    systematicStride: state.systematicStride,
+    intermediateSystematicIndex: state.intermediateSystematicIndex,
+    intermediateSystematicStride: state.intermediateSystematicStride,
+    paritySystematicIndex: state.paritySystematicIndex,
+    paritySystematicStride: state.paritySystematicStride,
+    paritySweepsInPass: state.paritySweepsInPass,
+    fountainSymbolId: state.fountainSymbolId,
+    dataPacketCount: state.dataPacketCount,
+    systematicPass: state.systematicPass,
+    tailStartFrame: state.tailStartFrame,
+    metadataIntervalFrames: state.metadataIntervalFrames
+  }
+}
+
+function setupSchedulerTestState({
+  mode = HDMI_MODE.BINARY_3,
+  K = 100,
+  KPrime = 112,
+  packetsPerFrame = 24,
+  systematicPass = 1,
+  paritySweepsInPass = 0
+} = {}) {
+  state.mode = mode
+  state.encoder = {
+    K,
+    K_prime: KPrime,
+    generateSymbol: symbolId => new Uint8Array([symbolId & 0xff])
+  }
+  state.packetsPerFrame = packetsPerFrame
+  state.systematicIndex = 0
+  state.systematicStride = 1
+  state.intermediateSystematicIndex = 0
+  state.intermediateSystematicStride = 1
+  state.paritySystematicIndex = 0
+  state.paritySystematicStride = 1
+  state.paritySweepsInPass = paritySweepsInPass
+  state.fountainSymbolId = KPrime + 1
+  state.dataPacketCount = 0
+  state.systematicPass = systematicPass
+  state.tailStartFrame = 0
+  state.metadataIntervalFrames = 90
+}
+
+function countSymbolKinds(symbolIds, encoder) {
+  const counts = { metadata: 0, source: 0, parity: 0, fountain: 0 }
+  for (const symbolId of symbolIds) {
+    if (symbolId === 0) counts.metadata++
+    else if (symbolId <= encoder.K) counts.source++
+    else if (symbolId <= encoder.K_prime) counts.parity++
+    else counts.fountain++
+  }
+  return counts
+}
+
+export function testBinary3MixedReplayPass1SourceOnly() {
+  const snapshot = snapshotSchedulerState()
+  try {
+    setupSchedulerTestState({ systematicPass: 1 })
+    const batch = buildFramePacketBatch(5)
+    const counts = countSymbolKinds(batch.symbolIds, state.encoder)
+    const pass = batch.symbolIds.length === 24 &&
+      counts.metadata === 0 &&
+      counts.source === 24 &&
+      counts.parity === 0 &&
+      counts.fountain === 0
+    console.log('BINARY_3 mixed replay pass 1 source-only test:', pass ? 'PASS' : 'FAIL', {
+      symbolIds: batch.symbolIds,
+      counts
+    })
+    return pass
+  } finally {
+    Object.assign(state, snapshot)
+  }
+}
+
+export function testBinary3MixedReplayPass2ChangesAfterParitySweep() {
+  const snapshot = snapshotSchedulerState()
+  try {
+    setupSchedulerTestState({ systematicPass: 2, paritySweepsInPass: 0 })
+    const sweep0 = countSymbolKinds(buildFramePacketBatch(5).symbolIds, state.encoder)
+
+    Object.assign(state, snapshot)
+    setupSchedulerTestState({ systematicPass: 2, paritySweepsInPass: 1 })
+    const sweep1 = countSymbolKinds(buildFramePacketBatch(5).symbolIds, state.encoder)
+
+    const pass = sweep0.metadata === 0 &&
+      sweep0.source === 18 &&
+      sweep0.parity === 6 &&
+      sweep0.fountain === 0 &&
+      sweep1.metadata === 0 &&
+      sweep1.source === 18 &&
+      sweep1.parity === 3 &&
+      sweep1.fountain === 3
+    console.log('BINARY_3 mixed replay pass 2 parity-sweep transition test:', pass ? 'PASS' : 'FAIL', {
+      sweep0,
+      sweep1
+    })
+    return pass
+  } finally {
+    Object.assign(state, snapshot)
+  }
+}
+
+export function testCompat4MixedReplayKeepsSixSlotPatterns() {
+  const snapshot = snapshotSchedulerState()
+  try {
+    state.mode = HDMI_MODE.COMPAT_4
+    const expected = [
+      ['source', 'source', 'source', 'source', 'source', 'source'],
+      ['source', 'source', 'source', 'source', 'parity', 'parity'],
+      ['source', 'source', 'source', 'source', 'parity', 'fountain'],
+      ['source', 'source', 'source', 'source', 'parity', 'fountain'],
+      ['source', 'source', 'source', 'parity', 'fountain', 'fountain'],
+      ['source', 'parity', 'parity', 'fountain', 'fountain', 'fountain']
+    ]
+    const observed = [
+      getSlotMixPatternForPass(1, { paritySweepsInPass: 0 }),
+      getSlotMixPatternForPass(2, { paritySweepsInPass: 0 }),
+      getSlotMixPatternForPass(2, { paritySweepsInPass: 1 }),
+      getSlotMixPatternForPass(3, { paritySweepsInPass: 0 }),
+      getSlotMixPatternForPass(4, { paritySweepsInPass: 0 }),
+      getSlotMixPatternForPass(5, { paritySweepsInPass: 0 })
+    ]
+    const pass = observed.every((pattern, i) =>
+      pattern.length === expected[i].length &&
+      pattern.every((slot, j) => slot === expected[i][j])
+    )
+    console.log('COMPAT_4 mixed replay six-slot compatibility test:', pass ? 'PASS' : 'FAIL', {
+      observed,
+      expected
+    })
+    return pass
+  } finally {
+    Object.assign(state, snapshot)
+  }
+}
+
+export function testBinary3MixedReplayMetadataReducesDataSlots() {
+  const snapshot = snapshotSchedulerState()
+  try {
+    setupSchedulerTestState({ systematicPass: 2, paritySweepsInPass: 0 })
+    const batch = buildFramePacketBatch(12)
+    const counts = countSymbolKinds(batch.symbolIds, state.encoder)
+    const pass = batch.symbolIds.length === 24 &&
+      batch.symbolIds[11] === 0 &&
+      counts.metadata === 1 &&
+      counts.source === 17 &&
+      counts.parity === 6 &&
+      counts.fountain === 0
+    console.log('BINARY_3 mixed replay metadata data-slot test:', pass ? 'PASS' : 'FAIL', {
+      symbolIds: batch.symbolIds,
+      counts
+    })
+    return pass
+  } finally {
+    Object.assign(state, snapshot)
+  }
 }
 
 export function testBinary3BatchingProfile() {

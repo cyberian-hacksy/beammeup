@@ -34,7 +34,12 @@ import {
   testExternalPresentationNativeMetrics,
   testExternalFullscreenUsesSelectedScreen,
   testExternalFullscreenFailureStopsBeforeMainFallback,
+  testExternalPreparedStartUsesManualGate,
   testLabCardFullscreenExitRequiresReadyRestore,
+  testBinary3MixedReplayPass1SourceOnly,
+  testBinary3MixedReplayPass2ChangesAfterParitySweep,
+  testCompat4MixedReplayKeepsSixSlotPatterns,
+  testBinary3MixedReplayMetadataReducesDataSlots,
   testBinary3BatchingProfile,
   testBinary3StrictGeometryGate,
   testBinary3MetadataUsesSparseSchedule,
@@ -171,7 +176,12 @@ window.testExternalDisplayReadiness = testExternalDisplayReadiness
 window.testExternalPresentationNativeMetrics = testExternalPresentationNativeMetrics
 window.testExternalFullscreenUsesSelectedScreen = testExternalFullscreenUsesSelectedScreen
 window.testExternalFullscreenFailureStopsBeforeMainFallback = testExternalFullscreenFailureStopsBeforeMainFallback
+window.testExternalPreparedStartUsesManualGate = testExternalPreparedStartUsesManualGate
 window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
+window.testBinary3MixedReplayPass1SourceOnly = testBinary3MixedReplayPass1SourceOnly
+window.testBinary3MixedReplayPass2ChangesAfterParitySweep = testBinary3MixedReplayPass2ChangesAfterParitySweep
+window.testCompat4MixedReplayKeepsSixSlotPatterns = testCompat4MixedReplayKeepsSixSlotPatterns
+window.testBinary3MixedReplayMetadataReducesDataSlots = testBinary3MixedReplayMetadataReducesDataSlots
 window.testBinary3BatchingProfile = testBinary3BatchingProfile
 window.testBinary3StrictGeometryGate = testBinary3StrictGeometryGate
 window.testBinary3MetadataUsesSparseSchedule = testBinary3MetadataUsesSparseSchedule
@@ -365,7 +375,12 @@ async function runAllTests() {
     externalPresentationNativeMetrics: testExternalPresentationNativeMetrics(),
     externalFullscreenUsesSelectedScreen: testExternalFullscreenUsesSelectedScreen(),
     externalFullscreenFailureStopsBeforeMainFallback: await testExternalFullscreenFailureStopsBeforeMainFallback(),
+    externalPreparedStartManualGate: testExternalPreparedStartUsesManualGate(),
     labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),
+    binary3MixedReplayPass1SourceOnly: testBinary3MixedReplayPass1SourceOnly(),
+    binary3MixedReplayPass2ParitySweepTransition: testBinary3MixedReplayPass2ChangesAfterParitySweep(),
+    compat4MixedReplaySixSlotPatterns: testCompat4MixedReplayKeepsSixSlotPatterns(),
+    binary3MixedReplayMetadataDataSlots: testBinary3MixedReplayMetadataReducesDataSlots(),
     binary3BatchingProfile: testBinary3BatchingProfile(),
     binary3StrictGeometryGate: testBinary3StrictGeometryGate(),
     binary3MetadataSparseSchedule: testBinary3MetadataUsesSparseSchedule(),
