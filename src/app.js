@@ -9,7 +9,8 @@ import { testEncoder } from './lib/encoder.js'
 import {
   testCodecRoundtrip,
   testCodecRoundtripWithLoss,
-  testCodecRoundtripDeferredMetadata
+  testCodecRoundtripDeferredMetadata,
+  testTailSolverTriggerAllowsWiderBinary3Tail
 } from './lib/decoder.js'
 import { testParityMap, testParityRecovery, testGF2SolverSmall, testGF2SolverLarge, testSourceToParityAdjacency } from './lib/precode.js'
 
@@ -46,6 +47,8 @@ import {
   testBinary3BatchingProfileDiagnostic,
   testBinary3LateMixDiagnostic,
   testBinary3LateMixPatterns,
+  testBinary3Pass3MixDiagnostic,
+  testBinary3Pass3MixPatterns,
   testBinary3StrictGeometryGate,
   testBinary3MetadataUsesSparseSchedule,
   testBinary3MetadataSlotRotatesOnlyWhenSent
@@ -139,6 +142,7 @@ window.testEncoder = testEncoder
 window.testCodecRoundtrip = testCodecRoundtrip
 window.testCodecRoundtripWithLoss = testCodecRoundtripWithLoss
 window.testCodecRoundtripDeferredMetadata = testCodecRoundtripDeferredMetadata
+window.testTailSolverTriggerAllowsWiderBinary3Tail = testTailSolverTriggerAllowsWiderBinary3Tail
 window.testParityMap = testParityMap
 window.testParityRecovery = testParityRecovery
 window.testGF2SolverSmall = testGF2SolverSmall
@@ -193,6 +197,8 @@ window.testBinary3BatchingProfileMath = testBinary3BatchingProfileMath
 window.testBinary3BatchingProfileDiagnostic = testBinary3BatchingProfileDiagnostic
 window.testBinary3LateMixDiagnostic = testBinary3LateMixDiagnostic
 window.testBinary3LateMixPatterns = testBinary3LateMixPatterns
+window.testBinary3Pass3MixDiagnostic = testBinary3Pass3MixDiagnostic
+window.testBinary3Pass3MixPatterns = testBinary3Pass3MixPatterns
 window.testBinary3StrictGeometryGate = testBinary3StrictGeometryGate
 window.testBinary3MetadataUsesSparseSchedule = testBinary3MetadataUsesSparseSchedule
 window.testBinary3MetadataSlotRotatesOnlyWhenSent = testBinary3MetadataSlotRotatesOnlyWhenSent
@@ -349,6 +355,7 @@ async function runAllTests() {
     codec: await testCodecRoundtrip(),
     codecWithLoss: await testCodecRoundtripWithLoss(),
     codecDeferredMetadata: await testCodecRoundtripDeferredMetadata(),
+    tailSolverWiderBinary3Tail: testTailSolverTriggerAllowsWiderBinary3Tail(),
     // HDMI-UVC tests
     crc32: testCrc32(),
     hdmiHeader: testHeaderRoundtrip(),
@@ -397,6 +404,8 @@ async function runAllTests() {
     binary3BatchingProfileDiagnostic: testBinary3BatchingProfileDiagnostic(),
     binary3LateMixDiagnostic: testBinary3LateMixDiagnostic(),
     binary3LateMixPatterns: testBinary3LateMixPatterns(),
+    binary3Pass3MixDiagnostic: testBinary3Pass3MixDiagnostic(),
+    binary3Pass3MixPatterns: testBinary3Pass3MixPatterns(),
     binary3StrictGeometryGate: testBinary3StrictGeometryGate(),
     binary3MetadataSparseSchedule: testBinary3MetadataUsesSparseSchedule(),
     binary3MetadataSlotRotatesOnlyWhenSent: testBinary3MetadataSlotRotatesOnlyWhenSent(),

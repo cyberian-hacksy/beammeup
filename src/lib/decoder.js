@@ -8,6 +8,22 @@ import { parseMetadataPayload } from './metadata.js'
 import { calculateParityParams, generateParityMap, buildSourceToParityAdjacency } from './precode.js'
 import { solveGF2 } from './gf2-solver.js'
 
+export const TAIL_SOLVER_MISSING_LIMIT = 192
+const TAIL_SOLVER_STALL_FRAME_THRESHOLD = 30
+
+export function shouldRunTailSolver({
+  missing,
+  signature,
+  lastTailSolveSignature,
+  paritySweepComplete,
+  stallFramesSinceLastSolve
+}) {
+  return missing > 0 &&
+    missing <= TAIL_SOLVER_MISSING_LIMIT &&
+    signature !== lastTailSolveSignature &&
+    (paritySweepComplete || stallFramesSinceLastSolve >= TAIL_SOLVER_STALL_FRAME_THRESHOLD)
+}
+
 export function createDecoder() {
   let fileId = null
   let K = null          // Source block count
@@ -430,9 +446,13 @@ export function createDecoder() {
 
     const missing = K - solvedSource
     const signature = (pendingSymbols.length * 0x10000) + solved
-    const shouldTrySolver = missing > 0 && missing <= 64 &&
-      signature !== lastTailSolveSignature &&
-      (paritySweepComplete || stallFramesSinceLastSolve >= 30)
+    const shouldTrySolver = shouldRunTailSolver({
+      missing,
+      signature,
+      lastTailSolveSignature,
+      paritySweepComplete,
+      stallFramesSinceLastSolve
+    })
     if (!shouldTrySolver) return 0
 
     lastTailSolveSignature = signature
@@ -734,6 +754,43 @@ export async function testCodecRoundtripWithLoss() {
     symbolsReceived: decoder.uniqueSymbols
   })
 
+  return pass
+}
+
+export function testTailSolverTriggerAllowsWiderBinary3Tail() {
+  const helperExists = typeof shouldRunTailSolver === 'function'
+  const widerTail = helperExists ? shouldRunTailSolver({
+    missing: 146,
+    signature: 12,
+    lastTailSolveSignature: 11,
+    paritySweepComplete: true,
+    stallFramesSinceLastSolve: 0
+  }) : false
+  const duplicateSignature = helperExists ? shouldRunTailSolver({
+    missing: 146,
+    signature: 12,
+    lastTailSolveSignature: 12,
+    paritySweepComplete: true,
+    stallFramesSinceLastSolve: 0
+  }) : true
+  const overLimit = helperExists ? shouldRunTailSolver({
+    missing: 193,
+    signature: 13,
+    lastTailSolveSignature: 12,
+    paritySweepComplete: true,
+    stallFramesSinceLastSolve: 0
+  }) : true
+
+  const pass = helperExists &&
+    widerTail === true &&
+    duplicateSignature === false &&
+    overLimit === false
+  console.log('Tail solver wider Binary3 tail trigger test:', pass ? 'PASS' : 'FAIL', {
+    helperExists,
+    widerTail,
+    duplicateSignature,
+    overLimit
+  })
   return pass
 }
 

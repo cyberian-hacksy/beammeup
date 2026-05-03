@@ -12,6 +12,7 @@
 //   worker          'off'|'hash'|'anchors'|'full'        reload  (?worker=)
 //   pass2           'p2'|'legacy'|'mix'                  live    (?pass2=)
 //   binary3Profile  'safe'|'fill99'|'medium'|'large'     live    (?binary3-profile=)
+//   binary3Pass3Mix 'balanced'|'source'                  live    (?binary3-pass3=)
 //   binary3LateMix  'balanced'|'source'                  live    (?binary3-late=)
 //
 // "Live" settings are re-read by the consumer per call; "reload" settings
@@ -91,7 +92,7 @@ const DEFINITIONS = {
   },
   binary3LateMix: {
     urlKey: 'binary3-late',
-    default: 'source',
+    default: 'balanced',
     allowed: ['balanced', 'source'],
     reloadRequired: false,
     labels: {
@@ -99,6 +100,17 @@ const DEFINITIONS = {
       source: 'source'
     },
     title: 'B3 Tail'
+  },
+  binary3Pass3Mix: {
+    urlKey: 'binary3-pass3',
+    default: 'balanced',
+    allowed: ['balanced', 'source'],
+    reloadRequired: false,
+    labels: {
+      balanced: 'balanced',
+      source: 'source'
+    },
+    title: 'B3 P3'
   }
 }
 
@@ -199,6 +211,7 @@ export function getWorkerMode() { return getDiagnostic('worker') }
 export function getPass2Variant() { return getDiagnostic('pass2') }
 export function getBinary3Profile() { return getDiagnostic('binary3Profile') }
 export function getBinary3LateMix() { return getDiagnostic('binary3LateMix') }
+export function getBinary3Pass3Mix() { return getDiagnostic('binary3Pass3Mix') }
 
 // Render a segmented-button diagnostics panel into `container`. `keys` is
 // the ordered list of setting keys to show — sender uses just ['pass2'],

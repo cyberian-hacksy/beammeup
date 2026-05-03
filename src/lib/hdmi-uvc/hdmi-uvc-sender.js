@@ -27,6 +27,7 @@ import { buildCard, CARD_KIND } from './hdmi-uvc-lab.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
 import {
   getBinary3LateMix,
+  getBinary3Pass3Mix,
   getBinary3Profile,
   getDiagnosticDefinition,
   getPass2Variant,
@@ -1821,7 +1822,17 @@ function getBinary3LateMixRatios(lateMix = getBinary3LateMix()) {
   return { source: 0.45, parity: 0.20, fountain: 0.35 }
 }
 
-function getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, lateMix = getBinary3LateMix()) {
+function getBinary3Pass3MixRatios(pass3Mix = getBinary3Pass3Mix()) {
+  if (pass3Mix === 'source') {
+    return { source: 0.77, parity: 0.08, fountain: 0.15 }
+  }
+  return { source: 0.65, parity: 0.15, fountain: 0.20 }
+}
+
+function getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, {
+  lateMix = getBinary3LateMix(),
+  pass3Mix = getBinary3Pass3Mix()
+} = {}) {
   const slotCount = Math.max(0, Math.floor(slots || 0))
   if (passNumber <= 1) {
     return buildSlotMix(slotCount, { source: slotCount })
@@ -1841,11 +1852,7 @@ function getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, 
     }))
   }
   if (passNumber === 3) {
-    return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
-      source: 0.65,
-      parity: 0.15,
-      fountain: 0.20
-    }))
+    return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, getBinary3Pass3MixRatios(pass3Mix)))
   }
   return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, getBinary3LateMixRatios(lateMix)))
 }
@@ -1854,11 +1861,12 @@ function getSlotMixPatternForPass(passNumber, {
   paritySweepsInPass = 0,
   slots = 6,
   mode = state.mode,
-  lateMix = getBinary3LateMix()
+  lateMix = getBinary3LateMix(),
+  pass3Mix = getBinary3Pass3Mix()
 } = {}) {
   if (!usesMixedSlotReplay(mode)) return null
   if (mode === HDMI_MODE.BINARY_3) {
-    return getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, lateMix)
+    return getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, { lateMix, pass3Mix })
   }
   if (passNumber <= 1) return ['source', 'source', 'source', 'source', 'source', 'source']
   if (passNumber === 2) {
@@ -2858,7 +2866,7 @@ export function initHdmiUvcSender(errorHandler) {
   }
   const diagPanel = document.getElementById('hdmi-uvc-sender-diagnostics')
   if (diagPanel) {
-    renderDiagnosticsPanel(diagPanel, ['pass2', 'binary3Profile', 'binary3LateMix'], { title: 'Diagnostics (sender)' })
+    renderDiagnosticsPanel(diagPanel, ['pass2', 'binary3Profile', 'binary3Pass3Mix', 'binary3LateMix'], { title: 'Diagnostics (sender)' })
   }
 
   debugLog('HDMI-UVC Sender initialized')
@@ -2871,9 +2879,9 @@ export function initHdmiUvcSender(errorHandler) {
 // subsequent sweep; paritySweepsInPass increments when paritySystematicIndex
 // wraps from paritySpan-1 back to 0.
 export function testPass2TwoStageSchedule() {
-  const sweep0 = getSlotMixPatternForPass(2, { paritySweepsInPass: 0 })
-  const sweep1 = getSlotMixPatternForPass(2, { paritySweepsInPass: 1 })
-  const sweep7 = getSlotMixPatternForPass(2, { paritySweepsInPass: 7 })
+  const sweep0 = getSlotMixPatternForPass(2, { mode: HDMI_MODE.COMPAT_4, paritySweepsInPass: 0 })
+  const sweep1 = getSlotMixPatternForPass(2, { mode: HDMI_MODE.COMPAT_4, paritySweepsInPass: 1 })
+  const sweep7 = getSlotMixPatternForPass(2, { mode: HDMI_MODE.COMPAT_4, paritySweepsInPass: 7 })
 
   const countSlots = (pattern) => {
     const c = { source: 0, parity: 0, fountain: 0 }
@@ -2890,8 +2898,8 @@ export function testPass2TwoStageSchedule() {
   const ok7 = c7.source === 4 && c7.parity === 1 && c7.fountain === 1
 
   // Pass 1 must still be source-only; pass 3+ unchanged.
-  const pass1 = getSlotMixPatternForPass(1, { paritySweepsInPass: 0 })
-  const pass3 = getSlotMixPatternForPass(3, { paritySweepsInPass: 0 })
+  const pass1 = getSlotMixPatternForPass(1, { mode: HDMI_MODE.COMPAT_4, paritySweepsInPass: 0 })
+  const pass3 = getSlotMixPatternForPass(3, { mode: HDMI_MODE.COMPAT_4, paritySweepsInPass: 0 })
   const c1Pass = countSlots(pass1)
   const c3Pass = countSlots(pass3)
   const okPass1 = c1Pass.source === 6 && c1Pass.parity === 0 && c1Pass.fountain === 0
@@ -3356,7 +3364,7 @@ export function testBinary3LateMixDiagnostic() {
   const diagGetterExists = typeof getBinary3LateMix === 'function'
   const def = getDiagnosticDefinition('binary3LateMix')
   const pass = diagGetterExists &&
-    def?.default === 'source' &&
+    def?.default === 'balanced' &&
     def.allowed?.includes('balanced') &&
     def.allowed?.includes('source')
   console.log('BINARY_3 late mix diagnostic test:', pass ? 'PASS' : 'FAIL', {
@@ -3383,25 +3391,68 @@ export function testBinary3LateMixPatterns() {
     slots: 13,
     lateMix: 'source'
   }) || [])
-  const pass3 = countSlots(getSlotMixPatternForPass(3, {
-    mode: HDMI_MODE.BINARY_3,
-    slots: 13,
-    lateMix: 'source'
-  }) || [])
 
   const pass = balanced.source === 6 &&
     balanced.parity === 3 &&
     balanced.fountain === 4 &&
     source.source === 8 &&
     source.parity === 1 &&
-    source.fountain === 4 &&
-    pass3.source === 8 &&
-    pass3.parity === 2 &&
-    pass3.fountain === 3
+    source.fountain === 4
   console.log('BINARY_3 late mix pattern test:', pass ? 'PASS' : 'FAIL', {
     balanced,
+    source
+  })
+  return pass
+}
+
+export function testBinary3Pass3MixDiagnostic() {
+  const def = getDiagnosticDefinition('binary3Pass3Mix')
+  const pass = def?.default === 'balanced' &&
+    def.allowed?.includes('balanced') &&
+    def.allowed?.includes('source')
+  console.log('BINARY_3 pass-3 mix diagnostic test:', pass ? 'PASS' : 'FAIL', {
+    definition: def
+  })
+  return pass
+}
+
+export function testBinary3Pass3MixPatterns() {
+  const countSlots = (pattern) => {
+    const counts = { source: 0, parity: 0, fountain: 0 }
+    for (const slot of pattern) if (counts[slot] !== undefined) counts[slot]++
+    return counts
+  }
+
+  const balanced = countSlots(getSlotMixPatternForPass(3, {
+    mode: HDMI_MODE.BINARY_3,
+    slots: 13,
+    pass3Mix: 'balanced'
+  }) || [])
+  const source = countSlots(getSlotMixPatternForPass(3, {
+    mode: HDMI_MODE.BINARY_3,
+    slots: 13,
+    pass3Mix: 'source'
+  }) || [])
+  const pass4 = countSlots(getSlotMixPatternForPass(4, {
+    mode: HDMI_MODE.BINARY_3,
+    slots: 13,
+    pass3Mix: 'source',
+    lateMix: 'balanced'
+  }) || [])
+
+  const pass = balanced.source === 8 &&
+    balanced.parity === 2 &&
+    balanced.fountain === 3 &&
+    source.source === 10 &&
+    source.parity === 1 &&
+    source.fountain === 2 &&
+    pass4.source === 6 &&
+    pass4.parity === 3 &&
+    pass4.fountain === 4
+  console.log('BINARY_3 pass-3 mix pattern test:', pass ? 'PASS' : 'FAIL', {
+    balanced,
     source,
-    pass3
+    pass4
   })
   return pass
 }
