@@ -11,6 +11,7 @@
 //   perf            'on'|'off'                           reload  (?perf=)
 //   worker          'off'|'hash'|'anchors'|'full'        reload  (?worker=)
 //   pass2           'p2'|'legacy'|'mix'                  live    (?pass2=)
+//   binary3Profile  'safe'|'fill99'|'medium'|'large'     live    (?binary3-profile=)
 //
 // "Live" settings are re-read by the consumer per call; "reload" settings
 // are captured at module init time and the UI surfaces a Reload prompt
@@ -73,6 +74,19 @@ const DEFINITIONS = {
     reloadRequired: false,
     labels: { p2: 'p2 (4S/2P)', legacy: 'legacy (5S/1P)', mix: 'mix (2S/2P/2F)' },
     title: 'Pass-2'
+  },
+  binary3Profile: {
+    urlKey: 'binary3-profile',
+    default: 'safe',
+    allowed: ['safe', 'fill99', 'medium', 'large'],
+    reloadRequired: false,
+    labels: {
+      safe: 'safe',
+      fill99: 'fill99',
+      medium: 'medium',
+      large: 'large'
+    },
+    title: 'B3 Batch'
   }
 }
 
@@ -171,6 +185,7 @@ export function getWasmClassifierEnabled() { return getDiagnostic('wasmClassifie
 export function isPerfMode() { return getDiagnostic('perf') === 'on' }
 export function getWorkerMode() { return getDiagnostic('worker') }
 export function getPass2Variant() { return getDiagnostic('pass2') }
+export function getBinary3Profile() { return getDiagnostic('binary3Profile') }
 
 // Render a segmented-button diagnostics panel into `container`. `keys` is
 // the ordered list of setting keys to show — sender uses just ['pass2'],

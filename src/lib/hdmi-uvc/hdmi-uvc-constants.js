@@ -51,6 +51,8 @@ export const HDMI_MODE_NAMES = {
   [HDMI_MODE.BINARY_3]: '3x3'
 }
 
+export const DEFAULT_HDMI_MODE = HDMI_MODE.BINARY_3
+
 export function getModeDataBlockSize(mode) {
   switch (mode) {
     case HDMI_MODE.RAW_RGB:
@@ -113,7 +115,7 @@ export const RENDER_SIZE_PRESETS = [
   { id: '720p', name: '720p', width: 1280, height: 720 },
   { id: '1080p', name: '1080p', width: 1920, height: 1080 }
 ]
-export const DEFAULT_RENDER_SIZE_PRESET = RENDER_SIZE_PRESETS[0].id
+export const DEFAULT_RENDER_SIZE_PRESET = '1080p'
 
 // LocalStorage key for device persistence
 export const DEVICE_STORAGE_KEY = 'hdmiUvcDevice'

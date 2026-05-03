@@ -8,6 +8,7 @@ import {
   HDMI_UVC_MAX_FILE_SIZE,
   HDMI_MODE,
   HDMI_MODE_NAMES,
+  DEFAULT_HDMI_MODE,
   FPS_PRESETS,
   DEFAULT_FPS_PRESET,
   RENDER_SIZE_PRESETS,
@@ -24,7 +25,12 @@ import {
 } from './hdmi-uvc-frame.js'
 import { buildCard, CARD_KIND } from './hdmi-uvc-lab.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
-import { getPass2Variant, renderDiagnosticsPanel } from './hdmi-uvc-diagnostics.js'
+import {
+  getBinary3Profile,
+  getDiagnosticDefinition,
+  getPass2Variant,
+  renderDiagnosticsPanel
+} from './hdmi-uvc-diagnostics.js'
 
 // Kick off WASM instantiation when the sender module loads so buildFrame's
 // payload CRC uses the WASM kernel from the first transmitted frame. Errors
@@ -282,7 +288,7 @@ const state = {
   fountainSymbolId: 0,
   dataPacketCount: 0,
   frameCount: 0,
-  mode: HDMI_MODE.COMPAT_4,
+  mode: DEFAULT_HDMI_MODE,
   renderSizePresetId: DEFAULT_RENDER_SIZE_PRESET,
   systematicPass: 1,
   tailStartFrame: 0,
@@ -1410,6 +1416,7 @@ const MIN_METADATA_INTERVAL_FRAMES = 90
 const MAX_METADATA_INTERVAL_FRAMES = 90
 const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 3072
+const MAX_FRAME_PACKET_SLOTS = 32
 const TARGET_SOURCE_BLOCKS = 128
 const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
 const RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL = 2
@@ -1463,6 +1470,120 @@ function chooseSystematicStride(span) {
   return Math.max(1, stride)
 }
 
+const BINARY3_BATCHING_PROFILES = {
+  safe: {
+    targetFrameFill: 0.90,
+    maxBlockSize: 1024
+  },
+  fill99: {
+    targetFrameFill: 0.99,
+    maxBlockSize: 1024
+  },
+  medium: {
+    targetFrameFill: 0.99,
+    maxBlockSize: 1536
+  },
+  large: {
+    targetFrameFill: 0.99,
+    maxBlockSize: 2048
+  }
+}
+
+function getBinary3BatchingProfile(profileId = getBinary3Profile()) {
+  const selectedId = Object.prototype.hasOwnProperty.call(BINARY3_BATCHING_PROFILES, profileId)
+    ? profileId
+    : 'safe'
+  const selected = BINARY3_BATCHING_PROFILES[selectedId]
+  return {
+    id: selectedId,
+    minPacketsPerFrame: 4,
+    fixedPacketsPerFrame: null,
+    maxPacketsPerFrame: MAX_FRAME_PACKET_SLOTS,
+    targetFrameFill: selected.targetFrameFill,
+    maxBlockSize: selected.maxBlockSize,
+    maxUsedBytes: null
+  }
+}
+
+function selectFrameBatching({ capacity, fileSize, profile }) {
+  const {
+    minPacketsPerFrame,
+    fixedPacketsPerFrame,
+    maxPacketsPerFrame,
+    targetFrameFill,
+    maxBlockSize: profileMaxBlockSize,
+    maxUsedBytes
+  } = profile
+
+  const frameBlockSize = Math.max(200, capacity - PACKET_HEADER_SIZE)
+  const preferredBlockSize = Math.ceil(fileSize / TARGET_SOURCE_BLOCKS)
+  const maxBlockSize = Math.min(frameBlockSize, profileMaxBlockSize ?? MAX_BLOCK_SIZE, MAX_BLOCK_SIZE)
+  const minBlockSize = Math.min(MIN_BLOCK_SIZE, maxBlockSize)
+  let blockSize = Math.min(maxBlockSize, Math.max(preferredBlockSize, minBlockSize))
+  let bestBlockSize = blockSize
+  let bestPacketsPerFrame = 1
+  let bestUsedBytes = blockSize + PACKET_HEADER_SIZE
+  let bestPayloadPerFrame = blockSize
+  let foundTargetFit = false
+
+  for (let candidate = minBlockSize; candidate <= maxBlockSize; candidate += 4) {
+    const maxPacketsThatFit = Math.min(
+      maxPacketsPerFrame,
+      Math.floor(capacity / (candidate + PACKET_HEADER_SIZE))
+    )
+    if (maxPacketsThatFit < 1) continue
+
+    if (!fixedPacketsPerFrame && minPacketsPerFrame && maxPacketsThatFit < minPacketsPerFrame) {
+      continue
+    }
+
+    const minPackets = fixedPacketsPerFrame
+      ? Math.min(fixedPacketsPerFrame, maxPacketsThatFit)
+      : (minPacketsPerFrame ?? 1)
+    const maxPackets = fixedPacketsPerFrame
+      ? Math.min(fixedPacketsPerFrame, maxPacketsThatFit)
+      : maxPacketsThatFit
+
+    for (let packetsPerFrame = minPackets; packetsPerFrame <= maxPackets; packetsPerFrame++) {
+      const usedBytes = packetsPerFrame * (candidate + PACKET_HEADER_SIZE)
+      if (maxUsedBytes && usedBytes > maxUsedBytes) continue
+
+      const fitsTarget = usedBytes / capacity <= targetFrameFill
+      if (foundTargetFit && !fitsTarget) continue
+
+      const payloadPerFrame = packetsPerFrame * candidate
+      const shouldSelect =
+        (!foundTargetFit && fitsTarget) ||
+        (fitsTarget === foundTargetFit && (
+          payloadPerFrame > bestPayloadPerFrame ||
+          (payloadPerFrame === bestPayloadPerFrame && packetsPerFrame < bestPacketsPerFrame) ||
+          (payloadPerFrame === bestPayloadPerFrame && packetsPerFrame === bestPacketsPerFrame && candidate > bestBlockSize)
+        ))
+
+      if (shouldSelect) {
+        bestBlockSize = candidate
+        bestPacketsPerFrame = packetsPerFrame
+        bestUsedBytes = usedBytes
+        bestPayloadPerFrame = payloadPerFrame
+        foundTargetFit = fitsTarget
+      }
+    }
+  }
+
+  return {
+    blockSize: bestBlockSize,
+    packetsPerFrame: bestPacketsPerFrame,
+    usedBytes: bestUsedBytes,
+    payloadPerFrame: bestPayloadPerFrame,
+    frameBlockSize,
+    maxBlockSize,
+    minBlockSize,
+    targetFrameFill,
+    maxPacketsPerFrame,
+    maxUsedBytes
+  }
+}
+
 function getBatchingProfile(mode) {
   switch (mode) {
     case HDMI_MODE.RAW_RGB:
@@ -1508,24 +1629,7 @@ function getBatchingProfile(mode) {
         maxUsedBytes: null
       }
     case HDMI_MODE.BINARY_3:
-      // Initial profile: 512-1024 B packets so one bad cell costs little.
-      //
-      // Preconditions to raise maxBlockSize toward 1536 / 2048 B:
-      //   (a) Phase 2 lab confirms sustained BINARY_3 SER below the derived
-      //       threshold in the Phase 3 pass-condition table.
-      //   (b) Phase 4 packet salvage is wired into the receiver and measured
-      //       on real-channel runs.
-      //
-      // Both gates are required because there is no backward channel and dense
-      // modes need soft-decision recovery before larger packets are safe.
-      return {
-        minPacketsPerFrame: 4,
-        fixedPacketsPerFrame: null,
-        maxPacketsPerFrame: 32,
-        targetFrameFill: 0.90,
-        maxBlockSize: 1024,
-        maxUsedBytes: null
-      }
+      return getBinary3BatchingProfile()
     case HDMI_MODE.CODEBOOK_3:
       // Binary quadrant glyphs keep the payload alphabet black/white while
       // increasing density over plain 4x4. Use many small shards and keep the
@@ -2304,80 +2408,29 @@ async function startSending() {
     logSenderSessionMetrics('Start session', metrics, capacity)
     const canvasWidth = metrics.width
     const canvasHeight = metrics.height
+    const batchingProfile = getBatchingProfile(state.mode)
+    const selectedBatching = selectFrameBatching({
+      capacity,
+      fileSize: state.fileSize,
+      profile: batchingProfile
+    })
     const {
-      minPacketsPerFrame,
-      fixedPacketsPerFrame,
+      blockSize,
+      packetsPerFrame: bestPacketsPerFrame,
+      usedBytes: bestUsedBytes,
+      frameBlockSize,
+      maxBlockSize,
       maxPacketsPerFrame,
       targetFrameFill,
-      maxBlockSize: profileMaxBlockSize,
       maxUsedBytes
-    } = getBatchingProfile(state.mode)
-
-    // Size payloads from the actual frame capacity instead of pinning them to
-    // 256 bytes. This keeps small files snappy and makes larger transfers practical
-    // without exceeding what the current frame geometry can carry.
-    const frameBlockSize = Math.max(200, capacity - PACKET_HEADER_SIZE)
-    const preferredBlockSize = Math.ceil(state.fileSize / TARGET_SOURCE_BLOCKS)
-    const maxBlockSize = Math.min(frameBlockSize, profileMaxBlockSize ?? MAX_BLOCK_SIZE, MAX_BLOCK_SIZE)
-    const minBlockSize = Math.min(MIN_BLOCK_SIZE, maxBlockSize)
-    let blockSize = Math.min(maxBlockSize, Math.max(preferredBlockSize, minBlockSize))
-    let bestBlockSize = blockSize
-    let bestPacketsPerFrame = 1
-    let bestUsedBytes = blockSize + PACKET_HEADER_SIZE
-    let bestPayloadPerFrame = blockSize
-    let foundTargetFit = false
-
-    for (let candidate = minBlockSize; candidate <= maxBlockSize; candidate += 4) {
-      const maxPacketsThatFit = Math.min(
-        maxPacketsPerFrame,
-        Math.floor(capacity / (candidate + PACKET_HEADER_SIZE))
-      )
-      if (maxPacketsThatFit < 1) continue
-
-      if (!fixedPacketsPerFrame && minPacketsPerFrame && maxPacketsThatFit < minPacketsPerFrame) {
-        continue
-      }
-
-      const minPackets = fixedPacketsPerFrame
-        ? Math.min(fixedPacketsPerFrame, maxPacketsThatFit)
-        : (minPacketsPerFrame ?? 1)
-      const maxPackets = fixedPacketsPerFrame
-        ? Math.min(fixedPacketsPerFrame, maxPacketsThatFit)
-        : maxPacketsThatFit
-
-      for (let packetsPerFrame = minPackets; packetsPerFrame <= maxPackets; packetsPerFrame++) {
-        const usedBytes = packetsPerFrame * (candidate + PACKET_HEADER_SIZE)
-        if (maxUsedBytes && usedBytes > maxUsedBytes) continue
-
-        const fitsTarget = usedBytes / capacity <= targetFrameFill
-        if (foundTargetFit && !fitsTarget) continue
-
-        const payloadPerFrame = packetsPerFrame * candidate
-        const shouldSelect =
-          (!foundTargetFit && fitsTarget) ||
-          (fitsTarget === foundTargetFit && (
-            payloadPerFrame > bestPayloadPerFrame ||
-            (payloadPerFrame === bestPayloadPerFrame && packetsPerFrame < bestPacketsPerFrame) ||
-            (payloadPerFrame === bestPayloadPerFrame && packetsPerFrame === bestPacketsPerFrame && candidate > bestBlockSize)
-          ))
-
-        if (shouldSelect) {
-          bestBlockSize = candidate
-          bestPacketsPerFrame = packetsPerFrame
-          bestUsedBytes = usedBytes
-          bestPayloadPerFrame = payloadPerFrame
-          foundTargetFit = fitsTarget
-        }
-      }
-    }
-
-    blockSize = bestBlockSize
+    } = selectedBatching
 
     debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
     debugLog(`Pass-2 variant: ${getPass2Variant()}`)
     debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
     debugLog(
-      `Batch profile: maxPackets=${maxPacketsPerFrame}, ` +
+      `Batch profile: ${batchingProfile.id ? `${batchingProfile.id}, ` : ''}` +
+      `maxPackets=${maxPacketsPerFrame}, ` +
       `targetFill=${(targetFrameFill * 100).toFixed(0)}%, maxBlockSize=${maxBlockSize}, ` +
       `maxUsedBytes=${maxUsedBytes ?? 'none'}`
     )
@@ -2795,7 +2848,7 @@ export function initHdmiUvcSender(errorHandler) {
   }
   const diagPanel = document.getElementById('hdmi-uvc-sender-diagnostics')
   if (diagPanel) {
-    renderDiagnosticsPanel(diagPanel, ['pass2'], { title: 'Diagnostics (sender)' })
+    renderDiagnosticsPanel(diagPanel, ['pass2', 'binary3Profile'], { title: 'Diagnostics (sender)' })
   }
 
   debugLog('HDMI-UVC Sender initialized')
@@ -2979,6 +3032,19 @@ export function testExternalPreparedStartUsesManualGate() {
     helperExists,
     externalDelay,
     localDelay
+  })
+  return pass
+}
+
+export function testHdmiUvcSenderDefaults() {
+  const renderPreset = getRenderSizePreset()
+  const pass = state.mode === HDMI_MODE.BINARY_3 &&
+    renderPreset.id === '1080p' &&
+    getRecommendedFpsPreset(state.mode) === '1'
+  console.log('HDMI-UVC sender defaults test:', pass ? 'PASS' : 'FAIL', {
+    mode: HDMI_MODE_NAMES[state.mode],
+    renderPresetId: renderPreset.id,
+    recommendedFpsPreset: getRecommendedFpsPreset(state.mode)
   })
   return pass
 }
@@ -3186,12 +3252,90 @@ export function testBinary3MixedReplayMetadataReducesDataSlots() {
 }
 
 export function testBinary3BatchingProfile() {
-  const profile = getBatchingProfile(HDMI_MODE.BINARY_3)
+  const profile = typeof getBinary3BatchingProfile === 'function'
+    ? getBinary3BatchingProfile('safe')
+    : getBatchingProfile(HDMI_MODE.BINARY_3)
   const pass = profile.maxBlockSize <= 1024 &&
     profile.minPacketsPerFrame >= 4 &&
     profile.maxPacketsPerFrame >= profile.minPacketsPerFrame &&
     profile.targetFrameFill >= 0.85
   console.log('BINARY_3 batching profile test:', pass ? 'PASS' : `FAIL ${JSON.stringify(profile)}`)
+  return pass
+}
+
+export function testBinary3BatchingProfileMath() {
+  const helperExists = typeof getBinary3BatchingProfile === 'function' &&
+    typeof selectFrameBatching === 'function'
+  const capacity = 26547
+  const fileSize = 5.5 * 1024 * 1024
+  const expected = {
+    safe: { packetsPerFrame: 24, blockSize: 980, usedBytes: 23880 },
+    fill99: { packetsPerFrame: 27, blockSize: 956, usedBytes: 26217 },
+    medium: { packetsPerFrame: 18, blockSize: 1444, usedBytes: 26262 },
+    large: { packetsPerFrame: 13, blockSize: 2004, usedBytes: 26247 }
+  }
+  const observed = {}
+  if (helperExists) {
+    for (const id of Object.keys(expected)) {
+      const selected = selectFrameBatching({
+        capacity,
+        fileSize,
+        profile: getBinary3BatchingProfile(id)
+      })
+      observed[id] = {
+        packetsPerFrame: selected.packetsPerFrame,
+        blockSize: selected.blockSize,
+        usedBytes: selected.usedBytes
+      }
+    }
+  }
+
+  const pass = helperExists &&
+    Object.keys(expected).every((id) =>
+      observed[id]?.packetsPerFrame === expected[id].packetsPerFrame &&
+      observed[id]?.blockSize === expected[id].blockSize &&
+      observed[id]?.usedBytes === expected[id].usedBytes
+    )
+  console.log('BINARY_3 batching profile math test:', pass ? 'PASS' : 'FAIL', {
+    helperExists,
+    observed,
+    expected
+  })
+  return pass
+}
+
+export function testBinary3BatchingProfileDiagnostic() {
+  const helperExists = typeof getBinary3BatchingProfile === 'function'
+  const diagGetterExists = typeof getBinary3Profile === 'function'
+  const defExists = typeof getDiagnosticDefinition === 'function'
+  const def = defExists ? getDiagnosticDefinition('binary3Profile') : null
+  const expectedAllowed = ['safe', 'fill99', 'medium', 'large']
+  const profileById = helperExists
+    ? {
+        safe: getBinary3BatchingProfile('safe'),
+        fill99: getBinary3BatchingProfile('fill99'),
+        medium: getBinary3BatchingProfile('medium'),
+        large: getBinary3BatchingProfile('large')
+      }
+    : {}
+  const pass = helperExists &&
+    diagGetterExists &&
+    def?.default === 'safe' &&
+    expectedAllowed.every((value) => def.allowed?.includes(value)) &&
+    profileById.safe?.maxBlockSize === 1024 &&
+    profileById.safe?.targetFrameFill === 0.90 &&
+    profileById.fill99?.maxBlockSize === 1024 &&
+    profileById.fill99?.targetFrameFill === 0.99 &&
+    profileById.medium?.maxBlockSize === 1536 &&
+    profileById.medium?.targetFrameFill === 0.99 &&
+    profileById.large?.maxBlockSize === 2048 &&
+    profileById.large?.targetFrameFill === 0.99
+  console.log('BINARY_3 batching profile diagnostic test:', pass ? 'PASS' : 'FAIL', {
+    helperExists,
+    diagGetterExists,
+    definition: def,
+    profileById
+  })
   return pass
 }
 
