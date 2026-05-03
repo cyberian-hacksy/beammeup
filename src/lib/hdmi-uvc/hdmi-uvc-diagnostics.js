@@ -77,7 +77,7 @@ const DEFINITIONS = {
   },
   binary3Profile: {
     urlKey: 'binary3-profile',
-    default: 'safe',
+    default: 'large',
     allowed: ['safe', 'fill99', 'medium', 'large'],
     reloadRequired: false,
     labels: {

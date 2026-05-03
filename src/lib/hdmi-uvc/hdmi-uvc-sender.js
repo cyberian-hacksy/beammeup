@@ -1490,9 +1490,10 @@ const BINARY3_BATCHING_PROFILES = {
 }
 
 function getBinary3BatchingProfile(profileId = getBinary3Profile()) {
+  const defaultId = getDiagnosticDefinition('binary3Profile')?.default || 'large'
   const selectedId = Object.prototype.hasOwnProperty.call(BINARY3_BATCHING_PROFILES, profileId)
     ? profileId
-    : 'safe'
+    : defaultId
   const selected = BINARY3_BATCHING_PROFILES[selectedId]
   return {
     id: selectedId,
@@ -3318,9 +3319,10 @@ export function testBinary3BatchingProfileDiagnostic() {
         large: getBinary3BatchingProfile('large')
       }
     : {}
+  const fallbackProfile = helperExists ? getBinary3BatchingProfile('not-a-profile') : null
   const pass = helperExists &&
     diagGetterExists &&
-    def?.default === 'safe' &&
+    def?.default === 'large' &&
     expectedAllowed.every((value) => def.allowed?.includes(value)) &&
     profileById.safe?.maxBlockSize === 1024 &&
     profileById.safe?.targetFrameFill === 0.90 &&
@@ -3329,12 +3331,14 @@ export function testBinary3BatchingProfileDiagnostic() {
     profileById.medium?.maxBlockSize === 1536 &&
     profileById.medium?.targetFrameFill === 0.99 &&
     profileById.large?.maxBlockSize === 2048 &&
-    profileById.large?.targetFrameFill === 0.99
+    profileById.large?.targetFrameFill === 0.99 &&
+    fallbackProfile?.id === 'large'
   console.log('BINARY_3 batching profile diagnostic test:', pass ? 'PASS' : 'FAIL', {
     helperExists,
     diagGetterExists,
     definition: def,
-    profileById
+    profileById,
+    fallbackProfile
   })
   return pass
 }
