@@ -79,6 +79,45 @@ export function chooseCaptureMethod(capabilities, preferred = null) {
   return 'main'
 }
 
+export function createReceiverCaptureTuningState({
+  canUseVideoFrame = typeof globalThis.VideoFrame !== 'undefined',
+  samplesPerMethod = 6
+} = {}) {
+  const benchmarkSamples = samplesPerMethod * 2
+  return {
+    canUseVideoFrame,
+    preferredMethod: canUseVideoFrame ? null : 'video',
+    benchmarkRemaining: canUseVideoFrame ? benchmarkSamples : 0,
+    videoSampleCount: 0,
+    videoSampleTotalMs: 0,
+    videoFrameSampleCount: 0,
+    videoFrameSampleTotalMs: 0,
+    roiPreferredMethod: 'video',
+    roiBenchmarkRemaining: 0,
+    roiVideoSampleCount: 0,
+    roiVideoSampleTotalMs: 0,
+    roiVideoFrameSampleCount: 0,
+    roiVideoFrameSampleTotalMs: 0,
+    totalFramesSeen: 0
+  }
+}
+
+export function testReceiverRoiCaptureDefaultsToVideo() {
+  const tuning = createReceiverCaptureTuningState({
+    canUseVideoFrame: true,
+    samplesPerMethod: 6
+  })
+  const pass = tuning.canUseVideoFrame === true &&
+    tuning.preferredMethod === null &&
+    tuning.benchmarkRemaining === 12 &&
+    tuning.roiPreferredMethod === 'video' &&
+    tuning.roiBenchmarkRemaining === 0 &&
+    tuning.roiVideoSampleCount === 0 &&
+    tuning.roiVideoFrameSampleCount === 0
+  console.log('Receiver ROI capture default test:', pass ? 'PASS' : 'FAIL', tuning)
+  return pass
+}
+
 export function testCaptureMethodDecision() {
   const fullCaps = {
     hasVideoFrame: true, hasMediaStreamTrackProcessor: true,

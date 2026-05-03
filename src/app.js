@@ -90,6 +90,7 @@ import {
 } from './lib/hdmi-uvc/hdmi-uvc-frame.js'
 import {
   testCaptureMethodDecision,
+  testReceiverRoiCaptureDefaultsToVideo,
   testComputeLockedCaptureRect,
   testLabFrameTapUsesFullCaptureRect,
   testLabFrameTapBypassesLockedCaptureRegion
@@ -203,6 +204,7 @@ window.testBinary3StrictGeometryGate = testBinary3StrictGeometryGate
 window.testBinary3MetadataUsesSparseSchedule = testBinary3MetadataUsesSparseSchedule
 window.testBinary3MetadataSlotRotatesOnlyWhenSent = testBinary3MetadataSlotRotatesOnlyWhenSent
 window.testCaptureMethodDecision = testCaptureMethodDecision
+window.testReceiverRoiCaptureDefaultsToVideo = testReceiverRoiCaptureDefaultsToVideo
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
 window.testLabFrameTapUsesFullCaptureRect = testLabFrameTapUsesFullCaptureRect
 window.testLabFrameTapBypassesLockedCaptureRegion = testLabFrameTapBypassesLockedCaptureRegion
@@ -410,6 +412,7 @@ async function runAllTests() {
     binary3MetadataSparseSchedule: testBinary3MetadataUsesSparseSchedule(),
     binary3MetadataSlotRotatesOnlyWhenSent: testBinary3MetadataSlotRotatesOnlyWhenSent(),
     captureMethodDecision: testCaptureMethodDecision(),
+    receiverRoiCaptureDefault: testReceiverRoiCaptureDefaultsToVideo(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
     labFrameTapFullCaptureRect: testLabFrameTapUsesFullCaptureRect(),
     labFrameTapBypassesLockedCapture: testLabFrameTapBypassesLockedCaptureRegion(),

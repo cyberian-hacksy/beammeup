@@ -23,6 +23,7 @@ import ReceiverWorker from './hdmi-uvc-receiver-worker.js?worker&inline'
 import {
   detectCaptureCapabilities,
   chooseCaptureMethod,
+  createReceiverCaptureTuningState,
   computeLockedCaptureRect,
   getWorkerCaptureCopyRect,
   shouldUseLockedCaptureRegion
@@ -1192,23 +1193,10 @@ function resetReceiverPerfState() {
 const CAPTURE_REBENCH_INTERVAL_FRAMES = 2000
 
 function createCaptureTuningState() {
-  const canUseVideoFrame = typeof VideoFrame !== 'undefined'
-  return {
-    canUseVideoFrame,
-    preferredMethod: canUseVideoFrame ? null : 'video',
-    benchmarkRemaining: canUseVideoFrame ? CAPTURE_BENCHMARK_SAMPLES_PER_METHOD * 2 : 0,
-    videoSampleCount: 0,
-    videoSampleTotalMs: 0,
-    videoFrameSampleCount: 0,
-    videoFrameSampleTotalMs: 0,
-    roiPreferredMethod: canUseVideoFrame ? null : 'video',
-    roiBenchmarkRemaining: canUseVideoFrame ? CAPTURE_BENCHMARK_SAMPLES_PER_METHOD * 2 : 0,
-    roiVideoSampleCount: 0,
-    roiVideoSampleTotalMs: 0,
-    roiVideoFrameSampleCount: 0,
-    roiVideoFrameSampleTotalMs: 0,
-    totalFramesSeen: 0
-  }
+  return createReceiverCaptureTuningState({
+    canUseVideoFrame: typeof VideoFrame !== 'undefined',
+    samplesPerMethod: CAPTURE_BENCHMARK_SAMPLES_PER_METHOD
+  })
 }
 
 // Periodically invalidate the previous capture-method decision so the receiver
