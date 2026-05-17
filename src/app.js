@@ -94,7 +94,7 @@ import {
   testWorkerTransferClockStartsOnFirstAcceptedFrame,
   testWorkerStartFailureResumesMainCapture,
   testReceiverExpectedPacketSizeWaitsForSession,
-  testReceiverRoiCaptureDefaultsToVideo,
+  testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable,
   testComputeLockedCaptureRect,
   testLabFrameTapUsesFullCaptureRect,
   testLabFrameTapBypassesLockedCaptureRegion
@@ -212,7 +212,7 @@ window.testWorkerTrackTransferFallbackUsesMain = testWorkerTrackTransferFallback
 window.testWorkerTransferClockStartsOnFirstAcceptedFrame = testWorkerTransferClockStartsOnFirstAcceptedFrame
 window.testWorkerStartFailureResumesMainCapture = testWorkerStartFailureResumesMainCapture
 window.testReceiverExpectedPacketSizeWaitsForSession = testReceiverExpectedPacketSizeWaitsForSession
-window.testReceiverRoiCaptureDefaultsToVideo = testReceiverRoiCaptureDefaultsToVideo
+window.testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable = testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
 window.testLabFrameTapUsesFullCaptureRect = testLabFrameTapUsesFullCaptureRect
 window.testLabFrameTapBypassesLockedCaptureRegion = testLabFrameTapBypassesLockedCaptureRegion
@@ -424,7 +424,7 @@ async function runAllTests() {
     workerTransferClockStartsOnAccept: testWorkerTransferClockStartsOnFirstAcceptedFrame(),
     workerStartFailureResumesMainCapture: testWorkerStartFailureResumesMainCapture(),
     receiverExpectedPacketSizeBootstrap: testReceiverExpectedPacketSizeWaitsForSession(),
-    receiverRoiCaptureDefault: testReceiverRoiCaptureDefaultsToVideo(),
+    receiverRoiCaptureBenchmarkDefault: testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
     labFrameTapFullCaptureRect: testLabFrameTapUsesFullCaptureRect(),
     labFrameTapBypassesLockedCapture: testLabFrameTapBypassesLockedCaptureRegion(),

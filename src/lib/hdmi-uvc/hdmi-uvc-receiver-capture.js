@@ -125,8 +125,8 @@ export function createReceiverCaptureTuningState({
     videoSampleTotalMs: 0,
     videoFrameSampleCount: 0,
     videoFrameSampleTotalMs: 0,
-    roiPreferredMethod: 'video',
-    roiBenchmarkRemaining: 0,
+    roiPreferredMethod: canUseVideoFrame ? null : 'video',
+    roiBenchmarkRemaining: canUseVideoFrame ? benchmarkSamples : 0,
     roiVideoSampleCount: 0,
     roiVideoSampleTotalMs: 0,
     roiVideoFrameSampleCount: 0,
@@ -135,7 +135,7 @@ export function createReceiverCaptureTuningState({
   }
 }
 
-export function testReceiverRoiCaptureDefaultsToVideo() {
+export function testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable() {
   const tuning = createReceiverCaptureTuningState({
     canUseVideoFrame: true,
     samplesPerMethod: 6
@@ -143,11 +143,11 @@ export function testReceiverRoiCaptureDefaultsToVideo() {
   const pass = tuning.canUseVideoFrame === true &&
     tuning.preferredMethod === null &&
     tuning.benchmarkRemaining === 12 &&
-    tuning.roiPreferredMethod === 'video' &&
-    tuning.roiBenchmarkRemaining === 0 &&
+    tuning.roiPreferredMethod === null &&
+    tuning.roiBenchmarkRemaining === 12 &&
     tuning.roiVideoSampleCount === 0 &&
     tuning.roiVideoFrameSampleCount === 0
-  console.log('Receiver ROI capture default test:', pass ? 'PASS' : 'FAIL', tuning)
+  console.log('Receiver ROI capture benchmark default test:', pass ? 'PASS' : 'FAIL', tuning)
   return pass
 }
 
