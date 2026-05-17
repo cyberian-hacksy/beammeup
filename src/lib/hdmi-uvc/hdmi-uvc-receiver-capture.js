@@ -80,7 +80,7 @@ export function chooseCaptureMethod(capabilities, preferred = null) {
 }
 
 export function getWorkerTrackTransferFallback(capabilities) {
-  return capabilities?.hasOffscreenCanvas ? 'offscreen' : 'main'
+  return 'main'
 }
 
 export function getReceiverExpectedPacketSize(decoder, packetHeaderSize) {
@@ -90,6 +90,10 @@ export function getReceiverExpectedPacketSize(decoder, packetHeaderSize) {
     decoder.K_prime !== null && decoder.K_prime !== undefined
   if (!hasSession) return null
   return decoder.blockSize + packetHeaderSize
+}
+
+export function shouldStartReceiverTransferClock(startTime, acceptedPacketCount) {
+  return !startTime && acceptedPacketCount > 0
 }
 
 export function createReceiverCaptureTuningState({
@@ -174,15 +178,24 @@ export function testCaptureMethodDecision() {
   return true
 }
 
-export function testWorkerTrackTransferFallbackUsesOffscreen() {
+export function testWorkerTrackTransferFallbackUsesMain() {
   const fallback = getWorkerTrackTransferFallback({
     hasOffscreenCanvas: true
   })
   const noFallback = getWorkerTrackTransferFallback({
     hasOffscreenCanvas: false
   })
-  const pass = fallback === 'offscreen' && noFallback === 'main'
+  const pass = fallback === 'main' && noFallback === 'main'
   console.log('worker track transfer fallback test:', pass ? 'PASS' : 'FAIL', { fallback, noFallback })
+  return pass
+}
+
+export function testWorkerTransferClockStartsOnFirstAcceptedFrame() {
+  const pass = shouldStartReceiverTransferClock(null, 13) === true &&
+    shouldStartReceiverTransferClock(undefined, 1) === true &&
+    shouldStartReceiverTransferClock(Date.now(), 13) === false &&
+    shouldStartReceiverTransferClock(null, 0) === false
+  console.log('worker transfer clock start test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

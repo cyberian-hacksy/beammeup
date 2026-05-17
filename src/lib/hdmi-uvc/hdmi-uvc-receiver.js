@@ -25,6 +25,7 @@ import {
   chooseCaptureMethod,
   getWorkerTrackTransferFallback,
   getReceiverExpectedPacketSize,
+  shouldStartReceiverTransferClock,
   createReceiverCaptureTuningState,
   computeLockedCaptureRect,
   getWorkerCaptureCopyRect,
@@ -370,6 +371,7 @@ function startWorkerCapture() {
       debugLog('Worker track transfer unsupported — trying offscreen worker capture')
       return startOffscreenCapture({ force: true })
     }
+    debugLog('Worker track transfer unsupported — falling back to main-thread capture')
     return false
   }
   armWorkerCaptureStartTimeout()
@@ -608,8 +610,6 @@ function handleReceiverWorkerMessage(event) {
       // synchronous receiveParsed().
       if (!state.decoder) {
         state.decoder = createWorkerDecoderShadow()
-        state.startTime = Date.now()
-        showReceivingStatus()
         debugLog(`Decoder created (worker capture shadow, ${msg.method || 'unknown'})`)
       }
       debugLog(`Worker capture started (${msg.method || 'unknown'})`)
@@ -798,6 +798,10 @@ function handleWorkerCaptureFrame(msg) {
   }
 
   if (msg.accepted > 0) {
+    if (shouldStartReceiverTransferClock(state.startTime, msg.accepted)) {
+      state.startTime = Date.now()
+      showReceivingStatus()
+    }
     state.validFrames++
     state.decodeFailCount = 0
     state.frameAcceptedThisFrame = true

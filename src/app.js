@@ -90,7 +90,8 @@ import {
 } from './lib/hdmi-uvc/hdmi-uvc-frame.js'
 import {
   testCaptureMethodDecision,
-  testWorkerTrackTransferFallbackUsesOffscreen,
+  testWorkerTrackTransferFallbackUsesMain,
+  testWorkerTransferClockStartsOnFirstAcceptedFrame,
   testReceiverExpectedPacketSizeWaitsForSession,
   testReceiverRoiCaptureDefaultsToVideo,
   testComputeLockedCaptureRect,
@@ -206,7 +207,8 @@ window.testBinary3StrictGeometryGate = testBinary3StrictGeometryGate
 window.testBinary3MetadataUsesSparseSchedule = testBinary3MetadataUsesSparseSchedule
 window.testBinary3MetadataSlotRotatesOnlyWhenSent = testBinary3MetadataSlotRotatesOnlyWhenSent
 window.testCaptureMethodDecision = testCaptureMethodDecision
-window.testWorkerTrackTransferFallbackUsesOffscreen = testWorkerTrackTransferFallbackUsesOffscreen
+window.testWorkerTrackTransferFallbackUsesMain = testWorkerTrackTransferFallbackUsesMain
+window.testWorkerTransferClockStartsOnFirstAcceptedFrame = testWorkerTransferClockStartsOnFirstAcceptedFrame
 window.testReceiverExpectedPacketSizeWaitsForSession = testReceiverExpectedPacketSizeWaitsForSession
 window.testReceiverRoiCaptureDefaultsToVideo = testReceiverRoiCaptureDefaultsToVideo
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
@@ -416,7 +418,8 @@ async function runAllTests() {
     binary3MetadataSparseSchedule: testBinary3MetadataUsesSparseSchedule(),
     binary3MetadataSlotRotatesOnlyWhenSent: testBinary3MetadataSlotRotatesOnlyWhenSent(),
     captureMethodDecision: testCaptureMethodDecision(),
-    workerTrackTransferFallback: testWorkerTrackTransferFallbackUsesOffscreen(),
+    workerTrackTransferFallback: testWorkerTrackTransferFallbackUsesMain(),
+    workerTransferClockStartsOnAccept: testWorkerTransferClockStartsOnFirstAcceptedFrame(),
     receiverExpectedPacketSizeBootstrap: testReceiverExpectedPacketSizeWaitsForSession(),
     receiverRoiCaptureDefault: testReceiverRoiCaptureDefaultsToVideo(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
