@@ -92,6 +92,7 @@ import {
   testCaptureMethodDecision,
   testWorkerTrackTransferFallbackUsesMain,
   testWorkerTransferClockStartsOnFirstAcceptedFrame,
+  testWorkerStartFailureResumesMainCapture,
   testReceiverExpectedPacketSizeWaitsForSession,
   testReceiverRoiCaptureDefaultsToVideo,
   testComputeLockedCaptureRect,
@@ -209,6 +210,7 @@ window.testBinary3MetadataSlotRotatesOnlyWhenSent = testBinary3MetadataSlotRotat
 window.testCaptureMethodDecision = testCaptureMethodDecision
 window.testWorkerTrackTransferFallbackUsesMain = testWorkerTrackTransferFallbackUsesMain
 window.testWorkerTransferClockStartsOnFirstAcceptedFrame = testWorkerTransferClockStartsOnFirstAcceptedFrame
+window.testWorkerStartFailureResumesMainCapture = testWorkerStartFailureResumesMainCapture
 window.testReceiverExpectedPacketSizeWaitsForSession = testReceiverExpectedPacketSizeWaitsForSession
 window.testReceiverRoiCaptureDefaultsToVideo = testReceiverRoiCaptureDefaultsToVideo
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
@@ -420,6 +422,7 @@ async function runAllTests() {
     captureMethodDecision: testCaptureMethodDecision(),
     workerTrackTransferFallback: testWorkerTrackTransferFallbackUsesMain(),
     workerTransferClockStartsOnAccept: testWorkerTransferClockStartsOnFirstAcceptedFrame(),
+    workerStartFailureResumesMainCapture: testWorkerStartFailureResumesMainCapture(),
     receiverExpectedPacketSizeBootstrap: testReceiverExpectedPacketSizeWaitsForSession(),
     receiverRoiCaptureDefault: testReceiverRoiCaptureDefaultsToVideo(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),

@@ -96,6 +96,22 @@ export function shouldStartReceiverTransferClock(startTime, acceptedPacketCount)
   return !startTime && acceptedPacketCount > 0
 }
 
+export function shouldScheduleMainCaptureAfterWorkerStart({
+  isScanning,
+  started,
+  workerCapturePending,
+  workerCaptureActive,
+  offscreenCaptureActive,
+  workerCaptureStartPendingAfterStop
+} = {}) {
+  return !!isScanning &&
+    !started &&
+    !workerCapturePending &&
+    !workerCaptureActive &&
+    !offscreenCaptureActive &&
+    !workerCaptureStartPendingAfterStop
+}
+
 export function createReceiverCaptureTuningState({
   canUseVideoFrame = typeof globalThis.VideoFrame !== 'undefined',
   samplesPerMethod = 6
@@ -196,6 +212,35 @@ export function testWorkerTransferClockStartsOnFirstAcceptedFrame() {
     shouldStartReceiverTransferClock(Date.now(), 13) === false &&
     shouldStartReceiverTransferClock(null, 0) === false
   console.log('worker transfer clock start test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testWorkerStartFailureResumesMainCapture() {
+  const pass = shouldScheduleMainCaptureAfterWorkerStart({
+    isScanning: true,
+    started: false,
+    workerCapturePending: false,
+    workerCaptureActive: false,
+    offscreenCaptureActive: false,
+    workerCaptureStartPendingAfterStop: false
+  }) === true &&
+    shouldScheduleMainCaptureAfterWorkerStart({
+      isScanning: true,
+      started: true,
+      workerCapturePending: false,
+      workerCaptureActive: true,
+      offscreenCaptureActive: false,
+      workerCaptureStartPendingAfterStop: false
+    }) === false &&
+    shouldScheduleMainCaptureAfterWorkerStart({
+      isScanning: true,
+      started: false,
+      workerCapturePending: true,
+      workerCaptureActive: false,
+      offscreenCaptureActive: false,
+      workerCaptureStartPendingAfterStop: false
+    }) === false
+  console.log('worker start failure resumes main capture test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

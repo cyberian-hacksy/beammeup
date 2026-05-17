@@ -26,6 +26,7 @@ import {
   getWorkerTrackTransferFallback,
   getReceiverExpectedPacketSize,
   shouldStartReceiverTransferClock,
+  shouldScheduleMainCaptureAfterWorkerStart,
   createReceiverCaptureTuningState,
   computeLockedCaptureRect,
   getWorkerCaptureCopyRect,
@@ -545,8 +546,19 @@ function handleReceiverWorkerMessage(event) {
       debugLog(`Worker ready (protocol v${msg.protocolVersion})`)
       postLabFrameTapStateToWorker()
       if (state.workerCapturePending) {
-        if (CAPTURE_METHOD === 'worker') startWorkerCapture()
-        else if (CAPTURE_METHOD === 'offscreen') startOffscreenCapture()
+        let started = false
+        if (CAPTURE_METHOD === 'worker') started = startWorkerCapture()
+        else if (CAPTURE_METHOD === 'offscreen') started = startOffscreenCapture()
+        if (shouldScheduleMainCaptureAfterWorkerStart({
+          isScanning: state.isScanning,
+          started,
+          workerCapturePending: state.workerCapturePending,
+          workerCaptureActive: state.workerCaptureActive,
+          offscreenCaptureActive: state.offscreenCaptureActive,
+          workerCaptureStartPendingAfterStop: state.workerCaptureStartPendingAfterStop
+        })) {
+          scheduleNextFrame()
+        }
       }
       return
     case 'wasmReady':
