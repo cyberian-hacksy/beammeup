@@ -24,6 +24,7 @@ import {
   detectCaptureCapabilities,
   chooseCaptureMethod,
   getWorkerTrackTransferFallback,
+  getReceiverExpectedPacketSize,
   createReceiverCaptureTuningState,
   computeLockedCaptureRect,
   getWorkerCaptureCopyRect,
@@ -1650,7 +1651,7 @@ function noteSignalDetected(mode, resolution = null) {
 }
 
 function getExpectedPacketSize() {
-  return state.decoder ? state.decoder.blockSize + PACKET_HEADER_SIZE : null
+  return getReceiverExpectedPacketSize(state.decoder, PACKET_HEADER_SIZE)
 }
 
 function getReceiverPacketSession() {

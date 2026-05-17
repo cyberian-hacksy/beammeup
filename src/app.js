@@ -91,6 +91,7 @@ import {
 import {
   testCaptureMethodDecision,
   testWorkerTrackTransferFallbackUsesOffscreen,
+  testReceiverExpectedPacketSizeWaitsForSession,
   testReceiverRoiCaptureDefaultsToVideo,
   testComputeLockedCaptureRect,
   testLabFrameTapUsesFullCaptureRect,
@@ -206,6 +207,7 @@ window.testBinary3MetadataUsesSparseSchedule = testBinary3MetadataUsesSparseSche
 window.testBinary3MetadataSlotRotatesOnlyWhenSent = testBinary3MetadataSlotRotatesOnlyWhenSent
 window.testCaptureMethodDecision = testCaptureMethodDecision
 window.testWorkerTrackTransferFallbackUsesOffscreen = testWorkerTrackTransferFallbackUsesOffscreen
+window.testReceiverExpectedPacketSizeWaitsForSession = testReceiverExpectedPacketSizeWaitsForSession
 window.testReceiverRoiCaptureDefaultsToVideo = testReceiverRoiCaptureDefaultsToVideo
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
 window.testLabFrameTapUsesFullCaptureRect = testLabFrameTapUsesFullCaptureRect
@@ -415,6 +417,7 @@ async function runAllTests() {
     binary3MetadataSlotRotatesOnlyWhenSent: testBinary3MetadataSlotRotatesOnlyWhenSent(),
     captureMethodDecision: testCaptureMethodDecision(),
     workerTrackTransferFallback: testWorkerTrackTransferFallbackUsesOffscreen(),
+    receiverExpectedPacketSizeBootstrap: testReceiverExpectedPacketSizeWaitsForSession(),
     receiverRoiCaptureDefault: testReceiverRoiCaptureDefaultsToVideo(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
     labFrameTapFullCaptureRect: testLabFrameTapUsesFullCaptureRect(),

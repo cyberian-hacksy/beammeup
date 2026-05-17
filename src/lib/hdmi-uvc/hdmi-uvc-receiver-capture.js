@@ -83,6 +83,15 @@ export function getWorkerTrackTransferFallback(capabilities) {
   return capabilities?.hasOffscreenCanvas ? 'offscreen' : 'main'
 }
 
+export function getReceiverExpectedPacketSize(decoder, packetHeaderSize) {
+  if (!decoder) return null
+  const hasSession =
+    decoder.fileId !== null && decoder.fileId !== undefined &&
+    decoder.K_prime !== null && decoder.K_prime !== undefined
+  if (!hasSession) return null
+  return decoder.blockSize + packetHeaderSize
+}
+
 export function createReceiverCaptureTuningState({
   canUseVideoFrame = typeof globalThis.VideoFrame !== 'undefined',
   samplesPerMethod = 6
@@ -174,6 +183,21 @@ export function testWorkerTrackTransferFallbackUsesOffscreen() {
   })
   const pass = fallback === 'offscreen' && noFallback === 'main'
   console.log('worker track transfer fallback test:', pass ? 'PASS' : 'FAIL', { fallback, noFallback })
+  return pass
+}
+
+export function testReceiverExpectedPacketSizeWaitsForSession() {
+  const headerSize = 15
+  const emptyShadow = { blockSize: 200, fileId: null, K_prime: null, metadata: null }
+  const activeDecoder = { blockSize: 2004, fileId: 0x1234, K_prime: 3013, metadata: null }
+  const pass = getReceiverExpectedPacketSize(emptyShadow, headerSize) === null &&
+    getReceiverExpectedPacketSize(activeDecoder, headerSize) === 2019 &&
+    getReceiverExpectedPacketSize(null, headerSize) === null
+  console.log('receiver expected packet size bootstrap test:', pass ? 'PASS' : 'FAIL', {
+    empty: getReceiverExpectedPacketSize(emptyShadow, headerSize),
+    active: getReceiverExpectedPacketSize(activeDecoder, headerSize),
+    none: getReceiverExpectedPacketSize(null, headerSize)
+  })
   return pass
 }
 
