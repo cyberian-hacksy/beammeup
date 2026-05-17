@@ -23,6 +23,7 @@ import ReceiverWorker from './hdmi-uvc-receiver-worker.js?worker&inline'
 import {
   detectCaptureCapabilities,
   chooseCaptureMethod,
+  getWorkerTrackTransferFallback,
   createReceiverCaptureTuningState,
   computeLockedCaptureRect,
   getWorkerCaptureCopyRect,
@@ -359,10 +360,15 @@ function startWorkerCapture() {
     region: null,
     expectedPacketSize: getExpectedPacketSize() || null,
     labFrameTapEnabled: state.labFrameTapEnabled
-  }, [workerTrack])
+  }, [workerTrack], { teardownOnError: false })
   if (!ok) {
     state.workerCapturePending = false
     try { workerTrack.stop() } catch (_) { /* ignore */ }
+    const fallback = getWorkerTrackTransferFallback(CAPTURE_CAPABILITIES)
+    if (fallback === 'offscreen') {
+      debugLog('Worker track transfer unsupported — trying offscreen worker capture')
+      return startOffscreenCapture({ force: true })
+    }
     return false
   }
   armWorkerCaptureStartTimeout()
@@ -391,8 +397,8 @@ function stopWorkerCapture() {
 // Phase 3.5: offscreen mode keeps the main-thread frame loop but replaces
 // drawImage/getImageData with createImageBitmap + transferable postMessage.
 // The worker does the readback locally.
-function startOffscreenCapture() {
-  if (CAPTURE_METHOD !== 'offscreen') return false
+function startOffscreenCapture({ force = false } = {}) {
+  if (CAPTURE_METHOD !== 'offscreen' && !force) return false
   if (!state.stream) return false
   if (state.offscreenCaptureActive) return true
   if (!receiverWorker) {
@@ -497,7 +503,7 @@ function processFrameForOffscreen() {
   scheduleNextFrame()
 }
 
-function postToWorker(msg, transfer) {
+function postToWorker(msg, transfer, options = {}) {
   if (!receiverWorker) return false
   try {
     if (transfer && transfer.length) receiverWorker.postMessage(msg, transfer)
@@ -505,7 +511,9 @@ function postToWorker(msg, transfer) {
     return true
   } catch (err) {
     debugLog(`Worker postMessage failed: ${(err && err.message) || err}`)
-    teardownReceiverWorker(true)
+    if (options.teardownOnError !== false) {
+      teardownReceiverWorker(options.markFailedOnError !== false)
+    }
     return false
   }
 }

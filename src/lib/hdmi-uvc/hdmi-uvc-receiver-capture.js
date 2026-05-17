@@ -79,6 +79,10 @@ export function chooseCaptureMethod(capabilities, preferred = null) {
   return 'main'
 }
 
+export function getWorkerTrackTransferFallback(capabilities) {
+  return capabilities?.hasOffscreenCanvas ? 'offscreen' : 'main'
+}
+
 export function createReceiverCaptureTuningState({
   canUseVideoFrame = typeof globalThis.VideoFrame !== 'undefined',
   samplesPerMethod = 6
@@ -159,6 +163,18 @@ export function testCaptureMethodDecision() {
   }
   console.log('Capture method decision test: PASS')
   return true
+}
+
+export function testWorkerTrackTransferFallbackUsesOffscreen() {
+  const fallback = getWorkerTrackTransferFallback({
+    hasOffscreenCanvas: true
+  })
+  const noFallback = getWorkerTrackTransferFallback({
+    hasOffscreenCanvas: false
+  })
+  const pass = fallback === 'offscreen' && noFallback === 'main'
+  console.log('worker track transfer fallback test:', pass ? 'PASS' : 'FAIL', { fallback, noFallback })
+  return pass
 }
 
 export function testComputeLockedCaptureRect() {
