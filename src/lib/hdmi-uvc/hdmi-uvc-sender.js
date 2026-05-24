@@ -3364,7 +3364,7 @@ export function testBinary3LateMixDiagnostic() {
   const diagGetterExists = typeof getBinary3LateMix === 'function'
   const def = getDiagnosticDefinition('binary3LateMix')
   const pass = diagGetterExists &&
-    def?.default === 'balanced' &&
+    def?.default === 'source' &&
     def.allowed?.includes('balanced') &&
     def.allowed?.includes('source')
   console.log('BINARY_3 late mix diagnostic test:', pass ? 'PASS' : 'FAIL', {

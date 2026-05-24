@@ -92,7 +92,7 @@ const DEFINITIONS = {
   },
   binary3LateMix: {
     urlKey: 'binary3-late',
-    default: 'balanced',
+    default: 'source',
     allowed: ['balanced', 'source'],
     reloadRequired: false,
     labels: {
