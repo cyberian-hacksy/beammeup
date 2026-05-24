@@ -3407,7 +3407,7 @@ export function testBinary3LateMixPatterns() {
 
 export function testBinary3Pass3MixDiagnostic() {
   const def = getDiagnosticDefinition('binary3Pass3Mix')
-  const pass = def?.default === 'balanced' &&
+  const pass = def?.default === 'source' &&
     def.allowed?.includes('balanced') &&
     def.allowed?.includes('source')
   console.log('BINARY_3 pass-3 mix diagnostic test:', pass ? 'PASS' : 'FAIL', {

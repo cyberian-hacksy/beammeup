@@ -103,7 +103,7 @@ const DEFINITIONS = {
   },
   binary3Pass3Mix: {
     urlKey: 'binary3-pass3',
-    default: 'balanced',
+    default: 'source',
     allowed: ['balanced', 'source'],
     reloadRequired: false,
     labels: {
