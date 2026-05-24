@@ -1,5 +1,6 @@
-// Pure Binary3 receiver lock-state helpers. The DOM/camera receiver owns the
-// mutable state object; this module only mutates the Binary3 lock fields.
+// Pure dense-binary receiver lock-state helpers. The DOM/camera receiver owns
+// the mutable state object; this module only mutates the legacy Binary3 lock
+// fields, which now also hold Binary2 layouts.
 
 import { HDMI_MODE } from './hdmi-uvc-constants.js'
 import { precomputeBinary3SampleOffsets } from './hdmi-uvc-frame.js'
@@ -11,15 +12,19 @@ export function clearBinary3LockState(target) {
   target.binary3LockFailStreak = 0
 }
 
+function isDenseBinaryLockMode(mode) {
+  return mode === HDMI_MODE.BINARY_3 || mode === HDMI_MODE.BINARY_2
+}
+
 function normalizeBinary3Layout(layoutInput, header = null) {
-  if (!layoutInput || layoutInput.frameMode !== HDMI_MODE.BINARY_3) return null
+  if (!layoutInput || !isDenseBinaryLockMode(layoutInput.frameMode)) return null
 
   return {
     blocksX: layoutInput.blocksX,
     blocksY: layoutInput.blocksY,
     headerBlocksX: layoutInput.headerBlocksX,
     headerBlocksY: layoutInput.headerBlocksY,
-    frameMode: HDMI_MODE.BINARY_3,
+    frameMode: layoutInput.frameMode,
     bitsPerBlock: 1,
     stepX: layoutInput.stepX,
     stepY: layoutInput.stepY,
@@ -61,14 +66,14 @@ export function lockBinary3LayoutState(target, layoutInput, currentRegion, heade
 }
 
 export function lockBinary3LayoutFromDecodeResult(target, result, currentRegion) {
-  if (!result?._diag || result._diag.frameMode !== HDMI_MODE.BINARY_3) {
+  if (!result?._diag || !isDenseBinaryLockMode(result._diag.frameMode)) {
     return { locked: false, wasLocked: !!target?.lockedBinary3Layout }
   }
   return lockBinary3LayoutState(target, result._diag, currentRegion, result.header || null)
 }
 
 export function noteBinary3UnrecoveredCrcFailure(target, result, invalidateAfter) {
-  if (!target || !result?._diag || result._diag.frameMode !== HDMI_MODE.BINARY_3) {
+  if (!target || !result?._diag || !isDenseBinaryLockMode(result._diag.frameMode)) {
     return { counted: false, invalidated: false, failStreak: target?.binary3LockFailStreak || 0 }
   }
 
@@ -124,6 +129,57 @@ export function testBinary3RecoveredLayoutKeepsLock() {
     target.lockedBinary3Offsets.length > 0
 
   console.log('BINARY_3 recovered layout lock test:', pass ? 'PASS' : 'FAIL', {
+    result,
+    failStreak: target.binary3LockFailStreak,
+    hasLock: !!target.lockedBinary3Layout,
+    offsets: target.lockedBinary3Offsets?.length || 0
+  })
+  return pass
+}
+
+export function testBinary2RecoveredLayoutKeepsLock() {
+  const target = {
+    lockedBinary3Layout: { frameMode: HDMI_MODE.BINARY_3, stepX: 3, stepY: 3 },
+    lockedBinary3Offsets: new Int32Array([1, 2]),
+    binary3LockFailStreak: 4,
+    fixedLayout: null,
+    preferredLayout: null
+  }
+  const region = { x: 24, y: 24, w: 1872, h: 1032 }
+  const layout = {
+    frameMode: HDMI_MODE.BINARY_2,
+    blocksX: 932,
+    blocksY: 512,
+    headerBlocksX: 468,
+    headerBlocksY: 4,
+    bitsPerBlock: 1,
+    stepX: 2,
+    stepY: 2,
+    dataBs: 2,
+    headerStepX: 4,
+    headerStepY: 4,
+    headerBs: 4,
+    xOff: 0,
+    yOff: 0,
+    blackLevel: 1,
+    whiteLevel: 249
+  }
+
+  const result = lockBinary3LayoutState(target, layout, region, {
+    width: 1920,
+    height: 1080,
+    fps: 60
+  })
+  const pass = result.locked === true &&
+    target.binary3LockFailStreak === 0 &&
+    target.lockedBinary3Layout?.frameMode === HDMI_MODE.BINARY_2 &&
+    target.lockedBinary3Layout?.frameWidth === 1920 &&
+    target.fixedLayout?.frameMode === HDMI_MODE.BINARY_2 &&
+    target.preferredLayout?.frameMode === HDMI_MODE.BINARY_2 &&
+    target.lockedBinary3Offsets instanceof Int32Array &&
+    target.lockedBinary3Offsets.length > 0
+
+  console.log('BINARY_2 recovered layout lock test:', pass ? 'PASS' : 'FAIL', {
     result,
     failStreak: target.binary3LockFailStreak,
     hasLock: !!target.lockedBinary3Layout,

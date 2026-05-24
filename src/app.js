@@ -59,9 +59,13 @@ import {
   resetHdmiUvcReceiver,
   autoStartHdmiUvcReceiver,
   testReceiverFrameAcceptSignals,
+  testDenseBinaryLockedLayoutOffsetsCoverBinary2,
   testStallCounterTicksOnDuplicateFrames
 } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
-import { testBinary3RecoveredLayoutKeepsLock } from './lib/hdmi-uvc/hdmi-uvc-binary3-lock.js'
+import {
+  testBinary3RecoveredLayoutKeepsLock,
+  testBinary2RecoveredLayoutKeepsLock
+} from './lib/hdmi-uvc/hdmi-uvc-binary3-lock.js'
 import { initHdmiUvcLabReceiverUi } from './lib/hdmi-uvc/hdmi-uvc-lab-ui.js'
 import { testCrc32 } from './lib/hdmi-uvc/crc32.js'
 import {
@@ -185,8 +189,10 @@ window.testFrameRefactorPreservesCodebook3Bytes = testFrameRefactorPreservesCode
 window.testFrameRefactorPreservesGlyph5Bytes = testFrameRefactorPreservesGlyph5Bytes
 window.testDecodeDataRegionRoundtripsAllModes = testDecodeDataRegionRoundtripsAllModes
 window.testReceiverFrameAcceptSignals = testReceiverFrameAcceptSignals
+window.testDenseBinaryLockedLayoutOffsetsCoverBinary2 = testDenseBinaryLockedLayoutOffsetsCoverBinary2
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
 window.testBinary3RecoveredLayoutKeepsLock = testBinary3RecoveredLayoutKeepsLock
+window.testBinary2RecoveredLayoutKeepsLock = testBinary2RecoveredLayoutKeepsLock
 window.testPass2TwoStageSchedule = testPass2TwoStageSchedule
 window.testParitySweepCounter = testParitySweepCounter
 window.testPresentationScreenSelection = testPresentationScreenSelection
@@ -400,8 +406,10 @@ async function runAllTests() {
     hdmiFrameRefactorGlyph5: testFrameRefactorPreservesGlyph5Bytes(),
     hdmiDecodeDataRegionAllModes: testDecodeDataRegionRoundtripsAllModes(),
     receiverFrameSignals: testReceiverFrameAcceptSignals(),
+    denseBinaryLockedLayoutOffsets: testDenseBinaryLockedLayoutOffsetsCoverBinary2(),
     stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames(),
     binary3RecoveredLayoutKeepsLock: testBinary3RecoveredLayoutKeepsLock(),
+    binary2RecoveredLayoutKeepsLock: testBinary2RecoveredLayoutKeepsLock(),
     twoStagePass2Schedule: testPass2TwoStageSchedule(),
     paritySweepCounter: testParitySweepCounter(),
     presentationScreenSelection: testPresentationScreenSelection(),

@@ -1606,6 +1606,16 @@ function getLockedLayoutProbeOptions(layout) {
   }
 }
 
+function isDenseBinaryLayout(layout) {
+  return layout?.frameMode === HDMI_MODE.BINARY_3 || layout?.frameMode === HDMI_MODE.BINARY_2
+}
+
+function getDenseBinaryLayoutOffsets(layout) {
+  return isDenseBinaryLayout(layout)
+    ? (layout.precomputedOffsets || state.lockedBinary3Offsets || null)
+    : null
+}
+
 function readLayoutPacketsExact(imageData, width, region, layout, payloadLength, expectedPacketSize = null) {
   if (!layout || !payloadLength || payloadLength <= 0) return null
 
@@ -1615,7 +1625,7 @@ function readLayoutPacketsExact(imageData, width, region, layout, payloadLength,
     region,
     layout,
     payloadLength,
-    layout.frameMode === HDMI_MODE.BINARY_3 ? (layout.precomputedOffsets || state.lockedBinary3Offsets || null) : null
+    getDenseBinaryLayoutOffsets(layout)
   )
   if (!payload) return null
 
@@ -2713,15 +2723,17 @@ function noteBinary3LockFailure(result) {
     LOCKED_BINARY3_INVALIDATE_AFTER_FAILS
   )
   if (outcome.invalidated) {
-    debugLog(`[HDMI-RX] BINARY_3 layout invalidated after ${LOCKED_BINARY3_INVALIDATE_AFTER_FAILS} unrecovered CRC fails - re-sweeping next frame`)
+    const modeName = HDMI_MODE_NAMES[result?._diag?.frameMode] || 'dense binary'
+    debugLog(`[HDMI-RX] ${modeName} layout invalidated after ${LOCKED_BINARY3_INVALIDATE_AFTER_FAILS} unrecovered CRC fails - re-sweeping next frame`)
   }
 }
 
 function logBinary3LockOutcome(outcome) {
   if (!outcome?.locked || outcome.wasLocked) return
   const layout = outcome.layout
+  const modeName = HDMI_MODE_NAMES[layout.frameMode] || 'dense binary'
   debugLog(
-    `[HDMI-RX] BINARY_3 layout locked: ` +
+    `[HDMI-RX] ${modeName} layout locked: ` +
     `step=${layout.stepX.toFixed(2)}/${layout.stepY.toFixed(2)} ` +
     `grid=${layout.blocksX}x${layout.blocksY}`
   )
@@ -3401,7 +3413,7 @@ async function processFrame(now, metadata) {
       if (isDiagFrame) {
         debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) via fixed layout`)
       }
-      if (state.fixedLayout?.frameMode === HDMI_MODE.BINARY_3) {
+      if (isDenseBinaryLayout(state.fixedLayout)) {
         applyBinary3RecoveredLayout(state.fixedLayout, result.header, region)
       }
       if (state.decoder?.isComplete()) {
@@ -3867,6 +3879,41 @@ export function testReceiverFrameAcceptSignals() {
 
   console.log('Receiver frame-accept signals test: PASS')
   return true
+}
+
+export function testDenseBinaryLockedLayoutOffsetsCoverBinary2() {
+  const oldOffsets = state.lockedBinary3Offsets
+  const fallbackOffsets = new Int32Array([7, 11])
+  const layoutOffsets = new Int32Array([13, 17])
+  try {
+    state.lockedBinary3Offsets = fallbackOffsets
+    const binary2WithLayoutOffsets = getDenseBinaryLayoutOffsets({
+      frameMode: HDMI_MODE.BINARY_2,
+      precomputedOffsets: layoutOffsets
+    })
+    const binary2FallbackOffsets = getDenseBinaryLayoutOffsets({
+      frameMode: HDMI_MODE.BINARY_2
+    })
+    const binary3FallbackOffsets = getDenseBinaryLayoutOffsets({
+      frameMode: HDMI_MODE.BINARY_3
+    })
+    const compatOffsets = getDenseBinaryLayoutOffsets({
+      frameMode: HDMI_MODE.COMPAT_4
+    })
+    const pass = binary2WithLayoutOffsets === layoutOffsets &&
+      binary2FallbackOffsets === fallbackOffsets &&
+      binary3FallbackOffsets === fallbackOffsets &&
+      compatOffsets === null
+    console.log('Dense binary locked-layout offsets test:', pass ? 'PASS' : 'FAIL', {
+      binary2WithLayoutOffsets: binary2WithLayoutOffsets?.length || 0,
+      binary2FallbackOffsets: binary2FallbackOffsets?.length || 0,
+      binary3FallbackOffsets: binary3FallbackOffsets?.length || 0,
+      compatOffsets: compatOffsets?.length || 0
+    })
+    return pass
+  } finally {
+    state.lockedBinary3Offsets = oldOffsets
+  }
 }
 
 export async function testStallCounterTicksOnDuplicateFrames() {
