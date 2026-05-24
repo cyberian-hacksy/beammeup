@@ -1640,8 +1640,8 @@ function getBatchingProfile(mode) {
     case HDMI_MODE.BINARY_2:
       return {
         minPacketsPerFrame: 20,
-        maxPacketsPerFrame: 24,
-        targetFrameFill: 0.85,
+        maxPacketsPerFrame: 29,
+        targetFrameFill: 0.99,
         maxBlockSize: 2048,
         maxUsedBytes: null
       }
@@ -3069,7 +3069,7 @@ export function testExternalPreparedStartUsesManualGate() {
 
 export function testHdmiUvcSenderDefaults() {
   const renderPreset = getRenderSizePreset()
-  const pass = state.mode === HDMI_MODE.BINARY_3 &&
+  const pass = state.mode === HDMI_MODE.BINARY_2 &&
     renderPreset.id === '1080p' &&
     getRecommendedFpsPreset(state.mode) === '1'
   console.log('HDMI-UVC sender defaults test:', pass ? 'PASS' : 'FAIL', {
@@ -3299,12 +3299,12 @@ export function testBinary2BatchingAndSchedule() {
   const profile = getBatchingProfile(HDMI_MODE.BINARY_2)
   const pass2 = getSlotMixPatternForPass(2, {
     mode: HDMI_MODE.BINARY_2,
-    slots: 24,
+    slots: 29,
     paritySweepsInPass: 1
   })
   const pass4 = getSlotMixPatternForPass(4, {
     mode: HDMI_MODE.BINARY_2,
-    slots: 24
+    slots: 29
   })
   const selected = selectFrameBatching({
     capacity: getPayloadCapacity(1920, 1080, HDMI_MODE.BINARY_2),
@@ -3313,16 +3313,19 @@ export function testBinary2BatchingAndSchedule() {
   })
   const pass = HDMI_MODE.BINARY_2 === 9 &&
     profile.minPacketsPerFrame === 20 &&
-    profile.maxPacketsPerFrame === 24 &&
+    profile.maxPacketsPerFrame === 29 &&
+    profile.targetFrameFill === 0.99 &&
     profile.maxBlockSize === 2048 &&
-    selected.packetsPerFrame === 24 &&
-    selected.blockSize === 2048 &&
-    countPattern(pass2, 'source') === 18 &&
-    countPattern(pass2, 'parity') === 3 &&
+    selected.packetsPerFrame === 29 &&
+    selected.blockSize === 2028 &&
+    selected.usedBytes === 59247 &&
+    selected.payloadPerFrame === 58812 &&
+    countPattern(pass2, 'source') === 22 &&
+    countPattern(pass2, 'parity') === 4 &&
     countPattern(pass2, 'fountain') === 3 &&
-    countPattern(pass4, 'source') === 15 &&
+    countPattern(pass4, 'source') === 18 &&
     countPattern(pass4, 'parity') === 2 &&
-    countPattern(pass4, 'fountain') === 7
+    countPattern(pass4, 'fountain') === 9
   console.log('BINARY_2 batching/schedule test:', pass ? 'PASS' : 'FAIL', {
     profile,
     selected,
