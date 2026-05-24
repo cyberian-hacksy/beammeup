@@ -1574,6 +1574,7 @@ function getLayoutProbeOptions(layout) {
         offsets: [0, -1, 1, -2, 2]
       }
     case HDMI_MODE.BINARY_3:
+    case HDMI_MODE.BINARY_2:
       return {
         offsets: [0, -1, 1]
       }
@@ -1591,6 +1592,7 @@ function getLockedLayoutProbeOptions(layout) {
     case HDMI_MODE.RAW_RGB:
     case HDMI_MODE.LUMA_2:
     case HDMI_MODE.BINARY_3:
+    case HDMI_MODE.BINARY_2:
       return {
         offsets: [0, -1, 1]
       }
@@ -1716,7 +1718,8 @@ async function tryLockedLayoutFastPath(imageData, width, region) {
     activeMode !== HDMI_MODE.RAW_RGB &&
     activeMode !== HDMI_MODE.LUMA_2 &&
     activeMode !== HDMI_MODE.CODEBOOK_3 &&
-    activeMode !== HDMI_MODE.BINARY_3
+    activeMode !== HDMI_MODE.BINARY_3 &&
+    activeMode !== HDMI_MODE.BINARY_2
   ) {
     return false
   }

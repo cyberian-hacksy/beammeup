@@ -59,6 +59,15 @@ const BINARY_3_HEADER_BLOCK_SIZE = 4
 const BINARY_3_PAYLOAD_BLOCK_SIZE = 3
 const BINARY_3_REF_STRIP_WIDTH_4X4 = 1
 const BINARY_3_REF_STRIP_PX = BINARY_3_REF_STRIP_WIDTH_4X4 * BINARY_3_HEADER_BLOCK_SIZE
+
+function isDenseBinaryMode(mode) {
+  return mode === HDMI_MODE.BINARY_3 || mode === HDMI_MODE.BINARY_2
+}
+
+function getDenseBinaryPayloadBlockSize(mode) {
+  return getModePayloadBlockSize(mode) || BINARY_3_PAYLOAD_BLOCK_SIZE
+}
+
 export const CODEBOOK3_PATTERNS = [
   [0, 0, 0, 0],
   [1, 1, 1, 1],
@@ -476,14 +485,15 @@ function getBinary3HeaderBandRows(headerCellsX) {
 
 // Calculate payload capacity in bytes (binary modulation: 8 data-blocks per byte)
 export function getPayloadCapacity(width, height, mode = HDMI_MODE.COMPAT_4) {
-  if (mode === HDMI_MODE.BINARY_3) {
+  if (isDenseBinaryMode(mode)) {
     const dr = getDataRegion(width, height)
+    const payloadBlockSize = getDenseBinaryPayloadBlockSize(mode)
     const headerCellsX = Math.floor(dr.w / BINARY_3_HEADER_BLOCK_SIZE)
     const headerBandRows = getBinary3HeaderBandRows(headerCellsX)
     const payloadW = dr.w - 2 * BINARY_3_REF_STRIP_PX
     const payloadH = dr.h - headerBandRows * BINARY_3_HEADER_BLOCK_SIZE
-    const payloadCellsX = Math.floor(payloadW / BINARY_3_PAYLOAD_BLOCK_SIZE)
-    const payloadCellsY = Math.floor(payloadH / BINARY_3_PAYLOAD_BLOCK_SIZE)
+    const payloadCellsX = Math.floor(payloadW / payloadBlockSize)
+    const payloadCellsY = Math.floor(payloadH / payloadBlockSize)
     return Math.max(0, Math.floor((payloadCellsX * payloadCellsY) / BITS_PER_BYTE))
   }
 
@@ -719,9 +729,10 @@ export function createFrameBuffer(width, height) {
   return imageData
 }
 
-function buildBinary3Frame(payload, width, height, fps, symbolId, targetBuffer = null) {
+function buildDenseBinaryFrame(payload, mode, width, height, fps, symbolId, targetBuffer = null) {
   const payloadCrc = crc32(payload)
-  const headerBytes = buildHeader(HDMI_MODE.BINARY_3, width, height, fps, symbolId, payload.length, payloadCrc)
+  const headerBytes = buildHeader(mode, width, height, fps, symbolId, payload.length, payloadCrc)
+  const payloadBlockSize = getDenseBinaryPayloadBlockSize(mode)
 
   const expectedLength = width * height * 4
   const imageData = targetBuffer && targetBuffer.length === expectedLength
@@ -780,8 +791,8 @@ function buildBinary3Frame(payload, width, height, fps, symbolId, targetBuffer =
   const payloadX = dr.x + BINARY_3_REF_STRIP_PX
   const payloadY = dr.y + headerBandHeightPx
   const payloadW = dr.w - 2 * BINARY_3_REF_STRIP_PX
-  const payloadCellsX = Math.floor(payloadW / BINARY_3_PAYLOAD_BLOCK_SIZE)
-  const payloadCellsY = Math.floor(payloadBandHeight / BINARY_3_PAYLOAD_BLOCK_SIZE)
+  const payloadCellsX = Math.floor(payloadW / payloadBlockSize)
+  const payloadCellsY = Math.floor(payloadBandHeight / payloadBlockSize)
   const payloadBitLength = payload.length * BITS_PER_BYTE
   let payloadBitPos = 0
 
@@ -793,9 +804,9 @@ function buildBinary3Frame(payload, width, height, fps, symbolId, targetBuffer =
       fillBlockSolid(
         imageData,
         width,
-        payloadX + cx * BINARY_3_PAYLOAD_BLOCK_SIZE,
-        payloadY + cy * BINARY_3_PAYLOAD_BLOCK_SIZE,
-        BINARY_3_PAYLOAD_BLOCK_SIZE,
+        payloadX + cx * payloadBlockSize,
+        payloadY + cy * payloadBlockSize,
+        payloadBlockSize,
         val,
         val,
         val
@@ -810,8 +821,8 @@ function buildBinary3Frame(payload, width, height, fps, symbolId, targetBuffer =
 // When `targetBuffer` is provided, it must already contain the initialized static
 // frame base (black background, alpha=255, anchors).
 export function buildFrame(payload, mode, width, height, fps, symbolId, targetBuffer = null) {
-  if (mode === HDMI_MODE.BINARY_3) {
-    return buildBinary3Frame(payload, width, height, fps, symbolId, targetBuffer)
+  if (isDenseBinaryMode(mode)) {
+    return buildDenseBinaryFrame(payload, mode, width, height, fps, symbolId, targetBuffer)
   }
 
   const headerBlockSize = getModeHeaderBlockSize(mode)
@@ -1235,15 +1246,16 @@ function sampleBinary3ReferenceRows(imageData, width, region, rx, ry, stepX, ste
 }
 
 export function precomputeBinary3SampleOffsets(layout, region) {
-  const headerStepX = layout.headerStepX || (layout.stepX * (BINARY_3_HEADER_BLOCK_SIZE / BINARY_3_PAYLOAD_BLOCK_SIZE))
-  const headerStepY = layout.headerStepY || (layout.stepY * (BINARY_3_HEADER_BLOCK_SIZE / BINARY_3_PAYLOAD_BLOCK_SIZE))
+  const payloadBlockSize = getDenseBinaryPayloadBlockSize(layout.frameMode)
+  const headerStepX = layout.headerStepX || (layout.stepX * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
+  const headerStepY = layout.headerStepY || (layout.stepY * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
   const headerBlocksX = layout.headerBlocksX || Math.floor(region.w / headerStepX)
   const headerBandRows = getBinary3HeaderBandRows(headerBlocksX)
   const stripWidthCapture = headerStepX * BINARY_3_REF_STRIP_WIDTH_4X4
   const payloadStartX = region.x + (layout.xOff || 0) + stripWidthCapture
   const payloadStartY = region.y + (layout.yOff || 0) + headerBandRows * headerStepY
-  const payloadStepX = layout.stepX || (headerStepX * (BINARY_3_PAYLOAD_BLOCK_SIZE / BINARY_3_HEADER_BLOCK_SIZE))
-  const payloadStepY = layout.stepY || (headerStepY * (BINARY_3_PAYLOAD_BLOCK_SIZE / BINARY_3_HEADER_BLOCK_SIZE))
+  const payloadStepX = layout.stepX || (headerStepX * (payloadBlockSize / BINARY_3_HEADER_BLOCK_SIZE))
+  const payloadStepY = layout.stepY || (headerStepY * (payloadBlockSize / BINARY_3_HEADER_BLOCK_SIZE))
   const payloadW = region.w - 2 * stripWidthCapture
   const payloadH = region.h - headerBandRows * headerStepY
   const cellsX = Math.max(0, Math.floor(payloadW / payloadStepX))
@@ -1275,9 +1287,10 @@ function readBinary3Payload(
   options = {},
   precomputedOffsets = null
 ) {
-  const payloadStepX = headerStepX * (BINARY_3_PAYLOAD_BLOCK_SIZE / BINARY_3_HEADER_BLOCK_SIZE)
-  const payloadStepY = headerStepY * (BINARY_3_PAYLOAD_BLOCK_SIZE / BINARY_3_HEADER_BLOCK_SIZE)
-  const payloadBs = headerBs * (BINARY_3_PAYLOAD_BLOCK_SIZE / BINARY_3_HEADER_BLOCK_SIZE)
+  const payloadBlockSize = getDenseBinaryPayloadBlockSize(header.mode)
+  const payloadStepX = headerStepX * (payloadBlockSize / BINARY_3_HEADER_BLOCK_SIZE)
+  const payloadStepY = headerStepY * (payloadBlockSize / BINARY_3_HEADER_BLOCK_SIZE)
+  const payloadBs = headerBs * (payloadBlockSize / BINARY_3_HEADER_BLOCK_SIZE)
   const stripWidthCapture = headerStepX * BINARY_3_REF_STRIP_WIDTH_4X4
   const payloadStartX = rx + stripWidthCapture
 
@@ -1354,7 +1367,7 @@ function readBinary3Payload(
     crcValid: actualCrc === header.payloadCrc,
     levels,
     _diag: {
-      frameMode: HDMI_MODE.BINARY_3,
+      frameMode: header.mode,
       blocksX: payloadCellsX,
       blocksY: payloadCellsY,
       headerBlocksX: headerCellsX,
@@ -1735,14 +1748,15 @@ function readPayloadAt(
   options = {},
   precomputedOffsets = null
 ) {
-  if (header.mode === HDMI_MODE.BINARY_3) {
+  if (isDenseBinaryMode(header.mode)) {
+    const payloadBlockSize = getDenseBinaryPayloadBlockSize(header.mode)
     const headerSamplingLayout = headerLayout || {
       rx,
       ry,
-      stepX: stepX * (BINARY_3_HEADER_BLOCK_SIZE / BINARY_3_PAYLOAD_BLOCK_SIZE),
-      stepY: stepY * (BINARY_3_HEADER_BLOCK_SIZE / BINARY_3_PAYLOAD_BLOCK_SIZE),
-      bs: bs * (BINARY_3_HEADER_BLOCK_SIZE / BINARY_3_PAYLOAD_BLOCK_SIZE),
-      blocksX: Math.floor(region.w / (stepX * (BINARY_3_HEADER_BLOCK_SIZE / BINARY_3_PAYLOAD_BLOCK_SIZE)))
+      stepX: stepX * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize),
+      stepY: stepY * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize),
+      bs: bs * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize),
+      blocksX: Math.floor(region.w / (stepX * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize)))
     }
     return readBinary3Payload(
       imageData,
@@ -1948,13 +1962,14 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
   const ry = region.y + (layout.yOff || 0)
   const bitsPerBlock = layout.bitsPerBlock || 1
 
-  if (frameMode === HDMI_MODE.BINARY_3) {
-    const headerStepX = layout.headerStepX || (layout.stepX * (BINARY_3_HEADER_BLOCK_SIZE / BINARY_3_PAYLOAD_BLOCK_SIZE))
-    const headerStepY = layout.headerStepY || (layout.stepY * (BINARY_3_HEADER_BLOCK_SIZE / BINARY_3_PAYLOAD_BLOCK_SIZE))
-    const headerBs = layout.headerBs || (layout.dataBs * (BINARY_3_HEADER_BLOCK_SIZE / BINARY_3_PAYLOAD_BLOCK_SIZE))
+  if (isDenseBinaryMode(frameMode)) {
+    const payloadBlockSize = getDenseBinaryPayloadBlockSize(frameMode)
+    const headerStepX = layout.headerStepX || (layout.stepX * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
+    const headerStepY = layout.headerStepY || (layout.stepY * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
+    const headerBs = layout.headerBs || (layout.dataBs * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
     const headerBlocksX = layout.headerBlocksX || Math.floor(region.w / headerStepX)
     const header = {
-      mode: HDMI_MODE.BINARY_3,
+      mode: frameMode,
       width: layout.frameWidth ?? 0,
       height: layout.frameHeight ?? 0,
       fps: layout.fps ?? 0,
@@ -2326,8 +2341,8 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
       if (!refinedHeader) continue
 
       const payloadBlocks = getUsablePayloadBlocks(refinedHeader.mode, payloadBlocksX, payloadBlocksY)
-      const payloadCapacity = refinedHeader.mode === HDMI_MODE.BINARY_3
-        ? getPayloadCapacity(refinedHeader.width, refinedHeader.height, HDMI_MODE.BINARY_3)
+      const payloadCapacity = isDenseBinaryMode(refinedHeader.mode)
+        ? getPayloadCapacity(refinedHeader.width, refinedHeader.height, refinedHeader.mode)
         : Math.floor((payloadBlocks * bitsPerBlock) / BITS_PER_BYTE)
       if (payloadCapacity < refinedHeader.payloadLength) continue
 
@@ -2385,7 +2400,7 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
         score: scoreCandidate(result),
         ...getHeaderSpanMetrics(refinedHeader, region)
       }
-      if (refinedHeader.mode === HDMI_MODE.BINARY_3 && innerDiag) {
+      if (isDenseBinaryMode(refinedHeader.mode) && innerDiag) {
         result._diag = {
           ...result._diag,
           blocksX: innerDiag.blocksX,
@@ -2554,7 +2569,7 @@ function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout, 
         score: scoreCandidate(result),
         ...getHeaderSpanMetrics(header, region)
       }
-      if (header.mode === HDMI_MODE.BINARY_3 && innerDiag) {
+      if (isDenseBinaryMode(header.mode) && innerDiag) {
         result._diag = {
           ...result._diag,
           blocksX: innerDiag.blocksX,
@@ -2654,8 +2669,8 @@ export function decodeDataRegion(imageData, width, region, options = {}) {
           if (payloadBlocksX * payloadBlocksY < HEADER_BLOCKS + BITS_PER_BYTE) continue
 
           const payloadBlocks = getUsablePayloadBlocks(header.mode, payloadBlocksX, payloadBlocksY)
-          const payloadCapacity = header.mode === HDMI_MODE.BINARY_3
-            ? getPayloadCapacity(header.width, header.height, HDMI_MODE.BINARY_3)
+          const payloadCapacity = isDenseBinaryMode(header.mode)
+            ? getPayloadCapacity(header.width, header.height, header.mode)
             : Math.floor((payloadBlocks * payloadBitsPerBlock) / BITS_PER_BYTE)
           if (payloadCapacity < header.payloadLength) continue
 
@@ -2715,7 +2730,7 @@ export function decodeDataRegion(imageData, width, region, options = {}) {
             score: scoreCandidate(baseResult),
             ...getHeaderSpanMetrics(header, region)
           }
-          if (header.mode === HDMI_MODE.BINARY_3 && innerDiag) {
+          if (isDenseBinaryMode(header.mode) && innerDiag) {
             baseResult._diag = {
               ...baseResult._diag,
               blocksX: innerDiag.blocksX,
@@ -2912,6 +2927,48 @@ export function testBinary3ConstantsRegistered() {
     getModeBitsPerBlock(HDMI_MODE.BINARY_3) === 1
   console.log('BINARY_3 constants test:', pass ? 'PASS' : 'FAIL')
   return pass
+}
+
+export function testBinary2ConstantsRegistered() {
+  const pass = HDMI_MODE.BINARY_2 === 9 &&
+    HDMI_MODE_NAMES[HDMI_MODE.BINARY_2] === '2x2' &&
+    getModeHeaderBlockSize(HDMI_MODE.BINARY_2) === 4 &&
+    getModePayloadBlockSize(HDMI_MODE.BINARY_2) === 2 &&
+    getModeBitsPerBlock(HDMI_MODE.BINARY_2) === 1
+  console.log('BINARY_2 constants test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testBinary2FrameRoundtrip() {
+  try {
+    const width = 640
+    const height = 407
+    const cap = getPayloadCapacity(width, height, HDMI_MODE.BINARY_2)
+    const payload = new Uint8Array(Math.min(cap, 1500))
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 31) & 0xff
+
+    const frame = buildFrame(payload, HDMI_MODE.BINARY_2, width, height, 30, 42)
+    const anchors = detectAnchors(frame, width, height)
+    if (anchors.length < 2) {
+      console.log('BINARY_2 roundtrip test: FAIL (anchors)')
+      return false
+    }
+    const region = dataRegionFromAnchors(anchors)
+    if (!region) {
+      console.log('BINARY_2 roundtrip test: FAIL (region)')
+      return false
+    }
+    const result = decodeDataRegion(frame, width, region)
+    const pass = result && result.crcValid &&
+      result.header.mode === HDMI_MODE.BINARY_2 &&
+      result.payload.length === payload.length &&
+      result.payload.every((v, i) => v === payload[i])
+    console.log('BINARY_2 roundtrip test:', pass ? 'PASS' : 'FAIL')
+    return pass
+  } catch (err) {
+    console.log('BINARY_2 roundtrip test: FAIL', err?.message || err)
+    return false
+  }
 }
 
 export function testBinary3FrameRoundtrip() {

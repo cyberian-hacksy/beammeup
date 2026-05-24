@@ -43,6 +43,7 @@ import {
   testCompat4MixedReplayKeepsSixSlotPatterns,
   testBinary3MixedReplayMetadataReducesDataSlots,
   testBinary3BatchingProfile,
+  testBinary2BatchingAndSchedule,
   testBinary3BatchingProfileMath,
   testBinary3BatchingProfileDiagnostic,
   testBinary3LateMixDiagnostic,
@@ -74,7 +75,9 @@ import {
   testClassifyStep,
   testHeaderAndPayloadBlockSizesMatchForExistingModes,
   testBinary3ConstantsRegistered,
+  testBinary2ConstantsRegistered,
   testBinary3FrameRoundtrip,
+  testBinary2FrameRoundtrip,
   testDecodeDataRegionPropagatesBinary3Levels,
   testBinary3LockedLayoutMatchesBlindSweep,
   testBinary3PrecomputedOffsetsMatchUncached,
@@ -166,7 +169,9 @@ window.testEffectiveOneToOnePresentationCheck = testEffectiveOneToOnePresentatio
 window.testClassifyStep = testClassifyStep
 window.testHeaderAndPayloadBlockSizesMatchForExistingModes = testHeaderAndPayloadBlockSizesMatchForExistingModes
 window.testBinary3ConstantsRegistered = testBinary3ConstantsRegistered
+window.testBinary2ConstantsRegistered = testBinary2ConstantsRegistered
 window.testBinary3FrameRoundtrip = testBinary3FrameRoundtrip
+window.testBinary2FrameRoundtrip = testBinary2FrameRoundtrip
 window.testDecodeDataRegionPropagatesBinary3Levels = testDecodeDataRegionPropagatesBinary3Levels
 window.testBinary3LockedLayoutMatchesBlindSweep = testBinary3LockedLayoutMatchesBlindSweep
 window.testBinary3PrecomputedOffsetsMatchUncached = testBinary3PrecomputedOffsetsMatchUncached
@@ -198,6 +203,7 @@ window.testBinary3MixedReplayPass2ChangesAfterParitySweep = testBinary3MixedRepl
 window.testCompat4MixedReplayKeepsSixSlotPatterns = testCompat4MixedReplayKeepsSixSlotPatterns
 window.testBinary3MixedReplayMetadataReducesDataSlots = testBinary3MixedReplayMetadataReducesDataSlots
 window.testBinary3BatchingProfile = testBinary3BatchingProfile
+window.testBinary2BatchingAndSchedule = testBinary2BatchingAndSchedule
 window.testBinary3BatchingProfileMath = testBinary3BatchingProfileMath
 window.testBinary3BatchingProfileDiagnostic = testBinary3BatchingProfileDiagnostic
 window.testBinary3LateMixDiagnostic = testBinary3LateMixDiagnostic
@@ -378,7 +384,9 @@ async function runAllTests() {
     hdmiClassifyStep: testClassifyStep(),
     hdmiHeaderPayloadBlockSizes: testHeaderAndPayloadBlockSizesMatchForExistingModes(),
     hdmiBinary3Constants: testBinary3ConstantsRegistered(),
+    hdmiBinary2Constants: testBinary2ConstantsRegistered(),
     hdmiBinary3FrameRoundtrip: testBinary3FrameRoundtrip(),
+    hdmiBinary2FrameRoundtrip: testBinary2FrameRoundtrip(),
     hdmiBinary3LevelsPropagation: testDecodeDataRegionPropagatesBinary3Levels(),
     hdmiBinary3LockedLayout: testBinary3LockedLayoutMatchesBlindSweep(),
     hdmiBinary3PrecomputedOffsets: testBinary3PrecomputedOffsetsMatchUncached(),
@@ -410,6 +418,7 @@ async function runAllTests() {
     compat4MixedReplaySixSlotPatterns: testCompat4MixedReplayKeepsSixSlotPatterns(),
     binary3MixedReplayMetadataDataSlots: testBinary3MixedReplayMetadataReducesDataSlots(),
     binary3BatchingProfile: testBinary3BatchingProfile(),
+    binary2BatchingAndSchedule: testBinary2BatchingAndSchedule(),
     binary3BatchingProfileMath: testBinary3BatchingProfileMath(),
     binary3BatchingProfileDiagnostic: testBinary3BatchingProfileDiagnostic(),
     binary3LateMixDiagnostic: testBinary3LateMixDiagnostic(),
