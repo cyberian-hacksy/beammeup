@@ -3256,7 +3256,6 @@ function handleReceiveAnother() {
 }
 
 export async function autoStartHdmiUvcReceiver() {
-  void ensureCimbarLoaded()
   await enumerateDevices()
 
   const savedDevice = loadDevicePreference()
