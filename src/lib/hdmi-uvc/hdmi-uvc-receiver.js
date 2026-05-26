@@ -2,7 +2,6 @@
 
 import { createDecoder } from '../decoder.js'
 import { PACKET_HEADER_SIZE, parsePacket } from '../packet.js'
-import { loadCimbarWasm, getModule as getCimbarModule } from '../cimbar/cimbar-loader.js'
 import {
   BLOCK_SIZE,
   DEVICE_STORAGE_KEY,
@@ -1184,7 +1183,13 @@ function createReceiverPerfState() {
     fixedRecoveredFrames: 0,
     fixedRecoveredPackets: 0,
     headerlessRecoveredFrames: 0,
-    headerlessRecoveredPackets: 0
+    headerlessRecoveredPackets: 0,
+    lockedFastExactHits: 0,
+    lockedFastExactMisses: 0,
+    lockedFastExactPackets: 0,
+    lockedFastRecoveryProbes: 0,
+    lockedFastRecoveryHits: 0,
+    lockedFastRecoveryPackets: 0
   }
 }
 
@@ -1209,6 +1214,12 @@ function clearReceiverPerfSamples(perf) {
   perf.fixedRecoveredPackets = 0
   perf.headerlessRecoveredFrames = 0
   perf.headerlessRecoveredPackets = 0
+  perf.lockedFastExactHits = 0
+  perf.lockedFastExactMisses = 0
+  perf.lockedFastExactPackets = 0
+  perf.lockedFastRecoveryProbes = 0
+  perf.lockedFastRecoveryHits = 0
+  perf.lockedFastRecoveryPackets = 0
 }
 
 function resetReceiverPerfState() {
@@ -1330,6 +1341,28 @@ function noteReceiverRecovery(kind, packetCount) {
   }
 }
 
+function noteLockedLayoutFastPath(kind, packetCount = 0) {
+  const perf = state.rxPerf
+  if (!perf) return
+
+  switch (kind) {
+    case 'exactHit':
+      perf.lockedFastExactHits++
+      perf.lockedFastExactPackets += packetCount
+      break
+    case 'exactMiss':
+      perf.lockedFastExactMisses++
+      break
+    case 'recoveryProbe':
+      perf.lockedFastRecoveryProbes++
+      break
+    case 'recoveryHit':
+      perf.lockedFastRecoveryHits++
+      perf.lockedFastRecoveryPackets += packetCount
+      break
+  }
+}
+
 function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs, classifierMs = 0) {
   const perf = state.rxPerf
   if (!perf) return
@@ -1362,6 +1395,11 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `p${(perf.phaseRecoveredFrames / frameBase).toFixed(2)}/${(perf.phaseRecoveredPackets / frameBase).toFixed(2)} ` +
     `f${(perf.fixedRecoveredFrames / frameBase).toFixed(2)}/${(perf.fixedRecoveredPackets / frameBase).toFixed(2)} ` +
     `h${(perf.headerlessRecoveredFrames / frameBase).toFixed(2)}/${(perf.headerlessRecoveredPackets / frameBase).toFixed(2)}`
+  const lockedFastSummary =
+    `lockedFast=x${perf.lockedFastExactHits}/${perf.lockedFastExactMisses}` +
+    `:${(perf.lockedFastExactPackets / frameBase).toFixed(2)} ` +
+    `r${perf.lockedFastRecoveryHits}/${perf.lockedFastRecoveryProbes}` +
+    `:${(perf.lockedFastRecoveryPackets / frameBase).toFixed(2)}`
 
   const t = state.decoder?.telemetry
   const telemetrySummary = t
@@ -1378,7 +1416,7 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `acceptCall=${averagePerfWindow(perf.acceptMs).toFixed(2)}ms ` +
     `total=${averagePerfWindow(perf.totalMs).toFixed(2)}ms ` +
     `acceptCalls=${avgAcceptCalls.toFixed(2)}/frame pkts=${avgAcceptedPackets.toFixed(2)}/frame ` +
-    `${recoverySummary} method=${perf.lastCaptureMethod || 'n/a'} ` +
+    `${recoverySummary} ${lockedFastSummary} method=${perf.lastCaptureMethod || 'n/a'} ` +
     `${telemetrySummary}`
   )
 
@@ -1656,9 +1694,6 @@ function noteSignalDetected(mode, resolution = null) {
   const firstDetection = state.detectedMode === null
   if (state.detectedMode === null) {
     state.detectedMode = mode
-    if (state.detectedMode !== HDMI_MODE.CIMBAR) {
-      resetCimbarSink()
-    }
   }
 
   if (resolution?.width && resolution?.height) {
@@ -1751,6 +1786,7 @@ async function tryLockedLayoutFastPath(imageData, width, region) {
   const exactPackets = exact?.probe?.packets || []
   if (exactPackets.length > 0) {
     if (await acceptPackets(exactPackets, state.frameCount, true, state.expectedPacketCount)) {
+      noteLockedLayoutFastPath('exactHit', exactPackets.length)
       state.lockedLayoutFastPathMisses = 0
       if (exact.layout) {
         state.fixedLayout = { ...exact.layout }
@@ -1762,12 +1798,14 @@ async function tryLockedLayoutFastPath(imageData, width, region) {
     }
   }
 
+  noteLockedLayoutFastPath('exactMiss')
   state.lockedLayoutFastPathMisses++
   const shouldRunRecoveryProbe =
     state.lockedLayoutFastPathMisses === 1 ||
     (state.lockedLayoutFastPathMisses % LOCKED_LAYOUT_RECOVERY_PROBE_INTERVAL_FRAMES) === 0
   if (!shouldRunRecoveryProbe) return false
 
+  noteLockedLayoutFastPath('recoveryProbe')
   const best = probeLayoutPackets(
     imageData,
     width,
@@ -1787,6 +1825,7 @@ async function tryLockedLayoutFastPath(imageData, width, region) {
   }
 
   if (await acceptPackets(packets, state.frameCount, true, state.expectedPacketCount)) {
+    noteLockedLayoutFastPath('recoveryHit', packets.length)
     state.lockedLayoutFastPathMisses = 0
     if (state.decoder?.isComplete()) return true
     scheduleNextFrame()
@@ -1977,49 +2016,13 @@ async function acceptPackets(
   }
 }
 
-const HDMI_CIMBAR_MODE = 68
-const HDMI_CIMBAR_VARIANT_NAME = 'B'
-const HDMI_CIMBAR_TILE_COUNT = 1
-const HDMI_CIMBAR_TILE_GAP = 0
-const HDMI_CIMBAR_TILE_PADDING = {
-  top: 20,
-  right: 20,
-  bottom: 10,
-  left: 10
-}
 const TENTATIVE_ANCHOR_MAX_FAILS = 10
-
-function getHdmiCimbarLayout(width, height) {
-  return {
-    captureRoi: {
-      x: Math.max(0, Math.floor((width - Math.min(width, height)) / 2)),
-      y: Math.max(0, Math.floor((height - Math.min(width, height)) / 2)),
-      w: Math.min(width, height),
-      h: Math.min(width, height)
-    }
-  }
-}
 
 const state = {
   decoder: null,
-  cimbarCurrentMode: 0,
-  cimbarLoaded: false,
-  cimbarRecentDecode: -1,
-  cimbarRecentExtract: -1,
-  cimbarFileSize: 0,
-  cimbarRawBytes: 0,
-  cimbarProgressSamples: [],
-  cimbarRoi: null,
-  cimbarTileRois: null,
-  cimbarRoiMisses: 0,
-  cimbarImgBuff: null,
-  cimbarFountainBuff: null,
-  cimbarReportBuff: null,
   stream: null,
   canvas: null,
   ctx: null,
-  cimbarCanvas: null,
-  cimbarCtx: null,
   animationId: null,
   callbackId: null,
   isScanning: false,
@@ -2065,10 +2068,6 @@ const state = {
   labFrameTapEnabled: false
 }
 
-const CIMBAR_MODE_LABELS = {
-  [HDMI_CIMBAR_MODE]: HDMI_CIMBAR_VARIANT_NAME
-}
-
 // Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
 const hasVideoFrameCallback = typeof HTMLVideoElement !== 'undefined' &&
   'requestVideoFrameCallback' in HTMLVideoElement.prototype
@@ -2104,386 +2103,6 @@ function loadDevicePreference() {
   } catch (e) {
     return null
   }
-}
-
-function ensureCimbarBuffers(Module, imgSize) {
-  if (!state.cimbarImgBuff || state.cimbarImgBuff.length < imgSize) {
-    if (state.cimbarImgBuff) Module._free(state.cimbarImgBuff.byteOffset)
-    const imgPtr = Module._malloc(imgSize)
-    state.cimbarImgBuff = new Uint8Array(Module.HEAPU8.buffer, imgPtr, imgSize)
-  }
-
-  const bufSize = Module._cimbard_get_bufsize()
-  if (!state.cimbarFountainBuff || state.cimbarFountainBuff.length < bufSize) {
-    if (state.cimbarFountainBuff) Module._free(state.cimbarFountainBuff.byteOffset)
-    const ptr = Module._malloc(bufSize)
-    state.cimbarFountainBuff = new Uint8Array(Module.HEAPU8.buffer, ptr, bufSize)
-  }
-
-  if (!state.cimbarReportBuff) {
-    const ptr = Module._malloc(1024)
-    state.cimbarReportBuff = new Uint8Array(Module.HEAPU8.buffer, ptr, 1024)
-  }
-}
-
-function getCimbarReport(Module) {
-  if (!state.cimbarReportBuff) return null
-  const reportLen = Module._cimbard_get_report(state.cimbarReportBuff.byteOffset, 1024)
-  if (reportLen <= 0) return null
-
-  const reportView = new Uint8Array(Module.HEAPU8.buffer, state.cimbarReportBuff.byteOffset, reportLen)
-  const text = new TextDecoder().decode(reportView)
-  try {
-    return JSON.parse(text)
-  } catch {
-    return text
-  }
-}
-
-function getCimbarProgressFraction(report) {
-  if (Array.isArray(report) && typeof report[0] === 'number' && Number.isFinite(report[0])) {
-    return Math.max(0, Math.min(1, report[0]))
-  }
-  if (report && typeof report === 'object') {
-    const value = report.progress ?? report.pct ?? report.percent
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value > 1 ? Math.max(0, Math.min(1, value / 100)) : Math.max(0, Math.min(1, value))
-    }
-  }
-  return null
-}
-
-function getCimbarReportedFileSize(report) {
-  if (Array.isArray(report)) {
-    for (let i = 1; i < report.length; i++) {
-      const value = report[i]
-      if (typeof value === 'number' && Number.isFinite(value) && value > 1024) {
-        return Math.round(value)
-      }
-    }
-  }
-  if (report && typeof report === 'object') {
-    const value = report.fileSize ?? report.filesize ?? report.totalBytes ?? report.bytesTotal ?? report.size
-    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-      return Math.round(value)
-    }
-  }
-  return 0
-}
-
-function recordCimbarProgressSample(bytes) {
-  if (!Number.isFinite(bytes) || bytes < 0) return
-
-  const now = Date.now()
-  state.cimbarProgressSamples.push({ time: now, bytes })
-
-  const cutoff = now - 10000
-  while (state.cimbarProgressSamples.length > 0 && state.cimbarProgressSamples[0].time < cutoff) {
-    state.cimbarProgressSamples.shift()
-  }
-}
-
-function getCimbarThroughputStats(currentBytes) {
-  if (!state.startTime || !Number.isFinite(currentBytes)) return null
-
-  recordCimbarProgressSample(currentBytes)
-
-  const now = Date.now()
-  const elapsed = (now - state.startTime) / 1000
-  const average = elapsed > 0 ? currentBytes / elapsed : 0
-
-  let recent = average
-  if (state.cimbarProgressSamples.length >= 2) {
-    const first = state.cimbarProgressSamples[0]
-    const last = state.cimbarProgressSamples[state.cimbarProgressSamples.length - 1]
-    const recentElapsed = (last.time - first.time) / 1000
-    if (recentElapsed > 0) {
-      recent = (last.bytes - first.bytes) / recentElapsed
-    }
-  }
-
-  return { average, recent }
-}
-
-function resetCimbarSink() {
-  state.cimbarCurrentMode = 0
-  state.cimbarRecentDecode = -1
-  state.cimbarRecentExtract = -1
-  state.cimbarFileSize = 0
-  state.cimbarRawBytes = 0
-  state.cimbarProgressSamples = []
-  state.cimbarRoi = null
-  state.cimbarTileRois = null
-  state.cimbarRoiMisses = 0
-
-  const Module = getCimbarModule()
-  if (!Module) return
-  Module._cimbard_configure_decode(4)
-  Module._cimbard_configure_decode(HDMI_CIMBAR_MODE)
-}
-
-async function ensureCimbarLoaded() {
-  if (state.cimbarLoaded) return true
-  try {
-    await loadCimbarWasm()
-    state.cimbarLoaded = true
-    resetCimbarSink()
-    debugLog('CIMBAR decoder ready')
-    return true
-  } catch (err) {
-    debugLog(`CIMBAR load failed: ${err.message}`)
-    return false
-  }
-}
-
-async function handleCimbarComplete(fileId) {
-  const Module = getCimbarModule()
-  if (!Module) return false
-
-  state.isScanning = false
-  cancelNextFrame()
-
-  const fileSize = Module._cimbard_get_filesize(fileId)
-  const fnLen = Module._cimbard_get_filename(fileId, state.cimbarReportBuff.byteOffset, 1024)
-  const fileName = fnLen > 0
-    ? new TextDecoder().decode(new Uint8Array(Module.HEAPU8.buffer, state.cimbarReportBuff.byteOffset, fnLen))
-    : 'download'
-
-  const bufSize = Module._cimbard_get_decompress_bufsize()
-  const decompBuff = Module._malloc(bufSize)
-  const chunks = []
-  let bytesRead
-  do {
-    bytesRead = Module._cimbard_decompress_read(fileId, decompBuff, bufSize)
-    if (bytesRead > 0) {
-      chunks.push(new Uint8Array(Module.HEAPU8.buffer, decompBuff, bytesRead).slice())
-    }
-  } while (bytesRead > 0)
-  Module._free(decompBuff)
-
-  const fileData = new Blob(chunks, { type: 'application/octet-stream' })
-  const arrayBuffer = await fileData.arrayBuffer()
-  const elapsed = (Date.now() - state.startTime) / 1000
-  const rate = fileSize / Math.max(elapsed, 0.001)
-
-  state.completedFile = {
-    data: arrayBuffer,
-    name: fileName,
-    type: 'application/octet-stream'
-  }
-  elements.completeName.textContent = `${fileName} (${formatBytes(fileSize)})`
-  elements.completeRate.textContent = `${formatBytes(rate)}/s`
-  debugLog('=== TRANSFER COMPLETE ===')
-  debugLog(`Complete: ${formatBytes(fileSize)} in ${elapsed.toFixed(1)}s (${formatBytes(rate)}/s)`)
-  showCompleteStatus()
-  return true
-}
-
-function fitAspectRect(maxWidth, maxHeight, ratio) {
-  let width = maxWidth
-  let height = Math.floor(width / ratio)
-  if (height > maxHeight) {
-    height = maxHeight
-    width = Math.floor(height * ratio)
-  }
-  return {
-    width: Math.max(1, width),
-    height: Math.max(1, height)
-  }
-}
-
-function buildCimbarTileLayout(width, height) {
-  const layout = getHdmiCimbarLayout(width, height)
-  return {
-    captureRoi: layout.captureRoi,
-    absoluteTiles: [layout.captureRoi],
-    relativeTiles: [{ x: 0, y: 0, w: layout.captureRoi.w, h: layout.captureRoi.h }]
-  }
-}
-
-function copyCimbarImageRect(Module, imageData, imageWidth, rect) {
-  const rgbaSize = rect.w * rect.h * 4
-  ensureCimbarBuffers(Module, rgbaSize)
-
-  const src = imageData.data
-  const rowBytes = rect.w * 4
-  let dstOffset = 0
-  let srcOffset = ((rect.y * imageWidth) + rect.x) * 4
-
-  for (let y = 0; y < rect.h; y++) {
-    state.cimbarImgBuff.set(src.subarray(srcOffset, srcOffset + rowBytes), dstOffset)
-    dstOffset += rowBytes
-    srcOffset += imageWidth * 4
-  }
-}
-
-function scanCimbarFrame(Module, imageData, width, height, mode, rect = null) {
-  let scanWidth = width
-  let scanHeight = height
-
-  if (rect) {
-    copyCimbarImageRect(Module, imageData, width, rect)
-    scanWidth = rect.w
-    scanHeight = rect.h
-  } else {
-    ensureCimbarBuffers(Module, imageData.data.length)
-    state.cimbarImgBuff.set(imageData.data)
-  }
-
-  Module._cimbard_configure_decode(mode)
-  return Module._cimbard_scan_extract_decode(
-    state.cimbarImgBuff.byteOffset,
-    scanWidth,
-    scanHeight,
-    4,
-    state.cimbarFountainBuff.byteOffset,
-    state.cimbarFountainBuff.length
-  )
-}
-
-function resetCimbarRoiAfterMisses() {
-  state.cimbarRoiMisses++
-  if (state.cimbarRoiMisses === 3 && state.cimbarRoi) {
-    debugLog(
-      `CIMBAR ROI reset after misses: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ` +
-      `${state.cimbarRoi.w}x${state.cimbarRoi.h} tiles=${HDMI_CIMBAR_TILE_COUNT}`
-    )
-    state.cimbarRoi = null
-    state.cimbarTileRois = null
-    state.cimbarRoiMisses = 0
-  }
-}
-
-async function tryCimbarDecode(imageData, width, height, { roiCaptured = false } = {}) {
-  if (!(await ensureCimbarLoaded())) return false
-
-  const Module = getCimbarModule()
-  if (!Module) return false
-
-  const effectiveMode = HDMI_CIMBAR_MODE
-  ensureCimbarBuffers(Module, imageData.data.length)
-
-  if (!state.cimbarRoi) {
-    const layout = buildCimbarTileLayout(width, height)
-    state.cimbarRoi = layout.captureRoi
-    state.cimbarTileRois = {
-      absolute: layout.absoluteTiles,
-      relative: layout.relativeTiles
-    }
-    state.cimbarRoiMisses = 0
-    debugLog(
-      `CIMBAR ROI preset: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ` +
-      `${state.cimbarRoi.w}x${state.cimbarRoi.h} tiles=${HDMI_CIMBAR_TILE_COUNT}`
-    )
-  }
-
-  let len = 0
-  let tileHits = 0
-  let completeResult = 0
-  let usedRoi = roiCaptured
-  if (roiCaptured) {
-    len = scanCimbarFrame(Module, imageData, width, height, effectiveMode)
-    if (len > 0) {
-      tileHits = 1
-      completeResult = Module._cimbard_fountain_decode(state.cimbarFountainBuff.byteOffset, len)
-    }
-    if (len <= 0) {
-      resetCimbarRoiAfterMisses()
-    }
-  } else if (state.cimbarRoi) {
-    len = scanCimbarFrame(Module, imageData, width, height, effectiveMode, state.cimbarRoi)
-    if (len > 0) {
-      tileHits = 1
-      completeResult = Module._cimbard_fountain_decode(state.cimbarFountainBuff.byteOffset, len)
-    }
-    usedRoi = len > 0
-    if (len <= 0) {
-      resetCimbarRoiAfterMisses()
-    }
-  }
-
-  if (len <= 0 && !roiCaptured) {
-    len = scanCimbarFrame(Module, imageData, width, height, effectiveMode)
-    if (len > 0) {
-      tileHits = 1
-      completeResult = Module._cimbard_fountain_decode(state.cimbarFountainBuff.byteOffset, len)
-    }
-    usedRoi = false
-  }
-
-  if (len > 0) {
-    state.cimbarRecentDecode = state.frameCount
-    state.cimbarRawBytes += len
-    if (state.cimbarCurrentMode !== effectiveMode) {
-      debugLog(`CIMBAR mode pinned: ${CIMBAR_MODE_LABELS[effectiveMode] || effectiveMode} (${effectiveMode})`)
-    }
-    state.cimbarCurrentMode = effectiveMode
-    if (!state.cimbarRoi) {
-      const layout = buildCimbarTileLayout(width, height)
-      state.cimbarRoi = layout.captureRoi
-      debugLog(
-        `CIMBAR ROI locked: (${state.cimbarRoi.x},${state.cimbarRoi.y}) ` +
-        `${state.cimbarRoi.w}x${state.cimbarRoi.h} tiles=${HDMI_CIMBAR_TILE_COUNT}`
-      )
-    }
-    state.cimbarRoiMisses = 0
-    if (state.detectedMode !== HDMI_MODE.CIMBAR) {
-      state.detectedMode = HDMI_MODE.CIMBAR
-      elements.signalStatus.textContent = 'Detected: CIMBAR'
-      debugLog('=== SIGNAL DETECTED ===')
-      debugLog(`Mode: ${HDMI_MODE_NAMES[HDMI_MODE.CIMBAR]}`)
-    }
-
-    const report = getCimbarReport(Module)
-    const progress = getCimbarProgressFraction(report)
-    const reportedFileSize = getCimbarReportedFileSize(report)
-    if (reportedFileSize > 0) {
-      state.cimbarFileSize = reportedFileSize
-    }
-
-    if (progress !== null) {
-      if (!state.startTime) {
-        state.startTime = Date.now()
-        showReceivingStatus()
-      }
-      const pct = Math.round(progress * 100)
-      elements.fileName.textContent = 'CIMBAR transfer'
-      elements.statProgress.textContent = `${pct}%`
-      elements.progressFill.style.width = `${pct}%`
-      const currentBytes = state.cimbarFileSize > 0
-        ? state.cimbarFileSize * progress
-        : state.cimbarRawBytes
-      const throughput = getCimbarThroughputStats(currentBytes)
-      if (throughput) {
-        const rawSuffix = state.cimbarFileSize > 0 ? '' : ' raw'
-        elements.statRate.textContent = `${formatBytes(throughput.average)}/s${rawSuffix}`
-      } else {
-        elements.statRate.textContent = '-'
-      }
-      if (state.frameCount % 10 === 0) {
-        const rateSuffix = throughput
-          ? ` rate=${formatBytes(throughput.average)}/s recent=${formatBytes(throughput.recent)}/s${state.cimbarFileSize > 0 ? '' : ' raw'}`
-          : ''
-        debugLog(
-          `CIMBAR Progress: ${pct}% len=${len} mode=${effectiveMode}` +
-          `${usedRoi ? ' roi=1' : ' roi=0'} tiles=${tileHits}/${HDMI_CIMBAR_TILE_COUNT}${rateSuffix}`
-        )
-      }
-    }
-
-    if (completeResult > 0) {
-      const fileId = Number(completeResult & BigInt(0xFFFFFFFF))
-      await handleCimbarComplete(fileId)
-    } else {
-      debugCurrent(`#${state.frameCount} CIMBAR len=${len} x${tileHits}`)
-    }
-    return true
-  }
-
-  if (len === 0) {
-    state.cimbarRecentExtract = state.frameCount
-  }
-  return false
 }
 
 async function enumerateDevices() {
@@ -2576,12 +2195,6 @@ async function startCapture(deviceId) {
     state.ctx = state.canvas.getContext('2d', {
       willReadFrequently: true,
       alpha: false,  // Might help with consistent color handling
-      colorSpace: 'srgb'
-    })
-    state.cimbarCanvas = document.createElement('canvas')
-    state.cimbarCtx = state.cimbarCanvas.getContext('2d', {
-      willReadFrequently: true,
-      alpha: false,
       colorSpace: 'srgb'
     })
 
@@ -2789,7 +2402,6 @@ async function processFrame(now, metadata) {
   let imageHeight = height
   let decodeRegion = state.anchorBounds || state.tentativeAnchorBounds
   let captureMethod = 'video'
-  let usedCimbarRoiCapture = false
   const frameStartMs = performance.now()
   let captureMs = 0
   let anchorMs = 0
@@ -2820,17 +2432,14 @@ async function processFrame(now, metadata) {
   const captureStartMs = performance.now()
 
   // ImageCapture is useful for initial acquisition, but it is noticeably
-  // slower than drawing the video element directly. Once we have either HDMI
-  // anchor lock or a CIMBAR ROI / signal lock, prioritize raw video frames.
+  // slower than drawing the video element directly. Once we have HDMI anchor
+  // lock, prioritize raw video frames.
   const useImageCapture = imageCapture &&
     !state.anchorBounds &&
-    !state.tentativeAnchorBounds &&
-    !(state.detectedMode === HDMI_MODE.CIMBAR && state.cimbarRoi) &&
-    state.detectedMode !== HDMI_MODE.CIMBAR
-  const useCimbarRoiCapture = state.detectedMode === HDMI_MODE.CIMBAR && !!state.cimbarRoi
+    !state.tentativeAnchorBounds
   let lockedCapture = null
   const anchorRegionForCapture = state.anchorBounds || state.tentativeAnchorBounds
-  if (shouldUseLockedCaptureRegion(anchorRegionForCapture, state.labFrameTapEnabled) && state.detectedMode !== HDMI_MODE.CIMBAR) {
+  if (shouldUseLockedCaptureRegion(anchorRegionForCapture, state.labFrameTapEnabled)) {
     const needsLockedCaptureRefresh =
       state.anchorBounds
         ? (
@@ -2861,44 +2470,6 @@ async function processFrame(now, metadata) {
     lockedCapture = state.anchorBounds
       ? state.lockedCaptureRegion
       : state.tentativeLockedCaptureRegion
-  }
-
-  if (useCimbarRoiCapture) {
-    const roi = state.cimbarRoi
-    imageWidth = roi.w
-    imageHeight = roi.h
-
-    if (hasVideoFrame && metadata) {
-      try {
-        const frame = new VideoFrame(video, { timestamp: metadata.mediaTime * 1000000 || 0 })
-        imageData = captureImageDataToCanvas(
-          frame,
-          state.cimbarCanvas,
-          state.cimbarCtx,
-          roi.w,
-          roi.h,
-          roi
-        )
-        frame.close()
-        captureMethod = 'VideoFrame ROI'
-        usedCimbarRoiCapture = true
-      } catch (e) {
-        // Fall through to direct video ROI capture
-      }
-    }
-
-    if (!imageData) {
-      imageData = captureImageDataToCanvas(
-        video,
-        state.cimbarCanvas,
-        state.cimbarCtx,
-        roi.w,
-        roi.h,
-        roi
-      )
-      captureMethod = 'video ROI'
-      usedCimbarRoiCapture = true
-    }
   }
 
   // Try ImageCapture API first while scanning for initial lock
@@ -3007,45 +2578,6 @@ async function processFrame(now, metadata) {
 
   state.frameCount++
   const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
-
-  if (state.detectedMode === HDMI_MODE.CIMBAR) {
-    let cimbarDetected = await tryCimbarDecode(imageData, imageWidth, imageHeight, { roiCaptured: usedCimbarRoiCapture })
-    if (!cimbarDetected && usedCimbarRoiCapture) {
-      let fallbackImageData = null
-      let fallbackMethod = captureMethod
-      if (hasVideoFrame && metadata) {
-        try {
-          const frame = new VideoFrame(video, { timestamp: metadata.mediaTime * 1000000 || 0 })
-          fallbackImageData = captureImageDataToCanvas(frame, state.canvas, state.ctx, width, height)
-          frame.close()
-          fallbackMethod = 'VideoFrame'
-        } catch (e) {
-          // Fall through to direct video capture
-        }
-      }
-      if (!fallbackImageData) {
-        fallbackImageData = captureImageDataToCanvas(video, state.canvas, state.ctx, width, height)
-        fallbackMethod = 'video'
-      }
-      if (fallbackMethod !== state.activeCaptureMethod) {
-        state.activeCaptureMethod = fallbackMethod
-        debugLog(`Capture path: ${fallbackMethod}`)
-      }
-      cimbarDetected = await tryCimbarDecode(fallbackImageData, width, height)
-    }
-    if (state.isScanning) scheduleNextFrame()
-    finalizeFramePerf()
-    return
-  }
-
-  if (!state.anchorBounds && (state.detectedMode === null || state.detectedMode === HDMI_MODE.CIMBAR)) {
-    const cimbarDetected = await tryCimbarDecode(imageData, width, height)
-    if (cimbarDetected) {
-      if (state.isScanning) scheduleNextFrame()
-      finalizeFramePerf()
-      return
-    }
-  }
 
   // Diagnostic: find canvas bounds and scan for anchors
   if (!state.anchorBounds && isDiagFrame) {
@@ -3650,15 +3182,6 @@ function resetReceiver() {
   cancelNextFrame()
 
   state.decoder = null
-  state.cimbarCurrentMode = 0
-  state.cimbarRecentDecode = -1
-  state.cimbarRecentExtract = -1
-  state.cimbarFileSize = 0
-  state.cimbarRawBytes = 0
-  state.cimbarProgressSamples = []
-  state.cimbarRoi = null
-  state.cimbarTileRois = null
-  state.cimbarRoiMisses = 0
   state.frameCount = 0
   state.validFrames = 0
   state.startTime = null
@@ -3683,7 +3206,6 @@ function resetReceiver() {
   state.lastImageDataCapturedAtMs = 0
   resetReceiverPerfState()
   resetCaptureTuningState()
-  resetCimbarSink()
   // Keep the worker alive across transfers, but reset the probe counters so
   // each transfer's telemetry starts from zero. Pending probes from a prior
   // transfer are dropped (their hashResult messages will be ignored because

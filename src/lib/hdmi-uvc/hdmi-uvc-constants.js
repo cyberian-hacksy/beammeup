@@ -36,7 +36,6 @@ export const HDMI_MODE = {
   LUMA_2: 3,
   CODEBOOK_3: 5,
   GLYPH_5: 6,
-  CIMBAR: 7,
   BINARY_3: 8,
   BINARY_2: 9
 }
@@ -48,7 +47,6 @@ export const HDMI_MODE_NAMES = {
   [HDMI_MODE.LUMA_2]: 'Luma2',
   [HDMI_MODE.CODEBOOK_3]: 'Tile3',
   [HDMI_MODE.GLYPH_5]: 'Glyph5',
-  [HDMI_MODE.CIMBAR]: 'CIMBAR',
   [HDMI_MODE.BINARY_3]: '3x3',
   [HDMI_MODE.BINARY_2]: '2x2'
 }

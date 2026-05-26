@@ -80,11 +80,13 @@ import {
   testHeaderAndPayloadBlockSizesMatchForExistingModes,
   testBinary3ConstantsRegistered,
   testBinary2ConstantsRegistered,
+  testHdmiModesExcludeRemovedMode7,
   testBinary3FrameRoundtrip,
   testBinary2FrameRoundtrip,
   testDecodeDataRegionPropagatesBinary3Levels,
   testBinary3LockedLayoutMatchesBlindSweep,
   testBinary3PrecomputedOffsetsMatchUncached,
+  testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer,
   testDecodeDataRegionConfidence,
   testDecodeDataRegionConfidenceCompat4,
   testFrameRefactorPreservesCompat4Bytes,
@@ -174,11 +176,13 @@ window.testClassifyStep = testClassifyStep
 window.testHeaderAndPayloadBlockSizesMatchForExistingModes = testHeaderAndPayloadBlockSizesMatchForExistingModes
 window.testBinary3ConstantsRegistered = testBinary3ConstantsRegistered
 window.testBinary2ConstantsRegistered = testBinary2ConstantsRegistered
+window.testHdmiModesExcludeRemovedMode7 = testHdmiModesExcludeRemovedMode7
 window.testBinary3FrameRoundtrip = testBinary3FrameRoundtrip
 window.testBinary2FrameRoundtrip = testBinary2FrameRoundtrip
 window.testDecodeDataRegionPropagatesBinary3Levels = testDecodeDataRegionPropagatesBinary3Levels
 window.testBinary3LockedLayoutMatchesBlindSweep = testBinary3LockedLayoutMatchesBlindSweep
 window.testBinary3PrecomputedOffsetsMatchUncached = testBinary3PrecomputedOffsetsMatchUncached
+window.testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer = testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer
 window.testDecodeDataRegionConfidence = testDecodeDataRegionConfidence
 window.testDecodeDataRegionConfidenceCompat4 = testDecodeDataRegionConfidenceCompat4
 window.testFrameRefactorPreservesCompat4Bytes = testFrameRefactorPreservesCompat4Bytes
@@ -391,11 +395,13 @@ async function runAllTests() {
     hdmiHeaderPayloadBlockSizes: testHeaderAndPayloadBlockSizesMatchForExistingModes(),
     hdmiBinary3Constants: testBinary3ConstantsRegistered(),
     hdmiBinary2Constants: testBinary2ConstantsRegistered(),
+    hdmiModesExcludeRemovedMode7: testHdmiModesExcludeRemovedMode7(),
     hdmiBinary3FrameRoundtrip: testBinary3FrameRoundtrip(),
     hdmiBinary2FrameRoundtrip: testBinary2FrameRoundtrip(),
     hdmiBinary3LevelsPropagation: testDecodeDataRegionPropagatesBinary3Levels(),
     hdmiBinary3LockedLayout: testBinary3LockedLayoutMatchesBlindSweep(),
     hdmiBinary3PrecomputedOffsets: testBinary3PrecomputedOffsetsMatchUncached(),
+    hdmiDenseBinaryLayoutNoConfidenceBuffer: testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer(),
     hdmiDecodeConfidenceBinary3: testDecodeDataRegionConfidence(),
     hdmiDecodeConfidenceCompat4: testDecodeDataRegionConfidenceCompat4(),
     hdmiFrameRefactorCompat4: testFrameRefactorPreservesCompat4Bytes(),

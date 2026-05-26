@@ -3,7 +3,6 @@
 import { createEncoder } from '../encoder.js'
 import { METADATA_INTERVAL } from '../constants.js'
 import { PACKET_HEADER_SIZE } from '../packet.js'
-import { loadCimbarWasm, getModule as getCimbarModule } from '../cimbar/cimbar-loader.js'
 import {
   HDMI_UVC_MAX_FILE_SIZE,
   HDMI_MODE,
@@ -46,73 +45,7 @@ const DEBUG_MODE = true
 // (2S/2P/2F aggressive) available via the sender diagnostics panel. The
 // value is read per-pass so changes apply on the next TX session without a
 // reload. See docs/plans/2026-04-17-hdmi-tail-solver-and-rx-hardening.md Phase 3.
-const CIMBAR_MAX_FILE_SIZE = 33 * 1024 * 1024
-const HDMI_CIMBAR_MODE = 68
-const HDMI_CIMBAR_VARIANT_NAME = 'B'
-const HDMI_CIMBAR_TILE_COUNT = 1
-const HDMI_CIMBAR_TILE_GAP = 0
 const TX_PERF_LOG_INTERVAL_FRAMES = 60
-const HDMI_CIMBAR_TILE_PADDING = {
-  top: 20,
-  right: 20,
-  bottom: 10,
-  left: 10
-}
-const HDMI_CIMBAR_CANONICAL_RENDER_SIZE = 1054
-const HDMI_CIMBAR_VARIANTS = [HDMI_CIMBAR_MODE]
-const CIMBAR_VARIANT_NAMES = {
-  [HDMI_CIMBAR_MODE]: HDMI_CIMBAR_VARIANT_NAME
-}
-
-function getHdmiCimbarLayout(width, height) {
-  const maxContentWidth = Math.max(1, width - HDMI_CIMBAR_TILE_PADDING.left - HDMI_CIMBAR_TILE_PADDING.right)
-  const maxContentHeight = Math.max(1, height - HDMI_CIMBAR_TILE_PADDING.top - HDMI_CIMBAR_TILE_PADDING.bottom)
-  const contentSize = Math.max(1, Math.min(maxContentWidth, maxContentHeight, HDMI_CIMBAR_CANONICAL_RENDER_SIZE))
-  const renderWidth = HDMI_CIMBAR_CANONICAL_RENDER_SIZE
-  const renderHeight = HDMI_CIMBAR_CANONICAL_RENDER_SIZE
-  const tileOuterWidth = contentSize + HDMI_CIMBAR_TILE_PADDING.left + HDMI_CIMBAR_TILE_PADDING.right
-  const tileOuterHeight = contentSize + HDMI_CIMBAR_TILE_PADDING.top + HDMI_CIMBAR_TILE_PADDING.bottom
-  const tiles = [{
-    index: 0,
-    x: 0,
-    y: 0,
-    w: tileOuterWidth,
-    h: tileOuterHeight,
-    contentX: HDMI_CIMBAR_TILE_PADDING.left,
-    contentY: HDMI_CIMBAR_TILE_PADDING.top,
-    contentW: contentSize,
-    contentH: contentSize,
-    renderX: HDMI_CIMBAR_TILE_PADDING.left,
-    renderY: HDMI_CIMBAR_TILE_PADDING.top,
-    renderW: contentSize,
-    renderH: contentSize
-  }]
-
-  return {
-    mode: HDMI_CIMBAR_MODE,
-    ratio: 1,
-    gap: HDMI_CIMBAR_TILE_GAP,
-    padding: { ...HDMI_CIMBAR_TILE_PADDING },
-    tileCount: HDMI_CIMBAR_TILE_COUNT,
-    contentWidth: contentSize,
-    contentHeight: contentSize,
-    renderWidth,
-    renderHeight,
-    tileOuterWidth,
-    tileOuterHeight,
-    composition: {
-      x: 0,
-      y: 0,
-      w: tileOuterWidth,
-      h: tileOuterHeight
-    },
-    display: {
-      width: tileOuterWidth,
-      height: tileOuterHeight
-    },
-    tiles
-  }
-}
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -295,12 +228,6 @@ const state = {
   systematicPass: 1,
   tailStartFrame: 0,
   metadataIntervalFrames: METADATA_INTERVAL * 2,
-  cimbarIdealRatio: 1,
-  cimbarVariant: HDMI_CIMBAR_MODE,
-  cimbarBoundsLogged: false,
-  cimbarRenderCanvas: null,
-  cimbarUseWrapper: false,
-  cimbarLayout: null,
   nextFrameDueMs: 0,
   frameBuffer: null,
   frameImageData: null,
@@ -551,10 +478,6 @@ function resetPreparedSessionState() {
   state.metadataIntervalFrames = METADATA_INTERVAL * 2
   state.frameCount = 0
   state.nextFrameDueMs = 0
-  state.cimbarIdealRatio = 1
-  state.cimbarBoundsLogged = false
-  state.cimbarUseWrapper = false
-  state.cimbarLayout = null
   state.animationId = null
   resetSenderPerfState()
 }
@@ -808,189 +731,12 @@ export function normalizeExternalPresentationMetrics(metrics, target = getPresen
   return metrics
 }
 
-function isCimbarMode() {
-  return state.mode === HDMI_MODE.CIMBAR
-}
-
 function isDenseBinaryMode(mode = state.mode) {
   return mode === HDMI_MODE.BINARY_3 || mode === HDMI_MODE.BINARY_2
 }
 
 function modeRequiresNative1080p(mode) {
   return isDenseBinaryMode(mode)
-}
-
-function normalizeHdmiCimbarVariant(value) {
-  return HDMI_CIMBAR_VARIANTS.includes(value) ? value : HDMI_CIMBAR_MODE
-}
-
-function copyToWasmHeap(Module, data) {
-  const ptr = Module._malloc(data.length)
-  const wasmData = new Uint8Array(Module.HEAPU8.buffer, ptr, data.length)
-  wasmData.set(data)
-  return { ptr, view: wasmData }
-}
-
-function logCimbarContentBounds(canvas = elements?.canvas, label = 'CIMBAR content bounds') {
-  if (!canvas) return
-
-  const srcWidth = canvas.width
-  const srcHeight = canvas.height
-  if (!srcWidth || !srcHeight) return
-
-  const probeCanvas = document.createElement('canvas')
-  probeCanvas.width = srcWidth
-  probeCanvas.height = srcHeight
-  const probeCtx = probeCanvas.getContext('2d', { willReadFrequently: true })
-  if (!probeCtx) return
-
-  probeCtx.drawImage(canvas, 0, 0, srcWidth, srcHeight)
-  const pixels = probeCtx.getImageData(0, 0, srcWidth, srcHeight).data
-
-  let minX = srcWidth
-  let minY = srcHeight
-  let maxX = -1
-  let maxY = -1
-
-  for (let y = 0; y < srcHeight; y++) {
-    for (let x = 0; x < srcWidth; x++) {
-      const idx = (y * srcWidth + x) * 4
-      const r = pixels[idx]
-      const g = pixels[idx + 1]
-      const b = pixels[idx + 2]
-      const a = pixels[idx + 3]
-      if (a > 0 && (r > 12 || g > 12 || b > 12)) {
-        if (x < minX) minX = x
-        if (y < minY) minY = y
-        if (x > maxX) maxX = x
-        if (y > maxY) maxY = y
-      }
-    }
-  }
-
-  if (maxX >= minX && maxY >= minY) {
-    debugLog(
-      `${label}: (${minX},${minY})..(${maxX},${maxY}) ` +
-      `size=${maxX - minX + 1}x${maxY - minY + 1} within ${srcWidth}x${srcHeight}`
-    )
-  } else {
-    debugLog(`${label}: no non-black pixels within ${srcWidth}x${srcHeight}`)
-  }
-}
-
-function ensureCimbarRenderCanvas(width, height) {
-  if (!state.cimbarRenderCanvas) {
-    state.cimbarRenderCanvas = document.createElement('canvas')
-  }
-  if (width && height) {
-    state.cimbarRenderCanvas.width = width
-    state.cimbarRenderCanvas.height = height
-  }
-  return state.cimbarRenderCanvas
-}
-
-function prepareCimbarCanvasForConfigure(metrics = getCanvasViewportMetrics()) {
-  const layout = getHdmiCimbarLayout(metrics.width, metrics.height)
-
-  elements.canvas.style.position = 'static'
-  elements.canvas.style.top = ''
-  elements.canvas.style.left = ''
-  elements.canvas.style.transform = ''
-  elements.canvas.style.setProperty('width', `${layout.display.width}px`, 'important')
-  elements.canvas.style.setProperty('height', `${layout.display.height}px`, 'important')
-  elements.canvas.style.setProperty('max-width', 'none', 'important')
-  elements.canvas.style.setProperty('max-height', 'none', 'important')
-  elements.canvas.style.padding = ''
-  elements.canvas.style.boxSizing = ''
-  if (elements.container) {
-    elements.container.style.justifyContent = 'center'
-    elements.container.style.alignItems = 'center'
-  }
-  state.cimbarLayout = layout
-  ensureCimbarRenderCanvas(layout.renderWidth, layout.renderHeight)
-
-  debugLog(`Canvas: CIMBAR provisional ${layout.renderWidth}x${layout.renderHeight} before configure`)
-}
-
-function clearCimbarDisplay() {
-  const ctx = elements.canvas.getContext('2d')
-  if (!ctx) return
-
-  ctx.fillStyle = '#000'
-  ctx.fillRect(0, 0, elements.canvas.width, elements.canvas.height)
-}
-
-function blitCimbarTileToDisplay(tile) {
-  if (!state.cimbarUseWrapper || !state.cimbarRenderCanvas || !tile) return
-
-  const ctx = elements.canvas.getContext('2d')
-  if (!ctx) return
-
-  ctx.drawImage(
-    state.cimbarRenderCanvas,
-    tile.renderX,
-    tile.renderY,
-    tile.renderW,
-    tile.renderH
-  )
-}
-
-function scaleCimbarCanvasToViewport(metrics = getCanvasViewportMetrics()) {
-  const Module = getCimbarModule()
-  const landscapeViewport = metrics.width >= metrics.height
-  const layout = getHdmiCimbarLayout(metrics.width, metrics.height)
-  const rotateFlag = landscapeViewport ? 1 : 0
-
-  if (Module?._cimbare_rotate_window) {
-    Module._cimbare_rotate_window(rotateFlag)
-  }
-
-  const ratio = Module?._cimbare_get_aspect_ratio?.() || state.cimbarIdealRatio || 1
-  state.cimbarIdealRatio = ratio
-  state.cimbarLayout = layout
-  state.cimbarUseWrapper = true
-
-  const renderCanvas = ensureCimbarRenderCanvas(layout.renderWidth, layout.renderHeight)
-  Module.canvas = renderCanvas
-  if (typeof Module?.setCanvasSize === 'function') {
-    Module.setCanvasSize(layout.renderWidth, layout.renderHeight)
-  } else {
-    renderCanvas.width = layout.renderWidth
-    renderCanvas.height = layout.renderHeight
-  }
-  elements.canvas.width = layout.display.width
-  elements.canvas.height = layout.display.height
-
-  elements.canvas.style.setProperty('width', `${layout.display.width}px`, 'important')
-  elements.canvas.style.setProperty('height', `${layout.display.height}px`, 'important')
-  elements.canvas.style.position = 'static'
-  elements.canvas.style.top = ''
-  elements.canvas.style.left = ''
-  elements.canvas.style.transform = ''
-  elements.canvas.style.padding = ''
-  elements.canvas.style.boxSizing = ''
-  elements.canvas.style.setProperty('max-width', 'none', 'important')
-  elements.canvas.style.setProperty('max-height', 'none', 'important')
-  if (elements.container) {
-    elements.container.style.justifyContent = 'center'
-    elements.container.style.alignItems = 'center'
-  }
-  clearCimbarDisplay()
-
-  debugLog(`Viewport: rect=${metrics.rectWidth}x${metrics.rectHeight}, visual=${metrics.visualWidth}x${metrics.visualHeight}, inner=${metrics.innerWidth}x${metrics.innerHeight}, screen=${metrics.screenWidth}x${metrics.screenHeight}, dpr=${metrics.devicePixelRatio}`)
-  debugLog(
-    `Canvas: CIMBAR viewport ${layout.display.width}x${layout.display.height} ` +
-    `(content=${layout.contentWidth}x${layout.contentHeight}, render=${layout.renderWidth}x${layout.renderHeight}, ` +
-    `tile=${layout.tileOuterWidth}x${layout.tileOuterHeight}, ` +
-    `gap=${layout.gap}, composition=${layout.composition.w}x${layout.composition.h}@(${layout.composition.x},${layout.composition.y}), ` +
-    `pad t=${layout.padding.top}, r=${layout.padding.right}, ` +
-    `b=${layout.padding.bottom}, l=${layout.padding.left}, ` +
-    `tiles=${layout.tileCount}, ratio=${ratio.toFixed(3)}, landscape=${landscapeViewport}, rotate=${rotateFlag}, scale=1.00)`
-  )
-  debugLog(
-    `Canvas internal: ${elements.canvas.width}x${elements.canvas.height} ` +
-    `(render=${state.cimbarRenderCanvas.width}x${state.cimbarRenderCanvas.height}, tiles=${layout.tileCount})`
-  )
 }
 
 function measureAndApplyCanvasSize(viewportMetrics = getCanvasViewportMetrics(), target = getPresentationTarget()) {
@@ -1217,7 +963,7 @@ async function prepareExternalFullscreenTarget() {
 }
 
 async function preparePresentationTarget() {
-  if (state.useExternalDisplay && !isCimbarMode()) {
+  if (state.useExternalDisplay) {
     return prepareExternalFullscreenTarget()
   }
   state.presentation = null
@@ -1379,14 +1125,12 @@ function updateModeSelector() {
     button.classList.toggle('active', mode === state.mode)
     button.disabled = disabled
   }
-
-  state.cimbarVariant = HDMI_CIMBAR_MODE
 }
 
 function updateRenderSizeSelector() {
   if (!elements?.renderSizeSelect) return
   elements.renderSizeSelect.value = getRenderSizePreset().id
-  elements.renderSizeSelect.disabled = state.isSending || state.isPaused || state.isAwaitingStart || isCimbarMode()
+  elements.renderSizeSelect.disabled = state.isSending || state.isPaused || state.isAwaitingStart
   if (elements.labCardSelect) {
     elements.labCardSelect.disabled = state.isSending || state.isPaused || state.isAwaitingStart
   }
@@ -2163,39 +1907,6 @@ function buildFramePacketBatch(frameNumber) {
 function renderFrame() {
   if (!state.isSending || state.isPaused) return
 
-  if (isCimbarMode()) {
-    const Module = getCimbarModule()
-    if (!Module) return
-
-    try {
-      const layout = state.cimbarLayout || getHdmiCimbarLayout(elements.canvas.width, elements.canvas.height)
-      clearCimbarDisplay()
-      for (const tile of layout.tiles) {
-        Module._cimbare_render()
-        blitCimbarTileToDisplay(tile)
-        Module._cimbare_next_frame(false)
-      }
-
-      state.frameCount++
-      if (!state.cimbarBoundsLogged && state.frameCount >= 2) {
-        if (state.cimbarUseWrapper && state.cimbarRenderCanvas) {
-          logCimbarContentBounds(state.cimbarRenderCanvas, 'CIMBAR render bounds')
-        }
-        logCimbarContentBounds(elements.canvas, 'CIMBAR content bounds')
-        state.cimbarBoundsLogged = true
-      }
-      elements.frameCount.textContent = state.frameCount
-      elements.progressDisplay.textContent = 'CIMBAR'
-      debugCurrent(`#${state.frameCount} CIMBAR x${layout.tileCount}`)
-
-      scheduleNextRender()
-    } catch (err) {
-      debugLog(`ERROR: ${err.message}`)
-      showError('CIMBAR render error: ' + err.message)
-    }
-    return
-  }
-
   if (!state.encoder) return
 
   const fps = getFps()
@@ -2294,12 +2005,7 @@ function armPreparedStart(autoStartDelayMs = 0) {
 
 function beginPreparedStart() {
   if (!state.fileData) return
-  if (isCimbarMode()) {
-    const Module = getCimbarModule()
-    if (!Module) return
-  } else if (!state.encoder) {
-    return
-  }
+  if (!state.encoder) return
 
   debugLog('=== START SENDING ===')
   cancelArmedStartTimer()
@@ -2379,55 +2085,6 @@ async function startSending() {
     // Measure the actual fullscreen element box instead of trusting window.inner*.
     const { target, stableMetrics } = await preparePresentationForTransmission()
     debugLog(`Sender FPS: ${selectedFps.name} (${selectedFps.interval}ms interval)`)
-
-    if (isCimbarMode()) {
-      if (state.fileSize > CIMBAR_MAX_FILE_SIZE) {
-        throw new Error(`File too large for CIMBAR mode (${formatBytes(CIMBAR_MAX_FILE_SIZE)} max)`)
-      }
-
-      state.cimbarVariant = normalizeHdmiCimbarVariant(state.cimbarVariant)
-
-      prepareCimbarCanvasForConfigure(stableMetrics)
-
-      await loadCimbarWasm()
-      const Module = getCimbarModule()
-      if (!Module) throw new Error('CIMBAR WASM not loaded')
-
-      const cimbarLayout = state.cimbarLayout || getHdmiCimbarLayout(stableMetrics.width, stableMetrics.height)
-      Module.canvas = ensureCimbarRenderCanvas(cimbarLayout.contentWidth, cimbarLayout.contentHeight)
-      Module._cimbare_configure(state.cimbarVariant, -1)
-      scaleCimbarCanvasToViewport(stableMetrics)
-
-      const fnBytes = new TextEncoder().encode(state.fileName)
-      const fnAlloc = copyToWasmHeap(Module, fnBytes)
-      Module._cimbare_init_encode(fnAlloc.ptr, fnBytes.length, -1)
-      Module._free(fnAlloc.ptr)
-
-      const chunkSize = Module._cimbare_encode_bufsize()
-      const fileBytes = new Uint8Array(state.fileData)
-      for (let offset = 0; offset < fileBytes.length; offset += chunkSize) {
-        const end = Math.min(offset + chunkSize, fileBytes.length)
-        const chunk = fileBytes.subarray(offset, end)
-        const chunkAlloc = copyToWasmHeap(Module, chunk)
-        Module._cimbare_encode(chunkAlloc.ptr, chunk.length)
-        Module._free(chunkAlloc.ptr)
-      }
-
-      const emptyAlloc = copyToWasmHeap(Module, new Uint8Array(0))
-      Module._cimbare_encode(emptyAlloc.ptr, 0)
-      Module._free(emptyAlloc.ptr)
-
-      debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
-      debugLog(
-        `CIMBAR sender configured: variant=${CIMBAR_VARIANT_NAMES[state.cimbarVariant] || state.cimbarVariant} ` +
-        `(mode=${state.cimbarVariant}) aspect=${state.cimbarIdealRatio.toFixed(3)} tiles=${HDMI_CIMBAR_TILE_COUNT}`
-      )
-      debugLog(`File: ${state.fileName} (${formatBytes(state.fileSize)})`)
-
-      state.cimbarBoundsLogged = false
-      armPreparedStart()
-      return
-    }
 
     const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics, target)
     const renderScaleIssue = getRenderScaleIssue(metrics, {
@@ -2542,18 +2199,14 @@ async function resumeSending() {
 
     const { target, stableMetrics } = await preparePresentationForTransmission()
     setSignalLive(true)
-    if (isCimbarMode()) {
-      scaleCimbarCanvasToViewport(stableMetrics)
-    } else {
-      const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics, target)
-      const renderScaleIssue = getRenderScaleIssue(metrics, {
-        requireNative1080p: modeRequiresNative1080p(state.mode)
-      })
-      if (renderScaleIssue) {
-        throw new Error(renderScaleIssue)
-      }
-      logSenderSessionMetrics('Resume session', metrics, capacity)
+    const { metrics, capacity } = measureAndApplyCanvasSize(stableMetrics, target)
+    const renderScaleIssue = getRenderScaleIssue(metrics, {
+      requireNative1080p: modeRequiresNative1080p(state.mode)
+    })
+    if (renderScaleIssue) {
+      throw new Error(renderScaleIssue)
     }
+    logSenderSessionMetrics('Resume session', metrics, capacity)
     state.nextFrameDueMs = performance.now() + (1000 / getFps().fps)
     resetSenderPerfState()
 
@@ -2692,8 +2345,7 @@ function handleFpsChange() {
 }
 
 function getRecommendedFpsPreset(mode = state.mode) {
-  return mode === HDMI_MODE.CIMBAR ||
-    mode === HDMI_MODE.COMPAT_4 ||
+  return mode === HDMI_MODE.COMPAT_4 ||
     mode === HDMI_MODE.RAW_RGB ||
     mode === HDMI_MODE.LUMA_2 ||
     isDenseBinaryMode(mode)

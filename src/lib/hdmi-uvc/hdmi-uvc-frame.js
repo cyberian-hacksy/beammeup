@@ -1988,7 +1988,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
       headerBs,
       headerBlocksX,
       header,
-      options,
+      { collectConfidence: false, ...options },
       precomputedOffsets
     )
     return result?.payload?.length === payloadLength ? result.payload : null
@@ -2939,6 +2939,14 @@ export function testBinary2ConstantsRegistered() {
   return pass
 }
 
+export function testHdmiModesExcludeRemovedMode7() {
+  const values = Object.values(HDMI_MODE)
+  const pass = !values.includes(7) &&
+    HDMI_MODE_NAMES[7] === undefined
+  console.log('HDMI modes exclude removed mode 7 test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
 export function testBinary2FrameRoundtrip() {
   try {
     const width = 640
@@ -3106,6 +3114,52 @@ export function testBinary3PrecomputedOffsetsMatchUncached() {
   } catch (err) {
     console.log('Binary3 precomputed offsets match test: FAIL', err?.message || err)
     return false
+  }
+}
+
+export function testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer() {
+  const RealUint8Array = globalThis.Uint8Array
+  try {
+    const width = 640
+    const height = 407
+    const payload = new RealUint8Array(1200)
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 43) & 0xff
+    const frame = buildFrame(payload, HDMI_MODE.BINARY_2, width, height, 30, 11)
+    const anchors = detectAnchors(frame, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    const decoded = region ? decodeDataRegion(frame, width, region) : null
+    if (!decoded?.crcValid) {
+      console.log('Dense binary layout read confidence-allocation test: FAIL (initial decode)')
+      return false
+    }
+
+    const allocationSizes = []
+    function CountingUint8Array(...args) {
+      if (typeof args[0] === 'number') allocationSizes.push(args[0])
+      return new RealUint8Array(...args)
+    }
+    Object.setPrototypeOf(CountingUint8Array, RealUint8Array)
+    CountingUint8Array.prototype = RealUint8Array.prototype
+
+    globalThis.Uint8Array = CountingUint8Array
+    const fastPayload = readPayloadWithLayout(frame, width, region, decoded._diag, payload.length)
+    globalThis.Uint8Array = RealUint8Array
+
+    const confidenceLength = payload.length * BITS_PER_BYTE
+    const pass = fastPayload?.length === payload.length &&
+      fastPayload.every((v, i) => v === payload[i]) &&
+      !allocationSizes.includes(confidenceLength)
+    console.log('Dense binary layout read confidence-allocation test:', pass ? 'PASS' : 'FAIL', {
+      allocations: allocationSizes,
+      confidenceLength
+    })
+    return pass
+  } catch (err) {
+    globalThis.Uint8Array = RealUint8Array
+    console.log('Dense binary layout read confidence-allocation test: FAIL', err?.message || err)
+    return false
+  } finally {
+    globalThis.Uint8Array = RealUint8Array
   }
 }
 
