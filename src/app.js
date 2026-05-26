@@ -87,6 +87,7 @@ import {
   testBinary3LockedLayoutMatchesBlindSweep,
   testBinary3PrecomputedOffsetsMatchUncached,
   testBinary2LockedPayloadReaderMatchesGeneric,
+  testBinary2LockedPayloadReaderTranslatesCroppedOffsets,
   testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop,
   testReadPayloadWithLayoutAcceptsImageDataWrapper,
   testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer,
@@ -187,6 +188,7 @@ window.testDecodeDataRegionPropagatesBinary3Levels = testDecodeDataRegionPropaga
 window.testBinary3LockedLayoutMatchesBlindSweep = testBinary3LockedLayoutMatchesBlindSweep
 window.testBinary3PrecomputedOffsetsMatchUncached = testBinary3PrecomputedOffsetsMatchUncached
 window.testBinary2LockedPayloadReaderMatchesGeneric = testBinary2LockedPayloadReaderMatchesGeneric
+window.testBinary2LockedPayloadReaderTranslatesCroppedOffsets = testBinary2LockedPayloadReaderTranslatesCroppedOffsets
 window.testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop = testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop
 window.testReadPayloadWithLayoutAcceptsImageDataWrapper = testReadPayloadWithLayoutAcceptsImageDataWrapper
 window.testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer = testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer
@@ -410,6 +412,7 @@ async function runAllTests() {
     hdmiBinary3LockedLayout: testBinary3LockedLayoutMatchesBlindSweep(),
     hdmiBinary3PrecomputedOffsets: testBinary3PrecomputedOffsetsMatchUncached(),
     hdmiBinary2LockedPayloadReader: testBinary2LockedPayloadReaderMatchesGeneric(),
+    hdmiBinary2CroppedLockedPayloadReader: testBinary2LockedPayloadReaderTranslatesCroppedOffsets(),
     hdmiDenseBinaryCropOffsets: testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop(),
     hdmiLayoutImageDataWrapper: testReadPayloadWithLayoutAcceptsImageDataWrapper(),
     hdmiDenseBinaryLayoutNoConfidenceBuffer: testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer(),
