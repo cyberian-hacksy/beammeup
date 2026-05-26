@@ -106,6 +106,7 @@ import {
   testWorkerStartFailureResumesMainCapture,
   testReceiverExpectedPacketSizeWaitsForSession,
   testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable,
+  testReceiverHotPerfFrameGate,
   testComputeLockedCaptureRect,
   testLabFrameTapUsesFullCaptureRect,
   testLabFrameTapBypassesLockedCaptureRegion
@@ -233,6 +234,7 @@ window.testWorkerTransferClockStartsOnFirstAcceptedFrame = testWorkerTransferClo
 window.testWorkerStartFailureResumesMainCapture = testWorkerStartFailureResumesMainCapture
 window.testReceiverExpectedPacketSizeWaitsForSession = testReceiverExpectedPacketSizeWaitsForSession
 window.testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable = testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable
+window.testReceiverHotPerfFrameGate = testReceiverHotPerfFrameGate
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
 window.testLabFrameTapUsesFullCaptureRect = testLabFrameTapUsesFullCaptureRect
 window.testLabFrameTapBypassesLockedCaptureRegion = testLabFrameTapBypassesLockedCaptureRegion
@@ -454,6 +456,7 @@ async function runAllTests() {
     workerStartFailureResumesMainCapture: testWorkerStartFailureResumesMainCapture(),
     receiverExpectedPacketSizeBootstrap: testReceiverExpectedPacketSizeWaitsForSession(),
     receiverRoiCaptureBenchmarkDefault: testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable(),
+    receiverHotPerfFrameGate: testReceiverHotPerfFrameGate(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
     labFrameTapFullCaptureRect: testLabFrameTapUsesFullCaptureRect(),
     labFrameTapBypassesLockedCapture: testLabFrameTapBypassesLockedCaptureRegion(),

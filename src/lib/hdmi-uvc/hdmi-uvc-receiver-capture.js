@@ -135,6 +135,20 @@ export function createReceiverCaptureTuningState({
   }
 }
 
+export function shouldRecordReceiverHotPerfFrame({
+  anchorLocked = false,
+  fixedLayout = null,
+  expectedPacketCount = 0,
+  roiPreferredMethod = null,
+  fastPathAccepted = false
+} = {}) {
+  return !!anchorLocked &&
+    !!fixedLayout &&
+    expectedPacketCount > 0 &&
+    !!roiPreferredMethod &&
+    !!fastPathAccepted
+}
+
 export function testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable() {
   const tuning = createReceiverCaptureTuningState({
     canUseVideoFrame: true,
@@ -148,6 +162,24 @@ export function testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable() {
     tuning.roiVideoSampleCount === 0 &&
     tuning.roiVideoFrameSampleCount === 0
   console.log('Receiver ROI capture benchmark default test:', pass ? 'PASS' : 'FAIL', tuning)
+  return pass
+}
+
+export function testReceiverHotPerfFrameGate() {
+  const settled = {
+    anchorLocked: true,
+    fixedLayout: { frameMode: 9 },
+    expectedPacketCount: 29,
+    roiPreferredMethod: 'video',
+    fastPathAccepted: true
+  }
+  const pass = shouldRecordReceiverHotPerfFrame(settled) === true &&
+    shouldRecordReceiverHotPerfFrame({ ...settled, anchorLocked: false }) === false &&
+    shouldRecordReceiverHotPerfFrame({ ...settled, fixedLayout: null }) === false &&
+    shouldRecordReceiverHotPerfFrame({ ...settled, expectedPacketCount: 0 }) === false &&
+    shouldRecordReceiverHotPerfFrame({ ...settled, roiPreferredMethod: null }) === false &&
+    shouldRecordReceiverHotPerfFrame({ ...settled, fastPathAccepted: false }) === false
+  console.log('receiver hot perf frame gate test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

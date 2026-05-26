@@ -29,7 +29,8 @@ import {
   createReceiverCaptureTuningState,
   computeLockedCaptureRect,
   getWorkerCaptureCopyRect,
-  shouldUseLockedCaptureRegion
+  shouldUseLockedCaptureRegion,
+  shouldRecordReceiverHotPerfFrame
 } from './hdmi-uvc-receiver-capture.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
 import {
@@ -1169,10 +1170,20 @@ function createReceiverPerfState() {
     classifierMs: createPerfWindow(),
     totalMs: createPerfWindow(),
     intervalMs: createPerfWindow(),
+    hotCaptureMs: createPerfWindow(),
+    hotAnchorMs: createPerfWindow(),
+    hotFastPathMs: createPerfWindow(),
+    hotDecodeMs: createPerfWindow(),
+    hotClassifierMs: createPerfWindow(),
+    hotTotalMs: createPerfWindow(),
+    hotIntervalMs: createPerfWindow(),
     acceptMs: createPerfWindow(),
     framesSinceLog: 0,
+    hotFramesSinceLog: 0,
     lastFrameStartMs: 0,
+    lastHotFrameStartMs: 0,
     lastCaptureMethod: null,
+    lastHotCaptureMethod: null,
     acceptCalls: 0,
     acceptedPackets: 0,
     crcFailFrames: 0,
@@ -1201,8 +1212,18 @@ function clearReceiverPerfSamples(perf) {
   resetPerfWindow(perf.classifierMs)
   resetPerfWindow(perf.totalMs)
   resetPerfWindow(perf.intervalMs)
+  resetPerfWindow(perf.hotCaptureMs)
+  resetPerfWindow(perf.hotAnchorMs)
+  resetPerfWindow(perf.hotFastPathMs)
+  resetPerfWindow(perf.hotDecodeMs)
+  resetPerfWindow(perf.hotClassifierMs)
+  resetPerfWindow(perf.hotTotalMs)
+  resetPerfWindow(perf.hotIntervalMs)
   resetPerfWindow(perf.acceptMs)
   perf.framesSinceLog = 0
+  perf.hotFramesSinceLog = 0
+  perf.lastHotFrameStartMs = 0
+  perf.lastHotCaptureMethod = null
   perf.acceptCalls = 0
   perf.acceptedPackets = 0
   perf.crcFailFrames = 0
@@ -1363,7 +1384,7 @@ function noteLockedLayoutFastPath(kind, packetCount = 0) {
   }
 }
 
-function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs, classifierMs = 0) {
+function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs, classifierMs = 0, isHotFrame = false) {
   const perf = state.rxPerf
   if (!perf) return
 
@@ -1380,6 +1401,22 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
   recordPerfSample(perf.totalMs, performance.now() - frameStartMs)
   perf.framesSinceLog++
   perf.lastCaptureMethod = captureMethod || perf.lastCaptureMethod
+
+  if (isHotFrame) {
+    if (perf.lastHotFrameStartMs > 0) {
+      recordPerfSample(perf.hotIntervalMs, frameStartMs - perf.lastHotFrameStartMs)
+    }
+    perf.lastHotFrameStartMs = frameStartMs
+    recordPerfSample(perf.hotCaptureMs, captureMs)
+    recordPerfSample(perf.hotAnchorMs, anchorMs)
+    recordPerfSample(perf.hotFastPathMs, fastPathMs)
+    recordPerfSample(perf.hotDecodeMs, decodeMs)
+    recordPerfSample(perf.hotClassifierMs, classifierMs)
+    recordPerfSample(perf.hotTotalMs, performance.now() - frameStartMs)
+    perf.hotFramesSinceLog++
+    perf.lastHotCaptureMethod = captureMethod || perf.lastHotCaptureMethod
+  }
+
   maybeRebenchmarkCaptureMethod()
 
   if (perf.framesSinceLog < RX_PERF_LOG_INTERVAL_FRAMES) return
@@ -1389,6 +1426,17 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
   const avgAcceptCalls = perf.framesSinceLog > 0 ? perf.acceptCalls / perf.framesSinceLog : 0
   const avgAcceptedPackets = perf.framesSinceLog > 0 ? perf.acceptedPackets / perf.framesSinceLog : 0
   const frameBase = perf.framesSinceLog > 0 ? perf.framesSinceLog : 1
+  const hotAvgIntervalMs = averagePerfWindow(perf.hotIntervalMs)
+  const hotFps = hotAvgIntervalMs > 0 ? 1000 / hotAvgIntervalMs : 0
+  const hotSummary = perf.hotFramesSinceLog > 0
+    ? `hot=${perf.hotFramesSinceLog}/${perf.framesSinceLog} ` +
+      `hotFps=${hotFps.toFixed(1)} ` +
+      `hotCapture=${averagePerfWindow(perf.hotCaptureMs).toFixed(2)}ms ` +
+      `hotFast=${averagePerfWindow(perf.hotFastPathMs).toFixed(2)}ms ` +
+      `hotDecode=${averagePerfWindow(perf.hotDecodeMs).toFixed(2)}ms ` +
+      `hotTotal=${averagePerfWindow(perf.hotTotalMs).toFixed(2)}ms ` +
+      `hotMethod=${perf.lastHotCaptureMethod || 'n/a'}`
+    : `hot=0/${perf.framesSinceLog}`
   const recoverySummary =
     `crcFail=${perf.crcFailFrames}/${perf.framesSinceLog} ` +
     `recover=s${(perf.salvagedFrames / frameBase).toFixed(2)}/${(perf.salvagedPackets / frameBase).toFixed(2)} ` +
@@ -1415,6 +1463,7 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `cls=${averagePerfWindow(perf.classifierMs).toFixed(2)}ms ` +
     `acceptCall=${averagePerfWindow(perf.acceptMs).toFixed(2)}ms ` +
     `total=${averagePerfWindow(perf.totalMs).toFixed(2)}ms ` +
+    `${hotSummary} ` +
     `acceptCalls=${avgAcceptCalls.toFixed(2)}/frame pkts=${avgAcceptedPackets.toFixed(2)}/frame ` +
     `${recoverySummary} ${lockedFastSummary} method=${perf.lastCaptureMethod || 'n/a'} ` +
     `${telemetrySummary}`
@@ -2409,6 +2458,7 @@ async function processFrame(now, metadata) {
   let decodeMs = 0
   let classifierMs = 0
   let framePerfFinalized = false
+  let fastPathAcceptedThisFrame = false
   // Reset per-frame accept signals. frameAcceptedThisFrame drives
   // noteFrameBoundary; frameInnovatedThisFrame drives innovation stats only.
   state.frameAcceptedThisFrame = false
@@ -2416,7 +2466,23 @@ async function processFrame(now, metadata) {
   const finalizeFramePerf = () => {
     if (framePerfFinalized) return
     framePerfFinalized = true
-    noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs, classifierMs)
+    const isHotFrame = shouldRecordReceiverHotPerfFrame({
+      anchorLocked: !!state.anchorBounds,
+      fixedLayout: state.fixedLayout,
+      expectedPacketCount: state.expectedPacketCount,
+      roiPreferredMethod: state.captureTuning?.roiPreferredMethod,
+      fastPathAccepted: fastPathAcceptedThisFrame
+    })
+    noteReceiverFramePerf(
+      frameStartMs,
+      captureMethod,
+      captureMs,
+      anchorMs,
+      fastPathMs,
+      decodeMs,
+      classifierMs,
+      isHotFrame
+    )
     if (state.frameAcceptedThisFrame &&
         typeof state.decoder?.noteFrameBoundary === 'function') {
       state.decoder.noteFrameBoundary()
@@ -2717,6 +2783,7 @@ async function processFrame(now, metadata) {
   const fastPathAccepted = await tryLockedLayoutFastPath(imageData, frameWidth, region)
   fastPathMs += performance.now() - fastPathStartMs
   if (fastPathAccepted) {
+    fastPathAcceptedThisFrame = true
     finalizeFramePerf()
     return
   }
