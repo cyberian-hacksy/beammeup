@@ -1326,6 +1326,94 @@ function sampleBinary2ReferenceThreshold(imageData, width, height, leftX, rightX
     : fallbackThreshold
 }
 
+function readBinary2PayloadLockedNativeGrid({
+  imageData,
+  width,
+  height,
+  offsets,
+  offsetTranslateX,
+  offsetTranslateY,
+  payloadCellsX,
+  payloadCellsY,
+  payloadLength,
+  headerStepY,
+  payloadStepY,
+  payloadStartY,
+  rx,
+  rightStripX,
+  headerBs,
+  fallbackThreshold,
+  stripRows
+}) {
+  const payload = new Uint8Array(payloadLength)
+  const rowStride = width * 4
+  let bitBuffer = 0
+  let bitCount = 0
+  let byteIdx = 0
+  let lastStripIdx = -1
+  let threshold4 = fallbackThreshold * 4
+
+  for (let cy = 0; cy < payloadCellsY && byteIdx < payloadLength; cy++) {
+    const stripIdx = Math.min(
+      stripRows - 1,
+      Math.max(0, Math.floor((cy * payloadStepY) / headerStepY))
+    )
+    if (stripIdx !== lastStripIdx) {
+      const refY = payloadStartY + Math.round(stripIdx * headerStepY)
+      threshold4 = sampleBinary2ReferenceThreshold(
+        imageData,
+        width,
+        height,
+        rx,
+        rightStripX,
+        refY,
+        headerBs,
+        fallbackThreshold
+      ) * 4
+      lastStripIdx = stripIdx
+    }
+
+    const rowOffsetIdx = cy * payloadCellsX * 2
+    const rowX = offsets[rowOffsetIdx] + offsetTranslateX
+    const rowY = offsets[rowOffsetIdx + 1] + offsetTranslateY
+    if (rowX < 0 || rowY < 0 || rowX + payloadCellsX * 2 > width || rowY + 1 >= height) return null
+
+    let base = ((rowY * width) + rowX) * 4
+    for (let cx = 0; cx < payloadCellsX && byteIdx < payloadLength;) {
+      if (bitCount === 0 && cx + BITS_PER_BYTE <= payloadCellsX) {
+        let value = 0
+        for (let i = 0; i < BITS_PER_BYTE; i++) {
+          const sum = imageData[base] +
+            imageData[base + 4] +
+            imageData[base + rowStride] +
+            imageData[base + rowStride + 4]
+          value = (value << 1) | (sum >= threshold4 ? 1 : 0)
+          base += 8
+        }
+        payload[byteIdx++] = value
+        cx += BITS_PER_BYTE
+        continue
+      }
+
+      const sum = imageData[base] +
+        imageData[base + 4] +
+        imageData[base + rowStride] +
+        imageData[base + rowStride + 4]
+      bitBuffer = (bitBuffer << 1) | (sum >= threshold4 ? 1 : 0)
+      bitCount++
+      base += 8
+      cx++
+      if (bitCount >= BITS_PER_BYTE) {
+        payload[byteIdx++] = bitBuffer & 0xff
+        bitBuffer = 0
+        bitCount = 0
+      }
+    }
+  }
+
+  return byteIdx === payloadLength ? payload : null
+}
+
 function readBinary2PayloadLocked(imageData, width, region, layout, payloadLength, precomputedOffsets = null) {
   const frameMode = layout?.frameMode ?? HDMI_MODE.COMPAT_4
   if (frameMode !== HDMI_MODE.BINARY_2) return null
@@ -1371,6 +1459,34 @@ function readBinary2PayloadLocked(imageData, width, region, layout, payloadLengt
   const fallbackThreshold = ((layout.blackLevel ?? 0) + (layout.whiteLevel ?? 255)) * 0.5
   const rightStripX = rx + region.w - stripWidthCapture
   const stripRows = Math.max(1, Math.floor((region.h - headerBandHeightCapture) / headerStepY))
+  if (
+    Math.abs(payloadStepX - 2) < 0.01 &&
+    Math.abs(payloadStepY - 2) < 0.01 &&
+    Number.isInteger(offsetTranslateX) &&
+    Number.isInteger(offsetTranslateY)
+  ) {
+    const nativePayload = readBinary2PayloadLockedNativeGrid({
+      imageData,
+      width,
+      height: imgHeight,
+      offsets,
+      offsetTranslateX,
+      offsetTranslateY,
+      payloadCellsX,
+      payloadCellsY,
+      payloadLength,
+      headerStepY,
+      payloadStepY,
+      payloadStartY,
+      rx,
+      rightStripX,
+      headerBs,
+      fallbackThreshold,
+      stripRows
+    })
+    if (nativePayload) return nativePayload
+  }
+
   const payload = new Uint8Array(payloadLength)
   let bitBuffer = 0
   let bitCount = 0
