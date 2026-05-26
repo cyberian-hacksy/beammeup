@@ -1302,6 +1302,112 @@ function getImageDataBytes(imageData) {
   return imageData?.data || imageData
 }
 
+function sampleBinary2PayloadCellFast(imageData, width, height, px, py) {
+  if (px < 0 || py < 0 || px + 1 >= width || py + 1 >= height) return NaN
+  const base = ((py * width) + px) * 4
+  const rowStride = width * 4
+  return (
+    imageData[base] +
+    imageData[base + 4] +
+    imageData[base + rowStride] +
+    imageData[base + rowStride + 4]
+  ) * 0.25
+}
+
+function sampleBinary2ReferenceThreshold(imageData, width, height, leftX, rightX, y, bs, fallbackThreshold) {
+  let leftVal = NaN
+  let rightVal = NaN
+  if (y >= 0 && y < height) {
+    if (leftX >= 0 && leftX < width) leftVal = sampleBlockAt(imageData, width, leftX, y, bs)
+    if (rightX >= 0 && rightX < width) rightVal = sampleBlockAt(imageData, width, rightX, y, bs)
+  }
+  return Number.isFinite(leftVal) && Number.isFinite(rightVal)
+    ? (leftVal + rightVal) * 0.5
+    : fallbackThreshold
+}
+
+function readBinary2PayloadLocked(imageData, width, region, layout, payloadLength, precomputedOffsets = null) {
+  const frameMode = layout?.frameMode ?? HDMI_MODE.COMPAT_4
+  if (frameMode !== HDMI_MODE.BINARY_2) return null
+  if (!payloadLength || payloadLength <= 0) return null
+
+  const offsets = getRegionSafePrecomputedOffsets(layout, region, precomputedOffsets)
+  if (!offsets) return null
+
+  const payloadBlockSize = getDenseBinaryPayloadBlockSize(frameMode)
+  const payloadStepX = layout.stepX
+  const payloadStepY = layout.stepY
+  const payloadBs = layout.dataBs || Math.min(payloadStepX, payloadStepY)
+  if (!payloadStepX || !payloadStepY || Math.abs(payloadBs - payloadBlockSize) > 0.5) return null
+
+  const rx = region.x + (layout.xOff || 0)
+  const ry = region.y + (layout.yOff || 0)
+  const headerStepX = layout.headerStepX || (payloadStepX * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
+  const headerStepY = layout.headerStepY || (payloadStepY * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
+  const headerBs = layout.headerBs || (payloadBs * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
+  if (!headerStepX || !headerStepY || !headerBs) return null
+
+  const headerBlocksX = layout.headerBlocksX || Math.floor(region.w / headerStepX)
+  const headerBandRows = getBinary3HeaderBandRows(headerBlocksX)
+  const headerBandHeightCapture = headerBandRows * headerStepY
+  const stripWidthCapture = headerStepX * BINARY_3_REF_STRIP_WIDTH_4X4
+  const payloadStartX = rx + stripWidthCapture
+  const payloadStartY = ry + headerBandHeightCapture
+  const payloadEndX = rx + region.w - stripWidthCapture
+  const payloadCellsX = Math.max(0, Math.floor((payloadEndX - payloadStartX) / payloadStepX))
+  const payloadCellsY = Math.max(0, Math.floor((region.h - headerBandHeightCapture) / payloadStepY))
+  if (!payloadCellsX || !payloadCellsY) return null
+  if (offsets.length < payloadCellsX * payloadCellsY * 2) return null
+
+  const imgHeight = imageData.length / (width * 4)
+  const fallbackThreshold = ((layout.blackLevel ?? 0) + (layout.whiteLevel ?? 255)) * 0.5
+  const rightStripX = rx + region.w - stripWidthCapture
+  const stripRows = Math.max(1, Math.floor((region.h - headerBandHeightCapture) / headerStepY))
+  const payload = new Uint8Array(payloadLength)
+  let bitBuffer = 0
+  let bitCount = 0
+  let byteIdx = 0
+  let lastStripIdx = -1
+  let threshold = fallbackThreshold
+
+  for (let cy = 0; cy < payloadCellsY && byteIdx < payloadLength; cy++) {
+    const stripIdx = Math.min(
+      stripRows - 1,
+      Math.max(0, Math.floor((cy * payloadStepY) / headerStepY))
+    )
+    if (stripIdx !== lastStripIdx) {
+      const refY = payloadStartY + Math.round(stripIdx * headerStepY)
+      threshold = sampleBinary2ReferenceThreshold(
+        imageData,
+        width,
+        imgHeight,
+        rx,
+        rightStripX,
+        refY,
+        headerBs,
+        fallbackThreshold
+      )
+      lastStripIdx = stripIdx
+    }
+
+    for (let cx = 0; cx < payloadCellsX && byteIdx < payloadLength; cx++) {
+      const offsetIdx = (cy * payloadCellsX + cx) * 2
+      const px = offsets[offsetIdx]
+      const py = offsets[offsetIdx + 1]
+      const val = sampleBinary2PayloadCellFast(imageData, width, imgHeight, px, py)
+      bitBuffer = (bitBuffer << 1) | (val >= threshold ? 1 : 0)
+      bitCount++
+      if (bitCount >= BITS_PER_BYTE) {
+        payload[byteIdx++] = bitBuffer & 0xff
+        bitBuffer = 0
+        bitCount = 0
+      }
+    }
+  }
+
+  return byteIdx === payloadLength ? payload : null
+}
+
 function readBinary3Payload(
   imageData,
   width,
@@ -2010,6 +2116,16 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
       payloadCrc: 0
     }
     const safePrecomputedOffsets = getRegionSafePrecomputedOffsets(layout, region, precomputedOffsets)
+    const lockedBinary2Payload = readBinary2PayloadLocked(
+      imageBytes,
+      width,
+      region,
+      layout,
+      payloadLength,
+      safePrecomputedOffsets
+    )
+    if (lockedBinary2Payload) return lockedBinary2Payload
+
     const result = readBinary3Payload(
       imageBytes,
       width,
@@ -3146,6 +3262,43 @@ export function testBinary3PrecomputedOffsetsMatchUncached() {
     return pass
   } catch (err) {
     console.log('Binary3 precomputed offsets match test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+export function testBinary2LockedPayloadReaderMatchesGeneric() {
+  try {
+    const width = 640
+    const height = 407
+    const payload = new Uint8Array(1500)
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 53 + 7) & 0xff
+
+    const frame = buildFrame(payload, HDMI_MODE.BINARY_2, width, height, 30, 17)
+    const anchors = detectAnchors(frame, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    const initial = region ? decodeDataRegion(frame, width, region) : null
+    if (!initial?.crcValid) {
+      console.log('BINARY_2 locked payload reader test: FAIL (initial decode)')
+      return false
+    }
+
+    const genericLayout = { ...initial._diag }
+    const precomputed = precomputeBinary3SampleOffsets(initial._diag, region)
+    const lockedLayout = {
+      ...initial._diag,
+      precomputedOffsets: precomputed.offsets,
+      precomputedRegion: precomputed.region
+    }
+    const generic = readPayloadWithLayout(frame, width, region, genericLayout, payload.length, null)
+    const locked = readBinary2PayloadLocked(frame, width, region, lockedLayout, payload.length, precomputed.offsets)
+    const pass = generic?.length === payload.length &&
+      locked?.length === payload.length &&
+      generic.every((v, i) => v === payload[i]) &&
+      locked.every((v, i) => v === payload[i])
+    console.log('BINARY_2 locked payload reader test:', pass ? 'PASS' : 'FAIL')
+    return pass
+  } catch (err) {
+    console.log('BINARY_2 locked payload reader test: FAIL', err?.message || err)
     return false
   }
 }
