@@ -60,6 +60,7 @@ import {
   autoStartHdmiUvcReceiver,
   testReceiverFrameAcceptSignals,
   testDenseBinaryLockedLayoutOffsetsCoverBinary2,
+  testLockedFastPerfBreakdownSummary,
   testStallCounterTicksOnDuplicateFrames
 } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
 import {
@@ -203,6 +204,7 @@ window.testFrameRefactorPreservesGlyph5Bytes = testFrameRefactorPreservesGlyph5B
 window.testDecodeDataRegionRoundtripsAllModes = testDecodeDataRegionRoundtripsAllModes
 window.testReceiverFrameAcceptSignals = testReceiverFrameAcceptSignals
 window.testDenseBinaryLockedLayoutOffsetsCoverBinary2 = testDenseBinaryLockedLayoutOffsetsCoverBinary2
+window.testLockedFastPerfBreakdownSummary = testLockedFastPerfBreakdownSummary
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
 window.testBinary3RecoveredLayoutKeepsLock = testBinary3RecoveredLayoutKeepsLock
 window.testBinary2RecoveredLayoutKeepsLock = testBinary2RecoveredLayoutKeepsLock
@@ -427,6 +429,7 @@ async function runAllTests() {
     hdmiDecodeDataRegionAllModes: testDecodeDataRegionRoundtripsAllModes(),
     receiverFrameSignals: testReceiverFrameAcceptSignals(),
     denseBinaryLockedLayoutOffsets: testDenseBinaryLockedLayoutOffsetsCoverBinary2(),
+    lockedFastPerfBreakdownSummary: testLockedFastPerfBreakdownSummary(),
     stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames(),
     binary3RecoveredLayoutKeepsLock: testBinary3RecoveredLayoutKeepsLock(),
     binary2RecoveredLayoutKeepsLock: testBinary2RecoveredLayoutKeepsLock(),

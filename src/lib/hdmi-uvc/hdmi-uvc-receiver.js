@@ -1177,6 +1177,8 @@ function createReceiverPerfState() {
     hotClassifierMs: createPerfWindow(),
     hotTotalMs: createPerfWindow(),
     hotIntervalMs: createPerfWindow(),
+    lockedFastExactReadMs: createPerfWindow(),
+    lockedFastExactProbeMs: createPerfWindow(),
     acceptMs: createPerfWindow(),
     framesSinceLog: 0,
     hotFramesSinceLog: 0,
@@ -1219,6 +1221,8 @@ function clearReceiverPerfSamples(perf) {
   resetPerfWindow(perf.hotClassifierMs)
   resetPerfWindow(perf.hotTotalMs)
   resetPerfWindow(perf.hotIntervalMs)
+  resetPerfWindow(perf.lockedFastExactReadMs)
+  resetPerfWindow(perf.lockedFastExactProbeMs)
   resetPerfWindow(perf.acceptMs)
   perf.framesSinceLog = 0
   perf.hotFramesSinceLog = 0
@@ -1384,6 +1388,26 @@ function noteLockedLayoutFastPath(kind, packetCount = 0) {
   }
 }
 
+function noteLockedFastStagePerf(kind, durationMs) {
+  const perf = state.rxPerf
+  if (!perf || !Number.isFinite(durationMs)) return
+
+  switch (kind) {
+    case 'read':
+      recordPerfSample(perf.lockedFastExactReadMs, durationMs)
+      break
+    case 'probe':
+      recordPerfSample(perf.lockedFastExactProbeMs, durationMs)
+      break
+  }
+}
+
+function getLockedFastStageSummary(perf) {
+  if (!perf) return 'lockedStage=read=0.00ms probe=0.00ms'
+  return `lockedStage=read=${averagePerfWindow(perf.lockedFastExactReadMs).toFixed(2)}ms ` +
+    `probe=${averagePerfWindow(perf.lockedFastExactProbeMs).toFixed(2)}ms`
+}
+
 function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs, classifierMs = 0, isHotFrame = false) {
   const perf = state.rxPerf
   if (!perf) return
@@ -1448,6 +1472,7 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `:${(perf.lockedFastExactPackets / frameBase).toFixed(2)} ` +
     `r${perf.lockedFastRecoveryHits}/${perf.lockedFastRecoveryProbes}` +
     `:${(perf.lockedFastRecoveryPackets / frameBase).toFixed(2)}`
+  const lockedFastStageSummary = getLockedFastStageSummary(perf)
 
   const t = state.decoder?.telemetry
   const telemetrySummary = t
@@ -1465,7 +1490,7 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `total=${averagePerfWindow(perf.totalMs).toFixed(2)}ms ` +
     `${hotSummary} ` +
     `acceptCalls=${avgAcceptCalls.toFixed(2)}/frame pkts=${avgAcceptedPackets.toFixed(2)}/frame ` +
-    `${recoverySummary} ${lockedFastSummary} method=${perf.lastCaptureMethod || 'n/a'} ` +
+    `${recoverySummary} ${lockedFastSummary} ${lockedFastStageSummary} method=${perf.lastCaptureMethod || 'n/a'} ` +
     `${telemetrySummary}`
   )
 
@@ -1706,6 +1731,7 @@ function getDenseBinaryLayoutOffsets(layout) {
 function readLayoutPacketsExact(imageData, width, region, layout, payloadLength, expectedPacketSize = null) {
   if (!layout || !payloadLength || payloadLength <= 0) return null
 
+  const readStartMs = performance.now()
   const payload = readPayloadWithLayout(
     imageData,
     width,
@@ -1714,11 +1740,16 @@ function readLayoutPacketsExact(imageData, width, region, layout, payloadLength,
     payloadLength,
     getDenseBinaryLayoutOffsets(layout)
   )
+  noteLockedFastStagePerf('read', performance.now() - readStartMs)
   if (!payload) return null
+
+  const probeStartMs = performance.now()
+  const probe = probeFramePackets(payload, expectedPacketSize)
+  noteLockedFastStagePerf('probe', performance.now() - probeStartMs)
 
   return {
     payload,
-    probe: probeFramePackets(payload, expectedPacketSize),
+    probe,
     layout
   }
 }
@@ -3501,6 +3532,21 @@ export function testDenseBinaryLockedLayoutOffsetsCoverBinary2() {
     return pass
   } finally {
     state.lockedBinary3Offsets = oldOffsets
+  }
+}
+
+export function testLockedFastPerfBreakdownSummary() {
+  const oldPerf = state.rxPerf
+  try {
+    state.rxPerf = createReceiverPerfState()
+    noteLockedFastStagePerf('read', 2)
+    noteLockedFastStagePerf('probe', 3)
+    const summary = getLockedFastStageSummary(state.rxPerf)
+    const pass = summary.includes('read=2.00ms') && summary.includes('probe=3.00ms')
+    console.log('Locked fast perf breakdown summary test:', pass ? 'PASS' : `FAIL ${summary}`)
+    return pass
+  } finally {
+    state.rxPerf = oldPerf
   }
 }
 
