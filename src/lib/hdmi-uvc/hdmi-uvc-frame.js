@@ -1298,6 +1298,10 @@ function getRegionSafePrecomputedOffsets(layout, region, explicitOffsets = null)
     : null
 }
 
+function getImageDataBytes(imageData) {
+  return imageData?.data || imageData
+}
+
 function readBinary3Payload(
   imageData,
   width,
@@ -1978,6 +1982,9 @@ function batchClassifyPayloadCells({
 export function readPayloadWithLayout(imageData, width, region, layout, payloadLength, precomputedOffsets = null, options = {}) {
   if (!layout || !payloadLength || payloadLength <= 0) return null
 
+  const imageBytes = getImageDataBytes(imageData)
+  if (!imageBytes) return null
+
   const blocksX = layout.blocksX
   const blocksY = layout.blocksY ?? Math.floor(region.h / layout.stepY)
   const frameMode = layout.frameMode ?? HDMI_MODE.COMPAT_4
@@ -2004,7 +2011,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
     }
     const safePrecomputedOffsets = getRegionSafePrecomputedOffsets(layout, region, precomputedOffsets)
     const result = readBinary3Payload(
-      imageData,
+      imageBytes,
       width,
       region,
       rx,
@@ -2024,7 +2031,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
   const reservedPayloadCells = getReservedPayloadCells(frameMode)
   const pilotField = bitsPerBlock === 1
     ? sampleBinaryPilotField(
-      imageData,
+      imageBytes,
       width,
       region,
       rx,
@@ -2046,8 +2053,8 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
         const px = rx + Math.round(bx * layout.stepX)
         const py = ry + Math.round(by * layout.stepY)
         let rgb = RGB3_PALETTE[i]
-        if (px >= 0 && px < width && py >= 0 && py < imageData.length / (width * 4)) {
-          rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
+        if (px >= 0 && px < width && py >= 0 && py < imageBytes.length / (width * 4)) {
+          rgb = sampleBlockRgbAt(imageBytes, width, px, py, layout.dataBs)
         }
         palette.push(normalizeRgbSample(rgb, layout.blackLevels, layout.whiteLevels))
       }
@@ -2059,7 +2066,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
     : null
   const payload = new Uint8Array(payloadLength)
   const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
-  const height = imageData.length / (width * 4)
+  const height = imageBytes.length / (width * 4)
 
   for (let cellIdx = reservedPayloadCells; cellIdx < payloadCells.length && decodeState.index < payloadLength; cellIdx++) {
     const { bx, by } = payloadCells[cellIdx]
@@ -2068,22 +2075,22 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
     let symbol = 0
     if (px >= 0 && px < width && py >= 0 && py < height) {
       if (frameMode === HDMI_MODE.RAW_RGB) {
-        const rgb = sampleBlockRgbAt(imageData, width, px, py, layout.dataBs)
+        const rgb = sampleBlockRgbAt(imageBytes, width, px, py, layout.dataBs)
         symbol = decodeRgb3(rgb, layout.blackLevels, layout.whiteLevels, rgbPalette)
       } else if (frameMode === HDMI_MODE.LUMA_2) {
-        const samples = sampleCodebook3At(imageData, width, px, py, layout.dataBs)
+        const samples = sampleCodebook3At(imageBytes, width, px, py, layout.dataBs)
         symbol = decodeLuma2(samples, layout.blackLevel, layout.whiteLevel)
       } else if (frameMode === HDMI_MODE.GLYPH_5) {
-        const samples = sampleGlyph5At(imageData, width, px, py, layout.dataBs)
+        const samples = sampleGlyph5At(imageBytes, width, px, py, layout.dataBs)
         symbol = decodeGlyph5(samples, layout.blackLevel, layout.whiteLevel)
       } else if (frameMode === HDMI_MODE.CODEBOOK_3) {
-        const samples = sampleCodebook3At(imageData, width, px, py, layout.dataBs)
+        const samples = sampleCodebook3At(imageBytes, width, px, py, layout.dataBs)
         symbol = decodeCodebook3(samples, layout.blackLevel, layout.whiteLevel)
       } else if (bitsPerBlock === 2) {
-        const val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
+        const val = sampleBlockAt(imageBytes, width, px, py, layout.dataBs)
         symbol = decodeGray2(val, layout.blackLevel, layout.whiteLevel)
       } else {
-        const val = sampleBlockAt(imageData, width, px, py, layout.dataBs)
+        const val = sampleBlockAt(imageBytes, width, px, py, layout.dataBs)
         const localLevels = pilotField
           ? estimateBinaryPilotLevelsAt(pilotField, bx, by, layout.blackLevel, layout.whiteLevel)
           : layout
@@ -3201,6 +3208,35 @@ export function testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop() {
     console.log('Dense binary crop-offset test: FAIL', err?.message || err)
     return false
   }
+}
+
+export function testReadPayloadWithLayoutAcceptsImageDataWrapper() {
+  const width = 640
+  const height = 407
+  const payload = new Uint8Array(1200)
+  for (let i = 0; i < payload.length; i++) payload[i] = (i * 31 + 9) & 0xff
+
+  const frame = buildFrame(payload, HDMI_MODE.BINARY_2, width, height, 30, 14)
+  const anchors = detectAnchors(frame, width, height)
+  const region = dataRegionFromAnchors(anchors)
+  const initial = region ? decodeDataRegion(frame, width, region) : null
+  if (!initial?.crcValid) {
+    console.log('ImageData-wrapper layout read test: FAIL (initial decode)')
+    return false
+  }
+
+  const reread = readPayloadWithLayout(
+    { data: frame },
+    width,
+    region,
+    initial._diag,
+    payload.length
+  )
+  const pass = !!reread &&
+    reread.length === payload.length &&
+    reread.every((value, index) => value === payload[index])
+  console.log('ImageData-wrapper layout read test:', pass ? 'PASS' : 'FAIL')
+  return pass
 }
 
 export function testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer() {

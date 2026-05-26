@@ -87,6 +87,7 @@ import {
   testBinary3LockedLayoutMatchesBlindSweep,
   testBinary3PrecomputedOffsetsMatchUncached,
   testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop,
+  testReadPayloadWithLayoutAcceptsImageDataWrapper,
   testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer,
   testDecodeDataRegionConfidence,
   testDecodeDataRegionConfidenceCompat4,
@@ -184,6 +185,7 @@ window.testDecodeDataRegionPropagatesBinary3Levels = testDecodeDataRegionPropaga
 window.testBinary3LockedLayoutMatchesBlindSweep = testBinary3LockedLayoutMatchesBlindSweep
 window.testBinary3PrecomputedOffsetsMatchUncached = testBinary3PrecomputedOffsetsMatchUncached
 window.testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop = testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop
+window.testReadPayloadWithLayoutAcceptsImageDataWrapper = testReadPayloadWithLayoutAcceptsImageDataWrapper
 window.testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer = testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer
 window.testDecodeDataRegionConfidence = testDecodeDataRegionConfidence
 window.testDecodeDataRegionConfidenceCompat4 = testDecodeDataRegionConfidenceCompat4
@@ -404,6 +406,7 @@ async function runAllTests() {
     hdmiBinary3LockedLayout: testBinary3LockedLayoutMatchesBlindSweep(),
     hdmiBinary3PrecomputedOffsets: testBinary3PrecomputedOffsetsMatchUncached(),
     hdmiDenseBinaryCropOffsets: testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop(),
+    hdmiLayoutImageDataWrapper: testReadPayloadWithLayoutAcceptsImageDataWrapper(),
     hdmiDenseBinaryLayoutNoConfidenceBuffer: testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer(),
     hdmiDecodeConfidenceBinary3: testDecodeDataRegionConfidence(),
     hdmiDecodeConfidenceCompat4: testDecodeDataRegionConfidenceCompat4(),
