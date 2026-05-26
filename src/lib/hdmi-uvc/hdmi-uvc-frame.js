@@ -1270,7 +1270,32 @@ export function precomputeBinary3SampleOffsets(layout, region) {
     }
   }
 
-  return { offsets, cellsX, cellsY }
+  return {
+    offsets,
+    cellsX,
+    cellsY,
+    region: {
+      x: region.x,
+      y: region.y,
+      w: region.w,
+      h: region.h
+    }
+  }
+}
+
+function getRegionSafePrecomputedOffsets(layout, region, explicitOffsets = null) {
+  const offsets = explicitOffsets || layout?.precomputedOffsets || null
+  if (!offsets) return null
+
+  const precomputedRegion = layout?.precomputedRegion
+  if (!precomputedRegion) return offsets
+
+  return precomputedRegion.x === region.x &&
+    precomputedRegion.y === region.y &&
+    precomputedRegion.w === region.w &&
+    precomputedRegion.h === region.h
+    ? offsets
+    : null
 }
 
 function readBinary3Payload(
@@ -1977,6 +2002,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
       payloadLength,
       payloadCrc: 0
     }
+    const safePrecomputedOffsets = getRegionSafePrecomputedOffsets(layout, region, precomputedOffsets)
     const result = readBinary3Payload(
       imageData,
       width,
@@ -1989,7 +2015,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
       headerBlocksX,
       header,
       { collectConfidence: false, ...options },
-      precomputedOffsets
+      safePrecomputedOffsets
     )
     return result?.payload?.length === payloadLength ? result.payload : null
   }
@@ -2503,7 +2529,7 @@ function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout, 
   const headerStepY = layout.headerStepY ?? layout.stepY
   const headerBs = layout.headerBs ?? layout.dataBs
   const headerBlocksY = layout.headerBlocksY ?? Math.floor(region.h / headerStepY)
-  const precomputedOffsets = layout.precomputedOffsets || null
+  const precomputedOffsets = getRegionSafePrecomputedOffsets(layout, region, layout.precomputedOffsets || null)
   if (!headerBlockSize || !payloadBlockSize || !bitsPerBlock || !blocksX || !blocksY || !headerBlocksX || !headerBlocksY) return null
 
   const xAdjustments = [0, -1, 1, -2, 2]
@@ -3113,6 +3139,66 @@ export function testBinary3PrecomputedOffsetsMatchUncached() {
     return pass
   } catch (err) {
     console.log('Binary3 precomputed offsets match test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+function cropFrameForTest(frame, width, rect) {
+  const cropped = new Uint8ClampedArray(rect.w * rect.h * 4)
+  const rowBytes = rect.w * 4
+  for (let y = 0; y < rect.h; y++) {
+    const srcStart = ((rect.y + y) * width + rect.x) * 4
+    cropped.set(frame.subarray(srcStart, srcStart + rowBytes), y * rowBytes)
+  }
+  return cropped
+}
+
+export function testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop() {
+  try {
+    const width = 640
+    const height = 407
+    const payload = new Uint8Array(1200)
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 47) & 0xff
+    const frame = buildFrame(payload, HDMI_MODE.BINARY_2, width, height, 30, 12)
+    const anchors = detectAnchors(frame, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    const initial = region ? decodeDataRegion(frame, width, region) : null
+    if (!initial?.crcValid) {
+      console.log('Dense binary crop-offset test: FAIL (initial decode)')
+      return false
+    }
+
+    const precomputed = precomputeBinary3SampleOffsets(initial._diag, region)
+    const layout = {
+      ...initial._diag,
+      precomputedRegion: { x: region.x, y: region.y, w: region.w, h: region.h }
+    }
+    const crop = {
+      x: Math.max(0, region.x - 4),
+      y: Math.max(0, region.y - 4),
+      w: Math.min(width - Math.max(0, region.x - 4), region.w + 8),
+      h: Math.min(height - Math.max(0, region.y - 4), region.h + 8)
+    }
+    const croppedRegion = {
+      ...region,
+      x: region.x - crop.x,
+      y: region.y - crop.y
+    }
+    const croppedFrame = cropFrameForTest(frame, width, crop)
+    const fastPayload = readPayloadWithLayout(
+      croppedFrame,
+      crop.w,
+      croppedRegion,
+      layout,
+      payload.length,
+      precomputed.offsets
+    )
+    const pass = fastPayload?.length === payload.length &&
+      fastPayload.every((v, i) => v === payload[i])
+    console.log('Dense binary crop-offset test:', pass ? 'PASS' : 'FAIL')
+    return pass
+  } catch (err) {
+    console.log('Dense binary crop-offset test: FAIL', err?.message || err)
     return false
   }
 }

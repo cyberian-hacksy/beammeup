@@ -50,11 +50,13 @@ export function lockBinary3LayoutState(target, layoutInput, currentRegion, heade
 
   const wasLocked = !!target.lockedBinary3Layout
   if (currentRegion) {
-    const { offsets } = precomputeBinary3SampleOffsets(layout, currentRegion)
-    layout.precomputedOffsets = offsets
-    target.lockedBinary3Offsets = offsets
+    const precomputed = precomputeBinary3SampleOffsets(layout, currentRegion)
+    layout.precomputedOffsets = precomputed.offsets
+    layout.precomputedRegion = precomputed.region
+    target.lockedBinary3Offsets = precomputed.offsets
   } else {
     target.lockedBinary3Offsets = layoutInput.precomputedOffsets || null
+    layout.precomputedRegion = layoutInput.precomputedRegion || null
   }
 
   target.lockedBinary3Layout = layout
