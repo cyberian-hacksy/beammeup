@@ -61,6 +61,7 @@ import {
   testReceiverFrameAcceptSignals,
   testDenseBinaryLockedLayoutOffsetsCoverBinary2,
   testLockedFastPerfBreakdownSummary,
+  testReceiverAnchorDiagnosticsQuietByDefault,
   testStallCounterTicksOnDuplicateFrames
 } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
 import {
@@ -89,6 +90,7 @@ import {
   testBinary3PrecomputedOffsetsMatchUncached,
   testBinary2LockedPayloadReaderMatchesGeneric,
   testBinary2LockedPayloadReaderTranslatesCroppedOffsets,
+  testBinary2SinglePixelLockedPayloadReader,
   testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop,
   testReadPayloadWithLayoutAcceptsImageDataWrapper,
   testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer,
@@ -190,6 +192,7 @@ window.testBinary3LockedLayoutMatchesBlindSweep = testBinary3LockedLayoutMatches
 window.testBinary3PrecomputedOffsetsMatchUncached = testBinary3PrecomputedOffsetsMatchUncached
 window.testBinary2LockedPayloadReaderMatchesGeneric = testBinary2LockedPayloadReaderMatchesGeneric
 window.testBinary2LockedPayloadReaderTranslatesCroppedOffsets = testBinary2LockedPayloadReaderTranslatesCroppedOffsets
+window.testBinary2SinglePixelLockedPayloadReader = testBinary2SinglePixelLockedPayloadReader
 window.testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop = testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop
 window.testReadPayloadWithLayoutAcceptsImageDataWrapper = testReadPayloadWithLayoutAcceptsImageDataWrapper
 window.testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer = testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer
@@ -205,6 +208,7 @@ window.testDecodeDataRegionRoundtripsAllModes = testDecodeDataRegionRoundtripsAl
 window.testReceiverFrameAcceptSignals = testReceiverFrameAcceptSignals
 window.testDenseBinaryLockedLayoutOffsetsCoverBinary2 = testDenseBinaryLockedLayoutOffsetsCoverBinary2
 window.testLockedFastPerfBreakdownSummary = testLockedFastPerfBreakdownSummary
+window.testReceiverAnchorDiagnosticsQuietByDefault = testReceiverAnchorDiagnosticsQuietByDefault
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
 window.testBinary3RecoveredLayoutKeepsLock = testBinary3RecoveredLayoutKeepsLock
 window.testBinary2RecoveredLayoutKeepsLock = testBinary2RecoveredLayoutKeepsLock
@@ -415,6 +419,7 @@ async function runAllTests() {
     hdmiBinary3PrecomputedOffsets: testBinary3PrecomputedOffsetsMatchUncached(),
     hdmiBinary2LockedPayloadReader: testBinary2LockedPayloadReaderMatchesGeneric(),
     hdmiBinary2CroppedLockedPayloadReader: testBinary2LockedPayloadReaderTranslatesCroppedOffsets(),
+    hdmiBinary2SinglePixelLockedPayloadReader: testBinary2SinglePixelLockedPayloadReader(),
     hdmiDenseBinaryCropOffsets: testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop(),
     hdmiLayoutImageDataWrapper: testReadPayloadWithLayoutAcceptsImageDataWrapper(),
     hdmiDenseBinaryLayoutNoConfidenceBuffer: testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer(),
@@ -430,6 +435,7 @@ async function runAllTests() {
     receiverFrameSignals: testReceiverFrameAcceptSignals(),
     denseBinaryLockedLayoutOffsets: testDenseBinaryLockedLayoutOffsetsCoverBinary2(),
     lockedFastPerfBreakdownSummary: testLockedFastPerfBreakdownSummary(),
+    receiverAnchorDiagnosticsQuietDefault: testReceiverAnchorDiagnosticsQuietByDefault(),
     stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames(),
     binary3RecoveredLayoutKeepsLock: testBinary3RecoveredLayoutKeepsLock(),
     binary2RecoveredLayoutKeepsLock: testBinary2RecoveredLayoutKeepsLock(),

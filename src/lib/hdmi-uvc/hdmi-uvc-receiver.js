@@ -73,6 +73,8 @@ const DEBUG_CONSOLE = false
 const CAPTURE_BENCHMARK_SAMPLES_PER_METHOD = 6
 const CAPTURE_BENCH_ONLY = typeof location !== 'undefined' &&
   new URLSearchParams(location.search).has('captureBench')
+const ANCHOR_SCAN_DIAGNOSTICS = typeof location !== 'undefined' &&
+  new URLSearchParams(location.search).has('anchorDiag')
 // Worker decode-pump mode: 'off' | 'hash' (diagnostic round-trip) | 'anchors'
 // (offload anchor detection) | 'full' (anchor + decoder ingest + tail). On
 // any worker error the receiver falls back to the main-thread path for the
@@ -1275,8 +1277,8 @@ function maybeRebenchmarkCaptureMethod() {
   tuning.videoSampleTotalMs = 0
   tuning.videoFrameSampleCount = 0
   tuning.videoFrameSampleTotalMs = 0
-  tuning.roiPreferredMethod = null
-  tuning.roiBenchmarkRemaining = CAPTURE_BENCHMARK_SAMPLES_PER_METHOD * 2
+  tuning.roiPreferredMethod = 'video'
+  tuning.roiBenchmarkRemaining = 0
   tuning.roiVideoSampleCount = 0
   tuning.roiVideoSampleTotalMs = 0
   tuning.roiVideoFrameSampleCount = 0
@@ -1286,6 +1288,15 @@ function maybeRebenchmarkCaptureMethod() {
 
 function resetCaptureTuningState() {
   state.captureTuning = createCaptureTuningState()
+}
+
+function shouldLogAnchorScanDiagnostics({
+  anchorLocked = false,
+  frameCount = 0,
+  verbose = ANCHOR_SCAN_DIAGNOSTICS
+} = {}) {
+  if (anchorLocked || !verbose) return false
+  return frameCount <= 5 || frameCount % 30 === 0
 }
 
 function noteCaptureTuningSample(method, durationMs, isRoi = false) {
@@ -1728,30 +1739,55 @@ function getDenseBinaryLayoutOffsets(layout) {
     : null
 }
 
-function readLayoutPacketsExact(imageData, width, region, layout, payloadLength, expectedPacketSize = null) {
-  if (!layout || !payloadLength || payloadLength <= 0) return null
+function shouldRetryBinary2AverageRead(layout, probe) {
+  if (layout?.frameMode !== HDMI_MODE.BINARY_2) return false
+  const packets = probe?.packets?.length || 0
+  const slots = probe?.slotCount || 0
+  if (packets === 0) return true
+  return slots > 0 && packets < slots
+}
 
-  const readStartMs = performance.now()
+function readLayoutPayloadOnly(imageData, width, region, layout, payloadLength, options = {}) {
   const payload = readPayloadWithLayout(
     imageData,
     width,
     region,
     layout,
     payloadLength,
-    getDenseBinaryLayoutOffsets(layout)
+    getDenseBinaryLayoutOffsets(layout),
+    options
   )
-  noteLockedFastStagePerf('read', performance.now() - readStartMs)
-  if (!payload) return null
+  return payload || null
+}
 
-  const probeStartMs = performance.now()
-  const probe = probeFramePackets(payload, expectedPacketSize)
-  noteLockedFastStagePerf('probe', performance.now() - probeStartMs)
+function readLayoutPacketsExact(imageData, width, region, layout, payloadLength, expectedPacketSize = null) {
+  if (!layout || !payloadLength || payloadLength <= 0) return null
 
-  return {
-    payload,
-    probe,
-    layout
+  let readMs = 0
+  let probeMs = 0
+  const attemptRead = (options = {}) => {
+    const readStartMs = performance.now()
+    const payload = readLayoutPayloadOnly(imageData, width, region, layout, payloadLength, options)
+    readMs += performance.now() - readStartMs
+    if (!payload) return null
+
+    const probeStartMs = performance.now()
+    const probe = probeFramePackets(payload, expectedPacketSize)
+    probeMs += performance.now() - probeStartMs
+    return { payload, probe, layout }
   }
+
+  let best = attemptRead(layout.frameMode === HDMI_MODE.BINARY_2 ? { binary2SampleMode: 'single' } : {})
+  if (shouldRetryBinary2AverageRead(layout, best?.probe)) {
+    const robust = attemptRead({ binary2SampleMode: 'average' })
+    if (isBetterPacketProbe(robust, best)) best = robust
+  }
+  noteLockedFastStagePerf('read', readMs)
+  if (!best?.payload) return null
+
+  noteLockedFastStagePerf('probe', probeMs)
+
+  return best
 }
 
 function ensureDecoder() {
@@ -2674,7 +2710,10 @@ async function processFrame(now, metadata) {
   }
 
   state.frameCount++
-  const isDiagFrame = state.frameCount <= 5 || state.frameCount % 30 === 0
+  const isDiagFrame = shouldLogAnchorScanDiagnostics({
+    anchorLocked: !!state.anchorBounds,
+    frameCount: state.frameCount
+  })
 
   // Diagnostic: find canvas bounds and scan for anchors
   if (!state.anchorBounds && isDiagFrame) {
@@ -3548,6 +3587,16 @@ export function testLockedFastPerfBreakdownSummary() {
   } finally {
     state.rxPerf = oldPerf
   }
+}
+
+export function testReceiverAnchorDiagnosticsQuietByDefault() {
+  const pass =
+    shouldLogAnchorScanDiagnostics({ anchorLocked: false, frameCount: 1, verbose: false }) === false &&
+    shouldLogAnchorScanDiagnostics({ anchorLocked: false, frameCount: 30, verbose: false }) === false &&
+    shouldLogAnchorScanDiagnostics({ anchorLocked: true, frameCount: 30, verbose: true }) === false &&
+    shouldLogAnchorScanDiagnostics({ anchorLocked: false, frameCount: 30, verbose: true }) === true
+  console.log('Receiver anchor diagnostics quiet default test:', pass ? 'PASS' : 'FAIL')
+  return pass
 }
 
 export async function testStallCounterTicksOnDuplicateFrames() {

@@ -1343,10 +1343,12 @@ function readBinary2PayloadLockedNativeGrid({
   rightStripX,
   headerBs,
   fallbackThreshold,
-  stripRows
+  stripRows,
+  sampleMode = 'average'
 }) {
   const payload = new Uint8Array(payloadLength)
   const rowStride = width * 4
+  const useSinglePixel = sampleMode === 'single'
   let bitBuffer = 0
   let bitCount = 0
   let byteIdx = 0
@@ -1383,11 +1385,17 @@ function readBinary2PayloadLockedNativeGrid({
       if (bitCount === 0 && cx + BITS_PER_BYTE <= payloadCellsX) {
         let value = 0
         for (let i = 0; i < BITS_PER_BYTE; i++) {
-          const sum = imageData[base] +
-            imageData[base + 4] +
-            imageData[base + rowStride] +
-            imageData[base + rowStride + 4]
-          value = (value << 1) | (sum >= threshold4 ? 1 : 0)
+          let bit
+          if (useSinglePixel) {
+            bit = (imageData[base] * 4) >= threshold4 ? 1 : 0
+          } else {
+            const sum = imageData[base] +
+              imageData[base + 4] +
+              imageData[base + rowStride] +
+              imageData[base + rowStride + 4]
+            bit = sum >= threshold4 ? 1 : 0
+          }
+          value = (value << 1) | bit
           base += 8
         }
         payload[byteIdx++] = value
@@ -1395,11 +1403,17 @@ function readBinary2PayloadLockedNativeGrid({
         continue
       }
 
-      const sum = imageData[base] +
-        imageData[base + 4] +
-        imageData[base + rowStride] +
-        imageData[base + rowStride + 4]
-      bitBuffer = (bitBuffer << 1) | (sum >= threshold4 ? 1 : 0)
+      let bit
+      if (useSinglePixel) {
+        bit = (imageData[base] * 4) >= threshold4 ? 1 : 0
+      } else {
+        const sum = imageData[base] +
+          imageData[base + 4] +
+          imageData[base + rowStride] +
+          imageData[base + rowStride + 4]
+        bit = sum >= threshold4 ? 1 : 0
+      }
+      bitBuffer = (bitBuffer << 1) | bit
       bitCount++
       base += 8
       cx++
@@ -1414,7 +1428,7 @@ function readBinary2PayloadLockedNativeGrid({
   return byteIdx === payloadLength ? payload : null
 }
 
-function readBinary2PayloadLocked(imageData, width, region, layout, payloadLength, precomputedOffsets = null) {
+function readBinary2PayloadLocked(imageData, width, region, layout, payloadLength, precomputedOffsets = null, options = {}) {
   const frameMode = layout?.frameMode ?? HDMI_MODE.COMPAT_4
   if (frameMode !== HDMI_MODE.BINARY_2) return null
   if (!payloadLength || payloadLength <= 0) return null
@@ -1482,7 +1496,8 @@ function readBinary2PayloadLocked(imageData, width, region, layout, payloadLengt
       rightStripX,
       headerBs,
       fallbackThreshold,
-      stripRows
+      stripRows,
+      sampleMode: options.binary2SampleMode === 'single' ? 'single' : 'average'
     })
     if (nativePayload) return nativePayload
   }
@@ -2247,7 +2262,8 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
       region,
       layout,
       payloadLength,
-      lockedBinary2Offsets
+      lockedBinary2Offsets,
+      options
     )
     if (lockedBinary2Payload) return lockedBinary2Payload
 
@@ -3469,6 +3485,58 @@ export function testBinary2LockedPayloadReaderTranslatesCroppedOffsets() {
     return pass
   } catch (err) {
     console.log('BINARY_2 cropped locked payload reader test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+export function testBinary2SinglePixelLockedPayloadReader() {
+  try {
+    const width = 1920
+    const height = 1080
+    const payload = new Uint8Array(1500)
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 97 + 13) & 0xff
+    const frame = buildFrame(payload, HDMI_MODE.BINARY_2, width, height, 60, 7)
+    const anchors = detectAnchors(frame, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    const initial = region ? decodeDataRegion(frame, width, region) : null
+    if (!initial?.crcValid || initial._diag?.frameMode !== HDMI_MODE.BINARY_2) {
+      console.log('BINARY_2 single-pixel locked reader test: FAIL (initial decode)')
+      return false
+    }
+    const precomputed = precomputeBinary3SampleOffsets(initial._diag, region)
+    const layout = {
+      ...initial._diag,
+      precomputedOffsets: precomputed.offsets,
+      precomputedRegion: precomputed.region
+    }
+
+    const damaged = new Uint8ClampedArray(frame)
+    const offsets = precomputed.offsets
+    const cells = Math.floor(offsets.length / 2)
+    for (let i = 0; i < cells; i++) {
+      const px = offsets[i * 2]
+      const py = offsets[i * 2 + 1]
+      const base = ((py * width) + px) * 4
+      const rowStride = width * 4
+      const inverted = damaged[base] > 127 ? 0 : 255
+      damaged[base + 4] = inverted
+      damaged[base + rowStride] = inverted
+      damaged[base + rowStride + 4] = inverted
+    }
+
+    const robust = readPayloadWithLayout(damaged, width, region, layout, payload.length, precomputed.offsets, {
+      binary2SampleMode: 'average'
+    })
+    const single = readPayloadWithLayout(damaged, width, region, layout, payload.length, precomputed.offsets, {
+      binary2SampleMode: 'single'
+    })
+    const pass = robust?.some((v, i) => v !== payload[i]) &&
+      single?.length === payload.length &&
+      single.every((v, i) => v === payload[i])
+    console.log('BINARY_2 single-pixel locked reader test:', pass ? 'PASS' : 'FAIL')
+    return pass
+  } catch (err) {
+    console.log('BINARY_2 single-pixel locked reader test: FAIL', err?.message || err)
     return false
   }
 }
