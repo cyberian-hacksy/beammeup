@@ -111,6 +111,7 @@ import {
   testWorkerStartFailureResumesMainCapture,
   testReceiverExpectedPacketSizeWaitsForSession,
   testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable,
+  testReceiverSlowRoiCaptureTriggersRebenchmark,
   testReceiverHotPerfFrameGate,
   testComputeLockedCaptureRect,
   testLabFrameTapUsesFullCaptureRect,
@@ -244,6 +245,7 @@ window.testWorkerTransferClockStartsOnFirstAcceptedFrame = testWorkerTransferClo
 window.testWorkerStartFailureResumesMainCapture = testWorkerStartFailureResumesMainCapture
 window.testReceiverExpectedPacketSizeWaitsForSession = testReceiverExpectedPacketSizeWaitsForSession
 window.testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable = testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable
+window.testReceiverSlowRoiCaptureTriggersRebenchmark = testReceiverSlowRoiCaptureTriggersRebenchmark
 window.testReceiverHotPerfFrameGate = testReceiverHotPerfFrameGate
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
 window.testLabFrameTapUsesFullCaptureRect = testLabFrameTapUsesFullCaptureRect
@@ -471,6 +473,7 @@ async function runAllTests() {
     workerStartFailureResumesMainCapture: testWorkerStartFailureResumesMainCapture(),
     receiverExpectedPacketSizeBootstrap: testReceiverExpectedPacketSizeWaitsForSession(),
     receiverRoiCaptureBenchmarkDefault: testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable(),
+    receiverSlowRoiCaptureRebenchmark: testReceiverSlowRoiCaptureTriggersRebenchmark(),
     receiverHotPerfFrameGate: testReceiverHotPerfFrameGate(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
     labFrameTapFullCaptureRect: testLabFrameTapUsesFullCaptureRect(),

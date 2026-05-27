@@ -131,8 +131,27 @@ export function createReceiverCaptureTuningState({
     roiVideoSampleTotalMs: 0,
     roiVideoFrameSampleCount: 0,
     roiVideoFrameSampleTotalMs: 0,
+    roiSlowRebenchDone: false,
     totalFramesSeen: 0
   }
+}
+
+export function shouldRebenchmarkReceiverRoiCapture({
+  canUseVideoFrame = false,
+  roiPreferredMethod = null,
+  roiBenchmarkRemaining = 0,
+  roiSlowRebenchDone = false,
+  hotCaptureSampleCount = 0,
+  hotCaptureAvgMs = 0,
+  minHotSamples = 30,
+  slowThresholdMs = 8
+} = {}) {
+  return !!canUseVideoFrame &&
+    roiPreferredMethod === 'video' &&
+    roiBenchmarkRemaining === 0 &&
+    !roiSlowRebenchDone &&
+    hotCaptureSampleCount >= minHotSamples &&
+    hotCaptureAvgMs >= slowThresholdMs
 }
 
 export function shouldRecordReceiverHotPerfFrame({
@@ -162,6 +181,26 @@ export function testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable() {
     tuning.roiVideoSampleCount === 0 &&
     tuning.roiVideoFrameSampleCount === 0
   console.log('Receiver ROI capture video default test:', pass ? 'PASS' : 'FAIL', tuning)
+  return pass
+}
+
+export function testReceiverSlowRoiCaptureTriggersRebenchmark() {
+  const slowVideo = {
+    canUseVideoFrame: true,
+    roiPreferredMethod: 'video',
+    roiBenchmarkRemaining: 0,
+    roiSlowRebenchDone: false,
+    hotCaptureSampleCount: 40,
+    hotCaptureAvgMs: 11.5
+  }
+  const pass =
+    shouldRebenchmarkReceiverRoiCapture(slowVideo) === true &&
+    shouldRebenchmarkReceiverRoiCapture({ ...slowVideo, hotCaptureAvgMs: 4 }) === false &&
+    shouldRebenchmarkReceiverRoiCapture({ ...slowVideo, hotCaptureSampleCount: 12 }) === false &&
+    shouldRebenchmarkReceiverRoiCapture({ ...slowVideo, roiPreferredMethod: 'VideoFrame' }) === false &&
+    shouldRebenchmarkReceiverRoiCapture({ ...slowVideo, roiSlowRebenchDone: true }) === false &&
+    shouldRebenchmarkReceiverRoiCapture({ ...slowVideo, canUseVideoFrame: false }) === false
+  console.log('Receiver slow ROI capture rebenchmark test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

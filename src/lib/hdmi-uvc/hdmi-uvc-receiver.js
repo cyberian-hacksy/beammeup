@@ -30,7 +30,8 @@ import {
   computeLockedCaptureRect,
   getWorkerCaptureCopyRect,
   shouldUseLockedCaptureRegion,
-  shouldRecordReceiverHotPerfFrame
+  shouldRecordReceiverHotPerfFrame,
+  shouldRebenchmarkReceiverRoiCapture
 } from './hdmi-uvc-receiver-capture.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
 import {
@@ -1283,6 +1284,7 @@ function maybeRebenchmarkCaptureMethod() {
   tuning.roiVideoSampleTotalMs = 0
   tuning.roiVideoFrameSampleCount = 0
   tuning.roiVideoFrameSampleTotalMs = 0
+  tuning.roiSlowRebenchDone = false
   debugLog('Capture-method benchmark re-entered (periodic)')
 }
 
@@ -1332,6 +1334,32 @@ function noteCaptureTuningSample(method, durationMs, isRoi = false) {
     `Capture tuning: prefer ${tuning[preferredKey]}${isRoi ? ' ROI' : ''} ` +
     `(video=${avgVideoMs.toFixed(2)}ms, VideoFrame=${avgVideoFrameMs.toFixed(2)}ms)`
   )
+}
+
+function maybeRebenchmarkSlowRoiCapture() {
+  const tuning = state.captureTuning
+  const perf = state.rxPerf
+  if (!tuning || !perf) return
+  const avgHotCaptureMs = averagePerfWindow(perf.hotCaptureMs)
+  if (!shouldRebenchmarkReceiverRoiCapture({
+    canUseVideoFrame: tuning.canUseVideoFrame,
+    roiPreferredMethod: tuning.roiPreferredMethod,
+    roiBenchmarkRemaining: tuning.roiBenchmarkRemaining,
+    roiSlowRebenchDone: tuning.roiSlowRebenchDone,
+    hotCaptureSampleCount: perf.hotCaptureMs.count,
+    hotCaptureAvgMs: avgHotCaptureMs
+  })) {
+    return
+  }
+
+  tuning.roiPreferredMethod = null
+  tuning.roiBenchmarkRemaining = CAPTURE_BENCHMARK_SAMPLES_PER_METHOD * 2
+  tuning.roiVideoSampleCount = 0
+  tuning.roiVideoSampleTotalMs = 0
+  tuning.roiVideoFrameSampleCount = 0
+  tuning.roiVideoFrameSampleTotalMs = 0
+  tuning.roiSlowRebenchDone = true
+  debugLog(`Capture tuning: slow video ROI (${avgHotCaptureMs.toFixed(2)}ms) - rebenchmarking ROI path`)
 }
 
 // innovationCount counts packets that delivered a new symbol to the decoder
@@ -1450,6 +1478,7 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     recordPerfSample(perf.hotTotalMs, performance.now() - frameStartMs)
     perf.hotFramesSinceLog++
     perf.lastHotCaptureMethod = captureMethod || perf.lastHotCaptureMethod
+    maybeRebenchmarkSlowRoiCapture()
   }
 
   maybeRebenchmarkCaptureMethod()

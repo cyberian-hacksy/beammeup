@@ -1586,18 +1586,9 @@ function getBinary3Pass3MixRatios(pass3Mix = getBinary3Pass3Mix()) {
   return { source: 0.65, parity: 0.15, fountain: 0.20 }
 }
 
-function getBinary2Pass3MixRatios() {
-  return { source: 0.45, parity: 0.15, fountain: 0.40 }
-}
-
-function getBinary2LateMixRatios() {
-  return { source: 0.35, parity: 0.15, fountain: 0.50 }
-}
-
 function getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, {
   lateMix = getBinary3LateMix(),
-  pass3Mix = getBinary3Pass3Mix(),
-  mode = state.mode
+  pass3Mix = getBinary3Pass3Mix()
 } = {}) {
   const slotCount = Math.max(0, Math.floor(slots || 0))
   if (passNumber <= 1) {
@@ -1611,24 +1602,11 @@ function getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, 
         fountain: 0
       }))
     }
-    if (mode === HDMI_MODE.BINARY_2) {
-      return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
-        source: 0.58,
-        parity: 0.15,
-        fountain: 0.27
-      }))
-    }
     return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
       source: 0.75,
       parity: 0.125,
       fountain: 0.125
     }))
-  }
-  if (mode === HDMI_MODE.BINARY_2) {
-    const ratios = passNumber === 3
-      ? getBinary2Pass3MixRatios()
-      : getBinary2LateMixRatios()
-    return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, ratios))
   }
   if (passNumber === 3) {
     return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, getBinary3Pass3MixRatios(pass3Mix)))
@@ -1645,7 +1623,7 @@ function getSlotMixPatternForPass(passNumber, {
 } = {}) {
   if (!usesMixedSlotReplay(mode)) return null
   if (isDenseBinaryMode(mode)) {
-    return getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, { lateMix, pass3Mix, mode })
+    return getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, { lateMix, pass3Mix })
   }
   if (passNumber <= 1) return ['source', 'source', 'source', 'source', 'source', 'source']
   if (passNumber === 2) {
@@ -2976,6 +2954,10 @@ export function testBinary2BatchingAndSchedule() {
     slots: 29,
     paritySweepsInPass: 1
   })
+  const pass3 = getSlotMixPatternForPass(3, {
+    mode: HDMI_MODE.BINARY_2,
+    slots: 29
+  })
   const pass4 = getSlotMixPatternForPass(4, {
     mode: HDMI_MODE.BINARY_2,
     slots: 29
@@ -2994,16 +2976,20 @@ export function testBinary2BatchingAndSchedule() {
     selected.blockSize === 2028 &&
     selected.usedBytes === 59247 &&
     selected.payloadPerFrame === 58812 &&
-    countPattern(pass2, 'source') === 17 &&
+    countPattern(pass2, 'source') === 22 &&
     countPattern(pass2, 'parity') === 4 &&
-    countPattern(pass2, 'fountain') === 8 &&
-    countPattern(pass4, 'source') === 10 &&
-    countPattern(pass4, 'parity') === 4 &&
-    countPattern(pass4, 'fountain') === 15
+    countPattern(pass2, 'fountain') === 3 &&
+    countPattern(pass3, 'source') === 19 &&
+    countPattern(pass3, 'parity') === 4 &&
+    countPattern(pass3, 'fountain') === 6 &&
+    countPattern(pass4, 'source') === 18 &&
+    countPattern(pass4, 'parity') === 2 &&
+    countPattern(pass4, 'fountain') === 9
   console.log('BINARY_2 batching/schedule test:', pass ? 'PASS' : 'FAIL', {
     profile,
     selected,
     pass2: describeSlotMixPattern(pass2),
+    pass3: describeSlotMixPattern(pass3),
     pass4: describeSlotMixPattern(pass4)
   })
   return pass
