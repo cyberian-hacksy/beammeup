@@ -25,6 +25,15 @@ export const METADATA_INTERVAL = 10
 export const FOUNTAIN_DEGREE = 3
 export const DEGREE_ONE_PROBABILITY = 0.15
 
+// Fountain degree distribution. This is a PROTOCOL parameter: the encoder and
+// decoder must agree, so it is a build-time constant (sender and receiver are
+// separate pages, but both read it from the same bundle) rather than a runtime
+// toggle. To A/B a variant, change this and rebuild the bundle used on BOTH ends.
+//   'classic' — 15% degree-1, otherwise degree-3 (original behaviour)
+//   'ripple'  — more degree-1/2 symbols; shortens the fountain endgame, where
+//               pure degree-3 stalls as a coupon-collector on the last blocks
+export const FOUNTAIN_VARIANT = 'classic'
+
 // Raptor-Lite pre-coding constants
 export const PARITY_LAYERS = 3 // Number of parity layers (consecutive, offset, strided)
 

@@ -1236,6 +1236,13 @@ const DENSE_BINARY_BATCHING_PROFILES = {
   large: {
     targetFrameFill: 0.99,
     maxBlockSize: 2048
+  },
+  // Fewer, larger blocks → smaller K → shorter fountain endgame (the
+  // coupon-collector cost scales with the source-block count). Decoder
+  // auto-adapts: block size is self-describing in each packet's payload.
+  xlarge: {
+    targetFrameFill: 0.99,
+    maxBlockSize: 3072
   }
 }
 
@@ -3065,13 +3072,14 @@ export function testDenseBinaryBatchingProfileDiagnostic() {
   const diagGetterExists = typeof getDenseBinaryProfile === 'function'
   const defExists = typeof getDiagnosticDefinition === 'function'
   const def = defExists ? getDiagnosticDefinition('denseBinaryProfile') : null
-  const expectedAllowed = ['safe', 'fill99', 'medium', 'large']
+  const expectedAllowed = ['safe', 'fill99', 'medium', 'large', 'xlarge']
   const profileById = helperExists
     ? {
         safe: getDenseBinaryBatchingProfile('safe'),
         fill99: getDenseBinaryBatchingProfile('fill99'),
         medium: getDenseBinaryBatchingProfile('medium'),
-        large: getDenseBinaryBatchingProfile('large')
+        large: getDenseBinaryBatchingProfile('large'),
+        xlarge: getDenseBinaryBatchingProfile('xlarge')
       }
     : {}
   const fallbackProfile = helperExists ? getDenseBinaryBatchingProfile('not-a-profile') : null
@@ -3087,6 +3095,8 @@ export function testDenseBinaryBatchingProfileDiagnostic() {
     profileById.medium?.targetFrameFill === 0.99 &&
     profileById.large?.maxBlockSize === 2048 &&
     profileById.large?.targetFrameFill === 0.99 &&
+    profileById.xlarge?.maxBlockSize === 3072 &&
+    profileById.xlarge?.targetFrameFill === 0.99 &&
     fallbackProfile?.id === 'large'
   console.log('dense-binary batching profile diagnostic test:', pass ? 'PASS' : 'FAIL', {
     helperExists,

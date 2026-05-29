@@ -6,6 +6,7 @@ import { testPRNG } from './lib/prng.js'
 import { testPacketRoundtrip } from './lib/packet.js'
 import { testMetadataRoundtrip } from './lib/metadata.js'
 import { testEncoder } from './lib/encoder.js'
+import { testFountainRippleVariant } from './lib/fountain-symbol.js'
 import {
   testCodecRoundtrip,
   testCodecRoundtripWithLoss,
@@ -163,6 +164,7 @@ window.testPRNG = testPRNG
 window.testPacketRoundtrip = testPacketRoundtrip
 window.testMetadataRoundtrip = testMetadataRoundtrip
 window.testEncoder = testEncoder
+window.testFountainRippleVariant = testFountainRippleVariant
 window.testCodecRoundtrip = testCodecRoundtrip
 window.testCodecRoundtripWithLoss = testCodecRoundtripWithLoss
 window.testCodecRoundtripDeferredMetadata = testCodecRoundtripDeferredMetadata
@@ -398,6 +400,7 @@ async function runAllTests() {
     gf2Small: await testGF2SolverSmall(),
     gf2Large: await testGF2SolverLarge(),
     encoder: await testEncoder(),
+    fountainRippleVariant: testFountainRippleVariant(),
     codec: await testCodecRoundtrip(),
     codecWithLoss: await testCodecRoundtripWithLoss(),
     codecDeferredMetadata: await testCodecRoundtripDeferredMetadata(),

@@ -1,8 +1,8 @@
 // LT Fountain Encoder with Raptor-Lite Pre-coding
 // Encodes file data into a stream of fountain-coded symbols
 
-import { FOUNTAIN_DEGREE, DEGREE_ONE_PROBABILITY, QR_MODE } from './constants.js'
-import { createPRNG } from './prng.js'
+import { QR_MODE } from './constants.js'
+import { deriveSymbolIndices } from './fountain-symbol.js'
 import { createPacket } from './packet.js'
 import { createMetadataPayload } from './metadata.js'
 import { calculateParityParams, generateParityMap, generateParityBlocks } from './precode.js'
@@ -56,31 +56,9 @@ export function createEncoder(fileData, filename, mimeType, hash, blockSize = 20
         return createPacket(fileId, K_prime, 0, metadataPayload, true, blockSize, mode)
       }
 
-      // Seed PRNG with fileId XOR symbolId
-      const seed = (fileId ^ symbolId) >>> 0
-      const rng = createPRNG(seed)
-
-      // Symbol IDs 1 to K_prime are "systematic" (degree-1, one block each)
-      // Symbol IDs > K_prime use fountain coding
-      let degree, indices
-      if (symbolId <= K_prime) {
-        // Systematic symbol: just one intermediate block
-        degree = 1
-        indices = [(symbolId - 1) % K_prime]
-      } else {
-        // Fountain-coded symbol: mix of degree-1 and degree-3
-        // Use PRNG's first value to decide degree (deterministic per symbol)
-        const degreeRoll = rng.next() / 0xFFFFFFFF
-        if (degreeRoll < DEGREE_ONE_PROBABILITY) {
-          // Degree-1: single random block (helps complete missing blocks faster)
-          degree = 1
-          indices = [rng.next() % K_prime]
-        } else {
-          // Degree-3: XOR of multiple blocks, but never all
-          degree = Math.min(FOUNTAIN_DEGREE, Math.max(1, K_prime - 1))
-          indices = rng.pickUnique(degree, K_prime)
-        }
-      }
+      // Symbol id → intermediate-block indices. Shared with the decoder
+      // (fountain-symbol.js) so the two derivations can never drift.
+      const indices = deriveSymbolIndices(fileId, symbolId, K_prime)
 
       // XOR selected intermediate blocks
       const payload = new Uint8Array(blockSize)

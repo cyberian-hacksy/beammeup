@@ -11,7 +11,7 @@
 //   perf            'on'|'off'                           reload  (?perf=)
 //   worker          'off'|'hash'|'anchors'|'full'        reload  (?worker=)
 //   pass2           'p2'|'legacy'|'mix'                  live    (?pass2=)
-//   denseBinaryProfile  'safe'|'fill99'|'medium'|'large'     live    (?dense-profile=)
+//   denseBinaryProfile  'safe'|'fill99'|'medium'|'large'|'xlarge'  live  (?dense-profile=)
 //   denseBinaryPass3Mix 'balanced'|'source'                  live    (?dense-pass3=)
 //   denseBinaryLateMix  'balanced'|'source'                  live    (?dense-late=)
 //
@@ -80,13 +80,14 @@ const DEFINITIONS = {
   denseBinaryProfile: {
     urlKey: 'dense-profile',
     default: 'large',
-    allowed: ['safe', 'fill99', 'medium', 'large'],
+    allowed: ['safe', 'fill99', 'medium', 'large', 'xlarge'],
     reloadRequired: false,
     labels: {
       safe: 'safe',
       fill99: 'fill99',
       medium: 'medium',
-      large: 'large'
+      large: 'large',
+      xlarge: 'xlarge'
     },
     title: 'Dense Batch'
   },

@@ -1,8 +1,7 @@
 // LT Fountain Decoder with Belief Propagation and Raptor-Lite Parity Recovery
 // Decodes fountain-coded symbols back into original file
 
-import { FOUNTAIN_DEGREE, DEGREE_ONE_PROBABILITY } from './constants.js'
-import { createPRNG } from './prng.js'
+import { deriveSymbolIndices } from './fountain-symbol.js'
 import { parsePacket } from './packet.js'
 import { parseMetadataPayload } from './metadata.js'
 import { calculateParityParams, generateParityMap, buildSourceToParityAdjacency } from './precode.js'
@@ -366,27 +365,9 @@ export function createDecoder() {
       return true
     }
 
-    // Reconstruct indices using same logic as encoder
-    const seed = (fileId ^ parsed.symbolId) >>> 0
-    const rng = createPRNG(seed)
-
-    // Match encoder's systematic/fountain logic (using K_prime)
-    let degree, indices
-    if (parsed.symbolId <= K_prime) {
-      // Systematic symbol: just one intermediate block
-      degree = 1
-      indices = [(parsed.symbolId - 1) % K_prime]
-    } else {
-      // Fountain-coded symbol
-      const degreeRoll = rng.next() / 0xFFFFFFFF
-      if (degreeRoll < DEGREE_ONE_PROBABILITY) {
-        degree = 1
-        indices = [rng.next() % K_prime]
-      } else {
-        degree = Math.min(FOUNTAIN_DEGREE, Math.max(1, K_prime - 1))
-        indices = rng.pickUnique(degree, K_prime)
-      }
-    }
+    // Reconstruct indices via the shared derivation (fountain-symbol.js) so the
+    // decoder can never drift from the encoder.
+    const indices = deriveSymbolIndices(fileId, parsed.symbolId, K_prime)
 
     // Fast path for degree-1 (systematic symbols and degree-1 fountain): install
     // the block directly into decodedBlocks, skipping the reduce/propagate cycle
