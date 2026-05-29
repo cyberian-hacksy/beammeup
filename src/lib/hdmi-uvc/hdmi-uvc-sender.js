@@ -28,6 +28,7 @@ import {
   getDenseBinaryLateMix,
   getDenseBinaryPass3Mix,
   getDenseBinaryProfile,
+  getDenseBinaryDegree,
   getDiagnosticDefinition,
   getPass2Variant,
   renderDiagnosticsPanel
@@ -1165,7 +1166,7 @@ const BOOTSTRAP_METADATA_WINDOW_FRAMES = 180
 const MIN_METADATA_INTERVAL_FRAMES = 90
 const MAX_METADATA_INTERVAL_FRAMES = 90
 const MIN_BLOCK_SIZE = 512
-const MAX_BLOCK_SIZE = 3072
+const MAX_BLOCK_SIZE = 4096
 const MAX_FRAME_PACKET_SLOTS = 32
 const TARGET_SOURCE_BLOCKS = 128
 const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
@@ -1240,9 +1241,12 @@ const DENSE_BINARY_BATCHING_PROFILES = {
   // Fewer, larger blocks → smaller K → shorter fountain endgame (the
   // coupon-collector cost scales with the source-block count). Decoder
   // auto-adapts: block size is self-describing in each packet's payload.
+  // The batcher still maximizes frame payload, so a high maxBlockSize lets it
+  // settle on the payload-optimal *large* block (~3.9KB → K≈2664 for 10MB,
+  // roughly half of large's K) rather than the ~2KB/29-packet point.
   xlarge: {
     targetFrameFill: 0.99,
-    maxBlockSize: 3072
+    maxBlockSize: 4096
   }
 }
 
@@ -2169,6 +2173,7 @@ async function startSending() {
     const utilization = ((batchedBytes / capacity) * 100).toFixed(1)
 
     debugLog(`Encoder: K=${state.encoder.K}, K'=${state.encoder.K_prime}`)
+    debugLog(`Fountain degree: ${getDenseBinaryDegree()} (receiver must match)`)
     debugLog(getMetadataScheduleDescription())
     debugLog(`Batching: ${state.packetsPerFrame} packet(s)/frame, packetSize=${state.packetSize}, used=${batchedBytes}/${capacity} bytes (${utilization}%)`)
 
@@ -3067,6 +3072,27 @@ export function testDenseBinaryBatchingProfileMath() {
   return pass
 }
 
+export function testDenseBinaryXlargeShrinksBlockCount() {
+  const capacity = getPayloadCapacity(1920, 1080, HDMI_MODE.BINARY_2)
+  const fileSize = 10 * 1024 * 1024
+  const large = selectFrameBatching({ capacity, fileSize, profile: getDenseBinaryBatchingProfile('large') })
+  const xlarge = selectFrameBatching({ capacity, fileSize, profile: getDenseBinaryBatchingProfile('xlarge') })
+  const kLarge = Math.ceil(fileSize / large.blockSize)
+  const kXlarge = Math.ceil(fileSize / xlarge.blockSize)
+  // xlarge exists to shrink K: bigger blocks (fewer packets/frame) → materially
+  // fewer source blocks → shorter fountain endgame. Raising maxBlockSize alone
+  // does NOT do this (the batcher maximizes frame payload, which favours ~2KB
+  // blocks); the profile must also cap packets-per-frame.
+  const pass = xlarge.blockSize > large.blockSize &&
+    xlarge.packetsPerFrame < large.packetsPerFrame &&
+    kXlarge < kLarge * 0.7
+  console.log('dense-binary xlarge shrinks block count test:', pass ? 'PASS' : 'FAIL', {
+    large: { blockSize: large.blockSize, packets: large.packetsPerFrame, K: kLarge },
+    xlarge: { blockSize: xlarge.blockSize, packets: xlarge.packetsPerFrame, K: kXlarge }
+  })
+  return pass
+}
+
 export function testDenseBinaryBatchingProfileDiagnostic() {
   const helperExists = typeof getDenseBinaryBatchingProfile === 'function'
   const diagGetterExists = typeof getDenseBinaryProfile === 'function'
@@ -3095,7 +3121,7 @@ export function testDenseBinaryBatchingProfileDiagnostic() {
     profileById.medium?.targetFrameFill === 0.99 &&
     profileById.large?.maxBlockSize === 2048 &&
     profileById.large?.targetFrameFill === 0.99 &&
-    profileById.xlarge?.maxBlockSize === 3072 &&
+    profileById.xlarge?.maxBlockSize === 4096 &&
     profileById.xlarge?.targetFrameFill === 0.99 &&
     fallbackProfile?.id === 'large'
   console.log('dense-binary batching profile diagnostic test:', pass ? 'PASS' : 'FAIL', {

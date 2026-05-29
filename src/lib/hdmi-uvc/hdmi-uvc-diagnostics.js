@@ -13,6 +13,7 @@
 //   pass2           'p2'|'legacy'|'mix'                  live    (?pass2=)
 //   denseBinaryProfile  'safe'|'fill99'|'medium'|'large'|'xlarge'  live  (?dense-profile=)
 //   denseBinaryPass3Mix 'balanced'|'source'                  live    (?dense-pass3=)
+//   denseBinaryDegree   'classic'|'ripple'                   reload  (?dense-degree=, set on BOTH ends)
 //   denseBinaryLateMix  'balanced'|'source'                  live    (?dense-late=)
 //
 // "Live" settings are re-read by the consumer per call; "reload" settings
@@ -113,6 +114,14 @@ const DEFINITIONS = {
       source: 'source'
     },
     title: 'Dense P3'
+  },
+  denseBinaryDegree: {
+    urlKey: 'dense-degree',
+    default: 'classic',
+    allowed: ['classic', 'ripple'],
+    reloadRequired: true,
+    labels: { classic: 'classic', ripple: 'ripple' },
+    title: 'Dense Degree'
   }
 }
 
@@ -214,6 +223,9 @@ export function getPass2Variant() { return getDiagnostic('pass2') }
 export function getDenseBinaryProfile() { return getDiagnostic('denseBinaryProfile') }
 export function getDenseBinaryLateMix() { return getDiagnostic('denseBinaryLateMix') }
 export function getDenseBinaryPass3Mix() { return getDiagnostic('denseBinaryPass3Mix') }
+// Fountain degree distribution. Read by BOTH encoder (sender) and decoder
+// (receiver) — they must match, so set ?dense-degree= identically on both pages.
+export function getDenseBinaryDegree() { return getDiagnostic('denseBinaryDegree') }
 
 // Render a segmented-button diagnostics panel into `container`. `keys` is
 // the ordered list of setting keys to show — sender uses just ['pass2'],

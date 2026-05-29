@@ -5,18 +5,19 @@
 // structurally impossible — previously it was duplicated verbatim in
 // encoder.js and decoder.js.
 //
-// The degree distribution is selected by FOUNTAIN_VARIANT (see constants.js),
-// a build-time constant so both ends always match.
+// The degree distribution is selected by the denseBinaryDegree diagnostic
+// (?dense-degree=, default 'classic'), read identically by encoder and decoder.
 
 import { createPRNG } from './prng.js'
-import { FOUNTAIN_DEGREE, DEGREE_ONE_PROBABILITY, FOUNTAIN_VARIANT } from './constants.js'
+import { FOUNTAIN_DEGREE, DEGREE_ONE_PROBABILITY } from './constants.js'
+import { getDenseBinaryDegree } from './hdmi-uvc/hdmi-uvc-diagnostics.js'
 
 // Given a symbol id, return the intermediate-block indices it combines.
 // Systematic ids (1..K_prime) carry exactly one block; ids > K_prime are
 // fountain-coded with a degree drawn from the selected distribution. The PRNG
 // is seeded deterministically from (fileId ^ symbolId), so encoder and decoder
 // reconstruct identical plans without any side channel.
-export function deriveSymbolIndices(fileId, symbolId, K_prime, variant = FOUNTAIN_VARIANT) {
+export function deriveSymbolIndices(fileId, symbolId, K_prime, variant = getDenseBinaryDegree()) {
   if (symbolId <= K_prime) {
     return [(symbolId - 1) % K_prime]
   }

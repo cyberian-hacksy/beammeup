@@ -47,6 +47,7 @@ import {
   testBinary2BatchingAndSchedule,
   testDenseBinaryBatchingProfileMath,
   testDenseBinaryBatchingProfileDiagnostic,
+  testDenseBinaryXlargeShrinksBlockCount,
   testDenseBinaryLateMixDiagnostic,
   testDenseBinaryLateMixPatterns,
   testDenseBinaryFountainTailPatterns,
@@ -235,6 +236,7 @@ window.testDenseBinaryBatchingProfile = testDenseBinaryBatchingProfile
 window.testBinary2BatchingAndSchedule = testBinary2BatchingAndSchedule
 window.testDenseBinaryBatchingProfileMath = testDenseBinaryBatchingProfileMath
 window.testDenseBinaryBatchingProfileDiagnostic = testDenseBinaryBatchingProfileDiagnostic
+window.testDenseBinaryXlargeShrinksBlockCount = testDenseBinaryXlargeShrinksBlockCount
 window.testDenseBinaryLateMixDiagnostic = testDenseBinaryLateMixDiagnostic
 window.testDenseBinaryLateMixPatterns = testDenseBinaryLateMixPatterns
 window.testDenseBinaryFountainTailPatterns = testDenseBinaryFountainTailPatterns
@@ -465,6 +467,7 @@ async function runAllTests() {
     binary2BatchingAndSchedule: testBinary2BatchingAndSchedule(),
     denseBinaryBatchingProfileMath: testDenseBinaryBatchingProfileMath(),
     denseBinaryBatchingProfileDiagnostic: testDenseBinaryBatchingProfileDiagnostic(),
+    denseBinaryXlargeShrinksBlockCount: testDenseBinaryXlargeShrinksBlockCount(),
     denseBinaryLateMixDiagnostic: testDenseBinaryLateMixDiagnostic(),
     denseBinaryLateMixPatterns: testDenseBinaryLateMixPatterns(),
     denseBinaryFountainTailPatterns: testDenseBinaryFountainTailPatterns(),
