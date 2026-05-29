@@ -10,7 +10,7 @@ import {
   testCodecRoundtrip,
   testCodecRoundtripWithLoss,
   testCodecRoundtripDeferredMetadata,
-  testTailSolverTriggerAllowsWiderBinary3Tail
+  testTailSolverTriggerAllowsWiderDenseBinaryTail
 } from './lib/decoder.js'
 import { testParityMap, testParityRecovery, testGF2SolverSmall, testGF2SolverLarge, testSourceToParityAdjacency } from './lib/precode.js'
 
@@ -38,21 +38,22 @@ import {
   testExternalPreparedStartUsesManualGate,
   testHdmiUvcSenderDefaults,
   testLabCardFullscreenExitRequiresReadyRestore,
-  testBinary3MixedReplayPass1SourceOnly,
-  testBinary3MixedReplayPass2ChangesAfterParitySweep,
+  testDenseBinaryMixedReplayPass1SourceOnly,
+  testDenseBinaryMixedReplayPass2ChangesAfterParitySweep,
   testCompat4MixedReplayKeepsSixSlotPatterns,
-  testBinary3MixedReplayMetadataReducesDataSlots,
-  testBinary3BatchingProfile,
+  testDenseBinaryMixedReplayMetadataReducesDataSlots,
+  testDenseBinaryBatchingProfile,
   testBinary2BatchingAndSchedule,
-  testBinary3BatchingProfileMath,
-  testBinary3BatchingProfileDiagnostic,
-  testBinary3LateMixDiagnostic,
-  testBinary3LateMixPatterns,
-  testBinary3Pass3MixDiagnostic,
-  testBinary3Pass3MixPatterns,
-  testBinary3StrictGeometryGate,
-  testBinary3MetadataUsesSparseSchedule,
-  testBinary3MetadataSlotRotatesOnlyWhenSent
+  testDenseBinaryBatchingProfileMath,
+  testDenseBinaryBatchingProfileDiagnostic,
+  testDenseBinaryLateMixDiagnostic,
+  testDenseBinaryLateMixPatterns,
+  testDenseBinaryFountainTailPatterns,
+  testDenseBinaryPass3MixDiagnostic,
+  testDenseBinaryPass3MixPatterns,
+  testDenseBinaryStrictGeometryGate,
+  testDenseBinaryMetadataUsesSparseSchedule,
+  testDenseBinaryMetadataSlotRotatesOnlyWhenSent
 } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
 import {
   initHdmiUvcReceiver,
@@ -67,7 +68,7 @@ import {
 import {
   testBinary3RecoveredLayoutKeepsLock,
   testBinary2RecoveredLayoutKeepsLock
-} from './lib/hdmi-uvc/hdmi-uvc-binary3-lock.js'
+} from './lib/hdmi-uvc/hdmi-uvc-dense-binary-lock.js'
 import { initHdmiUvcLabReceiverUi } from './lib/hdmi-uvc/hdmi-uvc-lab-ui.js'
 import { testCrc32 } from './lib/hdmi-uvc/crc32.js'
 import {
@@ -85,9 +86,9 @@ import {
   testHdmiModesExcludeRemovedMode7,
   testBinary3FrameRoundtrip,
   testBinary2FrameRoundtrip,
-  testDecodeDataRegionPropagatesBinary3Levels,
-  testBinary3LockedLayoutMatchesBlindSweep,
-  testBinary3PrecomputedOffsetsMatchUncached,
+  testDecodeDataRegionPropagatesDenseBinaryLevels,
+  testDenseBinaryLockedLayoutMatchesBlindSweep,
+  testDenseBinaryPrecomputedOffsetsMatchUncached,
   testBinary2LockedPayloadReaderMatchesGeneric,
   testBinary2LockedPayloadReaderTranslatesCroppedOffsets,
   testBinary2SinglePixelLockedPayloadReader,
@@ -165,7 +166,7 @@ window.testEncoder = testEncoder
 window.testCodecRoundtrip = testCodecRoundtrip
 window.testCodecRoundtripWithLoss = testCodecRoundtripWithLoss
 window.testCodecRoundtripDeferredMetadata = testCodecRoundtripDeferredMetadata
-window.testTailSolverTriggerAllowsWiderBinary3Tail = testTailSolverTriggerAllowsWiderBinary3Tail
+window.testTailSolverTriggerAllowsWiderDenseBinaryTail = testTailSolverTriggerAllowsWiderDenseBinaryTail
 window.testParityMap = testParityMap
 window.testParityRecovery = testParityRecovery
 window.testGF2SolverSmall = testGF2SolverSmall
@@ -188,9 +189,9 @@ window.testBinary2ConstantsRegistered = testBinary2ConstantsRegistered
 window.testHdmiModesExcludeRemovedMode7 = testHdmiModesExcludeRemovedMode7
 window.testBinary3FrameRoundtrip = testBinary3FrameRoundtrip
 window.testBinary2FrameRoundtrip = testBinary2FrameRoundtrip
-window.testDecodeDataRegionPropagatesBinary3Levels = testDecodeDataRegionPropagatesBinary3Levels
-window.testBinary3LockedLayoutMatchesBlindSweep = testBinary3LockedLayoutMatchesBlindSweep
-window.testBinary3PrecomputedOffsetsMatchUncached = testBinary3PrecomputedOffsetsMatchUncached
+window.testDecodeDataRegionPropagatesDenseBinaryLevels = testDecodeDataRegionPropagatesDenseBinaryLevels
+window.testDenseBinaryLockedLayoutMatchesBlindSweep = testDenseBinaryLockedLayoutMatchesBlindSweep
+window.testDenseBinaryPrecomputedOffsetsMatchUncached = testDenseBinaryPrecomputedOffsetsMatchUncached
 window.testBinary2LockedPayloadReaderMatchesGeneric = testBinary2LockedPayloadReaderMatchesGeneric
 window.testBinary2LockedPayloadReaderTranslatesCroppedOffsets = testBinary2LockedPayloadReaderTranslatesCroppedOffsets
 window.testBinary2SinglePixelLockedPayloadReader = testBinary2SinglePixelLockedPayloadReader
@@ -224,21 +225,22 @@ window.testExternalFullscreenFailureStopsBeforeMainFallback = testExternalFullsc
 window.testExternalPreparedStartUsesManualGate = testExternalPreparedStartUsesManualGate
 window.testHdmiUvcSenderDefaults = testHdmiUvcSenderDefaults
 window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
-window.testBinary3MixedReplayPass1SourceOnly = testBinary3MixedReplayPass1SourceOnly
-window.testBinary3MixedReplayPass2ChangesAfterParitySweep = testBinary3MixedReplayPass2ChangesAfterParitySweep
+window.testDenseBinaryMixedReplayPass1SourceOnly = testDenseBinaryMixedReplayPass1SourceOnly
+window.testDenseBinaryMixedReplayPass2ChangesAfterParitySweep = testDenseBinaryMixedReplayPass2ChangesAfterParitySweep
 window.testCompat4MixedReplayKeepsSixSlotPatterns = testCompat4MixedReplayKeepsSixSlotPatterns
-window.testBinary3MixedReplayMetadataReducesDataSlots = testBinary3MixedReplayMetadataReducesDataSlots
-window.testBinary3BatchingProfile = testBinary3BatchingProfile
+window.testDenseBinaryMixedReplayMetadataReducesDataSlots = testDenseBinaryMixedReplayMetadataReducesDataSlots
+window.testDenseBinaryBatchingProfile = testDenseBinaryBatchingProfile
 window.testBinary2BatchingAndSchedule = testBinary2BatchingAndSchedule
-window.testBinary3BatchingProfileMath = testBinary3BatchingProfileMath
-window.testBinary3BatchingProfileDiagnostic = testBinary3BatchingProfileDiagnostic
-window.testBinary3LateMixDiagnostic = testBinary3LateMixDiagnostic
-window.testBinary3LateMixPatterns = testBinary3LateMixPatterns
-window.testBinary3Pass3MixDiagnostic = testBinary3Pass3MixDiagnostic
-window.testBinary3Pass3MixPatterns = testBinary3Pass3MixPatterns
-window.testBinary3StrictGeometryGate = testBinary3StrictGeometryGate
-window.testBinary3MetadataUsesSparseSchedule = testBinary3MetadataUsesSparseSchedule
-window.testBinary3MetadataSlotRotatesOnlyWhenSent = testBinary3MetadataSlotRotatesOnlyWhenSent
+window.testDenseBinaryBatchingProfileMath = testDenseBinaryBatchingProfileMath
+window.testDenseBinaryBatchingProfileDiagnostic = testDenseBinaryBatchingProfileDiagnostic
+window.testDenseBinaryLateMixDiagnostic = testDenseBinaryLateMixDiagnostic
+window.testDenseBinaryLateMixPatterns = testDenseBinaryLateMixPatterns
+window.testDenseBinaryFountainTailPatterns = testDenseBinaryFountainTailPatterns
+window.testDenseBinaryPass3MixDiagnostic = testDenseBinaryPass3MixDiagnostic
+window.testDenseBinaryPass3MixPatterns = testDenseBinaryPass3MixPatterns
+window.testDenseBinaryStrictGeometryGate = testDenseBinaryStrictGeometryGate
+window.testDenseBinaryMetadataUsesSparseSchedule = testDenseBinaryMetadataUsesSparseSchedule
+window.testDenseBinaryMetadataSlotRotatesOnlyWhenSent = testDenseBinaryMetadataSlotRotatesOnlyWhenSent
 window.testCaptureMethodDecision = testCaptureMethodDecision
 window.testWorkerTrackTransferFallbackUsesMain = testWorkerTrackTransferFallbackUsesMain
 window.testWorkerTransferClockStartsOnFirstAcceptedFrame = testWorkerTransferClockStartsOnFirstAcceptedFrame
@@ -399,7 +401,7 @@ async function runAllTests() {
     codec: await testCodecRoundtrip(),
     codecWithLoss: await testCodecRoundtripWithLoss(),
     codecDeferredMetadata: await testCodecRoundtripDeferredMetadata(),
-    tailSolverWiderBinary3Tail: testTailSolverTriggerAllowsWiderBinary3Tail(),
+    tailSolverWiderDenseBinaryTail: testTailSolverTriggerAllowsWiderDenseBinaryTail(),
     // HDMI-UVC tests
     crc32: testCrc32(),
     hdmiHeader: testHeaderRoundtrip(),
@@ -416,16 +418,16 @@ async function runAllTests() {
     hdmiModesExcludeRemovedMode7: testHdmiModesExcludeRemovedMode7(),
     hdmiBinary3FrameRoundtrip: testBinary3FrameRoundtrip(),
     hdmiBinary2FrameRoundtrip: testBinary2FrameRoundtrip(),
-    hdmiBinary3LevelsPropagation: testDecodeDataRegionPropagatesBinary3Levels(),
-    hdmiBinary3LockedLayout: testBinary3LockedLayoutMatchesBlindSweep(),
-    hdmiBinary3PrecomputedOffsets: testBinary3PrecomputedOffsetsMatchUncached(),
+    hdmiDenseBinaryLevelsPropagation: testDecodeDataRegionPropagatesDenseBinaryLevels(),
+    hdmiDenseBinaryLockedLayout: testDenseBinaryLockedLayoutMatchesBlindSweep(),
+    hdmiDenseBinaryPrecomputedOffsets: testDenseBinaryPrecomputedOffsetsMatchUncached(),
     hdmiBinary2LockedPayloadReader: testBinary2LockedPayloadReaderMatchesGeneric(),
     hdmiBinary2CroppedLockedPayloadReader: testBinary2LockedPayloadReaderTranslatesCroppedOffsets(),
     hdmiBinary2SinglePixelLockedPayloadReader: testBinary2SinglePixelLockedPayloadReader(),
     hdmiDenseBinaryCropOffsets: testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop(),
     hdmiLayoutImageDataWrapper: testReadPayloadWithLayoutAcceptsImageDataWrapper(),
     hdmiDenseBinaryLayoutNoConfidenceBuffer: testDenseBinaryLayoutReadSkipsUnusedConfidenceBuffer(),
-    hdmiDecodeConfidenceBinary3: testDecodeDataRegionConfidence(),
+    hdmiDecodeConfidenceDenseBinary: testDecodeDataRegionConfidence(),
     hdmiDecodeConfidenceCompat4: testDecodeDataRegionConfidenceCompat4(),
     hdmiFrameRefactorCompat4: testFrameRefactorPreservesCompat4Bytes(),
     hdmiFrameRefactorRawGray: testFrameRefactorPreservesRawGrayBytes(),
@@ -452,21 +454,22 @@ async function runAllTests() {
     externalPreparedStartManualGate: testExternalPreparedStartUsesManualGate(),
     hdmiUvcSenderDefaults: testHdmiUvcSenderDefaults(),
     labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),
-    binary3MixedReplayPass1SourceOnly: testBinary3MixedReplayPass1SourceOnly(),
-    binary3MixedReplayPass2ParitySweepTransition: testBinary3MixedReplayPass2ChangesAfterParitySweep(),
+    denseBinaryMixedReplayPass1SourceOnly: testDenseBinaryMixedReplayPass1SourceOnly(),
+    denseBinaryMixedReplayPass2ParitySweepTransition: testDenseBinaryMixedReplayPass2ChangesAfterParitySweep(),
     compat4MixedReplaySixSlotPatterns: testCompat4MixedReplayKeepsSixSlotPatterns(),
-    binary3MixedReplayMetadataDataSlots: testBinary3MixedReplayMetadataReducesDataSlots(),
-    binary3BatchingProfile: testBinary3BatchingProfile(),
+    denseBinaryMixedReplayMetadataDataSlots: testDenseBinaryMixedReplayMetadataReducesDataSlots(),
+    denseBinaryBatchingProfile: testDenseBinaryBatchingProfile(),
     binary2BatchingAndSchedule: testBinary2BatchingAndSchedule(),
-    binary3BatchingProfileMath: testBinary3BatchingProfileMath(),
-    binary3BatchingProfileDiagnostic: testBinary3BatchingProfileDiagnostic(),
-    binary3LateMixDiagnostic: testBinary3LateMixDiagnostic(),
-    binary3LateMixPatterns: testBinary3LateMixPatterns(),
-    binary3Pass3MixDiagnostic: testBinary3Pass3MixDiagnostic(),
-    binary3Pass3MixPatterns: testBinary3Pass3MixPatterns(),
-    binary3StrictGeometryGate: testBinary3StrictGeometryGate(),
-    binary3MetadataSparseSchedule: testBinary3MetadataUsesSparseSchedule(),
-    binary3MetadataSlotRotatesOnlyWhenSent: testBinary3MetadataSlotRotatesOnlyWhenSent(),
+    denseBinaryBatchingProfileMath: testDenseBinaryBatchingProfileMath(),
+    denseBinaryBatchingProfileDiagnostic: testDenseBinaryBatchingProfileDiagnostic(),
+    denseBinaryLateMixDiagnostic: testDenseBinaryLateMixDiagnostic(),
+    denseBinaryLateMixPatterns: testDenseBinaryLateMixPatterns(),
+    denseBinaryFountainTailPatterns: testDenseBinaryFountainTailPatterns(),
+    denseBinaryPass3MixDiagnostic: testDenseBinaryPass3MixDiagnostic(),
+    denseBinaryPass3MixPatterns: testDenseBinaryPass3MixPatterns(),
+    denseBinaryStrictGeometryGate: testDenseBinaryStrictGeometryGate(),
+    denseBinaryMetadataSparseSchedule: testDenseBinaryMetadataUsesSparseSchedule(),
+    denseBinaryMetadataSlotRotatesOnlyWhenSent: testDenseBinaryMetadataSlotRotatesOnlyWhenSent(),
     captureMethodDecision: testCaptureMethodDecision(),
     workerTrackTransferFallback: testWorkerTrackTransferFallbackUsesMain(),
     workerTransferClockStartsOnAccept: testWorkerTransferClockStartsOnFirstAcceptedFrame(),

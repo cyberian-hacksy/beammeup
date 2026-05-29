@@ -53,12 +53,12 @@ const ENABLE_PAYLOAD_INTERLEAVING = false
 const BINARY_PILOT_SPACING = 16
 const BINARY_PILOT_OFFSET = 8
 const payloadCellOrderCache = new Map()
-const BINARY_3_MIN_HEADER_BAND_ROWS = 1
-const BINARY_3_HEADER_PAD_BYTE = 0xAA
-const BINARY_3_HEADER_BLOCK_SIZE = 4
+const DENSE_BINARY_MIN_HEADER_BAND_ROWS = 1
+const DENSE_BINARY_HEADER_PAD_BYTE = 0xAA
+const DENSE_BINARY_HEADER_BLOCK_SIZE = 4
 const BINARY_3_PAYLOAD_BLOCK_SIZE = 3
-const BINARY_3_REF_STRIP_WIDTH_4X4 = 1
-const BINARY_3_REF_STRIP_PX = BINARY_3_REF_STRIP_WIDTH_4X4 * BINARY_3_HEADER_BLOCK_SIZE
+const DENSE_BINARY_REF_STRIP_WIDTH_4X4 = 1
+const DENSE_BINARY_REF_STRIP_PX = DENSE_BINARY_REF_STRIP_WIDTH_4X4 * DENSE_BINARY_HEADER_BLOCK_SIZE
 
 function isDenseBinaryMode(mode) {
   return mode === HDMI_MODE.BINARY_3 || mode === HDMI_MODE.BINARY_2
@@ -476,9 +476,9 @@ export function getDataRegion(width, height) {
   }
 }
 
-function getBinary3HeaderBandRows(headerCellsX) {
+function getDenseBinaryHeaderBandRows(headerCellsX) {
   return Math.max(
-    BINARY_3_MIN_HEADER_BAND_ROWS,
+    DENSE_BINARY_MIN_HEADER_BAND_ROWS,
     Math.ceil((HEADER_SIZE * BITS_PER_BYTE) / Math.max(1, headerCellsX))
   )
 }
@@ -488,10 +488,10 @@ export function getPayloadCapacity(width, height, mode = HDMI_MODE.COMPAT_4) {
   if (isDenseBinaryMode(mode)) {
     const dr = getDataRegion(width, height)
     const payloadBlockSize = getDenseBinaryPayloadBlockSize(mode)
-    const headerCellsX = Math.floor(dr.w / BINARY_3_HEADER_BLOCK_SIZE)
-    const headerBandRows = getBinary3HeaderBandRows(headerCellsX)
-    const payloadW = dr.w - 2 * BINARY_3_REF_STRIP_PX
-    const payloadH = dr.h - headerBandRows * BINARY_3_HEADER_BLOCK_SIZE
+    const headerCellsX = Math.floor(dr.w / DENSE_BINARY_HEADER_BLOCK_SIZE)
+    const headerBandRows = getDenseBinaryHeaderBandRows(headerCellsX)
+    const payloadW = dr.w - 2 * DENSE_BINARY_REF_STRIP_PX
+    const payloadH = dr.h - headerBandRows * DENSE_BINARY_HEADER_BLOCK_SIZE
     const payloadCellsX = Math.floor(payloadW / payloadBlockSize)
     const payloadCellsY = Math.floor(payloadH / payloadBlockSize)
     return Math.max(0, Math.floor((payloadCellsX * payloadCellsY) / BITS_PER_BYTE))
@@ -742,15 +742,15 @@ function buildDenseBinaryFrame(payload, mode, width, height, fps, symbolId, targ
   const dr = getDataRegion(width, height)
   fillRectSolid(imageData, width, dr.x, dr.y, dr.w, dr.h, 0, 0, 0)
 
-  const headerCellsX = Math.floor(dr.w / BINARY_3_HEADER_BLOCK_SIZE)
-  const headerBandRows = getBinary3HeaderBandRows(headerCellsX)
-  const headerBandHeightPx = headerBandRows * BINARY_3_HEADER_BLOCK_SIZE
+  const headerCellsX = Math.floor(dr.w / DENSE_BINARY_HEADER_BLOCK_SIZE)
+  const headerBandRows = getDenseBinaryHeaderBandRows(headerCellsX)
+  const headerBandHeightPx = headerBandRows * DENSE_BINARY_HEADER_BLOCK_SIZE
   const totalHeaderBits = headerCellsX * headerBandRows
   const totalHeaderBytes = Math.ceil(totalHeaderBits / BITS_PER_BYTE)
   const paddedHeader = new Uint8Array(totalHeaderBytes)
   paddedHeader.set(headerBytes, 0)
   for (let i = headerBytes.length; i < totalHeaderBytes; i++) {
-    paddedHeader[i] = BINARY_3_HEADER_PAD_BYTE
+    paddedHeader[i] = DENSE_BINARY_HEADER_PAD_BYTE
   }
 
   let bitIdx = 0
@@ -762,9 +762,9 @@ function buildDenseBinaryFrame(payload, mode, width, height, fps, symbolId, targ
       fillBlockSolid(
         imageData,
         width,
-        dr.x + bx * BINARY_3_HEADER_BLOCK_SIZE,
-        dr.y + by * BINARY_3_HEADER_BLOCK_SIZE,
-        BINARY_3_HEADER_BLOCK_SIZE,
+        dr.x + bx * DENSE_BINARY_HEADER_BLOCK_SIZE,
+        dr.y + by * DENSE_BINARY_HEADER_BLOCK_SIZE,
+        DENSE_BINARY_HEADER_BLOCK_SIZE,
         val,
         val,
         val
@@ -778,19 +778,19 @@ function buildDenseBinaryFrame(payload, mode, width, height, fps, symbolId, targ
   }
 
   const payloadBandHeight = Math.max(0, dr.h - headerBandHeightPx)
-  const stripRows = Math.floor(payloadBandHeight / BINARY_3_HEADER_BLOCK_SIZE)
-  const rightStripX = dr.x + dr.w - BINARY_3_REF_STRIP_PX
+  const stripRows = Math.floor(payloadBandHeight / DENSE_BINARY_HEADER_BLOCK_SIZE)
+  const rightStripX = dr.x + dr.w - DENSE_BINARY_REF_STRIP_PX
   for (let row = 0; row < stripRows; row++) {
     const leftVal = (row & 1) ? 255 : 0
     const rightVal = leftVal ? 0 : 255
-    const y = dr.y + headerBandHeightPx + row * BINARY_3_HEADER_BLOCK_SIZE
-    fillRectSolid(imageData, width, dr.x, y, BINARY_3_REF_STRIP_PX, BINARY_3_HEADER_BLOCK_SIZE, leftVal, leftVal, leftVal)
-    fillRectSolid(imageData, width, rightStripX, y, BINARY_3_REF_STRIP_PX, BINARY_3_HEADER_BLOCK_SIZE, rightVal, rightVal, rightVal)
+    const y = dr.y + headerBandHeightPx + row * DENSE_BINARY_HEADER_BLOCK_SIZE
+    fillRectSolid(imageData, width, dr.x, y, DENSE_BINARY_REF_STRIP_PX, DENSE_BINARY_HEADER_BLOCK_SIZE, leftVal, leftVal, leftVal)
+    fillRectSolid(imageData, width, rightStripX, y, DENSE_BINARY_REF_STRIP_PX, DENSE_BINARY_HEADER_BLOCK_SIZE, rightVal, rightVal, rightVal)
   }
 
-  const payloadX = dr.x + BINARY_3_REF_STRIP_PX
+  const payloadX = dr.x + DENSE_BINARY_REF_STRIP_PX
   const payloadY = dr.y + headerBandHeightPx
-  const payloadW = dr.w - 2 * BINARY_3_REF_STRIP_PX
+  const payloadW = dr.w - 2 * DENSE_BINARY_REF_STRIP_PX
   const payloadCellsX = Math.floor(payloadW / payloadBlockSize)
   const payloadCellsY = Math.floor(payloadBandHeight / payloadBlockSize)
   const payloadBitLength = payload.length * BITS_PER_BYTE
@@ -1115,8 +1115,8 @@ function binaryConfidence(value, threshold) {
   return Math.min(128, Math.abs(value - threshold)) | 0
 }
 
-function buildPaddedBinary3Header(header, headerCellsX) {
-  const headerBandRows = getBinary3HeaderBandRows(headerCellsX)
+function buildPaddedDenseBinaryHeader(header, headerCellsX) {
+  const headerBandRows = getDenseBinaryHeaderBandRows(headerCellsX)
   const totalHeaderBits = headerCellsX * headerBandRows
   const totalHeaderBytes = Math.ceil(totalHeaderBits / BITS_PER_BYTE)
   const paddedHeader = new Uint8Array(totalHeaderBytes)
@@ -1131,13 +1131,13 @@ function buildPaddedBinary3Header(header, headerCellsX) {
   )
   paddedHeader.set(headerBytes, 0)
   for (let i = headerBytes.length; i < totalHeaderBytes; i++) {
-    paddedHeader[i] = BINARY_3_HEADER_PAD_BYTE
+    paddedHeader[i] = DENSE_BINARY_HEADER_PAD_BYTE
   }
   return { paddedHeader, headerBandRows }
 }
 
-function estimateBinary3LevelsFromHeader(imageData, width, rx, ry, stepX, stepY, bs, headerCellsX, header) {
-  const { paddedHeader, headerBandRows } = buildPaddedBinary3Header(header, headerCellsX)
+function estimateDenseBinaryLevelsFromHeader(imageData, width, rx, ry, stepX, stepY, bs, headerCellsX, header) {
+  const { paddedHeader, headerBandRows } = buildPaddedDenseBinaryHeader(header, headerCellsX)
   const imgHeight = imageData.length / (width * 4)
   let blackSum = 0
   let blackCount = 0
@@ -1176,7 +1176,7 @@ function estimateBinary3LevelsFromHeader(imageData, width, rx, ry, stepX, stepY,
   }
 }
 
-function fillMissingBinary3ReferenceRows(levels, fallback) {
+function fillMissingDenseBinaryReferenceRows(levels, fallback) {
   const { rowBlackLevels, rowWhiteLevels } = levels
   for (let i = 0; i < rowBlackLevels.length; i++) {
     if (!Number.isFinite(rowBlackLevels[i])) {
@@ -1192,11 +1192,11 @@ function fillMissingBinary3ReferenceRows(levels, fallback) {
   }
 }
 
-function sampleBinary3ReferenceRows(imageData, width, region, rx, ry, stepX, stepY, bs, headerCellsX, header) {
-  const headerBandRows = getBinary3HeaderBandRows(headerCellsX)
+function sampleDenseBinaryReferenceRows(imageData, width, region, rx, ry, stepX, stepY, bs, headerCellsX, header) {
+  const headerBandRows = getDenseBinaryHeaderBandRows(headerCellsX)
   const headerBandHeightCapture = headerBandRows * stepY
   const payloadStartY = ry + headerBandHeightCapture
-  const payloadEndX = rx + region.w - stepX * BINARY_3_REF_STRIP_WIDTH_4X4
+  const payloadEndX = rx + region.w - stepX * DENSE_BINARY_REF_STRIP_WIDTH_4X4
   const stripRows = Math.max(0, Math.floor((region.h - headerBandHeightCapture) / stepY))
   const rowBlackLevels = new Float32Array(stripRows)
   const rowWhiteLevels = new Float32Array(stripRows)
@@ -1222,7 +1222,7 @@ function sampleBinary3ReferenceRows(imageData, width, region, rx, ry, stepX, ste
     }
   }
 
-  const headerLevels = estimateBinary3LevelsFromHeader(
+  const headerLevels = estimateDenseBinaryLevelsFromHeader(
     imageData,
     width,
     rx,
@@ -1233,7 +1233,7 @@ function sampleBinary3ReferenceRows(imageData, width, region, rx, ry, stepX, ste
     headerCellsX,
     header
   )
-  fillMissingBinary3ReferenceRows({ rowBlackLevels, rowWhiteLevels }, headerLevels)
+  fillMissingDenseBinaryReferenceRows({ rowBlackLevels, rowWhiteLevels }, headerLevels)
 
   return {
     rowBlackLevels,
@@ -1245,17 +1245,17 @@ function sampleBinary3ReferenceRows(imageData, width, region, rx, ry, stepX, ste
   }
 }
 
-export function precomputeBinary3SampleOffsets(layout, region) {
+export function precomputeDenseBinarySampleOffsets(layout, region) {
   const payloadBlockSize = getDenseBinaryPayloadBlockSize(layout.frameMode)
-  const headerStepX = layout.headerStepX || (layout.stepX * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
-  const headerStepY = layout.headerStepY || (layout.stepY * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
+  const headerStepX = layout.headerStepX || (layout.stepX * (DENSE_BINARY_HEADER_BLOCK_SIZE / payloadBlockSize))
+  const headerStepY = layout.headerStepY || (layout.stepY * (DENSE_BINARY_HEADER_BLOCK_SIZE / payloadBlockSize))
   const headerBlocksX = layout.headerBlocksX || Math.floor(region.w / headerStepX)
-  const headerBandRows = getBinary3HeaderBandRows(headerBlocksX)
-  const stripWidthCapture = headerStepX * BINARY_3_REF_STRIP_WIDTH_4X4
+  const headerBandRows = getDenseBinaryHeaderBandRows(headerBlocksX)
+  const stripWidthCapture = headerStepX * DENSE_BINARY_REF_STRIP_WIDTH_4X4
   const payloadStartX = region.x + (layout.xOff || 0) + stripWidthCapture
   const payloadStartY = region.y + (layout.yOff || 0) + headerBandRows * headerStepY
-  const payloadStepX = layout.stepX || (headerStepX * (payloadBlockSize / BINARY_3_HEADER_BLOCK_SIZE))
-  const payloadStepY = layout.stepY || (headerStepY * (payloadBlockSize / BINARY_3_HEADER_BLOCK_SIZE))
+  const payloadStepX = layout.stepX || (headerStepX * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE))
+  const payloadStepY = layout.stepY || (headerStepY * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE))
   const payloadW = region.w - 2 * stripWidthCapture
   const payloadH = region.h - headerBandRows * headerStepY
   const cellsX = Math.max(0, Math.floor(payloadW / payloadStepX))
@@ -1452,15 +1452,15 @@ function readBinary2PayloadLocked(imageData, width, region, layout, payloadLengt
 
   const rx = region.x + (layout.xOff || 0)
   const ry = region.y + (layout.yOff || 0)
-  const headerStepX = layout.headerStepX || (payloadStepX * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
-  const headerStepY = layout.headerStepY || (payloadStepY * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
-  const headerBs = layout.headerBs || (payloadBs * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
+  const headerStepX = layout.headerStepX || (payloadStepX * (DENSE_BINARY_HEADER_BLOCK_SIZE / payloadBlockSize))
+  const headerStepY = layout.headerStepY || (payloadStepY * (DENSE_BINARY_HEADER_BLOCK_SIZE / payloadBlockSize))
+  const headerBs = layout.headerBs || (payloadBs * (DENSE_BINARY_HEADER_BLOCK_SIZE / payloadBlockSize))
   if (!headerStepX || !headerStepY || !headerBs) return null
 
   const headerBlocksX = layout.headerBlocksX || Math.floor(region.w / headerStepX)
-  const headerBandRows = getBinary3HeaderBandRows(headerBlocksX)
+  const headerBandRows = getDenseBinaryHeaderBandRows(headerBlocksX)
   const headerBandHeightCapture = headerBandRows * headerStepY
-  const stripWidthCapture = headerStepX * BINARY_3_REF_STRIP_WIDTH_4X4
+  const stripWidthCapture = headerStepX * DENSE_BINARY_REF_STRIP_WIDTH_4X4
   const payloadStartX = rx + stripWidthCapture
   const payloadStartY = ry + headerBandHeightCapture
   const payloadEndX = rx + region.w - stripWidthCapture
@@ -1547,7 +1547,7 @@ function readBinary2PayloadLocked(imageData, width, region, layout, payloadLengt
   return byteIdx === payloadLength ? payload : null
 }
 
-function readBinary3Payload(
+function readDenseBinaryPayload(
   imageData,
   width,
   region,
@@ -1562,13 +1562,13 @@ function readBinary3Payload(
   precomputedOffsets = null
 ) {
   const payloadBlockSize = getDenseBinaryPayloadBlockSize(header.mode)
-  const payloadStepX = headerStepX * (payloadBlockSize / BINARY_3_HEADER_BLOCK_SIZE)
-  const payloadStepY = headerStepY * (payloadBlockSize / BINARY_3_HEADER_BLOCK_SIZE)
-  const payloadBs = headerBs * (payloadBlockSize / BINARY_3_HEADER_BLOCK_SIZE)
-  const stripWidthCapture = headerStepX * BINARY_3_REF_STRIP_WIDTH_4X4
+  const payloadStepX = headerStepX * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE)
+  const payloadStepY = headerStepY * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE)
+  const payloadBs = headerBs * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE)
+  const stripWidthCapture = headerStepX * DENSE_BINARY_REF_STRIP_WIDTH_4X4
   const payloadStartX = rx + stripWidthCapture
 
-  const ref = sampleBinary3ReferenceRows(
+  const ref = sampleDenseBinaryReferenceRows(
     imageData,
     width,
     region,
@@ -2027,12 +2027,12 @@ function readPayloadAt(
     const headerSamplingLayout = headerLayout || {
       rx,
       ry,
-      stepX: stepX * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize),
-      stepY: stepY * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize),
-      bs: bs * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize),
-      blocksX: Math.floor(region.w / (stepX * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize)))
+      stepX: stepX * (DENSE_BINARY_HEADER_BLOCK_SIZE / payloadBlockSize),
+      stepY: stepY * (DENSE_BINARY_HEADER_BLOCK_SIZE / payloadBlockSize),
+      bs: bs * (DENSE_BINARY_HEADER_BLOCK_SIZE / payloadBlockSize),
+      blocksX: Math.floor(region.w / (stepX * (DENSE_BINARY_HEADER_BLOCK_SIZE / payloadBlockSize)))
     }
-    return readBinary3Payload(
+    return readDenseBinaryPayload(
       imageData,
       width,
       region,
@@ -2241,9 +2241,9 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
 
   if (isDenseBinaryMode(frameMode)) {
     const payloadBlockSize = getDenseBinaryPayloadBlockSize(frameMode)
-    const headerStepX = layout.headerStepX || (layout.stepX * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
-    const headerStepY = layout.headerStepY || (layout.stepY * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
-    const headerBs = layout.headerBs || (layout.dataBs * (BINARY_3_HEADER_BLOCK_SIZE / payloadBlockSize))
+    const headerStepX = layout.headerStepX || (layout.stepX * (DENSE_BINARY_HEADER_BLOCK_SIZE / payloadBlockSize))
+    const headerStepY = layout.headerStepY || (layout.stepY * (DENSE_BINARY_HEADER_BLOCK_SIZE / payloadBlockSize))
+    const headerBs = layout.headerBs || (layout.dataBs * (DENSE_BINARY_HEADER_BLOCK_SIZE / payloadBlockSize))
     const headerBlocksX = layout.headerBlocksX || Math.floor(region.w / headerStepX)
     const header = {
       mode: frameMode,
@@ -2267,7 +2267,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
     )
     if (lockedBinary2Payload) return lockedBinary2Payload
 
-    const result = readBinary3Payload(
+    const result = readDenseBinaryPayload(
       imageBytes,
       width,
       region,
@@ -3301,7 +3301,7 @@ export function testBinary3FrameRoundtrip() {
   }
 }
 
-export function testDecodeDataRegionPropagatesBinary3Levels() {
+export function testDecodeDataRegionPropagatesDenseBinaryLevels() {
   try {
     const width = 1920
     const height = 1080
@@ -3315,15 +3315,15 @@ export function testDecodeDataRegionPropagatesBinary3Levels() {
     const pass = result?.crcValid &&
       typeof result._diag?.blackLevel === 'number' &&
       typeof result._diag?.whiteLevel === 'number'
-    console.log('decodeDataRegion BINARY_3 levels propagation test:', pass ? 'PASS' : `FAIL diag=${JSON.stringify(result?._diag)}`)
+    console.log('decodeDataRegion dense-binary levels propagation test:', pass ? 'PASS' : `FAIL diag=${JSON.stringify(result?._diag)}`)
     return pass
   } catch (err) {
-    console.log('decodeDataRegion BINARY_3 levels propagation test: FAIL', err?.message || err)
+    console.log('decodeDataRegion dense-binary levels propagation test: FAIL', err?.message || err)
     return false
   }
 }
 
-export function testBinary3LockedLayoutMatchesBlindSweep() {
+export function testDenseBinaryLockedLayoutMatchesBlindSweep() {
   try {
     const width = 640
     const height = 407
@@ -3335,7 +3335,7 @@ export function testBinary3LockedLayoutMatchesBlindSweep() {
     const region = dataRegionFromAnchors(anchors)
     const blind = region ? decodeDataRegion(frame, width, region) : null
     if (!blind?.crcValid) {
-      console.log('Binary3 locked-layout test: FAIL (blind decode)')
+      console.log('DenseBinary locked-layout test: FAIL (blind decode)')
       return false
     }
 
@@ -3355,15 +3355,15 @@ export function testBinary3LockedLayoutMatchesBlindSweep() {
     }
     const fast = readPayloadWithLayout(frame, width, region, lockedLayout, payload.length)
     const pass = fast && fast.length === payload.length && fast.every((v, i) => v === payload[i])
-    console.log('Binary3 locked-layout test:', pass ? 'PASS' : 'FAIL')
+    console.log('DenseBinary locked-layout test:', pass ? 'PASS' : 'FAIL')
     return pass
   } catch (err) {
-    console.log('Binary3 locked-layout test: FAIL', err?.message || err)
+    console.log('DenseBinary locked-layout test: FAIL', err?.message || err)
     return false
   }
 }
 
-export function testBinary3PrecomputedOffsetsMatchUncached() {
+export function testDenseBinaryPrecomputedOffsetsMatchUncached() {
   try {
     const width = 640
     const height = 407
@@ -3375,7 +3375,7 @@ export function testBinary3PrecomputedOffsetsMatchUncached() {
     const region = dataRegionFromAnchors(anchors)
     const initial = region ? decodeDataRegion(frame, width, region) : null
     if (!initial?.crcValid) {
-      console.log('Binary3 precomputed offsets match test: FAIL (initial decode)')
+      console.log('DenseBinary precomputed offsets match test: FAIL (initial decode)')
       return false
     }
     const diag = initial._diag
@@ -3393,16 +3393,16 @@ export function testBinary3PrecomputedOffsetsMatchUncached() {
       whiteLevel: diag.whiteLevel
     }
     const uncached = readPayloadWithLayout(frame, width, region, layout, payload.length, null)
-    const { offsets } = precomputeBinary3SampleOffsets(layout, region)
+    const { offsets } = precomputeDenseBinarySampleOffsets(layout, region)
     const cached = readPayloadWithLayout(frame, width, region, layout, payload.length, offsets)
     const pass = uncached && cached &&
       uncached.length === cached.length &&
       cached.every((v, i) => v === uncached[i]) &&
       cached.every((v, i) => v === payload[i])
-    console.log('Binary3 precomputed offsets match test:', pass ? 'PASS' : 'FAIL')
+    console.log('DenseBinary precomputed offsets match test:', pass ? 'PASS' : 'FAIL')
     return pass
   } catch (err) {
-    console.log('Binary3 precomputed offsets match test: FAIL', err?.message || err)
+    console.log('DenseBinary precomputed offsets match test: FAIL', err?.message || err)
     return false
   }
 }
@@ -3424,7 +3424,7 @@ export function testBinary2LockedPayloadReaderMatchesGeneric() {
     }
 
     const genericLayout = { ...initial._diag }
-    const precomputed = precomputeBinary3SampleOffsets(initial._diag, region)
+    const precomputed = precomputeDenseBinarySampleOffsets(initial._diag, region)
     const lockedLayout = {
       ...initial._diag,
       precomputedOffsets: precomputed.offsets,
@@ -3460,7 +3460,7 @@ export function testBinary2LockedPayloadReaderTranslatesCroppedOffsets() {
       return false
     }
 
-    const precomputed = precomputeBinary3SampleOffsets(initial._diag, region)
+    const precomputed = precomputeDenseBinarySampleOffsets(initial._diag, region)
     const layout = {
       ...initial._diag,
       precomputedOffsets: precomputed.offsets,
@@ -3503,7 +3503,7 @@ export function testBinary2SinglePixelLockedPayloadReader() {
       console.log('BINARY_2 single-pixel locked reader test: FAIL (initial decode)')
       return false
     }
-    const precomputed = precomputeBinary3SampleOffsets(initial._diag, region)
+    const precomputed = precomputeDenseBinarySampleOffsets(initial._diag, region)
     const layout = {
       ...initial._diag,
       precomputedOffsets: precomputed.offsets,
@@ -3566,7 +3566,7 @@ export function testDenseBinaryPrecomputedOffsetsIgnoreMismatchedCrop() {
       return false
     }
 
-    const precomputed = precomputeBinary3SampleOffsets(initial._diag, region)
+    const precomputed = precomputeDenseBinarySampleOffsets(initial._diag, region)
     const layout = {
       ...initial._diag,
       precomputedRegion: { x: region.x, y: region.y, w: region.w, h: region.h }

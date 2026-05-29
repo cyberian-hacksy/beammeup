@@ -757,7 +757,7 @@ export async function testCodecRoundtripWithLoss() {
   return pass
 }
 
-export function testTailSolverTriggerAllowsWiderBinary3Tail() {
+export function testTailSolverTriggerAllowsWiderDenseBinaryTail() {
   const helperExists = typeof shouldRunTailSolver === 'function'
   const widerTail = helperExists ? shouldRunTailSolver({
     missing: 146,
@@ -785,7 +785,7 @@ export function testTailSolverTriggerAllowsWiderBinary3Tail() {
     widerTail === true &&
     duplicateSignature === false &&
     overLimit === false
-  console.log('Tail solver wider Binary3 tail trigger test:', pass ? 'PASS' : 'FAIL', {
+  console.log('Tail solver wider DenseBinary tail trigger test:', pass ? 'PASS' : 'FAIL', {
     helperExists,
     widerTail,
     duplicateSignature,

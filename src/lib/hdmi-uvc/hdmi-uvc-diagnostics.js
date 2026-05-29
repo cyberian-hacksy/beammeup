@@ -11,9 +11,9 @@
 //   perf            'on'|'off'                           reload  (?perf=)
 //   worker          'off'|'hash'|'anchors'|'full'        reload  (?worker=)
 //   pass2           'p2'|'legacy'|'mix'                  live    (?pass2=)
-//   binary3Profile  'safe'|'fill99'|'medium'|'large'     live    (?binary3-profile=)
-//   binary3Pass3Mix 'balanced'|'source'                  live    (?binary3-pass3=)
-//   binary3LateMix  'balanced'|'source'                  live    (?binary3-late=)
+//   denseBinaryProfile  'safe'|'fill99'|'medium'|'large'     live    (?dense-profile=)
+//   denseBinaryPass3Mix 'balanced'|'source'                  live    (?dense-pass3=)
+//   denseBinaryLateMix  'balanced'|'source'                  live    (?dense-late=)
 //
 // "Live" settings are re-read by the consumer per call; "reload" settings
 // are captured at module init time and the UI surfaces a Reload prompt
@@ -77,8 +77,8 @@ const DEFINITIONS = {
     labels: { p2: 'p2 (4S/2P)', legacy: 'legacy (5S/1P)', mix: 'mix (2S/2P/2F)' },
     title: 'Pass-2'
   },
-  binary3Profile: {
-    urlKey: 'binary3-profile',
+  denseBinaryProfile: {
+    urlKey: 'dense-profile',
     default: 'large',
     allowed: ['safe', 'fill99', 'medium', 'large'],
     reloadRequired: false,
@@ -88,21 +88,22 @@ const DEFINITIONS = {
       medium: 'medium',
       large: 'large'
     },
-    title: 'B3 Batch'
+    title: 'Dense Batch'
   },
-  binary3LateMix: {
-    urlKey: 'binary3-late',
+  denseBinaryLateMix: {
+    urlKey: 'dense-late',
     default: 'source',
-    allowed: ['balanced', 'source'],
+    allowed: ['balanced', 'source', 'fountain'],
     reloadRequired: false,
     labels: {
       balanced: 'balanced',
-      source: 'source'
+      source: 'source',
+      fountain: 'fountain'
     },
-    title: 'B3 Tail'
+    title: 'Dense Tail'
   },
-  binary3Pass3Mix: {
-    urlKey: 'binary3-pass3',
+  denseBinaryPass3Mix: {
+    urlKey: 'dense-pass3',
     default: 'balanced',
     allowed: ['balanced', 'source'],
     reloadRequired: false,
@@ -110,7 +111,7 @@ const DEFINITIONS = {
       balanced: 'balanced',
       source: 'source'
     },
-    title: 'B3 P3'
+    title: 'Dense P3'
   }
 }
 
@@ -209,9 +210,9 @@ export function getWasmClassifierEnabled() { return getDiagnostic('wasmClassifie
 export function isPerfMode() { return getDiagnostic('perf') === 'on' }
 export function getWorkerMode() { return getDiagnostic('worker') }
 export function getPass2Variant() { return getDiagnostic('pass2') }
-export function getBinary3Profile() { return getDiagnostic('binary3Profile') }
-export function getBinary3LateMix() { return getDiagnostic('binary3LateMix') }
-export function getBinary3Pass3Mix() { return getDiagnostic('binary3Pass3Mix') }
+export function getDenseBinaryProfile() { return getDiagnostic('denseBinaryProfile') }
+export function getDenseBinaryLateMix() { return getDiagnostic('denseBinaryLateMix') }
+export function getDenseBinaryPass3Mix() { return getDiagnostic('denseBinaryPass3Mix') }
 
 // Render a segmented-button diagnostics panel into `container`. `keys` is
 // the ordered list of setting keys to show — sender uses just ['pass2'],

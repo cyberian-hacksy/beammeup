@@ -41,11 +41,11 @@ import {
   renderDiagnosticsPanel
 } from './hdmi-uvc-diagnostics.js'
 import {
-  clearBinary3LockState,
-  lockBinary3LayoutFromDecodeResult,
-  lockBinary3LayoutState,
-  noteBinary3UnrecoveredCrcFailure
-} from './hdmi-uvc-binary3-lock.js'
+  clearDenseBinaryLockState,
+  lockDenseBinaryLayoutFromDecodeResult,
+  lockDenseBinaryLayoutState,
+  noteDenseBinaryUnrecoveredCrcFailure
+} from './hdmi-uvc-dense-binary-lock.js'
 import {
   probeFramePackets
 } from './hdmi-uvc-packet-probe.js'
@@ -770,7 +770,7 @@ function handleWorkerDecoderDelta(msg) {
     state.expectedPacketCount = 0
     state.fixedLayout = null
     state.preferredLayout = null
-    clearBinary3Lock()
+    clearDenseBinaryLock()
     state.lockedLayoutFastPathMisses = 0
     state.decodeFailCount = 0
     s.completionHandled = false
@@ -1764,7 +1764,7 @@ function isDenseBinaryLayout(layout) {
 
 function getDenseBinaryLayoutOffsets(layout) {
   return isDenseBinaryLayout(layout)
-    ? (layout.precomputedOffsets || state.lockedBinary3Offsets || null)
+    ? (layout.precomputedOffsets || state.lockedDenseBinaryOffsets || null)
     : null
 }
 
@@ -2075,7 +2075,7 @@ async function acceptPackets(
           state.expectedPacketCount = 0
           state.fixedLayout = null
           state.preferredLayout = null
-          clearBinary3Lock()
+          clearDenseBinaryLock()
           state.lockedLayoutFastPathMisses = 0
           state.decodeFailCount = 0
           result = decoder.receiveParsed(parsed)
@@ -2188,10 +2188,10 @@ const state = {
   fixedLayout: null,
   expectedPacketCount: 0,
   preferredLayout: null,
-  lockedBinary3Layout: null,
-  lockedBinary3Offsets: null,
-  binary3LockFailStreak: 0,
-  lastBinary3ConfidenceLogFrame: 0,
+  lockedDenseBinaryLayout: null,
+  lockedDenseBinaryOffsets: null,
+  denseBinaryLockFailStreak: 0,
+  lastDenseBinaryConfidenceLogFrame: 0,
   lockedLayoutFastPathMisses: 0,
   progressSamples: [],
   lastReceivingUiUpdateMs: 0,
@@ -2460,22 +2460,22 @@ function lockAnchorRegion(region, sourceWidth, sourceHeight, anchors = null) {
   }
 }
 
-function clearBinary3Lock() {
-  clearBinary3LockState(state)
+function clearDenseBinaryLock() {
+  clearDenseBinaryLockState(state)
 }
 
-function applyBinary3Lock(result, currentRegion) {
-  const outcome = lockBinary3LayoutFromDecodeResult(state, result, currentRegion)
-  logBinary3LockOutcome(outcome)
+function applyDenseBinaryLock(result, currentRegion) {
+  const outcome = lockDenseBinaryLayoutFromDecodeResult(state, result, currentRegion)
+  logDenseBinaryLockOutcome(outcome)
 }
 
-function applyBinary3RecoveredLayout(layout, header, currentRegion) {
-  const outcome = lockBinary3LayoutState(state, layout, currentRegion, header)
-  logBinary3LockOutcome(outcome)
+function applyDenseBinaryRecoveredLayout(layout, header, currentRegion) {
+  const outcome = lockDenseBinaryLayoutState(state, layout, currentRegion, header)
+  logDenseBinaryLockOutcome(outcome)
 }
 
-function noteBinary3LockFailure(result) {
-  const outcome = noteBinary3UnrecoveredCrcFailure(
+function noteDenseBinaryLockFailure(result) {
+  const outcome = noteDenseBinaryUnrecoveredCrcFailure(
     state,
     result,
     LOCKED_BINARY3_INVALIDATE_AFTER_FAILS
@@ -2486,7 +2486,7 @@ function noteBinary3LockFailure(result) {
   }
 }
 
-function logBinary3LockOutcome(outcome) {
+function logDenseBinaryLockOutcome(outcome) {
   if (!outcome?.locked || outcome.wasLocked) return
   const layout = outcome.layout
   const modeName = HDMI_MODE_NAMES[layout.frameMode] || 'dense binary'
@@ -2497,15 +2497,15 @@ function logBinary3LockOutcome(outcome) {
   )
 }
 
-function logBinary3Confidence(result) {
+function logDenseBinaryConfidence(result) {
   if (result?.header?.mode !== HDMI_MODE.BINARY_3 || !(result.confidence instanceof Uint8Array)) return
   if (
-    state.lastBinary3ConfidenceLogFrame > 0 &&
-    state.frameCount - state.lastBinary3ConfidenceLogFrame < BINARY3_CONFIDENCE_LOG_INTERVAL_FRAMES
+    state.lastDenseBinaryConfidenceLogFrame > 0 &&
+    state.frameCount - state.lastDenseBinaryConfidenceLogFrame < BINARY3_CONFIDENCE_LOG_INTERVAL_FRAMES
   ) {
     return
   }
-  state.lastBinary3ConfidenceLogFrame = state.frameCount
+  state.lastDenseBinaryConfidenceLogFrame = state.frameCount
 
   const values = Array.from(result.confidence).sort((a, b) => a - b)
   if (values.length === 0) return
@@ -2888,7 +2888,7 @@ async function processFrame(now, metadata) {
   }
 
   // === DECODE DATA REGION ===
-  region.preferredLayout = state.lockedBinary3Layout || state.preferredLayout
+  region.preferredLayout = state.lockedDenseBinaryLayout || state.preferredLayout
   let result = null
   let workerDecodedFrame = false
   let workerDecodedResp = null
@@ -2936,7 +2936,7 @@ async function processFrame(now, metadata) {
     decodeMs += performance.now() - decodeStartMs
     classifierMs += getClassifierPerfAccumulator()
   }
-  logBinary3Confidence(result)
+  logDenseBinaryConfidence(result)
 
   if (result && result.crcValid) {
     noteSignalDetected(result.header.mode, {
@@ -2993,7 +2993,7 @@ async function processFrame(now, metadata) {
       }
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
-      applyBinary3Lock(result, region)
+      applyDenseBinaryLock(result, region)
       if (state.decoder?.isComplete()) {
         finalizeFramePerf()
         return
@@ -3057,7 +3057,7 @@ async function processFrame(now, metadata) {
       }
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
-      applyBinary3Lock(result, region)
+      applyDenseBinaryLock(result, region)
       if (isDiagFrame) {
         debugLog(
           `Frame ${state.frameCount}: salvaged ${salvagedPackets.length} packet(s) ` +
@@ -3085,7 +3085,7 @@ async function processFrame(now, metadata) {
       }
       if (phaseProbe?.layout) state.fixedLayout = { ...phaseProbe.layout }
       if (phaseProbe?.layout) state.preferredLayout = { ...phaseProbe.layout }
-      if (phaseProbe?.layout) applyBinary3RecoveredLayout(phaseProbe.layout, result.header, region)
+      if (phaseProbe?.layout) applyDenseBinaryRecoveredLayout(phaseProbe.layout, result.header, region)
       if (isDiagFrame) {
         debugLog(`Frame ${state.frameCount}: phase-recovered ${phasePackets.length} packet(s) from CRC-fail frame`)
       }
@@ -3112,7 +3112,7 @@ async function processFrame(now, metadata) {
         debugLog(`Frame ${state.frameCount}: recovered ${fixedPackets.length} packet(s) via fixed layout`)
       }
       if (isDenseBinaryLayout(state.fixedLayout)) {
-        applyBinary3RecoveredLayout(state.fixedLayout, result.header, region)
+        applyDenseBinaryRecoveredLayout(state.fixedLayout, result.header, region)
       }
       if (state.decoder?.isComplete()) {
         finalizeFramePerf()
@@ -3124,7 +3124,7 @@ async function processFrame(now, metadata) {
     }
 
     state.decodeFailCount++
-    noteBinary3LockFailure(result)
+    noteDenseBinaryLockFailure(result)
     if (isDiagFrame) {
       // Dump full header for diagnosis
       const h = result.header
@@ -3224,7 +3224,7 @@ async function processFrame(now, metadata) {
     clearTentativeAnchorRegion()
     state.fixedLayout = null
     state.preferredLayout = null
-    clearBinary3Lock()
+    clearDenseBinaryLock()
     state.expectedPacketCount = 0
     state.lockedLayoutFastPathMisses = 0
     state.decodeFailCount = 0
@@ -3362,7 +3362,7 @@ function resetReceiver() {
   state.activeCaptureMethod = null
   state.fixedLayout = null
   state.preferredLayout = null
-  clearBinary3Lock()
+  clearDenseBinaryLock()
   state.lockedLayoutFastPathMisses = 0
   state.expectedPacketCount = 0
   state.progressSamples = []
@@ -3569,11 +3569,11 @@ export function testReceiverFrameAcceptSignals() {
 }
 
 export function testDenseBinaryLockedLayoutOffsetsCoverBinary2() {
-  const oldOffsets = state.lockedBinary3Offsets
+  const oldOffsets = state.lockedDenseBinaryOffsets
   const fallbackOffsets = new Int32Array([7, 11])
   const layoutOffsets = new Int32Array([13, 17])
   try {
-    state.lockedBinary3Offsets = fallbackOffsets
+    state.lockedDenseBinaryOffsets = fallbackOffsets
     const binary2WithLayoutOffsets = getDenseBinaryLayoutOffsets({
       frameMode: HDMI_MODE.BINARY_2,
       precomputedOffsets: layoutOffsets
@@ -3581,7 +3581,7 @@ export function testDenseBinaryLockedLayoutOffsetsCoverBinary2() {
     const binary2FallbackOffsets = getDenseBinaryLayoutOffsets({
       frameMode: HDMI_MODE.BINARY_2
     })
-    const binary3FallbackOffsets = getDenseBinaryLayoutOffsets({
+    const denseBinaryFallbackOffsets = getDenseBinaryLayoutOffsets({
       frameMode: HDMI_MODE.BINARY_3
     })
     const compatOffsets = getDenseBinaryLayoutOffsets({
@@ -3589,17 +3589,17 @@ export function testDenseBinaryLockedLayoutOffsetsCoverBinary2() {
     })
     const pass = binary2WithLayoutOffsets === layoutOffsets &&
       binary2FallbackOffsets === fallbackOffsets &&
-      binary3FallbackOffsets === fallbackOffsets &&
+      denseBinaryFallbackOffsets === fallbackOffsets &&
       compatOffsets === null
     console.log('Dense binary locked-layout offsets test:', pass ? 'PASS' : 'FAIL', {
       binary2WithLayoutOffsets: binary2WithLayoutOffsets?.length || 0,
       binary2FallbackOffsets: binary2FallbackOffsets?.length || 0,
-      binary3FallbackOffsets: binary3FallbackOffsets?.length || 0,
+      denseBinaryFallbackOffsets: denseBinaryFallbackOffsets?.length || 0,
       compatOffsets: compatOffsets?.length || 0
     })
     return pass
   } finally {
-    state.lockedBinary3Offsets = oldOffsets
+    state.lockedDenseBinaryOffsets = oldOffsets
   }
 }
 

@@ -25,9 +25,9 @@ import {
 import { buildCard, CARD_KIND } from './hdmi-uvc-lab.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
 import {
-  getBinary3LateMix,
-  getBinary3Pass3Mix,
-  getBinary3Profile,
+  getDenseBinaryLateMix,
+  getDenseBinaryPass3Mix,
+  getDenseBinaryProfile,
   getDiagnosticDefinition,
   getPass2Variant,
   renderDiagnosticsPanel
@@ -1220,7 +1220,7 @@ function chooseSystematicStride(span) {
   return Math.max(1, stride)
 }
 
-const BINARY3_BATCHING_PROFILES = {
+const DENSE_BINARY_BATCHING_PROFILES = {
   safe: {
     targetFrameFill: 0.90,
     maxBlockSize: 1024
@@ -1239,12 +1239,12 @@ const BINARY3_BATCHING_PROFILES = {
   }
 }
 
-function getBinary3BatchingProfile(profileId = getBinary3Profile()) {
-  const defaultId = getDiagnosticDefinition('binary3Profile')?.default || 'large'
-  const selectedId = Object.prototype.hasOwnProperty.call(BINARY3_BATCHING_PROFILES, profileId)
+function getDenseBinaryBatchingProfile(profileId = getDenseBinaryProfile()) {
+  const defaultId = getDiagnosticDefinition('denseBinaryProfile')?.default || 'large'
+  const selectedId = Object.prototype.hasOwnProperty.call(DENSE_BINARY_BATCHING_PROFILES, profileId)
     ? profileId
     : defaultId
-  const selected = BINARY3_BATCHING_PROFILES[selectedId]
+  const selected = DENSE_BINARY_BATCHING_PROFILES[selectedId]
   return {
     id: selectedId,
     minPacketsPerFrame: 4,
@@ -1380,7 +1380,7 @@ function getBatchingProfile(mode) {
         maxUsedBytes: null
       }
     case HDMI_MODE.BINARY_3:
-      return getBinary3BatchingProfile()
+      return getDenseBinaryBatchingProfile()
     case HDMI_MODE.BINARY_2:
       return {
         minPacketsPerFrame: 20,
@@ -1572,34 +1572,51 @@ function slotCountsFromRatios(slots, ratios) {
   return Object.fromEntries(entries.map(entry => [entry.key, entry.count]))
 }
 
-function getBinary3LateMixRatios(lateMix = getBinary3LateMix()) {
+function getDenseBinaryLateMixRatios(lateMix = getDenseBinaryLateMix()) {
+  if (lateMix === 'fountain') {
+    // Tail recovery on a clean link is duplicate-bound: re-sent source/parity
+    // blocks the receiver already holds waste bandwidth. Ship mostly fresh
+    // fountain symbols, keeping a thin source trickle for any clustered misses.
+    return { source: 0.10, parity: 0.0, fountain: 0.90 }
+  }
   if (lateMix === 'source') {
     return { source: 0.62, parity: 0.08, fountain: 0.30 }
   }
   return { source: 0.45, parity: 0.20, fountain: 0.35 }
 }
 
-function getBinary3Pass3MixRatios(pass3Mix = getBinary3Pass3Mix()) {
+function getDenseBinaryPass3MixRatios(pass3Mix = getDenseBinaryPass3Mix()) {
   if (pass3Mix === 'source') {
     return { source: 0.77, parity: 0.08, fountain: 0.15 }
   }
   return { source: 0.65, parity: 0.15, fountain: 0.20 }
 }
 
-function getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, {
-  lateMix = getBinary3LateMix(),
-  pass3Mix = getBinary3Pass3Mix()
+function getDenseBinarySlotMixPatternForPass(passNumber, slots, paritySweepsInPass, {
+  lateMix = getDenseBinaryLateMix(),
+  pass3Mix = getDenseBinaryPass3Mix()
 } = {}) {
   const slotCount = Math.max(0, Math.floor(slots || 0))
+  const fountainTail = lateMix === 'fountain'
   if (passNumber <= 1) {
     return buildSlotMix(slotCount, { source: slotCount })
   }
   if (passNumber === 2) {
     if (paritySweepsInPass === 0) {
+      // First sweep still delivers every parity row once, whatever the tail mix.
       return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
         source: 0.75,
         parity: 0.25,
         fountain: 0
+      }))
+    }
+    if (fountainTail) {
+      // On a fast link the receiver is already in recovery by pass 2, so this
+      // is where the duplicate waste happens. Flip to fountain-heavy here.
+      return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
+        source: 0.15,
+        parity: 0.05,
+        fountain: 0.80
       }))
     }
     return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
@@ -1609,21 +1626,28 @@ function getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, 
     }))
   }
   if (passNumber === 3) {
-    return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, getBinary3Pass3MixRatios(pass3Mix)))
+    if (fountainTail) {
+      return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
+        source: 0.10,
+        parity: 0.05,
+        fountain: 0.85
+      }))
+    }
+    return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, getDenseBinaryPass3MixRatios(pass3Mix)))
   }
-  return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, getBinary3LateMixRatios(lateMix)))
+  return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, getDenseBinaryLateMixRatios(lateMix)))
 }
 
 function getSlotMixPatternForPass(passNumber, {
   paritySweepsInPass = 0,
   slots = 6,
   mode = state.mode,
-  lateMix = getBinary3LateMix(),
-  pass3Mix = getBinary3Pass3Mix()
+  lateMix = getDenseBinaryLateMix(),
+  pass3Mix = getDenseBinaryPass3Mix()
 } = {}) {
   if (!usesMixedSlotReplay(mode)) return null
   if (isDenseBinaryMode(mode)) {
-    return getBinary3SlotMixPatternForPass(passNumber, slots, paritySweepsInPass, { lateMix, pass3Mix })
+    return getDenseBinarySlotMixPatternForPass(passNumber, slots, paritySweepsInPass, { lateMix, pass3Mix })
   }
   if (passNumber <= 1) return ['source', 'source', 'source', 'source', 'source', 'source']
   if (passNumber === 2) {
@@ -2531,7 +2555,7 @@ export function initHdmiUvcSender(errorHandler) {
   }
   const diagPanel = document.getElementById('hdmi-uvc-sender-diagnostics')
   if (diagPanel) {
-    renderDiagnosticsPanel(diagPanel, ['pass2', 'binary3Profile', 'binary3Pass3Mix', 'binary3LateMix'], { title: 'Diagnostics (sender)' })
+    renderDiagnosticsPanel(diagPanel, ['pass2', 'denseBinaryProfile', 'denseBinaryPass3Mix', 'denseBinaryLateMix'], { title: 'Diagnostics (sender)' })
   }
 
   debugLog('HDMI-UVC Sender initialized')
@@ -2829,7 +2853,7 @@ function countSymbolKinds(symbolIds, encoder) {
   return counts
 }
 
-export function testBinary3MixedReplayPass1SourceOnly() {
+export function testDenseBinaryMixedReplayPass1SourceOnly() {
   const snapshot = snapshotSchedulerState()
   try {
     setupSchedulerTestState({ systematicPass: 1 })
@@ -2840,7 +2864,7 @@ export function testBinary3MixedReplayPass1SourceOnly() {
       counts.source === 24 &&
       counts.parity === 0 &&
       counts.fountain === 0
-    console.log('BINARY_3 mixed replay pass 1 source-only test:', pass ? 'PASS' : 'FAIL', {
+    console.log('dense-binary mixed replay pass 1 source-only test:', pass ? 'PASS' : 'FAIL', {
       symbolIds: batch.symbolIds,
       counts
     })
@@ -2850,7 +2874,7 @@ export function testBinary3MixedReplayPass1SourceOnly() {
   }
 }
 
-export function testBinary3MixedReplayPass2ChangesAfterParitySweep() {
+export function testDenseBinaryMixedReplayPass2ChangesAfterParitySweep() {
   const snapshot = snapshotSchedulerState()
   try {
     setupSchedulerTestState({ systematicPass: 2, paritySweepsInPass: 0 })
@@ -2868,7 +2892,7 @@ export function testBinary3MixedReplayPass2ChangesAfterParitySweep() {
       sweep1.source === 18 &&
       sweep1.parity === 3 &&
       sweep1.fountain === 3
-    console.log('BINARY_3 mixed replay pass 2 parity-sweep transition test:', pass ? 'PASS' : 'FAIL', {
+    console.log('dense-binary mixed replay pass 2 parity-sweep transition test:', pass ? 'PASS' : 'FAIL', {
       sweep0,
       sweep1
     })
@@ -2912,7 +2936,7 @@ export function testCompat4MixedReplayKeepsSixSlotPatterns() {
   }
 }
 
-export function testBinary3MixedReplayMetadataReducesDataSlots() {
+export function testDenseBinaryMixedReplayMetadataReducesDataSlots() {
   const snapshot = snapshotSchedulerState()
   try {
     setupSchedulerTestState({ systematicPass: 2, paritySweepsInPass: 0 })
@@ -2924,7 +2948,7 @@ export function testBinary3MixedReplayMetadataReducesDataSlots() {
       counts.source === 17 &&
       counts.parity === 6 &&
       counts.fountain === 0
-    console.log('BINARY_3 mixed replay metadata data-slot test:', pass ? 'PASS' : 'FAIL', {
+    console.log('dense-binary mixed replay metadata data-slot test:', pass ? 'PASS' : 'FAIL', {
       symbolIds: batch.symbolIds,
       counts
     })
@@ -2934,15 +2958,15 @@ export function testBinary3MixedReplayMetadataReducesDataSlots() {
   }
 }
 
-export function testBinary3BatchingProfile() {
-  const profile = typeof getBinary3BatchingProfile === 'function'
-    ? getBinary3BatchingProfile('safe')
+export function testDenseBinaryBatchingProfile() {
+  const profile = typeof getDenseBinaryBatchingProfile === 'function'
+    ? getDenseBinaryBatchingProfile('safe')
     : getBatchingProfile(HDMI_MODE.BINARY_3)
   const pass = profile.maxBlockSize <= 1024 &&
     profile.minPacketsPerFrame >= 4 &&
     profile.maxPacketsPerFrame >= profile.minPacketsPerFrame &&
     profile.targetFrameFill >= 0.85
-  console.log('BINARY_3 batching profile test:', pass ? 'PASS' : `FAIL ${JSON.stringify(profile)}`)
+  console.log('dense-binary batching profile test:', pass ? 'PASS' : `FAIL ${JSON.stringify(profile)}`)
   return pass
 }
 
@@ -2995,8 +3019,8 @@ export function testBinary2BatchingAndSchedule() {
   return pass
 }
 
-export function testBinary3BatchingProfileMath() {
-  const helperExists = typeof getBinary3BatchingProfile === 'function' &&
+export function testDenseBinaryBatchingProfileMath() {
+  const helperExists = typeof getDenseBinaryBatchingProfile === 'function' &&
     typeof selectFrameBatching === 'function'
   const capacity = 26547
   const fileSize = 5.5 * 1024 * 1024
@@ -3012,7 +3036,7 @@ export function testBinary3BatchingProfileMath() {
       const selected = selectFrameBatching({
         capacity,
         fileSize,
-        profile: getBinary3BatchingProfile(id)
+        profile: getDenseBinaryBatchingProfile(id)
       })
       observed[id] = {
         packetsPerFrame: selected.packetsPerFrame,
@@ -3028,7 +3052,7 @@ export function testBinary3BatchingProfileMath() {
       observed[id]?.blockSize === expected[id].blockSize &&
       observed[id]?.usedBytes === expected[id].usedBytes
     )
-  console.log('BINARY_3 batching profile math test:', pass ? 'PASS' : 'FAIL', {
+  console.log('dense-binary batching profile math test:', pass ? 'PASS' : 'FAIL', {
     helperExists,
     observed,
     expected
@@ -3036,21 +3060,21 @@ export function testBinary3BatchingProfileMath() {
   return pass
 }
 
-export function testBinary3BatchingProfileDiagnostic() {
-  const helperExists = typeof getBinary3BatchingProfile === 'function'
-  const diagGetterExists = typeof getBinary3Profile === 'function'
+export function testDenseBinaryBatchingProfileDiagnostic() {
+  const helperExists = typeof getDenseBinaryBatchingProfile === 'function'
+  const diagGetterExists = typeof getDenseBinaryProfile === 'function'
   const defExists = typeof getDiagnosticDefinition === 'function'
-  const def = defExists ? getDiagnosticDefinition('binary3Profile') : null
+  const def = defExists ? getDiagnosticDefinition('denseBinaryProfile') : null
   const expectedAllowed = ['safe', 'fill99', 'medium', 'large']
   const profileById = helperExists
     ? {
-        safe: getBinary3BatchingProfile('safe'),
-        fill99: getBinary3BatchingProfile('fill99'),
-        medium: getBinary3BatchingProfile('medium'),
-        large: getBinary3BatchingProfile('large')
+        safe: getDenseBinaryBatchingProfile('safe'),
+        fill99: getDenseBinaryBatchingProfile('fill99'),
+        medium: getDenseBinaryBatchingProfile('medium'),
+        large: getDenseBinaryBatchingProfile('large')
       }
     : {}
-  const fallbackProfile = helperExists ? getBinary3BatchingProfile('not-a-profile') : null
+  const fallbackProfile = helperExists ? getDenseBinaryBatchingProfile('not-a-profile') : null
   const pass = helperExists &&
     diagGetterExists &&
     def?.default === 'large' &&
@@ -3064,7 +3088,7 @@ export function testBinary3BatchingProfileDiagnostic() {
     profileById.large?.maxBlockSize === 2048 &&
     profileById.large?.targetFrameFill === 0.99 &&
     fallbackProfile?.id === 'large'
-  console.log('BINARY_3 batching profile diagnostic test:', pass ? 'PASS' : 'FAIL', {
+  console.log('dense-binary batching profile diagnostic test:', pass ? 'PASS' : 'FAIL', {
     helperExists,
     diagGetterExists,
     definition: def,
@@ -3074,21 +3098,22 @@ export function testBinary3BatchingProfileDiagnostic() {
   return pass
 }
 
-export function testBinary3LateMixDiagnostic() {
-  const diagGetterExists = typeof getBinary3LateMix === 'function'
-  const def = getDiagnosticDefinition('binary3LateMix')
+export function testDenseBinaryLateMixDiagnostic() {
+  const diagGetterExists = typeof getDenseBinaryLateMix === 'function'
+  const def = getDiagnosticDefinition('denseBinaryLateMix')
   const pass = diagGetterExists &&
     def?.default === 'source' &&
     def.allowed?.includes('balanced') &&
-    def.allowed?.includes('source')
-  console.log('BINARY_3 late mix diagnostic test:', pass ? 'PASS' : 'FAIL', {
+    def.allowed?.includes('source') &&
+    def.allowed?.includes('fountain')
+  console.log('dense-binary late mix diagnostic test:', pass ? 'PASS' : 'FAIL', {
     diagGetterExists,
     definition: def
   })
   return pass
 }
 
-export function testBinary3LateMixPatterns() {
+export function testDenseBinaryLateMixPatterns() {
   const countSlots = (pattern) => {
     const counts = { source: 0, parity: 0, fountain: 0 }
     for (const slot of pattern) if (counts[slot] !== undefined) counts[slot]++
@@ -3112,25 +3137,25 @@ export function testBinary3LateMixPatterns() {
     source.source === 8 &&
     source.parity === 1 &&
     source.fountain === 4
-  console.log('BINARY_3 late mix pattern test:', pass ? 'PASS' : 'FAIL', {
+  console.log('dense-binary late mix pattern test:', pass ? 'PASS' : 'FAIL', {
     balanced,
     source
   })
   return pass
 }
 
-export function testBinary3Pass3MixDiagnostic() {
-  const def = getDiagnosticDefinition('binary3Pass3Mix')
+export function testDenseBinaryPass3MixDiagnostic() {
+  const def = getDiagnosticDefinition('denseBinaryPass3Mix')
   const pass = def?.default === 'balanced' &&
     def.allowed?.includes('balanced') &&
     def.allowed?.includes('source')
-  console.log('BINARY_3 pass-3 mix diagnostic test:', pass ? 'PASS' : 'FAIL', {
+  console.log('dense-binary pass-3 mix diagnostic test:', pass ? 'PASS' : 'FAIL', {
     definition: def
   })
   return pass
 }
 
-export function testBinary3Pass3MixPatterns() {
+export function testDenseBinaryPass3MixPatterns() {
   const countSlots = (pattern) => {
     const counts = { source: 0, parity: 0, fountain: 0 }
     for (const slot of pattern) if (counts[slot] !== undefined) counts[slot]++
@@ -3163,7 +3188,7 @@ export function testBinary3Pass3MixPatterns() {
     pass4.source === 6 &&
     pass4.parity === 3 &&
     pass4.fountain === 4
-  console.log('BINARY_3 pass-3 mix pattern test:', pass ? 'PASS' : 'FAIL', {
+  console.log('dense-binary pass-3 mix pattern test:', pass ? 'PASS' : 'FAIL', {
     balanced,
     source,
     pass4
@@ -3171,7 +3196,53 @@ export function testBinary3Pass3MixPatterns() {
   return pass
 }
 
-export function testBinary3StrictGeometryGate() {
+export function testDenseBinaryFountainTailPatterns() {
+  const countSlots = (pattern) => {
+    const counts = { source: 0, parity: 0, fountain: 0 }
+    for (const slot of pattern) if (counts[slot] !== undefined) counts[slot]++
+    return counts
+  }
+
+  // Pass 1 must stay pure source even when the fountain-heavy tail is selected:
+  // the first systematic pass is the optimal way to deliver every block once.
+  const pass1 = countSlots(getSlotMixPatternForPass(1, {
+    mode: HDMI_MODE.BINARY_2, slots: 13, lateMix: 'fountain'
+  }) || [])
+
+  // Pass 2's first sweep must still deliver every parity row once (no fountain
+  // yet) so the decoder's structured parity recovery has its equations.
+  const pass2Sweep0 = countSlots(getSlotMixPatternForPass(2, {
+    mode: HDMI_MODE.BINARY_2, slots: 13, lateMix: 'fountain', paritySweepsInPass: 0
+  }) || [])
+
+  // After the parity sweep, pass 2 goes fountain-heavy instead of re-sending
+  // already-delivered source blocks. This is the whole point of the variant:
+  // the tail recovery (which on a fast link happens during pass 2) stops
+  // wasting bandwidth on duplicates and ships fresh fountain symbols.
+  const pass2PostSweep = countSlots(getSlotMixPatternForPass(2, {
+    mode: HDMI_MODE.BINARY_2, slots: 13, lateMix: 'fountain', paritySweepsInPass: 1
+  }) || [])
+
+  // Pass 3 and pass 4+ are predominantly fountain under 'fountain'.
+  const pass3 = countSlots(getSlotMixPatternForPass(3, {
+    mode: HDMI_MODE.BINARY_2, slots: 13, lateMix: 'fountain'
+  }) || [])
+  const pass4 = countSlots(getSlotMixPatternForPass(4, {
+    mode: HDMI_MODE.BINARY_2, slots: 13, lateMix: 'fountain'
+  }) || [])
+
+  const pass = pass1.source === 13 && pass1.parity === 0 && pass1.fountain === 0 &&
+    pass2Sweep0.fountain === 0 && pass2Sweep0.parity > 0 &&
+    pass2PostSweep.source === 2 && pass2PostSweep.parity === 1 && pass2PostSweep.fountain === 10 &&
+    pass3.source === 1 && pass3.parity === 1 && pass3.fountain === 11 &&
+    pass4.source === 1 && pass4.parity === 0 && pass4.fountain === 12
+  console.log('dense-binary fountain tail pattern test:', pass ? 'PASS' : 'FAIL', {
+    pass1, pass2Sweep0, pass2PostSweep, pass3, pass4
+  })
+  return pass
+}
+
+export function testDenseBinaryStrictGeometryGate() {
   try {
     const badViewport = {
       renderPresetId: 'viewport',
@@ -3204,15 +3275,15 @@ export function testBinary3StrictGeometryGate() {
       !modeRequiresNative1080p(HDMI_MODE.COMPAT_4) &&
       !!getRenderScaleIssue(badViewport, { requireNative1080p: modeRequiresNative1080p(HDMI_MODE.BINARY_3) }) &&
       getRenderScaleIssue(native1080, { requireNative1080p: modeRequiresNative1080p(HDMI_MODE.BINARY_3) }) === null
-    console.log('BINARY_3 strict geometry gate test:', pass ? 'PASS' : 'FAIL')
+    console.log('dense-binary strict geometry gate test:', pass ? 'PASS' : 'FAIL')
     return pass
   } catch (err) {
-    console.log('BINARY_3 strict geometry gate test: FAIL', err?.message || err)
+    console.log('dense-binary strict geometry gate test: FAIL', err?.message || err)
     return false
   }
 }
 
-export function testBinary3MetadataUsesSparseSchedule() {
+export function testDenseBinaryMetadataUsesSparseSchedule() {
   const oldMode = state.mode
   const oldInterval = state.metadataIntervalFrames
   try {
@@ -3221,17 +3292,17 @@ export function testBinary3MetadataUsesSparseSchedule() {
 
     const frames = [1, 2, 3, 4, 5, 12, 13, 24, 180, 181, 270, 360]
     const expected = [true, true, true, true, false, true, false, true, true, false, true, true]
-    const binary3Observed = frames.map(frame => shouldSendMetadata(frame))
+    const denseBinaryObserved = frames.map(frame => shouldSendMetadata(frame))
 
     state.mode = HDMI_MODE.COMPAT_4
     const compat4Observed = frames.map(frame => shouldSendMetadata(frame))
 
-    const pass = binary3Observed.every((value, i) => value === expected[i]) &&
+    const pass = denseBinaryObserved.every((value, i) => value === expected[i]) &&
       compat4Observed.every((value, i) => value === expected[i])
-    console.log('BINARY_3 sparse metadata schedule test:', pass ? 'PASS' : 'FAIL', {
+    console.log('dense-binary sparse metadata schedule test:', pass ? 'PASS' : 'FAIL', {
       frames,
       expected,
-      binary3Observed,
+      denseBinaryObserved,
       compat4Observed
     })
     return pass
@@ -3241,7 +3312,7 @@ export function testBinary3MetadataUsesSparseSchedule() {
   }
 }
 
-export function testBinary3MetadataSlotRotatesOnlyWhenSent() {
+export function testDenseBinaryMetadataSlotRotatesOnlyWhenSent() {
   const snapshot = {
     mode: state.mode,
     encoder: state.encoder,
@@ -3300,7 +3371,7 @@ export function testBinary3MetadataSlotRotatesOnlyWhenSent() {
       frame4.filter(id => id === 0).length === 1 &&
       frame12.filter(id => id === 0).length === 1
 
-    console.log('BINARY_3 sparse metadata slot rotation test:', pass ? 'PASS' : 'FAIL', {
+    console.log('dense-binary sparse metadata slot rotation test:', pass ? 'PASS' : 'FAIL', {
       frame1,
       frame2,
       frame3,
