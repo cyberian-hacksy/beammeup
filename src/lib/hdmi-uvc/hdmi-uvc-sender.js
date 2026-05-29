@@ -2567,7 +2567,7 @@ export function initHdmiUvcSender(errorHandler) {
   }
   const diagPanel = document.getElementById('hdmi-uvc-sender-diagnostics')
   if (diagPanel) {
-    renderDiagnosticsPanel(diagPanel, ['pass2', 'denseBinaryProfile', 'denseBinaryPass3Mix', 'denseBinaryLateMix'], { title: 'Diagnostics (sender)' })
+    renderDiagnosticsPanel(diagPanel, ['pass2', 'denseBinaryProfile', 'denseBinaryPass3Mix', 'denseBinaryLateMix', 'denseBinaryDegree'], { title: 'Diagnostics (sender)' })
   }
 
   debugLog('HDMI-UVC Sender initialized')

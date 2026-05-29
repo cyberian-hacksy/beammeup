@@ -3505,7 +3505,7 @@ export function initHdmiUvcReceiver(errorHandler) {
   if (diagPanel) {
     renderDiagnosticsPanel(
       diagPanel,
-      ['captureMethod', 'wasmClassifier', 'perf', 'worker'],
+      ['captureMethod', 'wasmClassifier', 'perf', 'worker', 'denseBinaryDegree'],
       { title: 'Diagnostics (receiver)' }
     )
   }
