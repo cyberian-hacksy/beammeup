@@ -247,6 +247,7 @@ const LAB_CARD_KIND_BY_VALUE = {
   binary4: CARD_KIND.BINARY_4,
   binary3: CARD_KIND.BINARY_3,
   binary2: CARD_KIND.BINARY_2,
+  binary1: CARD_KIND.BINARY_1,
   luma2: CARD_KIND.LUMA_2,
   codebook3: CARD_KIND.CODEBOOK_3,
   glyph5: CARD_KIND.GLYPH_5,
@@ -734,7 +735,7 @@ export function normalizeExternalPresentationMetrics(metrics, target = getPresen
 }
 
 function isDenseBinaryMode(mode = state.mode) {
-  return mode === HDMI_MODE.BINARY_3 || mode === HDMI_MODE.BINARY_2
+  return mode === HDMI_MODE.BINARY_3 || mode === HDMI_MODE.BINARY_2 || mode === HDMI_MODE.BINARY_1
 }
 
 function modeRequiresNative1080p(mode) {
@@ -1407,6 +1408,8 @@ function getBatchingProfile(mode) {
     case HDMI_MODE.BINARY_3:
       return getDenseBinaryBatchingProfile()
     case HDMI_MODE.BINARY_2:
+      return getDenseBinaryBatchingProfile()
+    case HDMI_MODE.BINARY_1:
       return getDenseBinaryBatchingProfile()
     case HDMI_MODE.CODEBOOK_3:
       // Binary quadrant glyphs keep the payload alphabet black/white while
@@ -2084,7 +2087,10 @@ async function renderLabCard(kind) {
     const { target, stableMetrics } = await preparePresentationForTransmission()
     const { metrics } = measureAndApplyCanvasSize(stableMetrics, target)
     const issue = getRenderScaleIssue(metrics, {
-      requireNative1080p: kind === CARD_KIND.BINARY_3 || kind === CARD_KIND.BINARY_2 || kind === CARD_KIND.BINARY_4
+      requireNative1080p: kind === CARD_KIND.BINARY_3 ||
+        kind === CARD_KIND.BINARY_2 ||
+        kind === CARD_KIND.BINARY_1 ||
+        kind === CARD_KIND.BINARY_4
     })
     if (issue) throw new Error(issue)
 
@@ -2999,15 +3005,18 @@ export function testBinary2BatchingAndSchedule() {
     const pass2 = getSlotMixPatternForPass(2, {
       mode: HDMI_MODE.BINARY_2,
       slots: 29,
-      paritySweepsInPass: 1
+      paritySweepsInPass: 1,
+      lateMix: 'source'
     })
     const pass3 = getSlotMixPatternForPass(3, {
       mode: HDMI_MODE.BINARY_2,
-      slots: 29
+      slots: 29,
+      lateMix: 'source'
     })
     const pass4 = getSlotMixPatternForPass(4, {
       mode: HDMI_MODE.BINARY_2,
-      slots: 29
+      slots: 29,
+      lateMix: 'source'
     })
     const selected = selectFrameBatching({
       capacity: getPayloadCapacity(1920, 1080, HDMI_MODE.BINARY_2),
@@ -3396,6 +3405,7 @@ export function testDenseBinaryStrictGeometryGate() {
     }
     const pass = modeRequiresNative1080p(HDMI_MODE.BINARY_3) &&
       modeRequiresNative1080p(HDMI_MODE.BINARY_2) &&
+      modeRequiresNative1080p(HDMI_MODE.BINARY_1) &&
       !modeRequiresNative1080p(HDMI_MODE.COMPAT_4) &&
       !!getRenderScaleIssue(badViewport, { requireNative1080p: modeRequiresNative1080p(HDMI_MODE.BINARY_3) }) &&
       getRenderScaleIssue(native1080, { requireNative1080p: modeRequiresNative1080p(HDMI_MODE.BINARY_3) }) === null

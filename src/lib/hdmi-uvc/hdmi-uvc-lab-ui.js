@@ -7,6 +7,7 @@ const KIND_BY_VALUE = {
   binary4: CARD_KIND.BINARY_4,
   binary3: CARD_KIND.BINARY_3,
   binary2: CARD_KIND.BINARY_2,
+  binary1: CARD_KIND.BINARY_1,
   luma2: CARD_KIND.LUMA_2,
   codebook3: CARD_KIND.CODEBOOK_3,
   glyph5: CARD_KIND.GLYPH_5,

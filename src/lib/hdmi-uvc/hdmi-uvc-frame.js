@@ -61,7 +61,7 @@ const DENSE_BINARY_REF_STRIP_WIDTH_4X4 = 1
 const DENSE_BINARY_REF_STRIP_PX = DENSE_BINARY_REF_STRIP_WIDTH_4X4 * DENSE_BINARY_HEADER_BLOCK_SIZE
 
 function isDenseBinaryMode(mode) {
-  return mode === HDMI_MODE.BINARY_3 || mode === HDMI_MODE.BINARY_2
+  return mode === HDMI_MODE.BINARY_3 || mode === HDMI_MODE.BINARY_2 || mode === HDMI_MODE.BINARY_1
 }
 
 function getDenseBinaryPayloadBlockSize(mode) {
@@ -946,6 +946,11 @@ function samplePixel(imageData, width, x, y) {
 // Sample the center of a block at (px, py) with given block size.
 // Averages a 2×2 area around the block center for noise tolerance.
 export function sampleBlockAt(imageData, width, px, py, bs) {
+  if (bs <= 1.5) {
+    const x = Math.round(px)
+    const y = Math.round(py)
+    return imageData[((y * width + x) * 4)]
+  }
   const cx = Math.round(px + bs / 2) - 1
   const cy = Math.round(py + bs / 2) - 1
   let sum = 0
@@ -3229,6 +3234,16 @@ export function testBinary2ConstantsRegistered() {
   return pass
 }
 
+export function testBinary1ConstantsRegistered() {
+  const pass = HDMI_MODE.BINARY_1 === 10 &&
+    HDMI_MODE_NAMES[HDMI_MODE.BINARY_1] === '1x1' &&
+    getModeHeaderBlockSize(HDMI_MODE.BINARY_1) === 4 &&
+    getModePayloadBlockSize(HDMI_MODE.BINARY_1) === 1 &&
+    getModeBitsPerBlock(HDMI_MODE.BINARY_1) === 1
+  console.log('BINARY_1 constants test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
 export function testHdmiModesExcludeRemovedMode7() {
   const values = Object.values(HDMI_MODE)
   const pass = !values.includes(7) &&
@@ -3265,6 +3280,38 @@ export function testBinary2FrameRoundtrip() {
     return pass
   } catch (err) {
     console.log('BINARY_2 roundtrip test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+export function testBinary1FrameRoundtrip() {
+  try {
+    const width = 640
+    const height = 407
+    const cap = getPayloadCapacity(width, height, HDMI_MODE.BINARY_1)
+    const payload = new Uint8Array(Math.min(cap, 1500))
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 17) & 0xff
+
+    const frame = buildFrame(payload, HDMI_MODE.BINARY_1, width, height, 30, 43)
+    const anchors = detectAnchors(frame, width, height)
+    if (anchors.length < 2) {
+      console.log('BINARY_1 roundtrip test: FAIL (anchors)')
+      return false
+    }
+    const region = dataRegionFromAnchors(anchors)
+    if (!region) {
+      console.log('BINARY_1 roundtrip test: FAIL (region)')
+      return false
+    }
+    const result = decodeDataRegion(frame, width, region)
+    const pass = result && result.crcValid &&
+      result.header.mode === HDMI_MODE.BINARY_1 &&
+      result.payload.length === payload.length &&
+      result.payload.every((v, i) => v === payload[i])
+    console.log('BINARY_1 roundtrip test:', pass ? 'PASS' : 'FAIL')
+    return pass
+  } catch (err) {
+    console.log('BINARY_1 roundtrip test: FAIL', err?.message || err)
     return false
   }
 }

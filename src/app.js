@@ -88,9 +88,11 @@ import {
   testHeaderAndPayloadBlockSizesMatchForExistingModes,
   testBinary3ConstantsRegistered,
   testBinary2ConstantsRegistered,
+  testBinary1ConstantsRegistered,
   testHdmiModesExcludeRemovedMode7,
   testBinary3FrameRoundtrip,
   testBinary2FrameRoundtrip,
+  testBinary1FrameRoundtrip,
   testDecodeDataRegionPropagatesDenseBinaryLevels,
   testDenseBinaryLockedLayoutMatchesBlindSweep,
   testDenseBinaryPrecomputedOffsetsMatchUncached,
@@ -193,9 +195,11 @@ window.testClassifyStep = testClassifyStep
 window.testHeaderAndPayloadBlockSizesMatchForExistingModes = testHeaderAndPayloadBlockSizesMatchForExistingModes
 window.testBinary3ConstantsRegistered = testBinary3ConstantsRegistered
 window.testBinary2ConstantsRegistered = testBinary2ConstantsRegistered
+window.testBinary1ConstantsRegistered = testBinary1ConstantsRegistered
 window.testHdmiModesExcludeRemovedMode7 = testHdmiModesExcludeRemovedMode7
 window.testBinary3FrameRoundtrip = testBinary3FrameRoundtrip
 window.testBinary2FrameRoundtrip = testBinary2FrameRoundtrip
+window.testBinary1FrameRoundtrip = testBinary1FrameRoundtrip
 window.testDecodeDataRegionPropagatesDenseBinaryLevels = testDecodeDataRegionPropagatesDenseBinaryLevels
 window.testDenseBinaryLockedLayoutMatchesBlindSweep = testDenseBinaryLockedLayoutMatchesBlindSweep
 window.testDenseBinaryPrecomputedOffsetsMatchUncached = testDenseBinaryPrecomputedOffsetsMatchUncached
@@ -426,9 +430,11 @@ async function runAllTests() {
     hdmiHeaderPayloadBlockSizes: testHeaderAndPayloadBlockSizesMatchForExistingModes(),
     hdmiBinary3Constants: testBinary3ConstantsRegistered(),
     hdmiBinary2Constants: testBinary2ConstantsRegistered(),
+    hdmiBinary1Constants: testBinary1ConstantsRegistered(),
     hdmiModesExcludeRemovedMode7: testHdmiModesExcludeRemovedMode7(),
     hdmiBinary3FrameRoundtrip: testBinary3FrameRoundtrip(),
     hdmiBinary2FrameRoundtrip: testBinary2FrameRoundtrip(),
+    hdmiBinary1FrameRoundtrip: testBinary1FrameRoundtrip(),
     hdmiDenseBinaryLevelsPropagation: testDecodeDataRegionPropagatesDenseBinaryLevels(),
     hdmiDenseBinaryLockedLayout: testDenseBinaryLockedLayoutMatchesBlindSweep(),
     hdmiDenseBinaryPrecomputedOffsets: testDenseBinaryPrecomputedOffsetsMatchUncached(),

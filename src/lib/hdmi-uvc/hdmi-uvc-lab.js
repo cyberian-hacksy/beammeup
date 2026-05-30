@@ -25,6 +25,7 @@ export const CARD_KIND = {
   BINARY_4: 'binary4',
   BINARY_3: 'binary3',
   BINARY_2: 'binary2',
+  BINARY_1: 'binary1',
   LUMA_2: 'luma2',
   CODEBOOK_3: 'codebook3',
   GLYPH_5: 'glyph5',
@@ -35,6 +36,7 @@ const CELL_SIZE = {
   [CARD_KIND.BINARY_4]: 4,
   [CARD_KIND.BINARY_3]: 3,
   [CARD_KIND.BINARY_2]: 2,
+  [CARD_KIND.BINARY_1]: 1,
   [CARD_KIND.LUMA_2]: 4,
   [CARD_KIND.CODEBOOK_3]: 4,
   [CARD_KIND.GLYPH_5]: 8,
@@ -45,6 +47,7 @@ const SYMBOL_COUNT = {
   [CARD_KIND.BINARY_4]: 2,
   [CARD_KIND.BINARY_3]: 2,
   [CARD_KIND.BINARY_2]: 2,
+  [CARD_KIND.BINARY_1]: 2,
   [CARD_KIND.LUMA_2]: 4,
   [CARD_KIND.CODEBOOK_3]: 8,
   [CARD_KIND.GLYPH_5]: 32,
@@ -331,7 +334,7 @@ function estimateCardLevels(captured, capturedWidth, capturedHeight, card, regio
       if (px < 0 || px >= capturedWidth || py < 0 || py >= capturedHeight) continue
       const truth = groundTruth[cy * cellsX + cx]
 
-      if (kind === CARD_KIND.BINARY_4 || kind === CARD_KIND.BINARY_3 || kind === CARD_KIND.BINARY_2) {
+      if (kind === CARD_KIND.BINARY_4 || kind === CARD_KIND.BINARY_3 || kind === CARD_KIND.BINARY_2 || kind === CARD_KIND.BINARY_1) {
         const val = sampleBlockAt(captured, capturedWidth, px, py, bs)
         if (truth) {
           whiteSum += val
@@ -376,7 +379,7 @@ function estimateCardLevels(captured, capturedWidth, capturedHeight, card, regio
 
 function decodeCardCell(captured, capturedWidth, px, py, bs, card, levels) {
   const kind = card.layout.kind
-  if (kind === CARD_KIND.BINARY_4 || kind === CARD_KIND.BINARY_3 || kind === CARD_KIND.BINARY_2) {
+  if (kind === CARD_KIND.BINARY_4 || kind === CARD_KIND.BINARY_3 || kind === CARD_KIND.BINARY_2 || kind === CARD_KIND.BINARY_1) {
     const val = sampleBlockAt(captured, capturedWidth, px, py, bs)
     return {
       decoded: val >= levels.threshold ? 1 : 0,
@@ -976,6 +979,7 @@ export function testCardSelfDecodeAllKinds() {
     CARD_KIND.BINARY_4,
     CARD_KIND.BINARY_3,
     CARD_KIND.BINARY_2,
+    CARD_KIND.BINARY_1,
     CARD_KIND.LUMA_2,
     CARD_KIND.CODEBOOK_3,
     CARD_KIND.GLYPH_5,
