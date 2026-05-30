@@ -56,7 +56,7 @@ import {
   testBinary1Pass2ReplaysFromStart,
   testBinary1SyncPorchFramesAreHeaderOnly,
   testBinary1Pass2WarmupIsSourceOnly,
-  testBinary1DisplayPacedRenderPolicy,
+  testBinary1UsesTimerPacedRender,
   testBinary1CadenceFpsPresets,
   testDenseBinaryLateMixDiagnostic,
   testDenseBinaryDegreeDiagnostic,
@@ -271,7 +271,7 @@ window.testBinary1DefaultsToHugeBatching = testBinary1DefaultsToHugeBatching
 window.testBinary1Pass2ReplaysFromStart = testBinary1Pass2ReplaysFromStart
 window.testBinary1SyncPorchFramesAreHeaderOnly = testBinary1SyncPorchFramesAreHeaderOnly
 window.testBinary1Pass2WarmupIsSourceOnly = testBinary1Pass2WarmupIsSourceOnly
-window.testBinary1DisplayPacedRenderPolicy = testBinary1DisplayPacedRenderPolicy
+window.testBinary1UsesTimerPacedRender = testBinary1UsesTimerPacedRender
 window.testBinary1CadenceFpsPresets = testBinary1CadenceFpsPresets
 window.testDenseBinaryLateMixDiagnostic = testDenseBinaryLateMixDiagnostic
 window.testDenseBinaryLateMixPatterns = testDenseBinaryLateMixPatterns
@@ -522,7 +522,7 @@ async function runAllTests() {
     binary1Pass2ReplaysFromStart: testBinary1Pass2ReplaysFromStart(),
     binary1SyncPorchFramesAreHeaderOnly: testBinary1SyncPorchFramesAreHeaderOnly(),
     binary1Pass2WarmupIsSourceOnly: testBinary1Pass2WarmupIsSourceOnly(),
-    binary1DisplayPacedRenderPolicy: testBinary1DisplayPacedRenderPolicy(),
+    binary1TimerPacedRenderPolicy: testBinary1UsesTimerPacedRender(),
     binary1CadenceFpsPresets: testBinary1CadenceFpsPresets(),
     denseBinaryLateMixDiagnostic: testDenseBinaryLateMixDiagnostic(),
     denseBinaryDegreeDiagnostic: testDenseBinaryDegreeDiagnostic(),

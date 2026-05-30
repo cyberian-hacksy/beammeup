@@ -51,6 +51,7 @@ const TX_PERF_LOG_INTERVAL_FRAMES = 60
 const BINARY1_SYNC_PORCH_FRAMES = 12
 const BINARY1_PASS2_SOURCE_WARMUP_FRAMES = 12
 const DISPLAY_PACED_MIN_FPS = 55
+const DISPLAY_PACED_RENDER_ENABLED = false
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -1039,7 +1040,9 @@ function resetRenderSchedule() {
 }
 
 function shouldUseDisplayPacedRender(mode = state.mode, fps = getFps()) {
-  return mode === HDMI_MODE.BINARY_1 && (fps?.fps || 0) >= DISPLAY_PACED_MIN_FPS
+  return DISPLAY_PACED_RENDER_ENABLED &&
+    mode === HDMI_MODE.BINARY_1 &&
+    (fps?.fps || 0) >= DISPLAY_PACED_MIN_FPS
 }
 
 function scheduleNextRender() {
@@ -3192,12 +3195,12 @@ export function testBinary1Pass2WarmupIsSourceOnly() {
   }
 }
 
-export function testBinary1DisplayPacedRenderPolicy() {
-  const pass = shouldUseDisplayPacedRender(HDMI_MODE.BINARY_1, { fps: 60 }) === true &&
-    shouldUseDisplayPacedRender(HDMI_MODE.BINARY_1, { fps: 58 }) === true &&
+export function testBinary1UsesTimerPacedRender() {
+  const pass = shouldUseDisplayPacedRender(HDMI_MODE.BINARY_1, { fps: 60 }) === false &&
+    shouldUseDisplayPacedRender(HDMI_MODE.BINARY_1, { fps: 58 }) === false &&
     shouldUseDisplayPacedRender(HDMI_MODE.BINARY_2, { fps: 60 }) === false &&
     shouldUseDisplayPacedRender(HDMI_MODE.BINARY_1, { fps: 30 }) === false
-  console.log('BINARY_1 display-paced render policy test:', pass ? 'PASS' : 'FAIL')
+  console.log('BINARY_1 timer-paced render policy test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 
