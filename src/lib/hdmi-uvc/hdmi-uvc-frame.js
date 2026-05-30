@@ -15,7 +15,8 @@ import {
   scanBrightRunsWithFallback,
   isHdmiUvcWasmActive,
   wasmClassifyCompat4Cells,
-  wasmClassifyLuma2Cells
+  wasmClassifyLuma2Cells,
+  wasmPackBinary1Payload
 } from './hdmi-uvc-wasm.js'
 import { getWasmClassifierEnabled } from './hdmi-uvc-diagnostics.js'
 
@@ -1348,8 +1349,58 @@ function readDenseBinary1PayloadLockedNativeGrid({
   rightStripX,
   headerBs,
   fallbackThreshold,
-  stripRows
+  stripRows,
+  stats = null
 }) {
+  if (isHdmiUvcWasmActive()) {
+    try {
+      const rowStarts = new Int32Array(payloadCellsY * 2)
+      const thresholds = new Float32Array(payloadCellsY)
+      let lastStripIdx = -1
+      let threshold = fallbackThreshold
+      for (let cy = 0; cy < payloadCellsY; cy++) {
+        const stripIdx = Math.min(
+          stripRows - 1,
+          Math.max(0, Math.floor((cy * payloadStepY) / headerStepY))
+        )
+        if (stripIdx !== lastStripIdx) {
+          const refY = payloadStartY + Math.round(stripIdx * headerStepY)
+          threshold = sampleBinary2ReferenceThreshold(
+            imageData,
+            width,
+            height,
+            rx,
+            rightStripX,
+            refY,
+            headerBs,
+            fallbackThreshold
+          )
+          lastStripIdx = stripIdx
+        }
+        const rowOffsetIdx = cy * payloadCellsX * 2
+        rowStarts[cy * 2] = offsets[rowOffsetIdx] + offsetTranslateX
+        rowStarts[cy * 2 + 1] = offsets[rowOffsetIdx + 1] + offsetTranslateY
+        thresholds[cy] = threshold
+      }
+      const wasmPayload = wasmPackBinary1Payload(
+        imageData,
+        width,
+        height,
+        rowStarts,
+        thresholds,
+        payloadCellsX,
+        payloadCellsY,
+        payloadLength
+      )
+      if (wasmPayload) {
+        if (stats) stats.reader = 'binary1-wasm'
+        return wasmPayload
+      }
+    } catch (_) {
+      // Fall back to the JS byte packer if the WASM kernel is unavailable or rejects geometry.
+    }
+  }
+
   const payload = new Uint8Array(payloadLength)
   let bitBuffer = 0
   let bitCount = 0
@@ -1599,7 +1650,8 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
           rightStripX,
           headerBs,
           fallbackThreshold,
-          stripRows
+          stripRows,
+          stats: options.stats || null
         })
       : readDenseBinaryPayloadLockedNativeGrid({
           imageData,
@@ -1624,7 +1676,7 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
         })
     if (nativePayload) {
       if (options.stats) {
-        options.stats.reader = frameMode === HDMI_MODE.BINARY_1
+        options.stats.reader ||= frameMode === HDMI_MODE.BINARY_1
           ? 'binary1-bytepack'
           : 'binary2-native-grid'
       }
@@ -3679,7 +3731,7 @@ export function testBinary1LockedPayloadReaderUsesBytePacker() {
     const locked = readDenseBinaryPayloadLocked(frame, width, region, lockedLayout, payload.length, precomputed.offsets, { stats })
     const pass = locked?.length === payload.length &&
       locked.every((v, i) => v === payload[i]) &&
-      stats.reader === 'binary1-bytepack'
+      (stats.reader === 'binary1-bytepack' || stats.reader === 'binary1-wasm')
     console.log('BINARY_1 byte-packer locked payload reader test:', pass ? 'PASS' : 'FAIL')
     return pass
   } catch (err) {

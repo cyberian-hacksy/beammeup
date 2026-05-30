@@ -4,7 +4,8 @@
  (type $2 (func (param i32 i32) (result i32)))
  (type $3 (func (param i32) (result i32)))
  (type $4 (func (param i32 i32 i32 f32 f32 f32)))
- (type $5 (func (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)))
+ (type $5 (func (param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)))
+ (type $6 (func (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)))
  (global $wasm/hdmi-uvc/src/index/crcTableInit (mut i32) (i32.const 0))
  (memory $0 1 256)
  (export "crc32" (func $wasm/hdmi-uvc/src/index/crc32))
@@ -13,6 +14,7 @@
  (export "growMemory" (func $wasm/hdmi-uvc/src/index/growMemory))
  (export "classifyCompat4Cells" (func $wasm/hdmi-uvc/src/index/classifyCompat4Cells))
  (export "classifyLuma2Cells" (func $wasm/hdmi-uvc/src/index/classifyLuma2Cells))
+ (export "packBinary1Payload" (func $wasm/hdmi-uvc/src/index/packBinary1Payload))
  (export "scanBrightRuns" (func $wasm/hdmi-uvc/src/index/scanBrightRuns))
  (export "memory" (memory $0))
  (func $wasm/hdmi-uvc/src/index/crc32 (param $0 i32) (param $1 i32) (result i32)
@@ -714,6 +716,280 @@
    end
   end
   local.get $4
+ )
+ (func $wasm/hdmi-uvc/src/index/packBinary1Payload (param $0 i32) (param $1 i32) (param $2 i32) (param $3 i32) (param $4 i32) (param $5 i32) (param $6 i32) (param $7 i32) (param $8 i32) (result i32)
+  (local $9 i32)
+  (local $10 i32)
+  (local $11 f32)
+  (local $12 i32)
+  (local $13 i32)
+  (local $14 i32)
+  (local $15 i32)
+  (local $16 i32)
+  (local $17 i32)
+  (local $18 i32)
+  (local $19 i32)
+  local.get $1
+  i32.const 2
+  i32.shl
+  local.set $17
+  loop $for-loop|0
+   local.get $7
+   local.get $9
+   i32.gt_u
+   local.get $6
+   local.get $14
+   i32.gt_u
+   i32.and
+   if
+    local.get $3
+    local.get $14
+    i32.const 3
+    i32.shl
+    i32.add
+    local.tee $10
+    i32.load
+    local.tee $12
+    local.get $10
+    i32.load offset=4
+    local.tee $10
+    i32.or
+    i32.const 0
+    i32.lt_s
+    if
+     i32.const 0
+     return
+    end
+    local.get $2
+    local.get $10
+    i32.le_u
+    if
+     i32.const 0
+     return
+    end
+    local.get $5
+    local.get $12
+    i32.add
+    local.get $1
+    i32.gt_u
+    if
+     i32.const 0
+     return
+    end
+    local.get $4
+    local.get $14
+    i32.const 2
+    i32.shl
+    i32.add
+    f32.load
+    local.set $11
+    local.get $0
+    local.get $10
+    local.get $17
+    i32.mul
+    i32.add
+    local.get $12
+    i32.const 2
+    i32.shl
+    i32.add
+    local.set $10
+    i32.const 0
+    local.set $12
+    loop $while-continue|1
+     local.get $7
+     local.get $9
+     i32.gt_u
+     local.get $5
+     local.get $12
+     i32.gt_u
+     i32.and
+     if
+      local.get $15
+      i32.eqz
+      local.get $12
+      i32.const 8
+      i32.add
+      local.get $5
+      i32.le_u
+      i32.and
+      if
+       local.get $5
+       local.get $12
+       i32.sub
+       i32.const 3
+       i32.shr_u
+       local.tee $13
+       local.get $7
+       local.get $9
+       i32.sub
+       local.tee $18
+       local.get $13
+       local.get $18
+       i32.lt_u
+       select
+       local.set $18
+       i32.const 0
+       local.set $13
+       loop $for-loop|2
+        local.get $13
+        local.get $18
+        i32.lt_u
+        if
+         local.get $8
+         local.get $9
+         i32.add
+         i32.const 128
+         i32.const 0
+         local.get $10
+         i32.load8_u
+         f32.convert_i32_u
+         local.get $11
+         f32.ge
+         select
+         local.tee $19
+         i32.const 64
+         i32.or
+         local.get $19
+         local.get $10
+         i32.load8_u offset=4
+         f32.convert_i32_u
+         local.get $11
+         f32.ge
+         select
+         local.tee $19
+         i32.const 32
+         i32.or
+         local.get $19
+         local.get $10
+         i32.load8_u offset=8
+         f32.convert_i32_u
+         local.get $11
+         f32.ge
+         select
+         local.tee $19
+         i32.const 16
+         i32.or
+         local.get $19
+         local.get $10
+         i32.load8_u offset=12
+         f32.convert_i32_u
+         local.get $11
+         f32.ge
+         select
+         local.tee $19
+         i32.const 8
+         i32.or
+         local.get $19
+         local.get $10
+         i32.load8_u offset=16
+         f32.convert_i32_u
+         local.get $11
+         f32.ge
+         select
+         local.tee $19
+         i32.const 4
+         i32.or
+         local.get $19
+         local.get $10
+         i32.load8_u offset=20
+         f32.convert_i32_u
+         local.get $11
+         f32.ge
+         select
+         local.tee $19
+         i32.const 2
+         i32.or
+         local.get $19
+         local.get $10
+         i32.load8_u offset=24
+         f32.convert_i32_u
+         local.get $11
+         f32.ge
+         select
+         local.tee $19
+         i32.const 1
+         i32.or
+         local.get $19
+         local.get $10
+         i32.load8_u offset=28
+         f32.convert_i32_u
+         local.get $11
+         f32.ge
+         select
+         i32.store8
+         local.get $9
+         i32.const 1
+         i32.add
+         local.set $9
+         local.get $10
+         i32.const 32
+         i32.add
+         local.set $10
+         local.get $13
+         i32.const 1
+         i32.add
+         local.set $13
+         br $for-loop|2
+        end
+       end
+       local.get $12
+       local.get $18
+       i32.const 3
+       i32.shl
+       i32.add
+       local.set $12
+       br $while-continue|1
+      end
+      local.get $16
+      i32.const 1
+      i32.shl
+      local.get $11
+      local.get $10
+      i32.load8_u
+      f32.convert_i32_u
+      f32.le
+      i32.or
+      local.set $16
+      local.get $10
+      i32.const 4
+      i32.add
+      local.set $10
+      local.get $12
+      i32.const 1
+      i32.add
+      local.set $12
+      local.get $15
+      i32.const 1
+      i32.add
+      local.tee $15
+      i32.const 8
+      i32.ge_u
+      if
+       local.get $8
+       local.get $9
+       i32.add
+       local.get $16
+       i32.store8
+       i32.const 0
+       local.set $16
+       i32.const 0
+       local.set $15
+       local.get $9
+       i32.const 1
+       i32.add
+       local.set $9
+      end
+      br $while-continue|1
+     end
+    end
+    local.get $14
+    i32.const 1
+    i32.add
+    local.set $14
+    br $for-loop|0
+   end
+  end
+  local.get $9
  )
  (func $wasm/hdmi-uvc/src/index/scanBrightRuns (param $0 i32) (param $1 i32) (param $2 i32) (param $3 i32) (param $4 i32) (param $5 i32) (param $6 i32) (param $7 i32) (param $8 i32) (param $9 i32) (param $10 i32) (param $11 i32) (param $12 i32) (result i32)
   (local $13 i32)

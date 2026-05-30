@@ -148,6 +148,7 @@ import {
   testFrameCrcWasmIntegration,
   testWasmScanBrightRunsMatchesJs,
   testWasmClassifiersMatchJs,
+  testWasmPackBinary1PayloadMatchesJs,
   testWasmVsJsDetectAnchorsEquivalent,
   testWasmVsJsDecodeDataRegionEquivalent
 } from './lib/hdmi-uvc/hdmi-uvc-wasm.js'
@@ -289,6 +290,7 @@ window.testWasmCrc32MatchesJs = testWasmCrc32MatchesJs
 window.testFrameCrcWasmIntegration = testFrameCrcWasmIntegration
 window.testWasmScanBrightRunsMatchesJs = testWasmScanBrightRunsMatchesJs
 window.testWasmClassifiersMatchJs = testWasmClassifiersMatchJs
+window.testWasmPackBinary1PayloadMatchesJs = testWasmPackBinary1PayloadMatchesJs
 window.testWasmVsJsDetectAnchorsEquivalent = testWasmVsJsDetectAnchorsEquivalent
 window.testWasmVsJsDecodeDataRegionEquivalent = testWasmVsJsDecodeDataRegionEquivalent
 window.testBuildCardBinary4Geometry = testBuildCardBinary4Geometry
@@ -532,6 +534,7 @@ async function runAllTests() {
     frameCrcWasmIntegration: await testFrameCrcWasmIntegration(),
     wasmScanBrightRuns: await testWasmScanBrightRunsMatchesJs(),
     wasmClassifiers: await testWasmClassifiersMatchJs(),
+    wasmBinary1Packer: await testWasmPackBinary1PayloadMatchesJs(),
     wasmVsJsDetectAnchors: await testWasmVsJsDetectAnchorsEquivalent(),
     wasmVsJsDecodeDataRegion: await testWasmVsJsDecodeDataRegionEquivalent(),
     labBinary4Geometry: testBuildCardBinary4Geometry(),

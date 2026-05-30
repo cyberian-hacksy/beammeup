@@ -47,6 +47,20 @@ declare namespace __AdaptedExports {
    */
   export function classifyLuma2Cells(pixelsPtr: number, width: number, height: number, cellsPtr: number, cellCount: number, outPtr: number): number;
   /**
+   * wasm/hdmi-uvc/src/index/packBinary1Payload
+   * @param pixelsPtr `u32`
+   * @param width `u32`
+   * @param height `u32`
+   * @param rowStartsPtr `u32`
+   * @param thresholdsPtr `u32`
+   * @param payloadCellsX `u32`
+   * @param payloadCellsY `u32`
+   * @param payloadLength `u32`
+   * @param outPtr `u32`
+   * @returns `u32`
+   */
+  export function packBinary1Payload(pixelsPtr: number, width: number, height: number, rowStartsPtr: number, thresholdsPtr: number, payloadCellsX: number, payloadCellsY: number, payloadLength: number, outPtr: number): number;
+  /**
    * wasm/hdmi-uvc/src/index/scanBrightRuns
    * @param pixelsPtr `u32`
    * @param width `u32`

@@ -18,6 +18,10 @@ export async function instantiate(module, imports = {}) {
       // wasm/hdmi-uvc/src/index/classifyLuma2Cells(u32, u32, u32, u32, u32, u32) => u32
       return exports.classifyLuma2Cells(pixelsPtr, width, height, cellsPtr, cellCount, outPtr) >>> 0;
     },
+    packBinary1Payload(pixelsPtr, width, height, rowStartsPtr, thresholdsPtr, payloadCellsX, payloadCellsY, payloadLength, outPtr) {
+      // wasm/hdmi-uvc/src/index/packBinary1Payload(u32, u32, u32, u32, u32, u32, u32, u32, u32) => u32
+      return exports.packBinary1Payload(pixelsPtr, width, height, rowStartsPtr, thresholdsPtr, payloadCellsX, payloadCellsY, payloadLength, outPtr) >>> 0;
+    },
     scanBrightRuns(pixelsPtr, width, height, xStart, xEnd, yStart, yEnd, yDir, minRun, maxRun, threshold, outPtr, maxRuns) {
       // wasm/hdmi-uvc/src/index/scanBrightRuns(u32, u32, u32, u32, u32, i32, i32, i32, u32, u32, u32, u32, u32) => u32
       return exports.scanBrightRuns(pixelsPtr, width, height, xStart, xEnd, yStart, yEnd, yDir, minRun, maxRun, threshold, outPtr, maxRuns) >>> 0;

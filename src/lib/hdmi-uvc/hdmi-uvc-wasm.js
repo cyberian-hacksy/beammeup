@@ -383,6 +383,87 @@ export function wasmClassifyLuma2Cells(pixels, width, height, cells) {
   return new Uint8Array(wasmModule.memory.buffer.slice(outPtr, outPtr + cellCount))
 }
 
+export function wasmPackBinary1Payload(pixels, width, height, rowStarts, thresholds, payloadCellsX, payloadCellsY, payloadLength) {
+  if (!wasmModule || forceJsFallbackForTesting) throw new Error('hdmi-uvc wasm: not active')
+  const rowStartBytes = rowStarts.byteLength
+  const thresholdBytes = thresholds.byteLength
+  const total = pixels.length + rowStartBytes + thresholdBytes + payloadLength
+  ensureMemoryFor(total)
+  wasmBytesView.set(pixels, wasmScratchBase)
+  const rowStartsPtr = wasmScratchBase + pixels.length
+  const thresholdsPtr = rowStartsPtr + rowStartBytes
+  const outPtr = thresholdsPtr + thresholdBytes
+  new Uint8Array(wasmModule.memory.buffer).set(new Uint8Array(rowStarts.buffer, rowStarts.byteOffset, rowStartBytes), rowStartsPtr)
+  new Uint8Array(wasmModule.memory.buffer).set(new Uint8Array(thresholds.buffer, thresholds.byteOffset, thresholdBytes), thresholdsPtr)
+  const written = wasmModule.packBinary1Payload(
+    wasmScratchBase,
+    width >>> 0,
+    height >>> 0,
+    rowStartsPtr,
+    thresholdsPtr,
+    payloadCellsX >>> 0,
+    payloadCellsY >>> 0,
+    payloadLength >>> 0,
+    outPtr
+  ) >>> 0
+  if (written !== payloadLength) return null
+  return new Uint8Array(wasmModule.memory.buffer.slice(outPtr, outPtr + payloadLength))
+}
+
+export async function testWasmPackBinary1PayloadMatchesJs() {
+  try {
+    await loadHdmiUvcWasm()
+  } catch (err) {
+    console.log('WASM binary1 packer test: FAIL (load)', err?.message || err)
+    return false
+  }
+
+  const width = 32
+  const height = 8
+  const payloadCellsX = 17
+  const payloadCellsY = 3
+  const payloadLength = 6
+  const pixels = new Uint8ClampedArray(width * height * 4)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const base = (y * width + x) * 4
+      const v = (x * 31 + y * 47) & 0xff
+      pixels[base] = v
+      pixels[base + 1] = v
+      pixels[base + 2] = v
+      pixels[base + 3] = 255
+    }
+  }
+  const rowStarts = new Int32Array([3, 2, 5, 3, 1, 4])
+  const thresholds = new Float32Array([96, 128, 160])
+  const js = new Uint8Array(payloadLength)
+  let byteIdx = 0
+  let bitBuffer = 0
+  let bitCount = 0
+  for (let cy = 0; cy < payloadCellsY && byteIdx < payloadLength; cy++) {
+    const rowX = rowStarts[cy * 2]
+    const rowY = rowStarts[cy * 2 + 1]
+    const threshold = thresholds[cy]
+    for (let cx = 0; cx < payloadCellsX && byteIdx < payloadLength; cx++) {
+      const bit = pixels[(rowY * width + rowX + cx) * 4] >= threshold ? 1 : 0
+      bitBuffer = (bitBuffer << 1) | bit
+      bitCount++
+      if (bitCount >= 8) {
+        js[byteIdx++] = bitBuffer & 0xff
+        bitBuffer = 0
+        bitCount = 0
+      }
+    }
+  }
+  const wasm = wasmPackBinary1Payload(pixels, width, height, rowStarts, thresholds, payloadCellsX, payloadCellsY, payloadLength)
+  const pass = wasm?.length === js.length && js.every((v, i) => wasm[i] === v)
+  console.log('WASM binary1 packer test:', pass ? 'PASS' : 'FAIL', {
+    js: Array.from(js),
+    wasm: wasm ? Array.from(wasm) : null
+  })
+  return pass
+}
+
 // Test: WASM classifiers produce the same symbols as the JS references on a
 // synthetic pixel buffer populated with canonical LUMA_2 quadrant patterns.
 // The COMPAT_4 case additionally spans cells with thresholds at the boundary

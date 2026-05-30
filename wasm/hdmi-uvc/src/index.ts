@@ -219,6 +219,79 @@ export function classifyLuma2Cells(
   return cellCount
 }
 
+// Packs a locked 1x1 binary payload grid into bytes. JS precomputes one
+// starting pixel (x,y) and one threshold per payload row. This kernel owns the
+// hot loop over the contiguous RGBA row bytes.
+export function packBinary1Payload(
+  pixelsPtr: u32,
+  width: u32,
+  height: u32,
+  rowStartsPtr: u32,
+  thresholdsPtr: u32,
+  payloadCellsX: u32,
+  payloadCellsY: u32,
+  payloadLength: u32,
+  outPtr: u32
+): u32 {
+  const rowStride: u32 = width * 4
+  let byteIdx: u32 = 0
+  let bitBuffer: u32 = 0
+  let bitCount: u32 = 0
+
+  for (let cy: u32 = 0; cy < payloadCellsY && byteIdx < payloadLength; cy++) {
+    const rowBasePtr: u32 = rowStartsPtr + cy * 8
+    const rowX: i32 = load<i32>(rowBasePtr)
+    const rowY: i32 = load<i32>(rowBasePtr + 4)
+    if (rowX < 0 || rowY < 0) return 0
+    if (<u32>rowY >= height) return 0
+    if (<u32>rowX + payloadCellsX > width) return 0
+
+    const threshold: f32 = load<f32>(thresholdsPtr + cy * 4)
+    let base: u32 = pixelsPtr + <u32>rowY * rowStride + <u32>rowX * 4
+    let cx: u32 = 0
+
+    while (cx < payloadCellsX && byteIdx < payloadLength) {
+      if (bitCount === 0 && cx + 8 <= payloadCellsX) {
+        const remainingCells: u32 = payloadCellsX - cx
+        const rowFullBytes: u32 = remainingCells >> 3
+        const remainingBytes: u32 = payloadLength - byteIdx
+        const fullBytes: u32 = rowFullBytes < remainingBytes ? rowFullBytes : remainingBytes
+
+        for (let i: u32 = 0; i < fullBytes; i++) {
+          let value: u32 = 0
+          if (<f32>load<u8>(base) >= threshold) value |= 0x80
+          if (<f32>load<u8>(base + 4) >= threshold) value |= 0x40
+          if (<f32>load<u8>(base + 8) >= threshold) value |= 0x20
+          if (<f32>load<u8>(base + 12) >= threshold) value |= 0x10
+          if (<f32>load<u8>(base + 16) >= threshold) value |= 0x08
+          if (<f32>load<u8>(base + 20) >= threshold) value |= 0x04
+          if (<f32>load<u8>(base + 24) >= threshold) value |= 0x02
+          if (<f32>load<u8>(base + 28) >= threshold) value |= 0x01
+          store<u8>(outPtr + byteIdx, <u8>value)
+          byteIdx++
+          base += 32
+        }
+
+        cx += fullBytes * 8
+        continue
+      }
+
+      bitBuffer = (bitBuffer << 1) | (<f32>load<u8>(base) >= threshold ? 1 : 0)
+      bitCount++
+      base += 4
+      cx++
+      if (bitCount >= 8) {
+        store<u8>(outPtr + byteIdx, <u8>(bitBuffer & 0xff))
+        byteIdx++
+        bitBuffer = 0
+        bitCount = 0
+      }
+    }
+  }
+
+  return byteIdx
+}
+
 // @inline
 function clamp01(v: f32): f32 {
   if (v < 0) return 0
