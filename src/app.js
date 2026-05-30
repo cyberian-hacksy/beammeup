@@ -100,6 +100,7 @@ import {
   testDenseBinaryLockedLayoutMatchesBlindSweep,
   testDenseBinaryPrecomputedOffsetsMatchUncached,
   testBinary1LockedPayloadReaderMatchesGeneric,
+  testBinary1LockedPayloadReaderUsesBytePacker,
   testBinary2LockedPayloadReaderMatchesGeneric,
   testBinary2LockedPayloadReaderTranslatesCroppedOffsets,
   testBinary2SinglePixelLockedPayloadReader,
@@ -209,6 +210,7 @@ window.testDecodeDataRegionPropagatesDenseBinaryLevels = testDecodeDataRegionPro
 window.testDenseBinaryLockedLayoutMatchesBlindSweep = testDenseBinaryLockedLayoutMatchesBlindSweep
 window.testDenseBinaryPrecomputedOffsetsMatchUncached = testDenseBinaryPrecomputedOffsetsMatchUncached
 window.testBinary1LockedPayloadReaderMatchesGeneric = testBinary1LockedPayloadReaderMatchesGeneric
+window.testBinary1LockedPayloadReaderUsesBytePacker = testBinary1LockedPayloadReaderUsesBytePacker
 window.testBinary2LockedPayloadReaderMatchesGeneric = testBinary2LockedPayloadReaderMatchesGeneric
 window.testBinary2LockedPayloadReaderTranslatesCroppedOffsets = testBinary2LockedPayloadReaderTranslatesCroppedOffsets
 window.testBinary2SinglePixelLockedPayloadReader = testBinary2SinglePixelLockedPayloadReader
@@ -449,6 +451,7 @@ async function runAllTests() {
     hdmiDenseBinaryLockedLayout: testDenseBinaryLockedLayoutMatchesBlindSweep(),
     hdmiDenseBinaryPrecomputedOffsets: testDenseBinaryPrecomputedOffsetsMatchUncached(),
     hdmiBinary1LockedPayloadReader: testBinary1LockedPayloadReaderMatchesGeneric(),
+    hdmiBinary1LockedPayloadReaderBytePacker: testBinary1LockedPayloadReaderUsesBytePacker(),
     hdmiBinary2LockedPayloadReader: testBinary2LockedPayloadReaderMatchesGeneric(),
     hdmiBinary2CroppedLockedPayloadReader: testBinary2LockedPayloadReaderTranslatesCroppedOffsets(),
     hdmiBinary2SinglePixelLockedPayloadReader: testBinary2SinglePixelLockedPayloadReader(),
