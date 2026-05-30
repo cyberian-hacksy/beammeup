@@ -1167,7 +1167,7 @@ const BOOTSTRAP_METADATA_WINDOW_FRAMES = 180
 const MIN_METADATA_INTERVAL_FRAMES = 90
 const MAX_METADATA_INTERVAL_FRAMES = 90
 const MIN_BLOCK_SIZE = 512
-const MAX_BLOCK_SIZE = 4096
+const MAX_BLOCK_SIZE = 16384
 const MAX_FRAME_PACKET_SLOTS = 32
 const TARGET_SOURCE_BLOCKS = 128
 const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
@@ -1248,6 +1248,19 @@ const DENSE_BINARY_BATCHING_PROFILES = {
   xlarge: {
     targetFrameFill: 0.99,
     maxBlockSize: 4096
+  },
+  // Aggressive K-reduction ladder. The batcher picks the payload-optimal block
+  // up to maxBlockSize, so these settle on ~8 and ~4 packets/frame respectively
+  // (minPacketsPerFrame=4 is the floor). For a 10MB file: xxlarge → K≈1419,
+  // huge → K≈709. Smaller K shrinks the parity-recovery tail; the tradeoff is
+  // coarser granularity (a dropped frame loses a larger block).
+  xxlarge: {
+    targetFrameFill: 0.99,
+    maxBlockSize: 8192
+  },
+  huge: {
+    targetFrameFill: 0.99,
+    maxBlockSize: 16384
   }
 }
 
@@ -3118,19 +3131,53 @@ export function testBinary2UsesDenseBatchingProfile() {
   }
 }
 
+export function testDenseBinaryProfileLadderShrinksK() {
+  const capacity = getPayloadCapacity(1920, 1080, HDMI_MODE.BINARY_2)
+  const fileSize = 10 * 1024 * 1024
+  const original = getDenseBinaryProfile()
+  // Drive each profile through the REAL 2x2 sender path (getBatchingProfile),
+  // not getDenseBinaryBatchingProfile in isolation — that gap let the missing
+  // BINARY_2 case hide for several rounds.
+  const measure = (id) => {
+    setDiagnostic('denseBinaryProfile', id)
+    const profile = getBatchingProfile(HDMI_MODE.BINARY_2)
+    const batched = selectFrameBatching({ capacity, fileSize, profile })
+    return { id: profile.id, packets: batched.packetsPerFrame, K: Math.ceil(fileSize / batched.blockSize) }
+  }
+  try {
+    const r = {
+      large: measure('large'),
+      xlarge: measure('xlarge'),
+      xxlarge: measure('xxlarge'),
+      huge: measure('huge')
+    }
+    const pass =
+      r.large.id === 'large' && r.xlarge.id === 'xlarge' &&
+      r.xxlarge.id === 'xxlarge' && r.huge.id === 'huge' &&
+      r.huge.K < r.xxlarge.K && r.xxlarge.K < r.xlarge.K && r.xlarge.K < r.large.K &&
+      r.huge.packets >= 4
+    console.log('dense-binary profile ladder test:', pass ? 'PASS' : 'FAIL', r)
+    return pass
+  } finally {
+    setDiagnostic('denseBinaryProfile', original)
+  }
+}
+
 export function testDenseBinaryBatchingProfileDiagnostic() {
   const helperExists = typeof getDenseBinaryBatchingProfile === 'function'
   const diagGetterExists = typeof getDenseBinaryProfile === 'function'
   const defExists = typeof getDiagnosticDefinition === 'function'
   const def = defExists ? getDiagnosticDefinition('denseBinaryProfile') : null
-  const expectedAllowed = ['safe', 'fill99', 'medium', 'large', 'xlarge']
+  const expectedAllowed = ['safe', 'fill99', 'medium', 'large', 'xlarge', 'xxlarge', 'huge']
   const profileById = helperExists
     ? {
         safe: getDenseBinaryBatchingProfile('safe'),
         fill99: getDenseBinaryBatchingProfile('fill99'),
         medium: getDenseBinaryBatchingProfile('medium'),
         large: getDenseBinaryBatchingProfile('large'),
-        xlarge: getDenseBinaryBatchingProfile('xlarge')
+        xlarge: getDenseBinaryBatchingProfile('xlarge'),
+        xxlarge: getDenseBinaryBatchingProfile('xxlarge'),
+        huge: getDenseBinaryBatchingProfile('huge')
       }
     : {}
   const fallbackProfile = helperExists ? getDenseBinaryBatchingProfile('not-a-profile') : null
@@ -3148,6 +3195,8 @@ export function testDenseBinaryBatchingProfileDiagnostic() {
     profileById.large?.targetFrameFill === 0.99 &&
     profileById.xlarge?.maxBlockSize === 4096 &&
     profileById.xlarge?.targetFrameFill === 0.99 &&
+    profileById.xxlarge?.maxBlockSize === 8192 &&
+    profileById.huge?.maxBlockSize === 16384 &&
     fallbackProfile?.id === 'large'
   console.log('dense-binary batching profile diagnostic test:', pass ? 'PASS' : 'FAIL', {
     helperExists,
