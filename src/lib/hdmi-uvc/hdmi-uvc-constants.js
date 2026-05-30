@@ -116,6 +116,8 @@ export const FPS_PRESETS = [
   { name: '20 fps', fps: 20, interval: 50 },
   { name: '25 fps', fps: 25, interval: 40 },
   { name: '30 fps', fps: 30, interval: 33 },
+  { name: '55 fps', fps: 55, interval: 18 },
+  { name: '58 fps', fps: 58, interval: 17 },
   { name: '60 fps', fps: 60, interval: 16 }
 ]
 export const DEFAULT_FPS_PRESET = 2

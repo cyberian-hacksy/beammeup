@@ -1207,7 +1207,11 @@ function createReceiverPerfState() {
     lockedFastRecoveryProbes: 0,
     lockedFastRecoveryHits: 0,
     lockedFastRecoveryPackets: 0,
-    lockedFastReaderCounts: {}
+    lockedFastReaderCounts: {},
+    acceptedFrames: 0,
+    innovatingFrames: 0,
+    duplicateAcceptedFrames: 0,
+    emptyFrames: 0
   }
 }
 
@@ -1251,6 +1255,10 @@ function clearReceiverPerfSamples(perf) {
   perf.lockedFastRecoveryHits = 0
   perf.lockedFastRecoveryPackets = 0
   perf.lockedFastReaderCounts = {}
+  perf.acceptedFrames = 0
+  perf.innovatingFrames = 0
+  perf.duplicateAcceptedFrames = 0
+  perf.emptyFrames = 0
 }
 
 function resetReceiverPerfState() {
@@ -1349,6 +1357,7 @@ function maybeRebenchmarkSlowRoiCapture() {
     roiPreferredMethod: tuning.roiPreferredMethod,
     roiBenchmarkRemaining: tuning.roiBenchmarkRemaining,
     roiSlowRebenchDone: tuning.roiSlowRebenchDone,
+    transferActive: !!state.startTime && !state.completedFile,
     hotCaptureSampleCount: perf.hotCaptureMs.count,
     hotCaptureAvgMs: avgHotCaptureMs
   })) {
@@ -1465,6 +1474,35 @@ function getLockedFastStageSummary(perf) {
     getLockedFastReaderSummary(perf)
 }
 
+function noteReceiverFrameUse(accepted, innovated) {
+  const perf = state.rxPerf
+  if (!perf) return
+  if (accepted) perf.acceptedFrames++
+  else perf.emptyFrames++
+  if (innovated) perf.innovatingFrames++
+  else if (accepted) perf.duplicateAcceptedFrames++
+}
+
+function getReceiverFrameUseSummary(perf) {
+  if (!perf) return 'frameUse=acc0/0 innov0/0 dup0/0 empty0/0'
+  const countedFrames = (perf.acceptedFrames || 0) + (perf.emptyFrames || 0)
+  const frames = Math.max(1, perf.framesSinceLog || countedFrames)
+  return `frameUse=acc${perf.acceptedFrames || 0}/${frames} ` +
+    `innov${perf.innovatingFrames || 0}/${frames} ` +
+    `dup${perf.duplicateAcceptedFrames || 0}/${frames} ` +
+    `empty${perf.emptyFrames || 0}/${frames}`
+}
+
+function shouldUseHeaderOnlyFrameForLock(result) {
+  return !!result?.crcValid &&
+    result.header?.payloadLength === 0 &&
+    (
+      result.header?.mode === HDMI_MODE.BINARY_1 ||
+      result.header?.mode === HDMI_MODE.BINARY_2 ||
+      result.header?.mode === HDMI_MODE.BINARY_3
+    )
+}
+
 function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs, classifierMs = 0, isHotFrame = false) {
   const perf = state.rxPerf
   if (!perf) return
@@ -1531,6 +1569,7 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `r${perf.lockedFastRecoveryHits}/${perf.lockedFastRecoveryProbes}` +
     `:${(perf.lockedFastRecoveryPackets / frameBase).toFixed(2)}`
   const lockedFastStageSummary = getLockedFastStageSummary(perf)
+  const frameUseSummary = getReceiverFrameUseSummary(perf)
 
   const t = state.decoder?.telemetry
   const telemetrySummary = t
@@ -1548,7 +1587,7 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `total=${averagePerfWindow(perf.totalMs).toFixed(2)}ms ` +
     `${hotSummary} ` +
     `acceptCalls=${avgAcceptCalls.toFixed(2)}/frame pkts=${avgAcceptedPackets.toFixed(2)}/frame ` +
-    `${recoverySummary} ${lockedFastSummary} ${lockedFastStageSummary} method=${perf.lastCaptureMethod || 'n/a'} ` +
+    `${recoverySummary} ${lockedFastSummary} ${lockedFastStageSummary} ${frameUseSummary} method=${perf.lastCaptureMethod || 'n/a'} ` +
     `${telemetrySummary}`
   )
 
@@ -2594,6 +2633,7 @@ async function processFrame(now, metadata) {
       roiPreferredMethod: state.captureTuning?.roiPreferredMethod,
       fastPathAccepted: fastPathAcceptedThisFrame
     })
+    noteReceiverFrameUse(state.frameAcceptedThisFrame, state.frameInnovatedThisFrame)
     noteReceiverFramePerf(
       frameStartMs,
       captureMethod,
@@ -3032,6 +3072,19 @@ async function processFrame(now, metadata) {
         finalizeFramePerf()
         return
       }
+    } else if (shouldUseHeaderOnlyFrameForLock(result)) {
+      if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
+        lockAnchorRegion(
+          candidateRegion || state.tentativeAnchorBounds,
+          frameWidth,
+          frameHeight,
+          candidateAnchors || state.tentativeAnchors
+        )
+      }
+      if (result._diag) state.fixedLayout = { ...result._diag }
+      if (result._diag) state.preferredLayout = { ...result._diag }
+      applyDenseBinaryLock(result, region)
+      debugCurrent(`#${state.frameCount} sync header`)
     } else {
       // CRC-valid outer frame but zero inner packets accepted (wrong block
       // size, CRC-loss on every slot, worker transport failure, etc.). Drive
@@ -3653,6 +3706,45 @@ export function testLockedFastPerfBreakdownSummary() {
   } finally {
     state.rxPerf = oldPerf
   }
+}
+
+export function testReceiverFrameUseSummary() {
+  const oldPerf = state.rxPerf
+  try {
+    state.rxPerf = createReceiverPerfState()
+    noteReceiverFrameUse(true, true)
+    noteReceiverFrameUse(true, false)
+    noteReceiverFrameUse(false, false)
+    const summary = getReceiverFrameUseSummary(state.rxPerf)
+    const pass = summary.includes('frameUse=acc2/3') &&
+      summary.includes('innov1/3') &&
+      summary.includes('dup1/3') &&
+      summary.includes('empty1/3')
+    console.log('Receiver frame-use summary test:', pass ? 'PASS' : `FAIL ${summary}`)
+    return pass
+  } finally {
+    state.rxPerf = oldPerf
+  }
+}
+
+export function testReceiverHeaderOnlyFrameCanLock() {
+  const pass = shouldUseHeaderOnlyFrameForLock({
+    crcValid: true,
+    header: { mode: HDMI_MODE.BINARY_1, payloadLength: 0 },
+    _diag: { frameMode: HDMI_MODE.BINARY_1 }
+  }) === true &&
+    shouldUseHeaderOnlyFrameForLock({
+      crcValid: true,
+      header: { mode: HDMI_MODE.BINARY_1, payloadLength: 16 },
+      _diag: { frameMode: HDMI_MODE.BINARY_1 }
+    }) === false &&
+    shouldUseHeaderOnlyFrameForLock({
+      crcValid: false,
+      header: { mode: HDMI_MODE.BINARY_1, payloadLength: 0 },
+      _diag: { frameMode: HDMI_MODE.BINARY_1 }
+    }) === false
+  console.log('Receiver header-only lock frame test:', pass ? 'PASS' : 'FAIL')
+  return pass
 }
 
 export function testReceiverAnchorDiagnosticsQuietByDefault() {

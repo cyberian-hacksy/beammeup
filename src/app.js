@@ -54,6 +54,10 @@ import {
   testBinary1XlargeFillsFrame,
   testBinary1DefaultsToHugeBatching,
   testBinary1Pass2ReplaysFromStart,
+  testBinary1SyncPorchFramesAreHeaderOnly,
+  testBinary1Pass2WarmupIsSourceOnly,
+  testBinary1DisplayPacedRenderPolicy,
+  testBinary1CadenceFpsPresets,
   testDenseBinaryLateMixDiagnostic,
   testDenseBinaryDegreeDiagnostic,
   testDenseBinaryLateMixPatterns,
@@ -71,6 +75,8 @@ import {
   testReceiverFrameAcceptSignals,
   testDenseBinaryLockedLayoutOffsetsCoverBinary2,
   testLockedFastPerfBreakdownSummary,
+  testReceiverFrameUseSummary,
+  testReceiverHeaderOnlyFrameCanLock,
   testReceiverAnchorDiagnosticsQuietByDefault,
   testStallCounterTicksOnDuplicateFrames
 } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
@@ -126,6 +132,7 @@ import {
   testReceiverExpectedPacketSizeWaitsForSession,
   testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable,
   testReceiverSlowRoiCaptureTriggersRebenchmark,
+  testReceiverActiveTransferSuppressesRoiRebenchmark,
   testReceiverHotPerfFrameGate,
   testReceiverCapturePathBenchmarkSuppressesChurn,
   testComputeLockedCaptureRect,
@@ -231,6 +238,8 @@ window.testDecodeDataRegionRoundtripsAllModes = testDecodeDataRegionRoundtripsAl
 window.testReceiverFrameAcceptSignals = testReceiverFrameAcceptSignals
 window.testDenseBinaryLockedLayoutOffsetsCoverBinary2 = testDenseBinaryLockedLayoutOffsetsCoverBinary2
 window.testLockedFastPerfBreakdownSummary = testLockedFastPerfBreakdownSummary
+window.testReceiverFrameUseSummary = testReceiverFrameUseSummary
+window.testReceiverHeaderOnlyFrameCanLock = testReceiverHeaderOnlyFrameCanLock
 window.testReceiverAnchorDiagnosticsQuietByDefault = testReceiverAnchorDiagnosticsQuietByDefault
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
 window.testBinary3RecoveredLayoutKeepsLock = testBinary3RecoveredLayoutKeepsLock
@@ -260,6 +269,10 @@ window.testDenseBinaryProfileLadderShrinksK = testDenseBinaryProfileLadderShrink
 window.testBinary1XlargeFillsFrame = testBinary1XlargeFillsFrame
 window.testBinary1DefaultsToHugeBatching = testBinary1DefaultsToHugeBatching
 window.testBinary1Pass2ReplaysFromStart = testBinary1Pass2ReplaysFromStart
+window.testBinary1SyncPorchFramesAreHeaderOnly = testBinary1SyncPorchFramesAreHeaderOnly
+window.testBinary1Pass2WarmupIsSourceOnly = testBinary1Pass2WarmupIsSourceOnly
+window.testBinary1DisplayPacedRenderPolicy = testBinary1DisplayPacedRenderPolicy
+window.testBinary1CadenceFpsPresets = testBinary1CadenceFpsPresets
 window.testDenseBinaryLateMixDiagnostic = testDenseBinaryLateMixDiagnostic
 window.testDenseBinaryLateMixPatterns = testDenseBinaryLateMixPatterns
 window.testDenseBinaryFountainTailPatterns = testDenseBinaryFountainTailPatterns
@@ -275,6 +288,7 @@ window.testWorkerStartFailureResumesMainCapture = testWorkerStartFailureResumesM
 window.testReceiverExpectedPacketSizeWaitsForSession = testReceiverExpectedPacketSizeWaitsForSession
 window.testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable = testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable
 window.testReceiverSlowRoiCaptureTriggersRebenchmark = testReceiverSlowRoiCaptureTriggersRebenchmark
+window.testReceiverActiveTransferSuppressesRoiRebenchmark = testReceiverActiveTransferSuppressesRoiRebenchmark
 window.testReceiverHotPerfFrameGate = testReceiverHotPerfFrameGate
 window.testReceiverCapturePathBenchmarkSuppressesChurn = testReceiverCapturePathBenchmarkSuppressesChurn
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
@@ -474,6 +488,8 @@ async function runAllTests() {
     receiverFrameSignals: testReceiverFrameAcceptSignals(),
     denseBinaryLockedLayoutOffsets: testDenseBinaryLockedLayoutOffsetsCoverBinary2(),
     lockedFastPerfBreakdownSummary: testLockedFastPerfBreakdownSummary(),
+    receiverFrameUseSummary: testReceiverFrameUseSummary(),
+    receiverHeaderOnlyFrameCanLock: testReceiverHeaderOnlyFrameCanLock(),
     receiverAnchorDiagnosticsQuietDefault: testReceiverAnchorDiagnosticsQuietByDefault(),
     stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames(),
     binary3RecoveredLayoutKeepsLock: testBinary3RecoveredLayoutKeepsLock(),
@@ -504,6 +520,10 @@ async function runAllTests() {
     binary1XlargeFillsFrame: testBinary1XlargeFillsFrame(),
     binary1DefaultsToHugeBatching: testBinary1DefaultsToHugeBatching(),
     binary1Pass2ReplaysFromStart: testBinary1Pass2ReplaysFromStart(),
+    binary1SyncPorchFramesAreHeaderOnly: testBinary1SyncPorchFramesAreHeaderOnly(),
+    binary1Pass2WarmupIsSourceOnly: testBinary1Pass2WarmupIsSourceOnly(),
+    binary1DisplayPacedRenderPolicy: testBinary1DisplayPacedRenderPolicy(),
+    binary1CadenceFpsPresets: testBinary1CadenceFpsPresets(),
     denseBinaryLateMixDiagnostic: testDenseBinaryLateMixDiagnostic(),
     denseBinaryDegreeDiagnostic: testDenseBinaryDegreeDiagnostic(),
     denseBinaryLateMixPatterns: testDenseBinaryLateMixPatterns(),
@@ -520,6 +540,7 @@ async function runAllTests() {
     receiverExpectedPacketSizeBootstrap: testReceiverExpectedPacketSizeWaitsForSession(),
     receiverRoiCaptureBenchmarkDefault: testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable(),
     receiverSlowRoiCaptureRebenchmark: testReceiverSlowRoiCaptureTriggersRebenchmark(),
+    receiverActiveTransferRoiRebenchmarkSuppression: testReceiverActiveTransferSuppressesRoiRebenchmark(),
     receiverHotPerfFrameGate: testReceiverHotPerfFrameGate(),
     receiverCapturePathChurnSuppression: testReceiverCapturePathBenchmarkSuppressesChurn(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),

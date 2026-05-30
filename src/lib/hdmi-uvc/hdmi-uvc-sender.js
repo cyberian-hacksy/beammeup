@@ -48,6 +48,9 @@ const DEBUG_MODE = true
 // value is read per-pass so changes apply on the next TX session without a
 // reload. See docs/plans/2026-04-17-hdmi-tail-solver-and-rx-hardening.md Phase 3.
 const TX_PERF_LOG_INTERVAL_FRAMES = 60
+const BINARY1_SYNC_PORCH_FRAMES = 12
+const BINARY1_PASS2_SOURCE_WARMUP_FRAMES = 12
+const DISPLAY_PACED_MIN_FPS = 55
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -112,7 +115,9 @@ function createSenderPerfState() {
     jitterMs: createPerfWindow(),
     framesSinceLog: 0,
     lastFrameStartMs: 0,
-    overBudgetCount: 0
+    overBudgetCount: 0,
+    rafSkipCount: 0,
+    displayPacedFrames: 0
   }
 }
 
@@ -125,6 +130,8 @@ function clearSenderPerfSamples(perf) {
   resetPerfWindow(perf.jitterMs)
   perf.framesSinceLog = 0
   perf.overBudgetCount = 0
+  perf.rafSkipCount = 0
+  perf.displayPacedFrames = 0
 }
 
 function resetSenderPerfState() {
@@ -165,7 +172,7 @@ function logSenderSessionMetrics(phase, metrics, capacity) {
   )
 }
 
-function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fps, canvasWidth, canvasHeight) {
+function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fps, canvasWidth, canvasHeight, displayPaced = false) {
   const perf = state.txPerf
   if (!perf) return
   const targetIntervalMs = 1000 / fps.fps
@@ -182,6 +189,7 @@ function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fp
   recordPerfSample(perf.blitMs, blitMs)
   recordPerfSample(perf.totalMs, totalMs)
   if (totalMs > targetIntervalMs) perf.overBudgetCount++
+  if (displayPaced) perf.displayPacedFrames++
   perf.framesSinceLog++
 
   if (perf.framesSinceLog < TX_PERF_LOG_INTERVAL_FRAMES) return
@@ -195,7 +203,9 @@ function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fp
     `build=${averagePerfWindow(perf.buildMs).toFixed(2)}ms ` +
     `blit=${averagePerfWindow(perf.blitMs).toFixed(2)}ms ` +
     `total=${averagePerfWindow(perf.totalMs).toFixed(2)}ms ` +
-    `overBudget=${perf.overBudgetCount}/${perf.totalMs.count} canvas=${canvasWidth}x${canvasHeight}`
+    `overBudget=${perf.overBudgetCount}/${perf.totalMs.count} ` +
+    `pace=${perf.displayPacedFrames > 0 ? 'raf' : 'timer'} rafSkip=${perf.rafSkipCount} ` +
+    `canvas=${canvasWidth}x${canvasHeight}`
   )
 
   clearSenderPerfSamples(perf)
@@ -1028,6 +1038,10 @@ function resetRenderSchedule() {
   state.nextFrameDueMs = 0
 }
 
+function shouldUseDisplayPacedRender(mode = state.mode, fps = getFps()) {
+  return mode === HDMI_MODE.BINARY_1 && (fps?.fps || 0) >= DISPLAY_PACED_MIN_FPS
+}
+
 function scheduleNextRender() {
   if (!state.isSending || state.isPaused) return
 
@@ -1037,8 +1051,27 @@ function scheduleNextRender() {
     state.nextFrameDueMs = performance.now() + targetIntervalMs
   }
 
+  const displayPaced = shouldUseDisplayPacedRender(state.mode, fps)
   const armRender = () => {
     if (!state.isSending || state.isPaused) return
+
+    if (displayPaced) {
+      state.animationId = requestAnimationFrame((now) => {
+        state.animationId = null
+        if (!state.isSending || state.isPaused) return
+        if (now + 0.25 < state.nextFrameDueMs) {
+          if (state.txPerf) state.txPerf.rafSkipCount++
+          armRender()
+          return
+        }
+        state.nextFrameDueMs += targetIntervalMs
+        if (state.nextFrameDueMs < now - targetIntervalMs) {
+          state.nextFrameDueMs = now + targetIntervalMs
+        }
+        renderFrame()
+      })
+      return
+    }
 
     const waitMs = state.nextFrameDueMs - performance.now()
     if (waitMs > 8) {
@@ -1476,6 +1509,14 @@ function shouldSendMetadata(frameNumber) {
   return frameNumber % state.metadataIntervalFrames === 0
 }
 
+function getSyncPorchFrameCount(mode = state.mode) {
+  return mode === HDMI_MODE.BINARY_1 ? BINARY1_SYNC_PORCH_FRAMES : 0
+}
+
+function isSyncPorchFrame(frameNumber, mode = state.mode) {
+  return frameNumber > 0 && frameNumber <= getSyncPorchFrameCount(mode)
+}
+
 function getMetadataSlotIndex(frameNumber, slots) {
   if (slots <= 1) return 0
   if (isDenseBinaryMode(state.mode)) {
@@ -1714,6 +1755,27 @@ function getSlotMixPatternForPass(passNumber, {
   return ['source', 'parity', 'parity', 'fountain', 'fountain', 'fountain']
 }
 
+function getActiveSlotMixPatternForFrame(passNumber, {
+  paritySweepsInPass = 0,
+  slots = 6,
+  mode = state.mode,
+  sourceIndex = state.systematicIndex
+} = {}) {
+  if (
+    mode === HDMI_MODE.BINARY_1 &&
+    passNumber === 2 &&
+    paritySweepsInPass === 0 &&
+    sourceIndex < Math.max(1, slots) * BINARY1_PASS2_SOURCE_WARMUP_FRAMES
+  ) {
+    return buildSlotMix(slots, { source: slots })
+  }
+  return getSlotMixPatternForPass(passNumber, {
+    paritySweepsInPass,
+    slots,
+    mode
+  })
+}
+
 function describeSlotMixPattern(pattern) {
   if (!pattern || pattern.length === 0) return 'systematic'
   const counts = { source: 0, parity: 0, fountain: 0 }
@@ -1923,14 +1985,25 @@ function isTailSystematicBurstFrame(frameNumber) {
 }
 
 function buildFramePacketBatch(frameNumber) {
-  const sendMetadata = shouldSendMetadata(frameNumber)
+  if (isSyncPorchFrame(frameNumber)) {
+    return {
+      payload: new Uint8Array(0),
+      symbolIds: [],
+      outerSymbolId: 0,
+      sendMetadata: false,
+      syncPorch: true
+    }
+  }
+
+  const scheduleFrameNumber = Math.max(1, frameNumber - getSyncPorchFrameCount(state.mode))
+  const sendMetadata = shouldSendMetadata(scheduleFrameNumber)
   const packets = []
   const symbolIds = []
   const slots = Math.max(1, state.packetsPerFrame)
-  const metadataSlotIndex = sendMetadata ? getMetadataSlotIndex(frameNumber, slots) : -1
+  const metadataSlotIndex = sendMetadata ? getMetadataSlotIndex(scheduleFrameNumber, slots) : -1
   const tailSystematicBurst = isTailSystematicBurstFrame(frameNumber)
   const dataSlots = Math.max(0, slots - (sendMetadata ? 1 : 0))
-  const slotMixPattern = getSlotMixPatternForPass(state.systematicPass, {
+  const slotMixPattern = getActiveSlotMixPatternForFrame(state.systematicPass, {
     paritySweepsInPass: state.paritySweepsInPass,
     slots: dataSlots
   })
@@ -2020,11 +2093,15 @@ function renderFrame() {
       : firstData === lastData
         ? `sym=${formatSymbolRef(firstData)}`
         : `sym=${formatSymbolRef(firstData)}-${formatSymbolRef(lastData)}`
-    debugCurrent(
-      batch.sendMetadata
-        ? `#${state.frameCount} META + ${symbolLabel} ${progress}%`
-        : `#${state.frameCount} ${symbolLabel} ${progress}%`
-    )
+    if (batch.syncPorch) {
+      debugCurrent(`#${state.frameCount} SYNC ${progress}%`)
+    } else {
+      debugCurrent(
+        batch.sendMetadata
+          ? `#${state.frameCount} META + ${symbolLabel} ${progress}%`
+          : `#${state.frameCount} ${symbolLabel} ${progress}%`
+      )
+    }
 
     noteSenderFramePerf(
       frameStartMs,
@@ -2034,7 +2111,8 @@ function renderFrame() {
       blitDoneMs - frameStartMs,
       fps,
       cw,
-      ch
+      ch,
+      shouldUseDisplayPacedRender(state.mode, fps)
     )
 
     scheduleNextRender()
@@ -2210,6 +2288,9 @@ async function startSending() {
     debugLog(`Encoder: K=${state.encoder.K}, K'=${state.encoder.K_prime}`)
     debugLog(`Fountain degree: ${getDenseBinaryDegree()} (receiver must match)`)
     debugLog(getMetadataScheduleDescription())
+    if (getSyncPorchFrameCount(state.mode) > 0) {
+      debugLog(`Sync porch: ${getSyncPorchFrameCount(state.mode)} header-only frame(s) before data`)
+    }
     debugLog(`Batching: ${state.packetsPerFrame} packet(s)/frame, packetSize=${state.packetSize}, used=${batchedBytes}/${capacity} bytes (${utilization}%)`)
 
     state.systematicIndex = 0
@@ -3044,6 +3125,94 @@ export function testBinary1Pass2ReplaysFromStart() {
   } finally {
     Object.assign(state, snapshot)
   }
+}
+
+export function testBinary1SyncPorchFramesAreHeaderOnly() {
+  const snapshot = snapshotSchedulerState()
+  try {
+    setupSchedulerTestState({
+      mode: HDMI_MODE.BINARY_1,
+      K: 849,
+      KPrime: 934,
+      packetsPerFrame: 8,
+      systematicPass: 1
+    })
+    const first = buildFramePacketBatch(1)
+    const lastPorch = buildFramePacketBatch(12)
+    const firstData = buildFramePacketBatch(13)
+    const pass = first.payload.length === 0 &&
+      first.symbolIds.length === 0 &&
+      first.outerSymbolId === 0 &&
+      first.syncPorch === true &&
+      lastPorch.payload.length === 0 &&
+      lastPorch.syncPorch === true &&
+      firstData.payload.length > 0 &&
+      firstData.syncPorch !== true &&
+      firstData.symbolIds[0] === 0 &&
+      firstData.symbolIds[1] === 1
+    console.log('BINARY_1 sync porch header-only test:', pass ? 'PASS' : 'FAIL', {
+      first,
+      lastPorch,
+      firstDataSymbolIds: firstData.symbolIds
+    })
+    return pass
+  } finally {
+    Object.assign(state, snapshot)
+  }
+}
+
+export function testBinary1Pass2WarmupIsSourceOnly() {
+  const snapshot = snapshotSchedulerState()
+  try {
+    setupSchedulerTestState({
+      mode: HDMI_MODE.BINARY_1,
+      K: 849,
+      KPrime: 934,
+      packetsPerFrame: 8,
+      systematicPass: 2,
+      paritySweepsInPass: 0
+    })
+    const warmupCounts = countSymbolKinds(buildFramePacketBatch(13).symbolIds, state.encoder)
+    state.systematicIndex = 8 * 12
+    const postWarmupCounts = countSymbolKinds(buildFramePacketBatch(30).symbolIds, state.encoder)
+    const pass = warmupCounts.metadata === 1 &&
+      warmupCounts.source === 7 &&
+      warmupCounts.parity === 0 &&
+      warmupCounts.fountain === 0 &&
+      postWarmupCounts.source === 6 &&
+      postWarmupCounts.parity === 2 &&
+      postWarmupCounts.fountain === 0
+    console.log('BINARY_1 pass-2 warmup source-only test:', pass ? 'PASS' : 'FAIL', {
+      warmupCounts,
+      postWarmupCounts
+    })
+    return pass
+  } finally {
+    Object.assign(state, snapshot)
+  }
+}
+
+export function testBinary1DisplayPacedRenderPolicy() {
+  const pass = shouldUseDisplayPacedRender(HDMI_MODE.BINARY_1, { fps: 60 }) === true &&
+    shouldUseDisplayPacedRender(HDMI_MODE.BINARY_1, { fps: 58 }) === true &&
+    shouldUseDisplayPacedRender(HDMI_MODE.BINARY_2, { fps: 60 }) === false &&
+    shouldUseDisplayPacedRender(HDMI_MODE.BINARY_1, { fps: 30 }) === false
+  console.log('BINARY_1 display-paced render policy test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testBinary1CadenceFpsPresets() {
+  const fpsValues = FPS_PRESETS.map(preset => preset.fps)
+  const recommended = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_1))]
+  const pass = fpsValues.includes(55) &&
+    fpsValues.includes(58) &&
+    fpsValues.includes(60) &&
+    recommended?.fps === 60
+  console.log('BINARY_1 cadence FPS preset test:', pass ? 'PASS' : 'FAIL', {
+    fpsValues,
+    recommended
+  })
+  return pass
 }
 
 export function testDenseBinaryBatchingProfile() {
