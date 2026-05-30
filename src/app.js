@@ -38,7 +38,7 @@ import {
   testExternalFullscreenFailureStopsBeforeMainFallback,
   testExternalPreparedStartUsesManualGate,
   testHdmiUvcSenderDefaults,
-  testBinary1RecommendedFpsIsReceiverPaced,
+  testBinary1RecommendedFpsIs60,
   testLabCardFullscreenExitRequiresReadyRestore,
   testDenseBinaryMixedReplayPass1SourceOnly,
   testDenseBinaryMixedReplayPass2ChangesAfterParitySweep,
@@ -99,6 +99,7 @@ import {
   testDecodeDataRegionPropagatesDenseBinaryLevels,
   testDenseBinaryLockedLayoutMatchesBlindSweep,
   testDenseBinaryPrecomputedOffsetsMatchUncached,
+  testBinary1LockedPayloadReaderMatchesGeneric,
   testBinary2LockedPayloadReaderMatchesGeneric,
   testBinary2LockedPayloadReaderTranslatesCroppedOffsets,
   testBinary2SinglePixelLockedPayloadReader,
@@ -207,6 +208,7 @@ window.testBinary1FrameRoundtrip = testBinary1FrameRoundtrip
 window.testDecodeDataRegionPropagatesDenseBinaryLevels = testDecodeDataRegionPropagatesDenseBinaryLevels
 window.testDenseBinaryLockedLayoutMatchesBlindSweep = testDenseBinaryLockedLayoutMatchesBlindSweep
 window.testDenseBinaryPrecomputedOffsetsMatchUncached = testDenseBinaryPrecomputedOffsetsMatchUncached
+window.testBinary1LockedPayloadReaderMatchesGeneric = testBinary1LockedPayloadReaderMatchesGeneric
 window.testBinary2LockedPayloadReaderMatchesGeneric = testBinary2LockedPayloadReaderMatchesGeneric
 window.testBinary2LockedPayloadReaderTranslatesCroppedOffsets = testBinary2LockedPayloadReaderTranslatesCroppedOffsets
 window.testBinary2SinglePixelLockedPayloadReader = testBinary2SinglePixelLockedPayloadReader
@@ -239,7 +241,7 @@ window.testExternalFullscreenUsesSelectedScreen = testExternalFullscreenUsesSele
 window.testExternalFullscreenFailureStopsBeforeMainFallback = testExternalFullscreenFailureStopsBeforeMainFallback
 window.testExternalPreparedStartUsesManualGate = testExternalPreparedStartUsesManualGate
 window.testHdmiUvcSenderDefaults = testHdmiUvcSenderDefaults
-window.testBinary1RecommendedFpsIsReceiverPaced = testBinary1RecommendedFpsIsReceiverPaced
+window.testBinary1RecommendedFpsIs60 = testBinary1RecommendedFpsIs60
 window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
 window.testDenseBinaryMixedReplayPass1SourceOnly = testDenseBinaryMixedReplayPass1SourceOnly
 window.testDenseBinaryMixedReplayPass2ChangesAfterParitySweep = testDenseBinaryMixedReplayPass2ChangesAfterParitySweep
@@ -446,6 +448,7 @@ async function runAllTests() {
     hdmiDenseBinaryLevelsPropagation: testDecodeDataRegionPropagatesDenseBinaryLevels(),
     hdmiDenseBinaryLockedLayout: testDenseBinaryLockedLayoutMatchesBlindSweep(),
     hdmiDenseBinaryPrecomputedOffsets: testDenseBinaryPrecomputedOffsetsMatchUncached(),
+    hdmiBinary1LockedPayloadReader: testBinary1LockedPayloadReaderMatchesGeneric(),
     hdmiBinary2LockedPayloadReader: testBinary2LockedPayloadReaderMatchesGeneric(),
     hdmiBinary2CroppedLockedPayloadReader: testBinary2LockedPayloadReaderTranslatesCroppedOffsets(),
     hdmiBinary2SinglePixelLockedPayloadReader: testBinary2SinglePixelLockedPayloadReader(),
@@ -478,7 +481,7 @@ async function runAllTests() {
     externalFullscreenFailureStopsBeforeMainFallback: await testExternalFullscreenFailureStopsBeforeMainFallback(),
     externalPreparedStartManualGate: testExternalPreparedStartUsesManualGate(),
     hdmiUvcSenderDefaults: testHdmiUvcSenderDefaults(),
-    binary1ReceiverPacedFps: testBinary1RecommendedFpsIsReceiverPaced(),
+    binary1Recommended60Fps: testBinary1RecommendedFpsIs60(),
     labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),
     denseBinaryMixedReplayPass1SourceOnly: testDenseBinaryMixedReplayPass1SourceOnly(),
     denseBinaryMixedReplayPass2ParitySweepTransition: testDenseBinaryMixedReplayPass2ChangesAfterParitySweep(),

@@ -2409,7 +2409,6 @@ function getFpsPresetIndexForRate(fps, fallbackIndex = DEFAULT_FPS_PRESET) {
 }
 
 function getRecommendedFpsPreset(mode = state.mode) {
-  if (mode === HDMI_MODE.BINARY_1) return getFpsPresetIndexForRate(25)
   return mode === HDMI_MODE.COMPAT_4 ||
     mode === HDMI_MODE.RAW_RGB ||
     mode === HDMI_MODE.LUMA_2 ||
@@ -2799,12 +2798,12 @@ export function testHdmiUvcSenderDefaults() {
   return pass
 }
 
-export function testBinary1RecommendedFpsIsReceiverPaced() {
+export function testBinary1RecommendedFpsIs60() {
   const binary1Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_1))]
   const binary2Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_2))]
-  const pass = binary1Preset?.fps === 25 &&
+  const pass = binary1Preset?.fps === 60 &&
     binary2Preset?.fps === 60
-  console.log('BINARY_1 receiver-paced FPS recommendation test:', pass ? 'PASS' : 'FAIL', {
+  console.log('BINARY_1 60fps recommendation test:', pass ? 'PASS' : 'FAIL', {
     binary1: binary1Preset,
     binary2: binary2Preset
   })

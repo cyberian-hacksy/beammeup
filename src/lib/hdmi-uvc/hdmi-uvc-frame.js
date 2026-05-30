@@ -1331,7 +1331,7 @@ function sampleBinary2ReferenceThreshold(imageData, width, height, leftX, rightX
     : fallbackThreshold
 }
 
-function readBinary2PayloadLockedNativeGrid({
+function readDenseBinaryPayloadLockedNativeGrid({
   imageData,
   width,
   height,
@@ -1349,11 +1349,14 @@ function readBinary2PayloadLockedNativeGrid({
   headerBs,
   fallbackThreshold,
   stripRows,
+  nativeStep,
   sampleMode = 'average'
 }) {
   const payload = new Uint8Array(payloadLength)
   const rowStride = width * 4
   const useSinglePixel = sampleMode === 'single'
+  const pixelStep = Math.max(1, Math.round(nativeStep || 1))
+  const byteStep = pixelStep * 4
   let bitBuffer = 0
   let bitCount = 0
   let byteIdx = 0
@@ -1383,7 +1386,13 @@ function readBinary2PayloadLockedNativeGrid({
     const rowOffsetIdx = cy * payloadCellsX * 2
     const rowX = offsets[rowOffsetIdx] + offsetTranslateX
     const rowY = offsets[rowOffsetIdx + 1] + offsetTranslateY
-    if (rowX < 0 || rowY < 0 || rowX + payloadCellsX * 2 > width || rowY + 1 >= height) return null
+    if (rowX < 0 || rowY < 0) return null
+    const lastSampleX = rowX + (payloadCellsX - 1) * pixelStep
+    if (useSinglePixel) {
+      if (lastSampleX >= width || rowY >= height) return null
+    } else if (lastSampleX + 1 >= width || rowY + 1 >= height) {
+      return null
+    }
 
     let base = ((rowY * width) + rowX) * 4
     for (let cx = 0; cx < payloadCellsX && byteIdx < payloadLength;) {
@@ -1401,7 +1410,7 @@ function readBinary2PayloadLockedNativeGrid({
             bit = sum >= threshold4 ? 1 : 0
           }
           value = (value << 1) | bit
-          base += 8
+          base += byteStep
         }
         payload[byteIdx++] = value
         cx += BITS_PER_BYTE
@@ -1420,7 +1429,7 @@ function readBinary2PayloadLockedNativeGrid({
       }
       bitBuffer = (bitBuffer << 1) | bit
       bitCount++
-      base += 8
+      base += byteStep
       cx++
       if (bitCount >= BITS_PER_BYTE) {
         payload[byteIdx++] = bitBuffer & 0xff
@@ -1433,9 +1442,9 @@ function readBinary2PayloadLockedNativeGrid({
   return byteIdx === payloadLength ? payload : null
 }
 
-function readBinary2PayloadLocked(imageData, width, region, layout, payloadLength, precomputedOffsets = null, options = {}) {
+function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadLength, precomputedOffsets = null, options = {}) {
   const frameMode = layout?.frameMode ?? HDMI_MODE.COMPAT_4
-  if (frameMode !== HDMI_MODE.BINARY_2) return null
+  if (frameMode !== HDMI_MODE.BINARY_2 && frameMode !== HDMI_MODE.BINARY_1) return null
   if (!payloadLength || payloadLength <= 0) return null
 
   const offsets = precomputedOffsets || layout?.precomputedOffsets || null
@@ -1479,12 +1488,12 @@ function readBinary2PayloadLocked(imageData, width, region, layout, payloadLengt
   const rightStripX = rx + region.w - stripWidthCapture
   const stripRows = Math.max(1, Math.floor((region.h - headerBandHeightCapture) / headerStepY))
   if (
-    Math.abs(payloadStepX - 2) < 0.01 &&
-    Math.abs(payloadStepY - 2) < 0.01 &&
+    (Math.abs(payloadStepX - 2) < 0.01 || Math.abs(payloadStepX - 1) < 0.01) &&
+    Math.abs(payloadStepY - payloadStepX) < 0.01 &&
     Number.isInteger(offsetTranslateX) &&
     Number.isInteger(offsetTranslateY)
   ) {
-    const nativePayload = readBinary2PayloadLockedNativeGrid({
+    const nativePayload = readDenseBinaryPayloadLockedNativeGrid({
       imageData,
       width,
       height: imgHeight,
@@ -1502,7 +1511,8 @@ function readBinary2PayloadLocked(imageData, width, region, layout, payloadLengt
       headerBs,
       fallbackThreshold,
       stripRows,
-      sampleMode: options.binary2SampleMode === 'single' ? 'single' : 'average'
+      nativeStep: payloadStepX,
+      sampleMode: frameMode === HDMI_MODE.BINARY_1 || options.binary2SampleMode === 'single' ? 'single' : 'average'
     })
     if (nativePayload) return nativePayload
   }
@@ -2261,7 +2271,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
     }
     const safePrecomputedOffsets = getRegionSafePrecomputedOffsets(layout, region, precomputedOffsets)
     const lockedBinary2Offsets = precomputedOffsets || layout.precomputedOffsets || null
-    const lockedBinary2Payload = readBinary2PayloadLocked(
+    const lockedDenseBinaryPayload = readDenseBinaryPayloadLocked(
       imageBytes,
       width,
       region,
@@ -2270,7 +2280,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
       lockedBinary2Offsets,
       options
     )
-    if (lockedBinary2Payload) return lockedBinary2Payload
+    if (lockedDenseBinaryPayload) return lockedDenseBinaryPayload
 
     const result = readDenseBinaryPayload(
       imageBytes,
@@ -3478,7 +3488,7 @@ export function testBinary2LockedPayloadReaderMatchesGeneric() {
       precomputedRegion: precomputed.region
     }
     const generic = readPayloadWithLayout(frame, width, region, genericLayout, payload.length, null)
-    const locked = readBinary2PayloadLocked(frame, width, region, lockedLayout, payload.length, precomputed.offsets)
+    const locked = readDenseBinaryPayloadLocked(frame, width, region, lockedLayout, payload.length, precomputed.offsets)
     const pass = generic?.length === payload.length &&
       locked?.length === payload.length &&
       generic.every((v, i) => v === payload[i]) &&
@@ -3487,6 +3497,43 @@ export function testBinary2LockedPayloadReaderMatchesGeneric() {
     return pass
   } catch (err) {
     console.log('BINARY_2 locked payload reader test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+export function testBinary1LockedPayloadReaderMatchesGeneric() {
+  try {
+    const width = 640
+    const height = 407
+    const payload = new Uint8Array(1500)
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 67 + 23) & 0xff
+
+    const frame = buildFrame(payload, HDMI_MODE.BINARY_1, width, height, 30, 23)
+    const anchors = detectAnchors(frame, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    const initial = region ? decodeDataRegion(frame, width, region) : null
+    if (!initial?.crcValid) {
+      console.log('BINARY_1 locked payload reader test: FAIL (initial decode)')
+      return false
+    }
+
+    const genericLayout = { ...initial._diag }
+    const precomputed = precomputeDenseBinarySampleOffsets(initial._diag, region)
+    const lockedLayout = {
+      ...initial._diag,
+      precomputedOffsets: precomputed.offsets,
+      precomputedRegion: precomputed.region
+    }
+    const generic = readPayloadWithLayout(frame, width, region, genericLayout, payload.length, null)
+    const locked = readDenseBinaryPayloadLocked(frame, width, region, lockedLayout, payload.length, precomputed.offsets)
+    const pass = generic?.length === payload.length &&
+      locked?.length === payload.length &&
+      generic.every((v, i) => v === payload[i]) &&
+      locked.every((v, i) => v === payload[i])
+    console.log('BINARY_1 locked payload reader test:', pass ? 'PASS' : 'FAIL')
+    return pass
+  } catch (err) {
+    console.log('BINARY_1 locked payload reader test: FAIL', err?.message || err)
     return false
   }
 }
@@ -3525,7 +3572,7 @@ export function testBinary2LockedPayloadReaderTranslatesCroppedOffsets() {
       y: region.y - crop.y
     }
     const croppedFrame = cropFrameForTest(frame, width, crop)
-    const locked = readBinary2PayloadLocked(croppedFrame, crop.w, croppedRegion, layout, payload.length, precomputed.offsets)
+    const locked = readDenseBinaryPayloadLocked(croppedFrame, crop.w, croppedRegion, layout, payload.length, precomputed.offsets)
     const pass = locked?.length === payload.length &&
       locked.every((v, i) => v === payload[i])
     console.log('BINARY_2 cropped locked payload reader test:', pass ? 'PASS' : 'FAIL')
