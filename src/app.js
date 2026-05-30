@@ -38,6 +38,7 @@ import {
   testExternalFullscreenFailureStopsBeforeMainFallback,
   testExternalPreparedStartUsesManualGate,
   testHdmiUvcSenderDefaults,
+  testBinary1RecommendedFpsIsReceiverPaced,
   testLabCardFullscreenExitRequiresReadyRestore,
   testDenseBinaryMixedReplayPass1SourceOnly,
   testDenseBinaryMixedReplayPass2ChangesAfterParitySweep,
@@ -237,6 +238,7 @@ window.testExternalFullscreenUsesSelectedScreen = testExternalFullscreenUsesSele
 window.testExternalFullscreenFailureStopsBeforeMainFallback = testExternalFullscreenFailureStopsBeforeMainFallback
 window.testExternalPreparedStartUsesManualGate = testExternalPreparedStartUsesManualGate
 window.testHdmiUvcSenderDefaults = testHdmiUvcSenderDefaults
+window.testBinary1RecommendedFpsIsReceiverPaced = testBinary1RecommendedFpsIsReceiverPaced
 window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
 window.testDenseBinaryMixedReplayPass1SourceOnly = testDenseBinaryMixedReplayPass1SourceOnly
 window.testDenseBinaryMixedReplayPass2ChangesAfterParitySweep = testDenseBinaryMixedReplayPass2ChangesAfterParitySweep
@@ -474,6 +476,7 @@ async function runAllTests() {
     externalFullscreenFailureStopsBeforeMainFallback: await testExternalFullscreenFailureStopsBeforeMainFallback(),
     externalPreparedStartManualGate: testExternalPreparedStartUsesManualGate(),
     hdmiUvcSenderDefaults: testHdmiUvcSenderDefaults(),
+    binary1ReceiverPacedFps: testBinary1RecommendedFpsIsReceiverPaced(),
     labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),
     denseBinaryMixedReplayPass1SourceOnly: testDenseBinaryMixedReplayPass1SourceOnly(),
     denseBinaryMixedReplayPass2ParitySweepTransition: testDenseBinaryMixedReplayPass2ChangesAfterParitySweep(),

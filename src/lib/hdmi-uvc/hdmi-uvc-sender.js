@@ -2399,12 +2399,18 @@ function handleFpsChange() {
   updateEstimateSummary()
 }
 
+function getFpsPresetIndexForRate(fps, fallbackIndex = DEFAULT_FPS_PRESET) {
+  const index = FPS_PRESETS.findIndex(preset => preset.fps === fps)
+  return String(index >= 0 ? index : fallbackIndex)
+}
+
 function getRecommendedFpsPreset(mode = state.mode) {
+  if (mode === HDMI_MODE.BINARY_1) return getFpsPresetIndexForRate(20)
   return mode === HDMI_MODE.COMPAT_4 ||
     mode === HDMI_MODE.RAW_RGB ||
     mode === HDMI_MODE.LUMA_2 ||
     isDenseBinaryMode(mode)
-    ? '1'
+    ? getFpsPresetIndexForRate(60)
     : String(DEFAULT_FPS_PRESET)
 }
 
@@ -2776,13 +2782,27 @@ export function testExternalPreparedStartUsesManualGate() {
 
 export function testHdmiUvcSenderDefaults() {
   const renderPreset = getRenderSizePreset()
+  const recommendedFps = FPS_PRESETS[Number(getRecommendedFpsPreset(state.mode))]
   const pass = state.mode === HDMI_MODE.BINARY_2 &&
     renderPreset.id === '1080p' &&
-    getRecommendedFpsPreset(state.mode) === '1'
+    recommendedFps?.fps === 60
   console.log('HDMI-UVC sender defaults test:', pass ? 'PASS' : 'FAIL', {
     mode: HDMI_MODE_NAMES[state.mode],
     renderPresetId: renderPreset.id,
-    recommendedFpsPreset: getRecommendedFpsPreset(state.mode)
+    recommendedFpsPreset: getRecommendedFpsPreset(state.mode),
+    recommendedFps
+  })
+  return pass
+}
+
+export function testBinary1RecommendedFpsIsReceiverPaced() {
+  const binary1Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_1))]
+  const binary2Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_2))]
+  const pass = binary1Preset?.fps === 20 &&
+    binary2Preset?.fps === 60
+  console.log('BINARY_1 receiver-paced FPS recommendation test:', pass ? 'PASS' : 'FAIL', {
+    binary1: binary1Preset,
+    binary2: binary2Preset
   })
   return pass
 }
