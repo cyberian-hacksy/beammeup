@@ -2786,7 +2786,7 @@ export function testExternalPreparedStartUsesManualGate() {
 export function testHdmiUvcSenderDefaults() {
   const renderPreset = getRenderSizePreset()
   const recommendedFps = FPS_PRESETS[Number(getRecommendedFpsPreset(state.mode))]
-  const pass = state.mode === HDMI_MODE.BINARY_2 &&
+  const pass = state.mode === HDMI_MODE.BINARY_1 &&
     renderPreset.id === '1080p' &&
     recommendedFps?.fps === 60
   console.log('HDMI-UVC sender defaults test:', pass ? 'PASS' : 'FAIL', {

@@ -53,7 +53,7 @@ export const HDMI_MODE_NAMES = {
   [HDMI_MODE.BINARY_1]: '1x1'
 }
 
-export const DEFAULT_HDMI_MODE = HDMI_MODE.BINARY_2
+export const DEFAULT_HDMI_MODE = HDMI_MODE.BINARY_1
 
 export function getModeDataBlockSize(mode) {
   switch (mode) {
