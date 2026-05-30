@@ -50,6 +50,7 @@ import {
   testDenseBinaryXlargeShrinksBlockCount,
   testDenseBinaryProfileLadderShrinksK,
   testBinary2UsesDenseBatchingProfile,
+  testBinary1XlargeFillsFrame,
   testDenseBinaryLateMixDiagnostic,
   testDenseBinaryDegreeDiagnostic,
   testDenseBinaryLateMixPatterns,
@@ -129,6 +130,7 @@ import {
 import { testIngestCapturedFrame } from './lib/hdmi-uvc/hdmi-uvc-capture-pump.js'
 import {
   testEqualChunkProbeFinds24PacketFrame,
+  testEqualChunkProbeFinds59PacketFrame,
   testPacketProbeSalvagesLowConfidenceBit
 } from './lib/hdmi-uvc/hdmi-uvc-packet-probe.js'
 import {
@@ -246,6 +248,7 @@ window.testDenseBinaryBatchingProfileMath = testDenseBinaryBatchingProfileMath
 window.testDenseBinaryBatchingProfileDiagnostic = testDenseBinaryBatchingProfileDiagnostic
 window.testDenseBinaryXlargeShrinksBlockCount = testDenseBinaryXlargeShrinksBlockCount
 window.testDenseBinaryProfileLadderShrinksK = testDenseBinaryProfileLadderShrinksK
+window.testBinary1XlargeFillsFrame = testBinary1XlargeFillsFrame
 window.testDenseBinaryLateMixDiagnostic = testDenseBinaryLateMixDiagnostic
 window.testDenseBinaryLateMixPatterns = testDenseBinaryLateMixPatterns
 window.testDenseBinaryFountainTailPatterns = testDenseBinaryFountainTailPatterns
@@ -268,6 +271,7 @@ window.testLabFrameTapUsesFullCaptureRect = testLabFrameTapUsesFullCaptureRect
 window.testLabFrameTapBypassesLockedCaptureRegion = testLabFrameTapBypassesLockedCaptureRegion
 window.testIngestCapturedFrame = testIngestCapturedFrame
 window.testEqualChunkProbeFinds24PacketFrame = testEqualChunkProbeFinds24PacketFrame
+window.testEqualChunkProbeFinds59PacketFrame = testEqualChunkProbeFinds59PacketFrame
 window.testPacketProbeSalvagesLowConfidenceBit = testPacketProbeSalvagesLowConfidenceBit
 window.testRankBitsByLowConfidence = testRankBitsByLowConfidence
 window.testTrySalvageSingleBitFlip = testTrySalvageSingleBitFlip
@@ -482,6 +486,7 @@ async function runAllTests() {
     denseBinaryXlargeShrinksBlockCount: testDenseBinaryXlargeShrinksBlockCount(),
     denseBinaryProfileLadderShrinksK: testDenseBinaryProfileLadderShrinksK(),
     binary2UsesDenseBatchingProfile: testBinary2UsesDenseBatchingProfile(),
+    binary1XlargeFillsFrame: testBinary1XlargeFillsFrame(),
     denseBinaryLateMixDiagnostic: testDenseBinaryLateMixDiagnostic(),
     denseBinaryDegreeDiagnostic: testDenseBinaryDegreeDiagnostic(),
     denseBinaryLateMixPatterns: testDenseBinaryLateMixPatterns(),
@@ -505,6 +510,7 @@ async function runAllTests() {
     labFrameTapBypassesLockedCapture: testLabFrameTapBypassesLockedCaptureRegion(),
     ingestCapturedFrame: await testIngestCapturedFrame(),
     equalChunkProbe24PacketFrame: testEqualChunkProbeFinds24PacketFrame(),
+    equalChunkProbe59PacketFrame: testEqualChunkProbeFinds59PacketFrame(),
     packetProbeSoftSalvage: testPacketProbeSalvagesLowConfidenceBit(),
     salvageRankBits: testRankBitsByLowConfidence(),
     salvageSingleBit: testTrySalvageSingleBitFlip(),

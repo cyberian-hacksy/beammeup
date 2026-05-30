@@ -7,7 +7,7 @@
 import { createPacket, PACKET_HEADER_SIZE, parsePacket } from '../packet.js'
 import { tryParseOrSalvage } from './hdmi-uvc-salvage.js'
 
-export const MAX_FRAME_PACKET_SLOTS = 32
+export const MAX_FRAME_PACKET_SLOTS = 64
 
 export function tryVariableFramePackets(framePayload) {
   // HDMI-UVC batching uses equal-sized packets inside each frame payload.
@@ -174,6 +174,35 @@ export function testEqualChunkProbeFinds24PacketFrame() {
     probe.strategy === 'equal'
 
   console.log('Equal chunk 24-packet probe test:', pass ? 'PASS' : 'FAIL', {
+    packets: probe.packets.length,
+    slotCount: probe.slotCount,
+    packetSize: probe.packetSize,
+    strategy: probe.strategy
+  })
+  return pass
+}
+
+export function testEqualChunkProbeFinds59PacketFrame() {
+  const blockSize = 4004
+  const slotCount = 59
+  const packetSize = PACKET_HEADER_SIZE + blockSize
+  const framePayload = new Uint8Array(packetSize * slotCount)
+
+  for (let slot = 0; slot < slotCount; slot++) {
+    const payload = new Uint8Array(blockSize)
+    payload.fill((slot + 1) & 0xff)
+    const packet = createPacket(0x12345678, 2608, slot + 1, payload, false, blockSize)
+    framePayload.set(packet, slot * packetSize)
+  }
+
+  const probe = probeFramePackets(framePayload)
+  const pass = probe.packets.length === slotCount &&
+    probe.parsedPackets.length === slotCount &&
+    probe.slotCount === slotCount &&
+    probe.packetSize === packetSize &&
+    probe.strategy === 'equal'
+
+  console.log('Equal chunk 59-packet probe test:', pass ? 'PASS' : 'FAIL', {
     packets: probe.packets.length,
     slotCount: probe.slotCount,
     packetSize: probe.packetSize,

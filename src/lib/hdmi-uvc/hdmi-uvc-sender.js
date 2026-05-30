@@ -1170,6 +1170,7 @@ const MAX_METADATA_INTERVAL_FRAMES = 90
 const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 16384
 const MAX_FRAME_PACKET_SLOTS = 32
+const MAX_BINARY1_FRAME_PACKET_SLOTS = 64
 const TARGET_SOURCE_BLOCKS = 128
 const HYBRID_FOUNTAIN_PACKET_INTERVAL = 8
 const RAW_RGB_PASS2_FOUNTAIN_PACKET_INTERVAL = 2
@@ -1265,7 +1266,11 @@ const DENSE_BINARY_BATCHING_PROFILES = {
   }
 }
 
-function getDenseBinaryBatchingProfile(profileId = getDenseBinaryProfile()) {
+function getDenseBinaryMaxPacketSlots(mode) {
+  return mode === HDMI_MODE.BINARY_1 ? MAX_BINARY1_FRAME_PACKET_SLOTS : MAX_FRAME_PACKET_SLOTS
+}
+
+function getDenseBinaryBatchingProfile(profileId = getDenseBinaryProfile(), mode = null) {
   const defaultId = getDiagnosticDefinition('denseBinaryProfile')?.default || 'large'
   const selectedId = Object.prototype.hasOwnProperty.call(DENSE_BINARY_BATCHING_PROFILES, profileId)
     ? profileId
@@ -1275,7 +1280,7 @@ function getDenseBinaryBatchingProfile(profileId = getDenseBinaryProfile()) {
     id: selectedId,
     minPacketsPerFrame: 4,
     fixedPacketsPerFrame: null,
-    maxPacketsPerFrame: MAX_FRAME_PACKET_SLOTS,
+    maxPacketsPerFrame: getDenseBinaryMaxPacketSlots(mode),
     targetFrameFill: selected.targetFrameFill,
     maxBlockSize: selected.maxBlockSize,
     maxUsedBytes: null
@@ -1406,11 +1411,11 @@ function getBatchingProfile(mode) {
         maxUsedBytes: null
       }
     case HDMI_MODE.BINARY_3:
-      return getDenseBinaryBatchingProfile()
+      return getDenseBinaryBatchingProfile(undefined, mode)
     case HDMI_MODE.BINARY_2:
-      return getDenseBinaryBatchingProfile()
+      return getDenseBinaryBatchingProfile(undefined, mode)
     case HDMI_MODE.BINARY_1:
-      return getDenseBinaryBatchingProfile()
+      return getDenseBinaryBatchingProfile(undefined, mode)
     case HDMI_MODE.CODEBOOK_3:
       // Binary quadrant glyphs keep the payload alphabet black/white while
       // increasing density over plain 4x4. Use many small shards and keep the
@@ -3169,6 +3174,31 @@ export function testDenseBinaryProfileLadderShrinksK() {
     return pass
   } finally {
     setDiagnostic('denseBinaryProfile', original)
+  }
+}
+
+export function testBinary1XlargeFillsFrame() {
+  const originalProfile = getDenseBinaryProfile()
+  setDiagnostic('denseBinaryProfile', 'xlarge')
+  try {
+    const capacity = getPayloadCapacity(1920, 1080, HDMI_MODE.BINARY_1)
+    const selected = selectFrameBatching({
+      capacity,
+      fileSize: 10 * 1024 * 1024,
+      profile: getBatchingProfile(HDMI_MODE.BINARY_1)
+    })
+    const fill = selected.usedBytes / capacity
+    const pass = selected.packetsPerFrame > 32 &&
+      fill >= 0.98 &&
+      fill <= 0.99
+    console.log('BINARY_1 xlarge frame-fill test:', pass ? 'PASS' : 'FAIL', {
+      capacity,
+      selected,
+      fill
+    })
+    return pass
+  } finally {
+    setDiagnostic('denseBinaryProfile', originalProfile)
   }
 }
 
