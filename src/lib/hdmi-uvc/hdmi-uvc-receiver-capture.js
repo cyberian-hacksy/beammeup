@@ -151,6 +151,7 @@ export function shouldRebenchmarkReceiverRoiCapture({
     roiPreferredMethod === 'video' &&
     roiBenchmarkRemaining === 0 &&
     !roiSlowRebenchDone &&
+    !transferActive &&
     hotCaptureSampleCount >= minHotSamples &&
     hotCaptureAvgMs >= slowThresholdMs
 }
@@ -214,7 +215,7 @@ export function testReceiverSlowRoiCaptureTriggersRebenchmark() {
   return pass
 }
 
-export function testReceiverActiveTransferAllowsSlowRoiRebenchmark() {
+export function testReceiverActiveTransferSuppressesSlowRoiRebenchmark() {
   const slowVideo = {
     canUseVideoFrame: true,
     roiPreferredMethod: 'video',
@@ -224,10 +225,10 @@ export function testReceiverActiveTransferAllowsSlowRoiRebenchmark() {
     hotCaptureAvgMs: 11.5,
     transferActive: true
   }
-  const pass = shouldRebenchmarkReceiverRoiCapture(slowVideo) === true &&
+  const pass = shouldRebenchmarkReceiverRoiCapture(slowVideo) === false &&
     shouldRebenchmarkReceiverRoiCapture({ ...slowVideo, hotCaptureAvgMs: 6.5 }) === false &&
     shouldRebenchmarkReceiverRoiCapture({ ...slowVideo, transferActive: false }) === true
-  console.log('Receiver active-transfer slow ROI rebenchmark test:', pass ? 'PASS' : 'FAIL')
+  console.log('Receiver active-transfer ROI rebenchmark suppression test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

@@ -132,7 +132,7 @@ import {
   testReceiverExpectedPacketSizeWaitsForSession,
   testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable,
   testReceiverSlowRoiCaptureTriggersRebenchmark,
-  testReceiverActiveTransferAllowsSlowRoiRebenchmark,
+  testReceiverActiveTransferSuppressesSlowRoiRebenchmark,
   testReceiverHotPerfFrameGate,
   testReceiverCapturePathBenchmarkSuppressesChurn,
   testComputeLockedCaptureRect,
@@ -288,7 +288,7 @@ window.testWorkerStartFailureResumesMainCapture = testWorkerStartFailureResumesM
 window.testReceiverExpectedPacketSizeWaitsForSession = testReceiverExpectedPacketSizeWaitsForSession
 window.testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable = testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable
 window.testReceiverSlowRoiCaptureTriggersRebenchmark = testReceiverSlowRoiCaptureTriggersRebenchmark
-window.testReceiverActiveTransferAllowsSlowRoiRebenchmark = testReceiverActiveTransferAllowsSlowRoiRebenchmark
+window.testReceiverActiveTransferSuppressesSlowRoiRebenchmark = testReceiverActiveTransferSuppressesSlowRoiRebenchmark
 window.testReceiverHotPerfFrameGate = testReceiverHotPerfFrameGate
 window.testReceiverCapturePathBenchmarkSuppressesChurn = testReceiverCapturePathBenchmarkSuppressesChurn
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
@@ -540,7 +540,7 @@ async function runAllTests() {
     receiverExpectedPacketSizeBootstrap: testReceiverExpectedPacketSizeWaitsForSession(),
     receiverRoiCaptureBenchmarkDefault: testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable(),
     receiverSlowRoiCaptureRebenchmark: testReceiverSlowRoiCaptureTriggersRebenchmark(),
-    receiverActiveTransferSlowRoiRebenchmark: testReceiverActiveTransferAllowsSlowRoiRebenchmark(),
+    receiverActiveTransferRoiRebenchmarkSuppression: testReceiverActiveTransferSuppressesSlowRoiRebenchmark(),
     receiverHotPerfFrameGate: testReceiverHotPerfFrameGate(),
     receiverCapturePathChurnSuppression: testReceiverCapturePathBenchmarkSuppressesChurn(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
