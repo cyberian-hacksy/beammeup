@@ -32,6 +32,7 @@ import {
   shouldUseLockedCaptureRegion,
   shouldRecordReceiverHotPerfFrame,
   shouldRebenchmarkReceiverRoiCapture,
+  shouldStartReceiverRoiWarmupBenchmark,
   shouldLogReceiverCapturePathChange
 } from './hdmi-uvc-receiver-capture.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
@@ -1372,6 +1373,36 @@ function maybeRebenchmarkSlowRoiCapture() {
   tuning.roiVideoFrameSampleTotalMs = 0
   tuning.roiSlowRebenchDone = true
   debugLog(`Capture tuning: slow video ROI (${avgHotCaptureMs.toFixed(2)}ms) - rebenchmarking ROI path`)
+}
+
+function startRoiCaptureBenchmark(reason) {
+  const tuning = state.captureTuning
+  if (!tuning) return false
+  tuning.roiPreferredMethod = null
+  tuning.roiBenchmarkRemaining = CAPTURE_BENCHMARK_SAMPLES_PER_METHOD * 2
+  tuning.roiVideoSampleCount = 0
+  tuning.roiVideoSampleTotalMs = 0
+  tuning.roiVideoFrameSampleCount = 0
+  tuning.roiVideoFrameSampleTotalMs = 0
+  tuning.roiSlowRebenchDone = true
+  debugLog(`Capture tuning: ${reason} - benchmarking ROI path`)
+  return true
+}
+
+function maybeStartRoiWarmupBenchmark(headerOnlyFrame = false) {
+  const tuning = state.captureTuning
+  if (!tuning) return false
+  if (!shouldStartReceiverRoiWarmupBenchmark({
+    canUseVideoFrame: tuning.canUseVideoFrame,
+    roiPreferredMethod: tuning.roiPreferredMethod,
+    roiBenchmarkRemaining: tuning.roiBenchmarkRemaining,
+    roiSlowRebenchDone: tuning.roiSlowRebenchDone,
+    transferActive: !!state.startTime && !state.completedFile,
+    headerOnlyFrame
+  })) {
+    return false
+  }
+  return startRoiCaptureBenchmark('sync header')
 }
 
 // innovationCount counts packets that delivered a new symbol to the decoder
@@ -3084,6 +3115,7 @@ async function processFrame(now, metadata) {
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
       applyDenseBinaryLock(result, region)
+      maybeStartRoiWarmupBenchmark(true)
       debugCurrent(`#${state.frameCount} sync header`)
     } else {
       // CRC-valid outer frame but zero inner packets accepted (wrong block

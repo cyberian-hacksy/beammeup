@@ -156,6 +156,22 @@ export function shouldRebenchmarkReceiverRoiCapture({
     hotCaptureAvgMs >= slowThresholdMs
 }
 
+export function shouldStartReceiverRoiWarmupBenchmark({
+  canUseVideoFrame = false,
+  roiPreferredMethod = null,
+  roiBenchmarkRemaining = 0,
+  roiSlowRebenchDone = false,
+  transferActive = false,
+  headerOnlyFrame = false
+} = {}) {
+  return !!headerOnlyFrame &&
+    !!canUseVideoFrame &&
+    roiPreferredMethod === 'video' &&
+    roiBenchmarkRemaining === 0 &&
+    !roiSlowRebenchDone &&
+    !transferActive
+}
+
 export function shouldRecordReceiverHotPerfFrame({
   anchorLocked = false,
   fixedLayout = null,
@@ -229,6 +245,26 @@ export function testReceiverActiveTransferSuppressesSlowRoiRebenchmark() {
     shouldRebenchmarkReceiverRoiCapture({ ...slowVideo, hotCaptureAvgMs: 6.5 }) === false &&
     shouldRebenchmarkReceiverRoiCapture({ ...slowVideo, transferActive: false }) === true
   console.log('Receiver active-transfer ROI rebenchmark suppression test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testReceiverHeaderOnlyFrameStartsRoiWarmupBenchmark() {
+  const warmup = {
+    canUseVideoFrame: true,
+    roiPreferredMethod: 'video',
+    roiBenchmarkRemaining: 0,
+    roiSlowRebenchDone: false,
+    transferActive: false,
+    headerOnlyFrame: true
+  }
+  const pass = shouldStartReceiverRoiWarmupBenchmark(warmup) === true &&
+    shouldStartReceiverRoiWarmupBenchmark({ ...warmup, headerOnlyFrame: false }) === false &&
+    shouldStartReceiverRoiWarmupBenchmark({ ...warmup, transferActive: true }) === false &&
+    shouldStartReceiverRoiWarmupBenchmark({ ...warmup, roiPreferredMethod: null }) === false &&
+    shouldStartReceiverRoiWarmupBenchmark({ ...warmup, roiBenchmarkRemaining: 4 }) === false &&
+    shouldStartReceiverRoiWarmupBenchmark({ ...warmup, roiSlowRebenchDone: true }) === false &&
+    shouldStartReceiverRoiWarmupBenchmark({ ...warmup, canUseVideoFrame: false }) === false
+  console.log('Receiver header-only ROI warmup benchmark test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 
