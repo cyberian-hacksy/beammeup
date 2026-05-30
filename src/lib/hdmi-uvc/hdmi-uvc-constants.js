@@ -114,10 +114,11 @@ export function getModePayloadBlockSize(mode) {
 // Frame rate presets
 export const FPS_PRESETS = [
   { name: '20 fps', fps: 20, interval: 50 },
+  { name: '25 fps', fps: 25, interval: 40 },
   { name: '30 fps', fps: 30, interval: 33 },
   { name: '60 fps', fps: 60, interval: 16 }
 ]
-export const DEFAULT_FPS_PRESET = 1
+export const DEFAULT_FPS_PRESET = 2
 
 export const RENDER_SIZE_PRESETS = [
   { id: 'viewport', name: 'Viewport', width: 0, height: 0 },

@@ -1270,11 +1270,15 @@ function getDenseBinaryMaxPacketSlots(mode) {
   return mode === HDMI_MODE.BINARY_1 ? MAX_BINARY1_FRAME_PACKET_SLOTS : MAX_FRAME_PACKET_SLOTS
 }
 
-function getDenseBinaryBatchingProfile(profileId = getDenseBinaryProfile(), mode = null) {
+function getDenseBinaryBatchingProfile(profileId = null, mode = null, options = {}) {
   const defaultId = getDiagnosticDefinition('denseBinaryProfile')?.default || 'large'
-  const selectedId = Object.prototype.hasOwnProperty.call(DENSE_BINARY_BATCHING_PROFILES, profileId)
-    ? profileId
+  const requestedId = profileId ?? getDenseBinaryProfile()
+  const diagnosticId = Object.prototype.hasOwnProperty.call(DENSE_BINARY_BATCHING_PROFILES, requestedId)
+    ? requestedId
     : defaultId
+  const selectedId = options.useModeDefault === false
+    ? diagnosticId
+    : (mode === HDMI_MODE.BINARY_1 && diagnosticId === defaultId ? 'huge' : diagnosticId)
   const selected = DENSE_BINARY_BATCHING_PROFILES[selectedId]
   return {
     id: selectedId,
@@ -2405,7 +2409,7 @@ function getFpsPresetIndexForRate(fps, fallbackIndex = DEFAULT_FPS_PRESET) {
 }
 
 function getRecommendedFpsPreset(mode = state.mode) {
-  if (mode === HDMI_MODE.BINARY_1) return getFpsPresetIndexForRate(20)
+  if (mode === HDMI_MODE.BINARY_1) return getFpsPresetIndexForRate(25)
   return mode === HDMI_MODE.COMPAT_4 ||
     mode === HDMI_MODE.RAW_RGB ||
     mode === HDMI_MODE.LUMA_2 ||
@@ -2798,7 +2802,7 @@ export function testHdmiUvcSenderDefaults() {
 export function testBinary1RecommendedFpsIsReceiverPaced() {
   const binary1Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_1))]
   const binary2Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_2))]
-  const pass = binary1Preset?.fps === 20 &&
+  const pass = binary1Preset?.fps === 25 &&
     binary2Preset?.fps === 60
   console.log('BINARY_1 receiver-paced FPS recommendation test:', pass ? 'PASS' : 'FAIL', {
     binary1: binary1Preset,
@@ -3205,7 +3209,7 @@ export function testBinary1XlargeFillsFrame() {
     const selected = selectFrameBatching({
       capacity,
       fileSize: 10 * 1024 * 1024,
-      profile: getBatchingProfile(HDMI_MODE.BINARY_1)
+      profile: getDenseBinaryBatchingProfile('xlarge', HDMI_MODE.BINARY_1, { useModeDefault: false })
     })
     const fill = selected.usedBytes / capacity
     const pass = selected.packetsPerFrame > 32 &&
@@ -3215,6 +3219,32 @@ export function testBinary1XlargeFillsFrame() {
       capacity,
       selected,
       fill
+    })
+    return pass
+  } finally {
+    setDiagnostic('denseBinaryProfile', originalProfile)
+  }
+}
+
+export function testBinary1DefaultsToHugeBatching() {
+  const originalProfile = getDenseBinaryProfile()
+  setDiagnostic('denseBinaryProfile', 'xlarge')
+  try {
+    const capacity = getPayloadCapacity(1920, 1080, HDMI_MODE.BINARY_1)
+    const profile = getBatchingProfile(HDMI_MODE.BINARY_1)
+    const selected = selectFrameBatching({
+      capacity,
+      fileSize: 24 * 1024 * 1024,
+      profile
+    })
+    const sourceBlocks = Math.ceil((24 * 1024 * 1024) / selected.blockSize)
+    const pass = profile.id === 'huge' &&
+      selected.packetsPerFrame <= 16 &&
+      sourceBlocks < 1700
+    console.log('BINARY_1 huge default batching test:', pass ? 'PASS' : 'FAIL', {
+      profile,
+      selected,
+      sourceBlocks
     })
     return pass
   } finally {

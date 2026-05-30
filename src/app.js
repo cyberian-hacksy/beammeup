@@ -52,6 +52,7 @@ import {
   testDenseBinaryProfileLadderShrinksK,
   testBinary2UsesDenseBatchingProfile,
   testBinary1XlargeFillsFrame,
+  testBinary1DefaultsToHugeBatching,
   testDenseBinaryLateMixDiagnostic,
   testDenseBinaryDegreeDiagnostic,
   testDenseBinaryLateMixPatterns,
@@ -251,6 +252,7 @@ window.testDenseBinaryBatchingProfileDiagnostic = testDenseBinaryBatchingProfile
 window.testDenseBinaryXlargeShrinksBlockCount = testDenseBinaryXlargeShrinksBlockCount
 window.testDenseBinaryProfileLadderShrinksK = testDenseBinaryProfileLadderShrinksK
 window.testBinary1XlargeFillsFrame = testBinary1XlargeFillsFrame
+window.testBinary1DefaultsToHugeBatching = testBinary1DefaultsToHugeBatching
 window.testDenseBinaryLateMixDiagnostic = testDenseBinaryLateMixDiagnostic
 window.testDenseBinaryLateMixPatterns = testDenseBinaryLateMixPatterns
 window.testDenseBinaryFountainTailPatterns = testDenseBinaryFountainTailPatterns
@@ -490,6 +492,7 @@ async function runAllTests() {
     denseBinaryProfileLadderShrinksK: testDenseBinaryProfileLadderShrinksK(),
     binary2UsesDenseBatchingProfile: testBinary2UsesDenseBatchingProfile(),
     binary1XlargeFillsFrame: testBinary1XlargeFillsFrame(),
+    binary1DefaultsToHugeBatching: testBinary1DefaultsToHugeBatching(),
     denseBinaryLateMixDiagnostic: testDenseBinaryLateMixDiagnostic(),
     denseBinaryDegreeDiagnostic: testDenseBinaryDegreeDiagnostic(),
     denseBinaryLateMixPatterns: testDenseBinaryLateMixPatterns(),
