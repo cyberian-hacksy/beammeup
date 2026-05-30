@@ -1746,9 +1746,10 @@ function getCurrentSystematicLabel() {
   return state.systematicPass <= 1 ? 'source' : 'intermediate'
 }
 
-function getSystematicPassIndexOffset(sourceSpan, passNumber = state.systematicPass) {
+function getSystematicPassIndexOffset(sourceSpan, passNumber = state.systematicPass, mode = state.mode, symbolKind = 'source') {
   if (sourceSpan <= 1) return 0
   if (passNumber === 1) return 0
+  if (symbolKind === 'source' && mode === HDMI_MODE.BINARY_1 && passNumber === 2) return 0
   if (passNumber === 2) return Math.floor(sourceSpan / 2)
   if (passNumber === 3) return Math.floor(sourceSpan / 4)
   if (passNumber === 4) return Math.floor((sourceSpan * 3) / 4)
@@ -1761,9 +1762,9 @@ function getParitySystematicSpan() {
   return Math.max(0, state.encoder.K_prime - state.encoder.K)
 }
 
-function getSystematicSymbolIdForPass(index, span, stride, passNumber, base = 0) {
+function getSystematicSymbolIdForPass(index, span, stride, passNumber, base = 0, symbolKind = 'source') {
   if (span <= 0) return base + 1
-  const passOffset = getSystematicPassIndexOffset(span, passNumber)
+  const passOffset = getSystematicPassIndexOffset(span, passNumber, state.mode, symbolKind)
   return base + ((((index + passOffset) * stride) % span) + 1)
 }
 
@@ -1808,7 +1809,8 @@ function nextParitySystematicSymbolId() {
     paritySpan,
     state.paritySystematicStride,
     state.systematicPass,
-    state.encoder.K
+    state.encoder.K,
+    'parity'
   )
   const nextIndex = (state.paritySystematicIndex + 1) % paritySpan
   if (nextIndex === 0) {
@@ -2940,11 +2942,14 @@ export function testDenseBinaryMixedReplayPass1SourceOnly() {
 
 export function testDenseBinaryMixedReplayPass2ChangesAfterParitySweep() {
   const snapshot = snapshotSchedulerState()
+  const originalLateMix = getDenseBinaryLateMix()
   try {
+    setDiagnostic('denseBinaryLateMix', 'source')
     setupSchedulerTestState({ systematicPass: 2, paritySweepsInPass: 0 })
     const sweep0 = countSymbolKinds(buildFramePacketBatch(5).symbolIds, state.encoder)
 
     Object.assign(state, snapshot)
+    setDiagnostic('denseBinaryLateMix', 'source')
     setupSchedulerTestState({ systematicPass: 2, paritySweepsInPass: 1 })
     const sweep1 = countSymbolKinds(buildFramePacketBatch(5).symbolIds, state.encoder)
 
@@ -2962,6 +2967,7 @@ export function testDenseBinaryMixedReplayPass2ChangesAfterParitySweep() {
     })
     return pass
   } finally {
+    setDiagnostic('denseBinaryLateMix', originalLateMix)
     Object.assign(state, snapshot)
   }
 }
@@ -3015,6 +3021,24 @@ export function testDenseBinaryMixedReplayMetadataReducesDataSlots() {
     console.log('dense-binary mixed replay metadata data-slot test:', pass ? 'PASS' : 'FAIL', {
       symbolIds: batch.symbolIds,
       counts
+    })
+    return pass
+  } finally {
+    Object.assign(state, snapshot)
+  }
+}
+
+export function testBinary1Pass2ReplaysFromStart() {
+  const snapshot = snapshotSchedulerState()
+  try {
+    state.mode = HDMI_MODE.BINARY_1
+    const binary1Offset = getSystematicPassIndexOffset(849, 2)
+    state.mode = HDMI_MODE.BINARY_2
+    const binary2Offset = getSystematicPassIndexOffset(849, 2)
+    const pass = binary1Offset === 0 && binary2Offset === Math.floor(849 / 2)
+    console.log('BINARY_1 pass-2 replay offset test:', pass ? 'PASS' : 'FAIL', {
+      binary1Offset,
+      binary2Offset
     })
     return pass
   } finally {
