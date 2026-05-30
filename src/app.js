@@ -38,7 +38,7 @@ import {
   testExternalFullscreenFailureStopsBeforeMainFallback,
   testExternalPreparedStartUsesManualGate,
   testHdmiUvcSenderDefaults,
-  testBinary1RecommendedFpsIs60,
+  testBinary1RecommendedFpsIs58,
   testLabCardFullscreenExitRequiresReadyRestore,
   testDenseBinaryMixedReplayPass1SourceOnly,
   testDenseBinaryMixedReplayPass2ChangesAfterParitySweep,
@@ -132,7 +132,7 @@ import {
   testReceiverExpectedPacketSizeWaitsForSession,
   testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable,
   testReceiverSlowRoiCaptureTriggersRebenchmark,
-  testReceiverActiveTransferSuppressesRoiRebenchmark,
+  testReceiverActiveTransferAllowsSlowRoiRebenchmark,
   testReceiverHotPerfFrameGate,
   testReceiverCapturePathBenchmarkSuppressesChurn,
   testComputeLockedCaptureRect,
@@ -254,7 +254,7 @@ window.testExternalFullscreenUsesSelectedScreen = testExternalFullscreenUsesSele
 window.testExternalFullscreenFailureStopsBeforeMainFallback = testExternalFullscreenFailureStopsBeforeMainFallback
 window.testExternalPreparedStartUsesManualGate = testExternalPreparedStartUsesManualGate
 window.testHdmiUvcSenderDefaults = testHdmiUvcSenderDefaults
-window.testBinary1RecommendedFpsIs60 = testBinary1RecommendedFpsIs60
+window.testBinary1RecommendedFpsIs58 = testBinary1RecommendedFpsIs58
 window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
 window.testDenseBinaryMixedReplayPass1SourceOnly = testDenseBinaryMixedReplayPass1SourceOnly
 window.testDenseBinaryMixedReplayPass2ChangesAfterParitySweep = testDenseBinaryMixedReplayPass2ChangesAfterParitySweep
@@ -288,7 +288,7 @@ window.testWorkerStartFailureResumesMainCapture = testWorkerStartFailureResumesM
 window.testReceiverExpectedPacketSizeWaitsForSession = testReceiverExpectedPacketSizeWaitsForSession
 window.testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable = testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable
 window.testReceiverSlowRoiCaptureTriggersRebenchmark = testReceiverSlowRoiCaptureTriggersRebenchmark
-window.testReceiverActiveTransferSuppressesRoiRebenchmark = testReceiverActiveTransferSuppressesRoiRebenchmark
+window.testReceiverActiveTransferAllowsSlowRoiRebenchmark = testReceiverActiveTransferAllowsSlowRoiRebenchmark
 window.testReceiverHotPerfFrameGate = testReceiverHotPerfFrameGate
 window.testReceiverCapturePathBenchmarkSuppressesChurn = testReceiverCapturePathBenchmarkSuppressesChurn
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
@@ -504,7 +504,7 @@ async function runAllTests() {
     externalFullscreenFailureStopsBeforeMainFallback: await testExternalFullscreenFailureStopsBeforeMainFallback(),
     externalPreparedStartManualGate: testExternalPreparedStartUsesManualGate(),
     hdmiUvcSenderDefaults: testHdmiUvcSenderDefaults(),
-    binary1Recommended60Fps: testBinary1RecommendedFpsIs60(),
+    binary1Recommended58Fps: testBinary1RecommendedFpsIs58(),
     labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),
     denseBinaryMixedReplayPass1SourceOnly: testDenseBinaryMixedReplayPass1SourceOnly(),
     denseBinaryMixedReplayPass2ParitySweepTransition: testDenseBinaryMixedReplayPass2ChangesAfterParitySweep(),
@@ -540,7 +540,7 @@ async function runAllTests() {
     receiverExpectedPacketSizeBootstrap: testReceiverExpectedPacketSizeWaitsForSession(),
     receiverRoiCaptureBenchmarkDefault: testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable(),
     receiverSlowRoiCaptureRebenchmark: testReceiverSlowRoiCaptureTriggersRebenchmark(),
-    receiverActiveTransferRoiRebenchmarkSuppression: testReceiverActiveTransferSuppressesRoiRebenchmark(),
+    receiverActiveTransferSlowRoiRebenchmark: testReceiverActiveTransferAllowsSlowRoiRebenchmark(),
     receiverHotPerfFrameGate: testReceiverHotPerfFrameGate(),
     receiverCapturePathChurnSuppression: testReceiverCapturePathBenchmarkSuppressesChurn(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),

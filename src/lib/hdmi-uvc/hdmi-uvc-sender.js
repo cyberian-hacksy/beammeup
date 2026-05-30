@@ -2502,6 +2502,7 @@ function getFpsPresetIndexForRate(fps, fallbackIndex = DEFAULT_FPS_PRESET) {
 }
 
 function getRecommendedFpsPreset(mode = state.mode) {
+  if (mode === HDMI_MODE.BINARY_1) return getFpsPresetIndexForRate(58)
   return mode === HDMI_MODE.COMPAT_4 ||
     mode === HDMI_MODE.RAW_RGB ||
     mode === HDMI_MODE.LUMA_2 ||
@@ -2881,7 +2882,7 @@ export function testHdmiUvcSenderDefaults() {
   const recommendedFps = FPS_PRESETS[Number(getRecommendedFpsPreset(state.mode))]
   const pass = state.mode === HDMI_MODE.BINARY_1 &&
     renderPreset.id === '1080p' &&
-    recommendedFps?.fps === 60
+    recommendedFps?.fps === 58
   console.log('HDMI-UVC sender defaults test:', pass ? 'PASS' : 'FAIL', {
     mode: HDMI_MODE_NAMES[state.mode],
     renderPresetId: renderPreset.id,
@@ -2891,12 +2892,12 @@ export function testHdmiUvcSenderDefaults() {
   return pass
 }
 
-export function testBinary1RecommendedFpsIs60() {
+export function testBinary1RecommendedFpsIs58() {
   const binary1Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_1))]
   const binary2Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_2))]
-  const pass = binary1Preset?.fps === 60 &&
+  const pass = binary1Preset?.fps === 58 &&
     binary2Preset?.fps === 60
-  console.log('BINARY_1 60fps recommendation test:', pass ? 'PASS' : 'FAIL', {
+  console.log('BINARY_1 58fps recommendation test:', pass ? 'PASS' : 'FAIL', {
     binary1: binary1Preset,
     binary2: binary2Preset
   })
@@ -3207,7 +3208,7 @@ export function testBinary1CadenceFpsPresets() {
   const pass = fpsValues.includes(55) &&
     fpsValues.includes(58) &&
     fpsValues.includes(60) &&
-    recommended?.fps === 60
+    recommended?.fps === 58
   console.log('BINARY_1 cadence FPS preset test:', pass ? 'PASS' : 'FAIL', {
     fpsValues,
     recommended
