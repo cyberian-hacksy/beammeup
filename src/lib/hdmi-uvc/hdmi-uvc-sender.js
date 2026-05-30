@@ -31,6 +31,7 @@ import {
   getDenseBinaryDegree,
   getDiagnosticDefinition,
   getPass2Variant,
+  setDiagnostic,
   renderDiagnosticsPanel
 } from './hdmi-uvc-diagnostics.js'
 
@@ -1393,13 +1394,7 @@ function getBatchingProfile(mode) {
     case HDMI_MODE.BINARY_3:
       return getDenseBinaryBatchingProfile()
     case HDMI_MODE.BINARY_2:
-      return {
-        minPacketsPerFrame: 20,
-        maxPacketsPerFrame: 29,
-        targetFrameFill: 0.99,
-        maxBlockSize: 2048,
-        maxUsedBytes: null
-      }
+      return getDenseBinaryBatchingProfile()
     case HDMI_MODE.CODEBOOK_3:
       // Binary quadrant glyphs keep the payload alphabet black/white while
       // increasing density over plain 4x4. Use many small shards and keep the
@@ -2983,52 +2978,59 @@ export function testDenseBinaryBatchingProfile() {
 }
 
 export function testBinary2BatchingAndSchedule() {
-  const countPattern = (pattern, value) => (pattern || []).filter((item) => item === value).length
-  const profile = getBatchingProfile(HDMI_MODE.BINARY_2)
-  const pass2 = getSlotMixPatternForPass(2, {
-    mode: HDMI_MODE.BINARY_2,
-    slots: 29,
-    paritySweepsInPass: 1
-  })
-  const pass3 = getSlotMixPatternForPass(3, {
-    mode: HDMI_MODE.BINARY_2,
-    slots: 29
-  })
-  const pass4 = getSlotMixPatternForPass(4, {
-    mode: HDMI_MODE.BINARY_2,
-    slots: 29
-  })
-  const selected = selectFrameBatching({
-    capacity: getPayloadCapacity(1920, 1080, HDMI_MODE.BINARY_2),
-    fileSize: 5.5 * 1024 * 1024,
-    profile
-  })
-  const pass = HDMI_MODE.BINARY_2 === 9 &&
-    profile.minPacketsPerFrame === 20 &&
-    profile.maxPacketsPerFrame === 29 &&
-    profile.targetFrameFill === 0.99 &&
-    profile.maxBlockSize === 2048 &&
-    selected.packetsPerFrame === 29 &&
-    selected.blockSize === 2028 &&
-    selected.usedBytes === 59247 &&
-    selected.payloadPerFrame === 58812 &&
-    countPattern(pass2, 'source') === 22 &&
-    countPattern(pass2, 'parity') === 4 &&
-    countPattern(pass2, 'fountain') === 3 &&
-    countPattern(pass3, 'source') === 19 &&
-    countPattern(pass3, 'parity') === 4 &&
-    countPattern(pass3, 'fountain') === 6 &&
-    countPattern(pass4, 'source') === 18 &&
-    countPattern(pass4, 'parity') === 2 &&
-    countPattern(pass4, 'fountain') === 9
-  console.log('BINARY_2 batching/schedule test:', pass ? 'PASS' : 'FAIL', {
-    profile,
-    selected,
-    pass2: describeSlotMixPattern(pass2),
-    pass3: describeSlotMixPattern(pass3),
-    pass4: describeSlotMixPattern(pass4)
-  })
-  return pass
+  const originalProfile = getDenseBinaryProfile()
+  setDiagnostic('denseBinaryProfile', 'large')
+  try {
+    const countPattern = (pattern, value) => (pattern || []).filter((item) => item === value).length
+    const profile = getBatchingProfile(HDMI_MODE.BINARY_2)
+    const pass2 = getSlotMixPatternForPass(2, {
+      mode: HDMI_MODE.BINARY_2,
+      slots: 29,
+      paritySweepsInPass: 1
+    })
+    const pass3 = getSlotMixPatternForPass(3, {
+      mode: HDMI_MODE.BINARY_2,
+      slots: 29
+    })
+    const pass4 = getSlotMixPatternForPass(4, {
+      mode: HDMI_MODE.BINARY_2,
+      slots: 29
+    })
+    const selected = selectFrameBatching({
+      capacity: getPayloadCapacity(1920, 1080, HDMI_MODE.BINARY_2),
+      fileSize: 5.5 * 1024 * 1024,
+      profile
+    })
+    const pass = HDMI_MODE.BINARY_2 === 9 &&
+      profile.id === 'large' &&
+      profile.minPacketsPerFrame === 4 &&
+      profile.maxPacketsPerFrame === 32 &&
+      profile.targetFrameFill === 0.99 &&
+      profile.maxBlockSize === 2048 &&
+      selected.packetsPerFrame === 29 &&
+      selected.blockSize === 2028 &&
+      selected.usedBytes === 59247 &&
+      selected.payloadPerFrame === 58812 &&
+      countPattern(pass2, 'source') === 22 &&
+      countPattern(pass2, 'parity') === 4 &&
+      countPattern(pass2, 'fountain') === 3 &&
+      countPattern(pass3, 'source') === 19 &&
+      countPattern(pass3, 'parity') === 4 &&
+      countPattern(pass3, 'fountain') === 6 &&
+      countPattern(pass4, 'source') === 18 &&
+      countPattern(pass4, 'parity') === 2 &&
+      countPattern(pass4, 'fountain') === 9
+    console.log('BINARY_2 batching/schedule test:', pass ? 'PASS' : 'FAIL', {
+      profile,
+      selected,
+      pass2: describeSlotMixPattern(pass2),
+      pass3: describeSlotMixPattern(pass3),
+      pass4: describeSlotMixPattern(pass4)
+    })
+    return pass
+  } finally {
+    setDiagnostic('denseBinaryProfile', originalProfile)
+  }
 }
 
 export function testDenseBinaryBatchingProfileMath() {
@@ -3091,6 +3093,29 @@ export function testDenseBinaryXlargeShrinksBlockCount() {
     xlarge: { blockSize: xlarge.blockSize, packets: xlarge.packetsPerFrame, K: kXlarge }
   })
   return pass
+}
+
+export function testBinary2UsesDenseBatchingProfile() {
+  const originalProfile = getDenseBinaryProfile()
+  setDiagnostic('denseBinaryProfile', 'xlarge')
+  try {
+    const capacity = getPayloadCapacity(1920, 1080, HDMI_MODE.BINARY_2)
+    const fileSize = 10 * 1024 * 1024
+    const selectedProfile = getBatchingProfile(HDMI_MODE.BINARY_2)
+    const large = selectFrameBatching({ capacity, fileSize, profile: getDenseBinaryBatchingProfile('large') })
+    const selected = selectFrameBatching({ capacity, fileSize, profile: selectedProfile })
+    const pass = selectedProfile.id === 'xlarge' &&
+      selected.blockSize > large.blockSize &&
+      selected.packetsPerFrame < large.packetsPerFrame
+    console.log('BINARY_2 dense batching profile test:', pass ? 'PASS' : 'FAIL', {
+      selectedProfile,
+      large: { blockSize: large.blockSize, packets: large.packetsPerFrame },
+      selected: { blockSize: selected.blockSize, packets: selected.packetsPerFrame }
+    })
+    return pass
+  } finally {
+    setDiagnostic('denseBinaryProfile', originalProfile)
+  }
 }
 
 export function testDenseBinaryBatchingProfileDiagnostic() {
