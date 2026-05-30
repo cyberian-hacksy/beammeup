@@ -1169,6 +1169,7 @@ const MIN_METADATA_INTERVAL_FRAMES = 90
 const MAX_METADATA_INTERVAL_FRAMES = 90
 const MIN_BLOCK_SIZE = 512
 const MAX_BLOCK_SIZE = 16384
+const BINARY1_HUGE_MAX_BLOCK_SIZE = 32768
 const MAX_FRAME_PACKET_SLOTS = 32
 const MAX_BINARY1_FRAME_PACKET_SLOTS = 64
 const TARGET_SOURCE_BLOCKS = 128
@@ -1280,13 +1281,17 @@ function getDenseBinaryBatchingProfile(profileId = null, mode = null, options = 
     ? diagnosticId
     : (mode === HDMI_MODE.BINARY_1 && diagnosticId === defaultId ? 'huge' : diagnosticId)
   const selected = DENSE_BINARY_BATCHING_PROFILES[selectedId]
+  const maxBlockSize = mode === HDMI_MODE.BINARY_1 && selectedId === 'huge'
+    ? BINARY1_HUGE_MAX_BLOCK_SIZE
+    : selected.maxBlockSize
   return {
     id: selectedId,
     minPacketsPerFrame: 4,
     fixedPacketsPerFrame: null,
     maxPacketsPerFrame: getDenseBinaryMaxPacketSlots(mode),
     targetFrameFill: selected.targetFrameFill,
-    maxBlockSize: selected.maxBlockSize,
+    maxBlockSize,
+    absoluteMaxBlockSize: Math.max(MAX_BLOCK_SIZE, maxBlockSize),
     maxUsedBytes: null
   }
 }
@@ -1298,12 +1303,17 @@ function selectFrameBatching({ capacity, fileSize, profile }) {
     maxPacketsPerFrame,
     targetFrameFill,
     maxBlockSize: profileMaxBlockSize,
+    absoluteMaxBlockSize: profileAbsoluteMaxBlockSize,
     maxUsedBytes
   } = profile
 
   const frameBlockSize = Math.max(200, capacity - PACKET_HEADER_SIZE)
   const preferredBlockSize = Math.ceil(fileSize / TARGET_SOURCE_BLOCKS)
-  const maxBlockSize = Math.min(frameBlockSize, profileMaxBlockSize ?? MAX_BLOCK_SIZE, MAX_BLOCK_SIZE)
+  const maxBlockSize = Math.min(
+    frameBlockSize,
+    profileMaxBlockSize ?? MAX_BLOCK_SIZE,
+    profileAbsoluteMaxBlockSize ?? MAX_BLOCK_SIZE
+  )
   const minBlockSize = Math.min(MIN_BLOCK_SIZE, maxBlockSize)
   let blockSize = Math.min(maxBlockSize, Math.max(preferredBlockSize, minBlockSize))
   let bestBlockSize = blockSize
@@ -3238,8 +3248,8 @@ export function testBinary1DefaultsToHugeBatching() {
     })
     const sourceBlocks = Math.ceil((24 * 1024 * 1024) / selected.blockSize)
     const pass = profile.id === 'huge' &&
-      selected.packetsPerFrame <= 16 &&
-      sourceBlocks < 1700
+      selected.packetsPerFrame <= 8 &&
+      sourceBlocks < 900
     console.log('BINARY_1 huge default batching test:', pass ? 'PASS' : 'FAIL', {
       profile,
       selected,
@@ -3377,11 +3387,13 @@ export function testDenseBinaryPass3MixPatterns() {
   const balanced = countSlots(getSlotMixPatternForPass(3, {
     mode: HDMI_MODE.BINARY_3,
     slots: 13,
+    lateMix: 'balanced',
     pass3Mix: 'balanced'
   }) || [])
   const source = countSlots(getSlotMixPatternForPass(3, {
     mode: HDMI_MODE.BINARY_3,
     slots: 13,
+    lateMix: 'balanced',
     pass3Mix: 'source'
   }) || [])
   const pass4 = countSlots(getSlotMixPatternForPass(4, {

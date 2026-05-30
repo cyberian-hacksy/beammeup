@@ -1206,7 +1206,8 @@ function createReceiverPerfState() {
     lockedFastExactPackets: 0,
     lockedFastRecoveryProbes: 0,
     lockedFastRecoveryHits: 0,
-    lockedFastRecoveryPackets: 0
+    lockedFastRecoveryPackets: 0,
+    lockedFastReaderCounts: {}
   }
 }
 
@@ -1249,6 +1250,7 @@ function clearReceiverPerfSamples(perf) {
   perf.lockedFastRecoveryProbes = 0
   perf.lockedFastRecoveryHits = 0
   perf.lockedFastRecoveryPackets = 0
+  perf.lockedFastReaderCounts = {}
 }
 
 function resetReceiverPerfState() {
@@ -1442,10 +1444,25 @@ function noteLockedFastStagePerf(kind, durationMs) {
   }
 }
 
+function noteLockedFastReaderKind(reader) {
+  const perf = state.rxPerf
+  if (!perf || !reader) return
+  if (!perf.lockedFastReaderCounts) perf.lockedFastReaderCounts = {}
+  perf.lockedFastReaderCounts[reader] = (perf.lockedFastReaderCounts[reader] || 0) + 1
+}
+
+function getLockedFastReaderSummary(perf) {
+  const counts = perf?.lockedFastReaderCounts || {}
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1])
+  if (entries.length === 0) return 'reader=n/a'
+  return 'reader=' + entries.map(([reader, count]) => `${reader}:${count}`).join(',')
+}
+
 function getLockedFastStageSummary(perf) {
   if (!perf) return 'lockedStage=read=0.00ms probe=0.00ms'
   return `lockedStage=read=${averagePerfWindow(perf.lockedFastExactReadMs).toFixed(2)}ms ` +
-    `probe=${averagePerfWindow(perf.lockedFastExactProbeMs).toFixed(2)}ms`
+    `probe=${averagePerfWindow(perf.lockedFastExactProbeMs).toFixed(2)}ms ` +
+    getLockedFastReaderSummary(perf)
 }
 
 function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs, fastPathMs, decodeMs, classifierMs = 0, isHotFrame = false) {
@@ -1800,15 +1817,16 @@ function readLayoutPacketsExact(imageData, width, region, layout, payloadLength,
   let readMs = 0
   let probeMs = 0
   const attemptRead = (options = {}) => {
+    const stats = {}
     const readStartMs = performance.now()
-    const payload = readLayoutPayloadOnly(imageData, width, region, layout, payloadLength, options)
+    const payload = readLayoutPayloadOnly(imageData, width, region, layout, payloadLength, { ...options, stats })
     readMs += performance.now() - readStartMs
     if (!payload) return null
 
     const probeStartMs = performance.now()
     const probe = probeFramePackets(payload, expectedPacketSize)
     probeMs += performance.now() - probeStartMs
-    return { payload, probe, layout }
+    return { payload, probe, layout, reader: stats.reader || 'fallback' }
   }
 
   let best = attemptRead(layout.frameMode === HDMI_MODE.BINARY_2 ? { binary2SampleMode: 'single' } : {})
@@ -1819,6 +1837,7 @@ function readLayoutPacketsExact(imageData, width, region, layout, payloadLength,
   noteLockedFastStagePerf('read', readMs)
   if (!best?.payload) return null
 
+  noteLockedFastReaderKind(best.reader)
   noteLockedFastStagePerf('probe', probeMs)
 
   return best
@@ -3624,8 +3643,11 @@ export function testLockedFastPerfBreakdownSummary() {
     state.rxPerf = createReceiverPerfState()
     noteLockedFastStagePerf('read', 2)
     noteLockedFastStagePerf('probe', 3)
+    noteLockedFastReaderKind('binary1-bytepack')
     const summary = getLockedFastStageSummary(state.rxPerf)
-    const pass = summary.includes('read=2.00ms') && summary.includes('probe=3.00ms')
+    const pass = summary.includes('read=2.00ms') &&
+      summary.includes('probe=3.00ms') &&
+      summary.includes('reader=binary1-bytepack:1')
     console.log('Locked fast perf breakdown summary test:', pass ? 'PASS' : `FAIL ${summary}`)
     return pass
   } finally {
