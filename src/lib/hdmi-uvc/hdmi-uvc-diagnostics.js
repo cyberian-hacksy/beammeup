@@ -14,7 +14,7 @@
 //   denseBinaryProfile  'safe'|'fill99'|'medium'|'large'|'xlarge'|'xxlarge'|'huge'  live  (?dense-profile=)
 //   denseBinaryPass3Mix 'balanced'|'source'                  live    (?dense-pass3=)
 //   denseBinaryDegree   'classic'|'ripple'                   reload  (?dense-degree=, set on BOTH ends)
-//   denseBinaryLateMix  'balanced'|'source'                  live    (?dense-late=)
+//   denseBinaryLateMix  'balanced'|'source'|'fountain'       live    (?dense-late=)
 //
 // "Live" settings are re-read by the consumer per call; "reload" settings
 // are captured at module init time and the UI surfaces a Reload prompt
@@ -80,7 +80,7 @@ const DEFINITIONS = {
   },
   denseBinaryProfile: {
     urlKey: 'dense-profile',
-    default: 'large',
+    default: 'xlarge',
     allowed: ['safe', 'fill99', 'medium', 'large', 'xlarge', 'xxlarge', 'huge'],
     reloadRequired: false,
     labels: {
@@ -96,7 +96,7 @@ const DEFINITIONS = {
   },
   denseBinaryLateMix: {
     urlKey: 'dense-late',
-    default: 'source',
+    default: 'fountain',
     allowed: ['balanced', 'source', 'fountain'],
     reloadRequired: false,
     labels: {

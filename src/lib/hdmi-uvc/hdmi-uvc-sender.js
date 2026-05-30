@@ -3183,7 +3183,7 @@ export function testDenseBinaryBatchingProfileDiagnostic() {
   const fallbackProfile = helperExists ? getDenseBinaryBatchingProfile('not-a-profile') : null
   const pass = helperExists &&
     diagGetterExists &&
-    def?.default === 'large' &&
+    def?.default === 'xlarge' &&
     expectedAllowed.every((value) => def.allowed?.includes(value)) &&
     profileById.safe?.maxBlockSize === 1024 &&
     profileById.safe?.targetFrameFill === 0.90 &&
@@ -3197,7 +3197,7 @@ export function testDenseBinaryBatchingProfileDiagnostic() {
     profileById.xlarge?.targetFrameFill === 0.99 &&
     profileById.xxlarge?.maxBlockSize === 8192 &&
     profileById.huge?.maxBlockSize === 16384 &&
-    fallbackProfile?.id === 'large'
+    fallbackProfile?.id === 'xlarge'
   console.log('dense-binary batching profile diagnostic test:', pass ? 'PASS' : 'FAIL', {
     helperExists,
     diagGetterExists,
@@ -3212,11 +3212,25 @@ export function testDenseBinaryLateMixDiagnostic() {
   const diagGetterExists = typeof getDenseBinaryLateMix === 'function'
   const def = getDiagnosticDefinition('denseBinaryLateMix')
   const pass = diagGetterExists &&
-    def?.default === 'source' &&
+    def?.default === 'fountain' &&
     def.allowed?.includes('balanced') &&
     def.allowed?.includes('source') &&
     def.allowed?.includes('fountain')
   console.log('dense-binary late mix diagnostic test:', pass ? 'PASS' : 'FAIL', {
+    diagGetterExists,
+    definition: def
+  })
+  return pass
+}
+
+export function testDenseBinaryDegreeDiagnostic() {
+  const diagGetterExists = typeof getDenseBinaryDegree === 'function'
+  const def = getDiagnosticDefinition('denseBinaryDegree')
+  const pass = diagGetterExists &&
+    def?.default === 'classic' &&
+    def.allowed?.includes('classic') &&
+    def.allowed?.includes('ripple')
+  console.log('dense-binary degree diagnostic test:', pass ? 'PASS' : 'FAIL', {
     diagGetterExists,
     definition: def
   })

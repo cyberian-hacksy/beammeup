@@ -168,6 +168,15 @@ export function shouldRecordReceiverHotPerfFrame({
     !!fastPathAccepted
 }
 
+export function shouldLogReceiverCapturePathChange({
+  previousMethod = null,
+  nextMethod = null,
+  benchmarkActive = false
+} = {}) {
+  if (!nextMethod || nextMethod === previousMethod) return false
+  return !benchmarkActive || !previousMethod
+}
+
 export function testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable() {
   const tuning = createReceiverCaptureTuningState({
     canUseVideoFrame: true,
@@ -219,6 +228,32 @@ export function testReceiverHotPerfFrameGate() {
     shouldRecordReceiverHotPerfFrame({ ...settled, roiPreferredMethod: null }) === false &&
     shouldRecordReceiverHotPerfFrame({ ...settled, fastPathAccepted: false }) === false
   console.log('receiver hot perf frame gate test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testReceiverCapturePathBenchmarkSuppressesChurn() {
+  const pass =
+    shouldLogReceiverCapturePathChange({
+      previousMethod: null,
+      nextMethod: 'video ROI',
+      benchmarkActive: true
+    }) === true &&
+    shouldLogReceiverCapturePathChange({
+      previousMethod: 'video ROI',
+      nextMethod: 'VideoFrame ROI',
+      benchmarkActive: true
+    }) === false &&
+    shouldLogReceiverCapturePathChange({
+      previousMethod: 'video ROI',
+      nextMethod: 'VideoFrame ROI',
+      benchmarkActive: false
+    }) === true &&
+    shouldLogReceiverCapturePathChange({
+      previousMethod: 'video ROI',
+      nextMethod: 'video ROI',
+      benchmarkActive: true
+    }) === false
+  console.log('receiver capture path churn suppression test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

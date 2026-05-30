@@ -31,7 +31,8 @@ import {
   getWorkerCaptureCopyRect,
   shouldUseLockedCaptureRegion,
   shouldRecordReceiverHotPerfFrame,
-  shouldRebenchmarkReceiverRoiCapture
+  shouldRebenchmarkReceiverRoiCapture,
+  shouldLogReceiverCapturePathChange
 } from './hdmi-uvc-receiver-capture.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
 import {
@@ -2708,10 +2709,15 @@ async function processFrame(now, metadata) {
   }
   captureMs = performance.now() - captureStartMs
   rememberCapturedFrame(imageData)
+  const tunableCaptureMethod = captureMethod.startsWith('VideoFrame') || captureMethod.startsWith('video')
+  const roiCaptureMethod = captureMethod.endsWith('ROI')
+  const benchmarkActive = tunableCaptureMethod && state.captureTuning
+    ? !(roiCaptureMethod ? state.captureTuning.roiPreferredMethod : state.captureTuning.preferredMethod)
+    : false
   noteCaptureTuningSample(
     captureMethod.startsWith('VideoFrame') ? 'VideoFrame' : captureMethod.startsWith('video') ? 'video' : captureMethod,
     captureMs,
-    captureMethod.endsWith('ROI')
+    roiCaptureMethod
   )
   // Phase 5 sub-phase 1 diagnostic: the hash probe clones the full
   // ImageData buffer every 30 frames, which pollutes worker-vs-nonworker
@@ -2733,7 +2739,11 @@ async function processFrame(now, metadata) {
   const frameWidth = imageWidth
   const frameHeight = imageHeight
 
-  if (captureMethod !== state.activeCaptureMethod) {
+  if (shouldLogReceiverCapturePathChange({
+    previousMethod: state.activeCaptureMethod,
+    nextMethod: captureMethod,
+    benchmarkActive
+  })) {
     state.activeCaptureMethod = captureMethod
     debugLog(`Capture path: ${captureMethod}`)
   }

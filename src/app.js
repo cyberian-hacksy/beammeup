@@ -51,6 +51,7 @@ import {
   testDenseBinaryProfileLadderShrinksK,
   testBinary2UsesDenseBatchingProfile,
   testDenseBinaryLateMixDiagnostic,
+  testDenseBinaryDegreeDiagnostic,
   testDenseBinaryLateMixPatterns,
   testDenseBinaryFountainTailPatterns,
   testDenseBinaryPass3MixDiagnostic,
@@ -118,6 +119,7 @@ import {
   testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable,
   testReceiverSlowRoiCaptureTriggersRebenchmark,
   testReceiverHotPerfFrameGate,
+  testReceiverCapturePathBenchmarkSuppressesChurn,
   testComputeLockedCaptureRect,
   testLabFrameTapUsesFullCaptureRect,
   testLabFrameTapBypassesLockedCaptureRegion
@@ -256,6 +258,7 @@ window.testReceiverExpectedPacketSizeWaitsForSession = testReceiverExpectedPacke
 window.testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable = testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable
 window.testReceiverSlowRoiCaptureTriggersRebenchmark = testReceiverSlowRoiCaptureTriggersRebenchmark
 window.testReceiverHotPerfFrameGate = testReceiverHotPerfFrameGate
+window.testReceiverCapturePathBenchmarkSuppressesChurn = testReceiverCapturePathBenchmarkSuppressesChurn
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
 window.testLabFrameTapUsesFullCaptureRect = testLabFrameTapUsesFullCaptureRect
 window.testLabFrameTapBypassesLockedCaptureRegion = testLabFrameTapBypassesLockedCaptureRegion
@@ -474,6 +477,7 @@ async function runAllTests() {
     denseBinaryProfileLadderShrinksK: testDenseBinaryProfileLadderShrinksK(),
     binary2UsesDenseBatchingProfile: testBinary2UsesDenseBatchingProfile(),
     denseBinaryLateMixDiagnostic: testDenseBinaryLateMixDiagnostic(),
+    denseBinaryDegreeDiagnostic: testDenseBinaryDegreeDiagnostic(),
     denseBinaryLateMixPatterns: testDenseBinaryLateMixPatterns(),
     denseBinaryFountainTailPatterns: testDenseBinaryFountainTailPatterns(),
     denseBinaryPass3MixDiagnostic: testDenseBinaryPass3MixDiagnostic(),
@@ -489,6 +493,7 @@ async function runAllTests() {
     receiverRoiCaptureBenchmarkDefault: testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable(),
     receiverSlowRoiCaptureRebenchmark: testReceiverSlowRoiCaptureTriggersRebenchmark(),
     receiverHotPerfFrameGate: testReceiverHotPerfFrameGate(),
+    receiverCapturePathChurnSuppression: testReceiverCapturePathBenchmarkSuppressesChurn(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),
     labFrameTapFullCaptureRect: testLabFrameTapUsesFullCaptureRect(),
     labFrameTapBypassesLockedCapture: testLabFrameTapBypassesLockedCaptureRegion(),
