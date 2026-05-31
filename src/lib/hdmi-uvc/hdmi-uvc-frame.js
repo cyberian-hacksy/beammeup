@@ -58,6 +58,7 @@ const DENSE_BINARY_MIN_HEADER_BAND_ROWS = 1
 const DENSE_BINARY_HEADER_PAD_BYTE = 0xAA
 const DENSE_BINARY_HEADER_BLOCK_SIZE = 4
 const BINARY_3_PAYLOAD_BLOCK_SIZE = 3
+const LUMA1_EDGE_GUARD_CELLS = 1
 const DENSE_BINARY_REF_STRIP_WIDTH_4X4 = 1
 const DENSE_BINARY_REF_STRIP_PX = DENSE_BINARY_REF_STRIP_WIDTH_4X4 * DENSE_BINARY_HEADER_BLOCK_SIZE
 const LUMA1_GRAY_SYMBOL_TO_LEVEL = [0, 1, 3, 2]
@@ -73,6 +74,10 @@ function isDenseBinaryMode(mode) {
 
 function isDenseLuma1Mode(mode) {
   return mode === HDMI_MODE.LUMA_1
+}
+
+function getDenseBinaryPayloadEdgeGuardCells(mode) {
+  return mode === HDMI_MODE.LUMA_1 ? LUMA1_EDGE_GUARD_CELLS : 0
 }
 
 function getDenseBinaryPayloadBlockSize(mode) {
@@ -567,7 +572,8 @@ export function getPayloadCapacity(width, height, mode = HDMI_MODE.COMPAT_4) {
     const headerBandRows = getDenseBinaryHeaderBandRows(headerCellsX)
     const payloadW = dr.w - 2 * DENSE_BINARY_REF_STRIP_PX
     const payloadH = dr.h - headerBandRows * DENSE_BINARY_HEADER_BLOCK_SIZE
-    const payloadCellsX = Math.floor(payloadW / payloadBlockSize)
+    const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(mode)
+    const payloadCellsX = Math.max(0, Math.floor(payloadW / payloadBlockSize) - edgeGuardCells * 2)
     const payloadCellsY = Math.floor(payloadH / payloadBlockSize)
     const bitsPerCell = getModeBitsPerBlock(mode) || 1
     return Math.max(0, Math.floor((payloadCellsX * payloadCellsY * bitsPerCell) / BITS_PER_BYTE))
@@ -873,26 +879,58 @@ function buildDenseBinaryFrame(payload, mode, width, height, fps, symbolId, targ
   const payloadX = dr.x + DENSE_BINARY_REF_STRIP_PX
   const payloadY = dr.y + headerBandHeightPx
   const payloadW = dr.w - 2 * DENSE_BINARY_REF_STRIP_PX
-  const payloadCellsX = Math.floor(payloadW / payloadBlockSize)
+  const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(mode)
+  const payloadCellsX = Math.max(0, Math.floor(payloadW / payloadBlockSize) - edgeGuardCells * 2)
   const payloadCellsY = Math.floor(payloadBandHeight / payloadBlockSize)
+  const payloadDataX = payloadX + edgeGuardCells * payloadBlockSize
+  const rightGuardX = payloadDataX + payloadCellsX * payloadBlockSize
   const bitsPerPayloadCell = getModeBitsPerBlock(mode) || 1
   const payloadBitLength = payload.length * BITS_PER_BYTE
   let payloadBitPos = 0
 
   for (let cy = 0; cy < payloadCellsY; cy++) {
+    let firstVal = 0
+    let lastVal = 0
     for (let cx = 0; cx < payloadCellsX; cx++) {
       const symbol = payloadBitPos < payloadBitLength ? extractBits(payload, payloadBitPos, bitsPerPayloadCell) : 0
       payloadBitPos += bitsPerPayloadCell
       const val = isLuma1 ? encodeLuma1Symbol(symbol) : (symbol ? 255 : 0)
+      if (cx === 0) firstVal = val
+      lastVal = val
       fillBlockSolid(
         imageData,
         width,
-        payloadX + cx * payloadBlockSize,
+        payloadDataX + cx * payloadBlockSize,
         payloadY + cy * payloadBlockSize,
         payloadBlockSize,
         val,
         val,
         val
+      )
+    }
+    if (edgeGuardCells > 0 && payloadCellsX > 0) {
+      const rowY = payloadY + cy * payloadBlockSize
+      fillRectSolid(
+        imageData,
+        width,
+        payloadX,
+        rowY,
+        edgeGuardCells * payloadBlockSize,
+        payloadBlockSize,
+        firstVal,
+        firstVal,
+        firstVal
+      )
+      fillRectSolid(
+        imageData,
+        width,
+        rightGuardX,
+        rowY,
+        edgeGuardCells * payloadBlockSize,
+        payloadBlockSize,
+        lastVal,
+        lastVal,
+        lastVal
       )
     }
   }
@@ -1340,11 +1378,13 @@ export function precomputeDenseBinarySampleOffsets(layout, region) {
   const headerBlocksX = layout.headerBlocksX || Math.floor(region.w / headerStepX)
   const headerBandRows = getDenseBinaryHeaderBandRows(headerBlocksX)
   const stripWidthCapture = headerStepX * DENSE_BINARY_REF_STRIP_WIDTH_4X4
-  const payloadStartX = region.x + (layout.xOff || 0) + stripWidthCapture
-  const payloadStartY = region.y + (layout.yOff || 0) + headerBandRows * headerStepY
+  const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(layout.frameMode)
+  const payloadPhaseX = layout.payloadPhaseX || 0
   const payloadStepX = layout.stepX || (headerStepX * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE))
   const payloadStepY = layout.stepY || (headerStepY * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE))
-  const payloadW = region.w - 2 * stripWidthCapture
+  const payloadStartX = region.x + (layout.xOff || 0) + stripWidthCapture + edgeGuardCells * payloadStepX + payloadPhaseX
+  const payloadStartY = region.y + (layout.yOff || 0) + headerBandRows * headerStepY
+  const payloadW = region.w - 2 * stripWidthCapture - 2 * edgeGuardCells * payloadStepX
   const payloadH = region.h - headerBandRows * headerStepY
   const cellsX = Math.max(0, Math.floor(payloadW / payloadStepX))
   const cellsY = Math.max(0, Math.floor(payloadH / payloadStepY))
@@ -1850,9 +1890,12 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
   const headerBandRows = getDenseBinaryHeaderBandRows(headerBlocksX)
   const headerBandHeightCapture = headerBandRows * headerStepY
   const stripWidthCapture = headerStepX * DENSE_BINARY_REF_STRIP_WIDTH_4X4
-  const payloadStartX = rx + stripWidthCapture
+  const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(frameMode)
+  const payloadPhaseX = layout.payloadPhaseX || 0
+  const payloadStartX = rx + stripWidthCapture + edgeGuardCells * payloadStepX + payloadPhaseX
   const payloadStartY = ry + headerBandHeightCapture
-  const payloadEndX = rx + region.w - stripWidthCapture
+  const rightStripX = rx + region.w - stripWidthCapture
+  const payloadEndX = rightStripX - edgeGuardCells * payloadStepX + payloadPhaseX
   const payloadCellsX = Math.max(0, Math.floor((payloadEndX - payloadStartX) / payloadStepX))
   const payloadCellsY = Math.max(0, Math.floor((region.h - headerBandHeightCapture) / payloadStepY))
   if (!payloadCellsX || !payloadCellsY) return null
@@ -1862,7 +1905,6 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
   const fallbackBlack = layout.blackLevel ?? 0
   const fallbackWhite = layout.whiteLevel ?? 255
   const fallbackThreshold = (fallbackBlack + fallbackWhite) * 0.5
-  const rightStripX = rx + region.w - stripWidthCapture
   const stripRows = Math.max(1, Math.floor((region.h - headerBandHeightCapture) / headerStepY))
   if (
     (Math.abs(payloadStepX - 2) < 0.01 || Math.abs(payloadStepX - 1) < 0.01) &&
@@ -2025,7 +2067,8 @@ function readDenseBinaryPayload(
   const payloadStepY = headerStepY * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE)
   const payloadBs = headerBs * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE)
   const stripWidthCapture = headerStepX * DENSE_BINARY_REF_STRIP_WIDTH_4X4
-  const payloadStartX = rx + stripWidthCapture
+  const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(header.mode)
+  const payloadStartXBase = rx + stripWidthCapture + edgeGuardCells * payloadStepX
 
   const ref = sampleDenseBinaryReferenceRows(
     imageData,
@@ -2040,100 +2083,116 @@ function readDenseBinaryPayload(
     header
   )
   const payloadStartY = ry + ref.headerBandHeightCapture
-  const payloadEndX = rx + region.w - stripWidthCapture
-  const payloadCellsX = Math.max(0, Math.floor((payloadEndX - payloadStartX) / payloadStepX))
+  const rightStripX = rx + region.w - stripWidthCapture
+  const payloadEndX = rightStripX - edgeGuardCells * payloadStepX
+  const payloadCellsX = Math.max(0, Math.floor((payloadEndX - payloadStartXBase) / payloadStepX))
   const payloadCellsY = Math.max(0, Math.floor((region.h - ref.headerBandHeightCapture) / payloadStepY))
-  const payload = new Uint8Array(header.payloadLength)
   const bitsPerPayloadCell = getModeBitsPerBlock(header.mode) || 1
-  const confidence = options.collectConfidence !== false && bitsPerPayloadCell === 1
-    ? new Uint8Array(header.payloadLength * BITS_PER_BYTE)
-    : null
   const imgHeight = imageData.length / (width * 4)
-  const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
-  let confidenceIdx = 0
 
-  for (let cy = 0; cy < payloadCellsY && decodeState.index < header.payloadLength; cy++) {
-    const stripIdx = Math.min(
-      Math.max(0, ref.stripRows - 1),
-      Math.max(0, Math.round((cy * payloadStepY) / headerStepY))
-    )
-    const black = header.mode === HDMI_MODE.LUMA_1
-      ? ref.headerLevels.blackLevel
-      : (Number.isFinite(ref.rowBlackLevels[stripIdx]) ? ref.rowBlackLevels[stripIdx] : ref.headerLevels.blackLevel)
-    const white = header.mode === HDMI_MODE.LUMA_1
-      ? ref.headerLevels.whiteLevel
-      : (Number.isFinite(ref.rowWhiteLevels[stripIdx]) ? ref.rowWhiteLevels[stripIdx] : ref.headerLevels.whiteLevel)
-    const threshold = (black + white) * 0.5
-    const lumaLevels = header.mode === HDMI_MODE.LUMA_1
-      ? sampleLuma1ReferenceLevels(
-          imageData,
-          width,
-          imgHeight,
-          rx,
-          payloadEndX,
-          payloadStartY + Math.round(stripIdx * headerStepY),
-          headerBs,
-          black,
-          white
-        )
+  const makeResult = (payloadPhaseX = 0) => {
+    const payload = new Uint8Array(header.payloadLength)
+    const confidence = options.collectConfidence !== false && bitsPerPayloadCell === 1
+      ? new Uint8Array(header.payloadLength * BITS_PER_BYTE)
       : null
+    const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
+    let confidenceIdx = 0
 
-    for (let cx = 0; cx < payloadCellsX && decodeState.index < header.payloadLength; cx++) {
-      const offsetIdx = (cy * payloadCellsX + cx) * 2
-      const px = precomputedOffsets && offsetIdx + 1 < precomputedOffsets.length
-        ? precomputedOffsets[offsetIdx]
-        : payloadStartX + Math.round(cx * payloadStepX)
-      const py = precomputedOffsets && offsetIdx + 1 < precomputedOffsets.length
-        ? precomputedOffsets[offsetIdx + 1]
-        : payloadStartY + Math.round(cy * payloadStepY)
+    for (let cy = 0; cy < payloadCellsY && decodeState.index < header.payloadLength; cy++) {
+      const stripIdx = Math.min(
+        Math.max(0, ref.stripRows - 1),
+        Math.max(0, Math.round((cy * payloadStepY) / headerStepY))
+      )
+      const black = header.mode === HDMI_MODE.LUMA_1
+        ? ref.headerLevels.blackLevel
+        : (Number.isFinite(ref.rowBlackLevels[stripIdx]) ? ref.rowBlackLevels[stripIdx] : ref.headerLevels.blackLevel)
+      const white = header.mode === HDMI_MODE.LUMA_1
+        ? ref.headerLevels.whiteLevel
+        : (Number.isFinite(ref.rowWhiteLevels[stripIdx]) ? ref.rowWhiteLevels[stripIdx] : ref.headerLevels.whiteLevel)
+      const threshold = (black + white) * 0.5
+      const lumaLevels = header.mode === HDMI_MODE.LUMA_1
+        ? sampleLuma1ReferenceLevels(
+            imageData,
+            width,
+            imgHeight,
+            rx,
+            rightStripX,
+            payloadStartY + Math.round(stripIdx * headerStepY),
+            headerBs,
+            black,
+            white
+          )
+        : null
 
-      let val = 0
-      if (px >= 0 && px < width && py >= 0 && py < imgHeight) {
-        val = sampleBlockAt(imageData, width, px, py, payloadBs)
+      for (let cx = 0; cx < payloadCellsX && decodeState.index < header.payloadLength; cx++) {
+        const offsetIdx = (cy * payloadCellsX + cx) * 2
+        const px = precomputedOffsets && offsetIdx + 1 < precomputedOffsets.length
+          ? precomputedOffsets[offsetIdx] + payloadPhaseX
+          : payloadStartXBase + Math.round(cx * payloadStepX) + payloadPhaseX
+        const py = precomputedOffsets && offsetIdx + 1 < precomputedOffsets.length
+          ? precomputedOffsets[offsetIdx + 1]
+          : payloadStartY + Math.round(cy * payloadStepY)
+
+        let val = 0
+        if (px >= 0 && px < width && py >= 0 && py < imgHeight) {
+          val = sampleBlockAt(imageData, width, px, py, payloadBs)
+        }
+        const symbol = header.mode === HDMI_MODE.LUMA_1
+          ? decodeLuma1SymbolFromLevels(val, lumaLevels, black, white)
+          : (val >= threshold ? 1 : 0)
+        if (confidence && confidenceIdx < confidence.length) {
+          confidence[confidenceIdx++] = binaryConfidence(val, threshold)
+        }
+        appendSymbolBits(payload, decodeState, symbol, bitsPerPayloadCell)
       }
-      const symbol = header.mode === HDMI_MODE.LUMA_1
-        ? decodeLuma1SymbolFromLevels(val, lumaLevels, black, white)
-        : (val >= threshold ? 1 : 0)
-      if (confidence && confidenceIdx < confidence.length) {
-        confidence[confidenceIdx++] = binaryConfidence(val, threshold)
-      }
-      appendSymbolBits(payload, decodeState, symbol, bitsPerPayloadCell)
     }
-  }
 
-  const actualCrc = crc32(payload)
-  const levels = {
-    blackLevel: ref.headerLevels.blackLevel,
-    whiteLevel: ref.headerLevels.whiteLevel,
-    rowBlackLevels: ref.rowBlackLevels,
-    rowWhiteLevels: ref.rowWhiteLevels
-  }
-  const result = {
-    header,
-    payload,
-    crcValid: actualCrc === header.payloadCrc,
-    levels,
-    _diag: {
-      frameMode: header.mode,
-      blocksX: payloadCellsX,
-      blocksY: payloadCellsY,
-      headerBlocksX: headerCellsX,
-      headerBlocksY: Math.floor(region.h / headerStepY),
-      dataBs: payloadBs,
-      headerBs,
-      stepX: payloadStepX,
-      stepY: payloadStepY,
-      headerStepX,
-      headerStepY,
-      xOff: rx - region.x,
-      yOff: ry - region.y,
+    const actualCrc = crc32(payload)
+    const levels = {
       blackLevel: ref.headerLevels.blackLevel,
       whiteLevel: ref.headerLevels.whiteLevel,
-      stripRows: ref.stripRows
+      rowBlackLevels: ref.rowBlackLevels,
+      rowWhiteLevels: ref.rowWhiteLevels
     }
+    const result = {
+      header,
+      payload,
+      crcValid: actualCrc === header.payloadCrc,
+      levels,
+      _diag: {
+        frameMode: header.mode,
+        blocksX: payloadCellsX,
+        blocksY: payloadCellsY,
+        headerBlocksX: headerCellsX,
+        headerBlocksY: Math.floor(region.h / headerStepY),
+        dataBs: payloadBs,
+        headerBs,
+        stepX: payloadStepX,
+        stepY: payloadStepY,
+        headerStepX,
+        headerStepY,
+        xOff: rx - region.x,
+        yOff: ry - region.y,
+        payloadPhaseX,
+        blackLevel: ref.headerLevels.blackLevel,
+        whiteLevel: ref.headerLevels.whiteLevel,
+        stripRows: ref.stripRows
+      }
+    }
+    if (confidence) result.confidence = confidence
+    return result
   }
-  if (confidence) result.confidence = confidence
-  return result
+
+  const phases = header.mode === HDMI_MODE.LUMA_1 && Number.isFinite(options.payloadPhaseX)
+    ? [options.payloadPhaseX]
+    : header.mode === HDMI_MODE.LUMA_1 ? [0, 1, -1, 2, -2] : [0]
+  let firstResult = null
+  for (const phase of phases) {
+    const result = makeResult(phase)
+    if (!firstResult) firstResult = result
+    if (result.crcValid) return result
+  }
+  return firstResult
 }
 
 // Check if an 8×8 block grid at (originX, originY) matches the anchor pattern
@@ -2751,7 +2810,7 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
       headerBs,
       headerBlocksX,
       header,
-      { collectConfidence: false, ...options },
+      { collectConfidence: false, ...options, payloadPhaseX: layout.payloadPhaseX || 0 },
       safePrecomputedOffsets
     )
     return result?.payload?.length === payloadLength ? result.payload : null
@@ -2877,6 +2936,7 @@ function summarizeDecisionCandidate(result, region) {
     payloadLength: result.header.payloadLength,
     xOff: diag.xOff,
     yOff: diag.yOff,
+    payloadPhaseX: diag.payloadPhaseX,
     dataBs: diag.dataBs,
     stepX: diag.stepX,
     stepY: diag.stepY,
@@ -3172,6 +3232,7 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
           headerBlocksY: innerDiag.headerBlocksY,
           blackLevel: innerDiag.blackLevel,
           whiteLevel: innerDiag.whiteLevel,
+          payloadPhaseX: innerDiag.payloadPhaseX,
           stripRows: innerDiag.stripRows
         }
       }
@@ -3343,6 +3404,7 @@ function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout, 
           headerBlocksY: innerDiag.headerBlocksY,
           blackLevel: innerDiag.blackLevel,
           whiteLevel: innerDiag.whiteLevel,
+          payloadPhaseX: innerDiag.payloadPhaseX,
           stripRows: innerDiag.stripRows
         }
       }
@@ -3504,6 +3566,7 @@ export function decodeDataRegion(imageData, width, region, options = {}) {
               headerBlocksY: innerDiag.headerBlocksY,
               blackLevel: innerDiag.blackLevel,
               whiteLevel: innerDiag.whiteLevel,
+              payloadPhaseX: innerDiag.payloadPhaseX,
               stripRows: innerDiag.stripRows
             }
           }
@@ -3722,7 +3785,8 @@ export function testLuma1ConstantsRegistered() {
     getModeHeaderBlockSize(HDMI_MODE.LUMA_1) === 4 &&
     getModePayloadBlockSize(HDMI_MODE.LUMA_1) === 1 &&
     getModeBitsPerBlock(HDMI_MODE.LUMA_1) === 2 &&
-    luma1Cap === binary1Cap * 2
+    luma1Cap > binary1Cap &&
+    luma1Cap < binary1Cap * 2
   console.log('LUMA_1 constants/capacity test:', pass ? 'PASS' : 'FAIL', { binary1Cap, luma1Cap })
   return pass
 }
