@@ -13,7 +13,10 @@ export function clearDenseBinaryLockState(target) {
 }
 
 function isDenseBinaryLockMode(mode) {
-  return mode === HDMI_MODE.BINARY_3 || mode === HDMI_MODE.BINARY_2 || mode === HDMI_MODE.BINARY_1
+  return mode === HDMI_MODE.BINARY_3 ||
+    mode === HDMI_MODE.BINARY_2 ||
+    mode === HDMI_MODE.BINARY_1 ||
+    mode === HDMI_MODE.LUMA_1
 }
 
 function normalizeDenseBinaryLayout(layoutInput, header = null) {
@@ -25,7 +28,7 @@ function normalizeDenseBinaryLayout(layoutInput, header = null) {
     headerBlocksX: layoutInput.headerBlocksX,
     headerBlocksY: layoutInput.headerBlocksY,
     frameMode: layoutInput.frameMode,
-    bitsPerBlock: 1,
+    bitsPerBlock: layoutInput.bitsPerBlock || (layoutInput.frameMode === HDMI_MODE.LUMA_1 ? 2 : 1),
     stepX: layoutInput.stepX,
     stepY: layoutInput.stepY,
     dataBs: layoutInput.dataBs,

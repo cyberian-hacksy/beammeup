@@ -798,7 +798,14 @@ export function normalizeExternalPresentationMetrics(metrics, target = getPresen
 }
 
 function isDenseBinaryMode(mode = state.mode) {
-  return mode === HDMI_MODE.BINARY_3 || mode === HDMI_MODE.BINARY_2 || mode === HDMI_MODE.BINARY_1
+  return mode === HDMI_MODE.BINARY_3 ||
+    mode === HDMI_MODE.BINARY_2 ||
+    mode === HDMI_MODE.BINARY_1 ||
+    mode === HDMI_MODE.LUMA_1
+}
+
+function usesBinary1DenseDefaults(mode = state.mode) {
+  return mode === HDMI_MODE.BINARY_1 || mode === HDMI_MODE.LUMA_1
 }
 
 function modeRequiresNative1080p(mode) {
@@ -1362,7 +1369,7 @@ const DENSE_BINARY_BATCHING_PROFILES = {
 }
 
 function getDenseBinaryMaxPacketSlots(mode) {
-  return mode === HDMI_MODE.BINARY_1 ? MAX_BINARY1_FRAME_PACKET_SLOTS : MAX_FRAME_PACKET_SLOTS
+  return usesBinary1DenseDefaults(mode) ? MAX_BINARY1_FRAME_PACKET_SLOTS : MAX_FRAME_PACKET_SLOTS
 }
 
 function getDenseBinaryBatchingProfile(profileId = null, mode = null, options = {}) {
@@ -1373,9 +1380,9 @@ function getDenseBinaryBatchingProfile(profileId = null, mode = null, options = 
     : defaultId
   const selectedId = options.useModeDefault === false
     ? diagnosticId
-    : (mode === HDMI_MODE.BINARY_1 && diagnosticId === defaultId ? 'huge' : diagnosticId)
+    : (usesBinary1DenseDefaults(mode) && diagnosticId === defaultId ? 'huge' : diagnosticId)
   const selected = DENSE_BINARY_BATCHING_PROFILES[selectedId]
-  const maxBlockSize = mode === HDMI_MODE.BINARY_1 && selectedId === 'huge'
+  const maxBlockSize = usesBinary1DenseDefaults(mode) && selectedId === 'huge'
     ? BINARY1_HUGE_MAX_BLOCK_SIZE
     : selected.maxBlockSize
   return {
@@ -1523,6 +1530,7 @@ function getBatchingProfile(mode) {
     case HDMI_MODE.BINARY_2:
       return getDenseBinaryBatchingProfile(undefined, mode)
     case HDMI_MODE.BINARY_1:
+    case HDMI_MODE.LUMA_1:
       return getDenseBinaryBatchingProfile(undefined, mode)
     case HDMI_MODE.CODEBOOK_3:
       // Binary quadrant glyphs keep the payload alphabet black/white while
@@ -1571,7 +1579,7 @@ function shouldSendMetadata(frameNumber) {
 }
 
 function getSyncPorchFrameCount(mode = state.mode) {
-  return mode === HDMI_MODE.BINARY_1 ? BINARY1_SYNC_PORCH_FRAMES : 0
+  return usesBinary1DenseDefaults(mode) ? BINARY1_SYNC_PORCH_FRAMES : 0
 }
 
 function isSyncPorchFrame(frameNumber, mode = state.mode) {
@@ -1847,7 +1855,7 @@ function getActiveSlotMixPatternForFrame(passNumber, {
   sourceIndex = state.systematicIndex
 } = {}) {
   if (
-    mode === HDMI_MODE.BINARY_1 &&
+    usesBinary1DenseDefaults(mode) &&
     passNumber === 2 &&
     paritySweepsInPass === 0 &&
     sourceIndex < Math.max(1, slots) * BINARY1_PASS2_SOURCE_WARMUP_FRAMES
@@ -1896,7 +1904,7 @@ function getCurrentSystematicLabel() {
 function getSystematicPassIndexOffset(sourceSpan, passNumber = state.systematicPass, mode = state.mode, symbolKind = 'source') {
   if (sourceSpan <= 1) return 0
   if (passNumber === 1) return 0
-  if (symbolKind === 'source' && mode === HDMI_MODE.BINARY_1 && passNumber === 2) return 0
+  if (symbolKind === 'source' && usesBinary1DenseDefaults(mode) && passNumber === 2) return 0
   if (passNumber === 2) return Math.floor(sourceSpan / 2)
   if (passNumber === 3) return Math.floor(sourceSpan / 4)
   if (passNumber === 4) return Math.floor((sourceSpan * 3) / 4)
@@ -2953,7 +2961,7 @@ export function testExternalPreparedStartUsesManualGate() {
 export function testHdmiUvcSenderDefaults() {
   const renderPreset = getRenderSizePreset()
   const recommendedFps = FPS_PRESETS[Number(getRecommendedFpsPreset(state.mode))]
-  const pass = state.mode === HDMI_MODE.BINARY_1 &&
+  const pass = state.mode === HDMI_MODE.LUMA_1 &&
     renderPreset.id === '1080p' &&
     recommendedFps?.fps === 60
   console.log('HDMI-UVC sender defaults test:', pass ? 'PASS' : 'FAIL', {
@@ -2968,11 +2976,14 @@ export function testHdmiUvcSenderDefaults() {
 export function testBinary1RecommendedFpsIs60() {
   const binary1Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_1))]
   const binary2Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_2))]
+  const luma1Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.LUMA_1))]
   const pass = binary1Preset?.fps === 60 &&
-    binary2Preset?.fps === 60
+    binary2Preset?.fps === 60 &&
+    luma1Preset?.fps === 60
   console.log('BINARY_1 60fps recommendation test:', pass ? 'PASS' : 'FAIL', {
     binary1: binary1Preset,
-    binary2: binary2Preset
+    binary2: binary2Preset,
+    luma1: luma1Preset
   })
   return pass
 }

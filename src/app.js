@@ -105,15 +105,18 @@ import {
   testBinary3ConstantsRegistered,
   testBinary2ConstantsRegistered,
   testBinary1ConstantsRegistered,
+  testLuma1ConstantsRegistered,
   testHdmiModesExcludeRemovedMode7,
   testBinary3FrameRoundtrip,
   testBinary2FrameRoundtrip,
   testBinary1FrameRoundtrip,
+  testLuma1FrameRoundtrip,
   testDecodeDataRegionPropagatesDenseBinaryLevels,
   testDenseBinaryLockedLayoutMatchesBlindSweep,
   testDenseBinaryPrecomputedOffsetsMatchUncached,
   testBinary1LockedPayloadReaderMatchesGeneric,
   testBinary1LockedPayloadReaderUsesBytePacker,
+  testLuma1LockedPayloadReaderMatchesGeneric,
   testBinary2LockedPayloadReaderMatchesGeneric,
   testBinary2LockedPayloadReaderTranslatesCroppedOffsets,
   testBinary2SinglePixelLockedPayloadReader,
@@ -220,15 +223,18 @@ window.testHeaderAndPayloadBlockSizesMatchForExistingModes = testHeaderAndPayloa
 window.testBinary3ConstantsRegistered = testBinary3ConstantsRegistered
 window.testBinary2ConstantsRegistered = testBinary2ConstantsRegistered
 window.testBinary1ConstantsRegistered = testBinary1ConstantsRegistered
+window.testLuma1ConstantsRegistered = testLuma1ConstantsRegistered
 window.testHdmiModesExcludeRemovedMode7 = testHdmiModesExcludeRemovedMode7
 window.testBinary3FrameRoundtrip = testBinary3FrameRoundtrip
 window.testBinary2FrameRoundtrip = testBinary2FrameRoundtrip
 window.testBinary1FrameRoundtrip = testBinary1FrameRoundtrip
+window.testLuma1FrameRoundtrip = testLuma1FrameRoundtrip
 window.testDecodeDataRegionPropagatesDenseBinaryLevels = testDecodeDataRegionPropagatesDenseBinaryLevels
 window.testDenseBinaryLockedLayoutMatchesBlindSweep = testDenseBinaryLockedLayoutMatchesBlindSweep
 window.testDenseBinaryPrecomputedOffsetsMatchUncached = testDenseBinaryPrecomputedOffsetsMatchUncached
 window.testBinary1LockedPayloadReaderMatchesGeneric = testBinary1LockedPayloadReaderMatchesGeneric
 window.testBinary1LockedPayloadReaderUsesBytePacker = testBinary1LockedPayloadReaderUsesBytePacker
+window.testLuma1LockedPayloadReaderMatchesGeneric = testLuma1LockedPayloadReaderMatchesGeneric
 window.testBinary2LockedPayloadReaderMatchesGeneric = testBinary2LockedPayloadReaderMatchesGeneric
 window.testBinary2LockedPayloadReaderTranslatesCroppedOffsets = testBinary2LockedPayloadReaderTranslatesCroppedOffsets
 window.testBinary2SinglePixelLockedPayloadReader = testBinary2SinglePixelLockedPayloadReader
@@ -474,15 +480,18 @@ async function runAllTests() {
     hdmiBinary3Constants: testBinary3ConstantsRegistered(),
     hdmiBinary2Constants: testBinary2ConstantsRegistered(),
     hdmiBinary1Constants: testBinary1ConstantsRegistered(),
+    hdmiLuma1Constants: testLuma1ConstantsRegistered(),
     hdmiModesExcludeRemovedMode7: testHdmiModesExcludeRemovedMode7(),
     hdmiBinary3FrameRoundtrip: testBinary3FrameRoundtrip(),
     hdmiBinary2FrameRoundtrip: testBinary2FrameRoundtrip(),
     hdmiBinary1FrameRoundtrip: testBinary1FrameRoundtrip(),
+    hdmiLuma1FrameRoundtrip: testLuma1FrameRoundtrip(),
     hdmiDenseBinaryLevelsPropagation: testDecodeDataRegionPropagatesDenseBinaryLevels(),
     hdmiDenseBinaryLockedLayout: testDenseBinaryLockedLayoutMatchesBlindSweep(),
     hdmiDenseBinaryPrecomputedOffsets: testDenseBinaryPrecomputedOffsetsMatchUncached(),
     hdmiBinary1LockedPayloadReader: testBinary1LockedPayloadReaderMatchesGeneric(),
     hdmiBinary1LockedPayloadReaderBytePacker: testBinary1LockedPayloadReaderUsesBytePacker(),
+    hdmiLuma1LockedPayloadReader: testLuma1LockedPayloadReaderMatchesGeneric(),
     hdmiBinary2LockedPayloadReader: testBinary2LockedPayloadReaderMatchesGeneric(),
     hdmiBinary2CroppedLockedPayloadReader: testBinary2LockedPayloadReaderTranslatesCroppedOffsets(),
     hdmiBinary2SinglePixelLockedPayloadReader: testBinary2SinglePixelLockedPayloadReader(),

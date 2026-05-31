@@ -1617,6 +1617,7 @@ function shouldUseHeaderOnlyFrameForLock(result) {
     result.header?.payloadLength === 0 &&
     (
       result.header?.mode === HDMI_MODE.BINARY_1 ||
+      result.header?.mode === HDMI_MODE.LUMA_1 ||
       result.header?.mode === HDMI_MODE.BINARY_2 ||
       result.header?.mode === HDMI_MODE.BINARY_3
     )
@@ -1906,6 +1907,7 @@ function getLayoutProbeOptions(layout) {
     case HDMI_MODE.BINARY_3:
     case HDMI_MODE.BINARY_2:
     case HDMI_MODE.BINARY_1:
+    case HDMI_MODE.LUMA_1:
       return {
         offsets: [0, -1, 1]
       }
@@ -1925,6 +1927,7 @@ function getLockedLayoutProbeOptions(layout) {
     case HDMI_MODE.BINARY_3:
     case HDMI_MODE.BINARY_2:
     case HDMI_MODE.BINARY_1:
+    case HDMI_MODE.LUMA_1:
       return {
         offsets: [0, -1, 1]
       }
@@ -1941,7 +1944,8 @@ function getLockedLayoutProbeOptions(layout) {
 function isDenseBinaryLayout(layout) {
   return layout?.frameMode === HDMI_MODE.BINARY_3 ||
     layout?.frameMode === HDMI_MODE.BINARY_2 ||
-    layout?.frameMode === HDMI_MODE.BINARY_1
+    layout?.frameMode === HDMI_MODE.BINARY_1 ||
+    layout?.frameMode === HDMI_MODE.LUMA_1
 }
 
 function getDenseBinaryLayoutOffsets(layout) {
@@ -2094,7 +2098,8 @@ async function tryLockedLayoutFastPath(imageData, width, region) {
     activeMode !== HDMI_MODE.CODEBOOK_3 &&
     activeMode !== HDMI_MODE.BINARY_3 &&
     activeMode !== HDMI_MODE.BINARY_2 &&
-    activeMode !== HDMI_MODE.BINARY_1
+    activeMode !== HDMI_MODE.BINARY_1 &&
+    activeMode !== HDMI_MODE.LUMA_1
   ) {
     return false
   }
