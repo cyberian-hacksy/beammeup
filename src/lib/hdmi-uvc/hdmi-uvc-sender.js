@@ -48,8 +48,8 @@ const DEBUG_MODE = true
 // value is read per-pass so changes apply on the next TX session without a
 // reload. See docs/plans/2026-04-17-hdmi-tail-solver-and-rx-hardening.md Phase 3.
 const TX_PERF_LOG_INTERVAL_FRAMES = 60
-const BINARY1_SYNC_PORCH_FRAMES = 12
-const BINARY1_PASS2_SOURCE_WARMUP_FRAMES = 12
+const BINARY1_SYNC_PORCH_FRAMES = 0
+const BINARY1_PASS2_SOURCE_WARMUP_FRAMES = 0
 const DISPLAY_PACED_MIN_FPS = 55
 const DISPLAY_PACED_RENDER_ENABLED = false
 
@@ -3130,7 +3130,7 @@ export function testBinary1Pass2ReplaysFromStart() {
   }
 }
 
-export function testBinary1SyncPorchFramesAreHeaderOnly() {
+export function testBinary1StartsDataImmediately() {
   const snapshot = snapshotSchedulerState()
   try {
     setupSchedulerTestState({
@@ -3141,22 +3141,17 @@ export function testBinary1SyncPorchFramesAreHeaderOnly() {
       systematicPass: 1
     })
     const first = buildFramePacketBatch(1)
-    const lastPorch = buildFramePacketBatch(12)
-    const firstData = buildFramePacketBatch(13)
-    const pass = first.payload.length === 0 &&
-      first.symbolIds.length === 0 &&
+    const second = buildFramePacketBatch(2)
+    const pass = first.payload.length > 0 &&
+      first.syncPorch !== true &&
       first.outerSymbolId === 0 &&
-      first.syncPorch === true &&
-      lastPorch.payload.length === 0 &&
-      lastPorch.syncPorch === true &&
-      firstData.payload.length > 0 &&
-      firstData.syncPorch !== true &&
-      firstData.symbolIds[0] === 0 &&
-      firstData.symbolIds[1] === 1
-    console.log('BINARY_1 sync porch header-only test:', pass ? 'PASS' : 'FAIL', {
+      first.symbolIds[0] === 0 &&
+      first.symbolIds[1] === 1 &&
+      second.payload.length > 0 &&
+      second.syncPorch !== true
+    console.log('BINARY_1 immediate data start test:', pass ? 'PASS' : 'FAIL', {
       first,
-      lastPorch,
-      firstDataSymbolIds: firstData.symbolIds
+      secondSymbolIds: second.symbolIds
     })
     return pass
   } finally {
@@ -3164,7 +3159,7 @@ export function testBinary1SyncPorchFramesAreHeaderOnly() {
   }
 }
 
-export function testBinary1Pass2WarmupIsSourceOnly() {
+export function testBinary1Pass2StartsMixedReplay() {
   const snapshot = snapshotSchedulerState()
   try {
     setupSchedulerTestState({
@@ -3175,19 +3170,12 @@ export function testBinary1Pass2WarmupIsSourceOnly() {
       systematicPass: 2,
       paritySweepsInPass: 0
     })
-    const warmupCounts = countSymbolKinds(buildFramePacketBatch(13).symbolIds, state.encoder)
-    state.systematicIndex = 8 * 12
-    const postWarmupCounts = countSymbolKinds(buildFramePacketBatch(30).symbolIds, state.encoder)
-    const pass = warmupCounts.metadata === 1 &&
-      warmupCounts.source === 7 &&
-      warmupCounts.parity === 0 &&
-      warmupCounts.fountain === 0 &&
-      postWarmupCounts.source === 6 &&
-      postWarmupCounts.parity === 2 &&
-      postWarmupCounts.fountain === 0
-    console.log('BINARY_1 pass-2 warmup source-only test:', pass ? 'PASS' : 'FAIL', {
-      warmupCounts,
-      postWarmupCounts
+    const firstPass2Counts = countSymbolKinds(buildFramePacketBatch(13).symbolIds, state.encoder)
+    const pass = firstPass2Counts.source === 6 &&
+      firstPass2Counts.parity === 2 &&
+      firstPass2Counts.fountain === 0
+    console.log('BINARY_1 pass-2 mixed replay start test:', pass ? 'PASS' : 'FAIL', {
+      firstPass2Counts
     })
     return pass
   } finally {

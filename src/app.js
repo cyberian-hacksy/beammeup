@@ -54,8 +54,8 @@ import {
   testBinary1XlargeFillsFrame,
   testBinary1DefaultsToHugeBatching,
   testBinary1Pass2ReplaysFromStart,
-  testBinary1SyncPorchFramesAreHeaderOnly,
-  testBinary1Pass2WarmupIsSourceOnly,
+  testBinary1StartsDataImmediately,
+  testBinary1Pass2StartsMixedReplay,
   testBinary1UsesTimerPacedRender,
   testBinary1CadenceFpsPresets,
   testDenseBinaryLateMixDiagnostic,
@@ -271,8 +271,8 @@ window.testDenseBinaryProfileLadderShrinksK = testDenseBinaryProfileLadderShrink
 window.testBinary1XlargeFillsFrame = testBinary1XlargeFillsFrame
 window.testBinary1DefaultsToHugeBatching = testBinary1DefaultsToHugeBatching
 window.testBinary1Pass2ReplaysFromStart = testBinary1Pass2ReplaysFromStart
-window.testBinary1SyncPorchFramesAreHeaderOnly = testBinary1SyncPorchFramesAreHeaderOnly
-window.testBinary1Pass2WarmupIsSourceOnly = testBinary1Pass2WarmupIsSourceOnly
+window.testBinary1StartsDataImmediately = testBinary1StartsDataImmediately
+window.testBinary1Pass2StartsMixedReplay = testBinary1Pass2StartsMixedReplay
 window.testBinary1UsesTimerPacedRender = testBinary1UsesTimerPacedRender
 window.testBinary1CadenceFpsPresets = testBinary1CadenceFpsPresets
 window.testDenseBinaryLateMixDiagnostic = testDenseBinaryLateMixDiagnostic
@@ -524,8 +524,8 @@ async function runAllTests() {
     binary1XlargeFillsFrame: testBinary1XlargeFillsFrame(),
     binary1DefaultsToHugeBatching: testBinary1DefaultsToHugeBatching(),
     binary1Pass2ReplaysFromStart: testBinary1Pass2ReplaysFromStart(),
-    binary1SyncPorchFramesAreHeaderOnly: testBinary1SyncPorchFramesAreHeaderOnly(),
-    binary1Pass2WarmupIsSourceOnly: testBinary1Pass2WarmupIsSourceOnly(),
+    binary1StartsDataImmediately: testBinary1StartsDataImmediately(),
+    binary1Pass2StartsMixedReplay: testBinary1Pass2StartsMixedReplay(),
     binary1TimerPacedRenderPolicy: testBinary1UsesTimerPacedRender(),
     binary1CadenceFpsPresets: testBinary1CadenceFpsPresets(),
     denseBinaryLateMixDiagnostic: testDenseBinaryLateMixDiagnostic(),
