@@ -49,6 +49,38 @@ const TX_PERF_LOG_INTERVAL_FRAMES = 60
 const BINARY1_SYNC_PORCH_FRAMES = 0
 const BINARY1_PASS2_SOURCE_WARMUP_FRAMES = 0
 
+function getCurrentSearch() {
+  try {
+    return typeof location !== 'undefined' ? location.search : ''
+  } catch (_) {
+    return ''
+  }
+}
+
+export function resolveDefaultHdmiMode(search = getCurrentSearch()) {
+  let params
+  try {
+    params = new URLSearchParams(search || '')
+  } catch (_) {
+    return DEFAULT_HDMI_MODE
+  }
+
+  const rawMode = (params.get('tx-mode') || params.get('hdmi-mode') || '').trim().toLowerCase()
+  switch (rawMode) {
+    case 'luma1':
+    case 'luma-1':
+    case 'luma4':
+    case '1x1-luma4':
+      return HDMI_MODE.LUMA_1
+    case 'binary1':
+    case 'binary-1':
+    case '1x1':
+      return HDMI_MODE.BINARY_1
+    default:
+      return DEFAULT_HDMI_MODE
+  }
+}
+
 function debugLog(text) {
   if (!DEBUG_MODE) return
 
@@ -288,7 +320,7 @@ const state = {
   fountainSymbolId: 0,
   dataPacketCount: 0,
   frameCount: 0,
-  mode: DEFAULT_HDMI_MODE,
+  mode: resolveDefaultHdmiMode(),
   renderSizePresetId: DEFAULT_RENDER_SIZE_PRESET,
   systematicPass: 1,
   tailStartFrame: 0,
@@ -2961,7 +2993,7 @@ export function testExternalPreparedStartUsesManualGate() {
 export function testHdmiUvcSenderDefaults() {
   const renderPreset = getRenderSizePreset()
   const recommendedFps = FPS_PRESETS[Number(getRecommendedFpsPreset(state.mode))]
-  const pass = state.mode === HDMI_MODE.LUMA_1 &&
+  const pass = state.mode === HDMI_MODE.BINARY_1 &&
     renderPreset.id === '1080p' &&
     recommendedFps?.fps === 60
   console.log('HDMI-UVC sender defaults test:', pass ? 'PASS' : 'FAIL', {
@@ -2985,6 +3017,17 @@ export function testBinary1RecommendedFpsIs60() {
     binary2: binary2Preset,
     luma1: luma1Preset
   })
+  return pass
+}
+
+export function testHdmiUvcSenderModeUrlOverride() {
+  const pass = resolveDefaultHdmiMode('') === HDMI_MODE.BINARY_1 &&
+    resolveDefaultHdmiMode('?tx-mode=binary1') === HDMI_MODE.BINARY_1 &&
+    resolveDefaultHdmiMode('?tx-mode=luma1') === HDMI_MODE.LUMA_1 &&
+    resolveDefaultHdmiMode('?tx-mode=luma4') === HDMI_MODE.LUMA_1 &&
+    resolveDefaultHdmiMode('?hdmi-mode=luma1') === HDMI_MODE.LUMA_1 &&
+    resolveDefaultHdmiMode('?tx-mode=unknown') === HDMI_MODE.BINARY_1
+  console.log('HDMI-UVC sender mode URL override test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

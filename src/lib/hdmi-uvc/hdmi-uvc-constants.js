@@ -55,7 +55,7 @@ export const HDMI_MODE_NAMES = {
   [HDMI_MODE.LUMA_1]: '1x1 Luma4'
 }
 
-export const DEFAULT_HDMI_MODE = HDMI_MODE.LUMA_1
+export const DEFAULT_HDMI_MODE = HDMI_MODE.BINARY_1
 
 export function getModeDataBlockSize(mode) {
   switch (mode) {

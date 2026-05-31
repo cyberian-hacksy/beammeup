@@ -38,6 +38,7 @@ import {
   testExternalFullscreenFailureStopsBeforeMainFallback,
   testExternalPreparedStartUsesManualGate,
   testHdmiUvcSenderDefaults,
+  testHdmiUvcSenderModeUrlOverride,
   testBinary1RecommendedFpsIs60,
   testLabCardFullscreenExitRequiresReadyRestore,
   testDenseBinaryMixedReplayPass1SourceOnly,
@@ -111,6 +112,7 @@ import {
   testBinary2FrameRoundtrip,
   testBinary1FrameRoundtrip,
   testLuma1FrameRoundtrip,
+  testLuma1WarpedIntermediateLevelsDecode,
   testDecodeDataRegionPropagatesDenseBinaryLevels,
   testDenseBinaryLockedLayoutMatchesBlindSweep,
   testDenseBinaryPrecomputedOffsetsMatchUncached,
@@ -229,6 +231,7 @@ window.testBinary3FrameRoundtrip = testBinary3FrameRoundtrip
 window.testBinary2FrameRoundtrip = testBinary2FrameRoundtrip
 window.testBinary1FrameRoundtrip = testBinary1FrameRoundtrip
 window.testLuma1FrameRoundtrip = testLuma1FrameRoundtrip
+window.testLuma1WarpedIntermediateLevelsDecode = testLuma1WarpedIntermediateLevelsDecode
 window.testDecodeDataRegionPropagatesDenseBinaryLevels = testDecodeDataRegionPropagatesDenseBinaryLevels
 window.testDenseBinaryLockedLayoutMatchesBlindSweep = testDenseBinaryLockedLayoutMatchesBlindSweep
 window.testDenseBinaryPrecomputedOffsetsMatchUncached = testDenseBinaryPrecomputedOffsetsMatchUncached
@@ -270,6 +273,7 @@ window.testExternalFullscreenUsesSelectedScreen = testExternalFullscreenUsesSele
 window.testExternalFullscreenFailureStopsBeforeMainFallback = testExternalFullscreenFailureStopsBeforeMainFallback
 window.testExternalPreparedStartUsesManualGate = testExternalPreparedStartUsesManualGate
 window.testHdmiUvcSenderDefaults = testHdmiUvcSenderDefaults
+window.testHdmiUvcSenderModeUrlOverride = testHdmiUvcSenderModeUrlOverride
 window.testBinary1RecommendedFpsIs60 = testBinary1RecommendedFpsIs60
 window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
 window.testDenseBinaryMixedReplayPass1SourceOnly = testDenseBinaryMixedReplayPass1SourceOnly
@@ -486,6 +490,7 @@ async function runAllTests() {
     hdmiBinary2FrameRoundtrip: testBinary2FrameRoundtrip(),
     hdmiBinary1FrameRoundtrip: testBinary1FrameRoundtrip(),
     hdmiLuma1FrameRoundtrip: testLuma1FrameRoundtrip(),
+    hdmiLuma1WarpedIntermediateLevelsDecode: testLuma1WarpedIntermediateLevelsDecode(),
     hdmiDenseBinaryLevelsPropagation: testDecodeDataRegionPropagatesDenseBinaryLevels(),
     hdmiDenseBinaryLockedLayout: testDenseBinaryLockedLayoutMatchesBlindSweep(),
     hdmiDenseBinaryPrecomputedOffsets: testDenseBinaryPrecomputedOffsetsMatchUncached(),
@@ -527,6 +532,7 @@ async function runAllTests() {
     externalFullscreenFailureStopsBeforeMainFallback: await testExternalFullscreenFailureStopsBeforeMainFallback(),
     externalPreparedStartManualGate: testExternalPreparedStartUsesManualGate(),
     hdmiUvcSenderDefaults: testHdmiUvcSenderDefaults(),
+    hdmiUvcSenderModeUrlOverride: testHdmiUvcSenderModeUrlOverride(),
     binary1Recommended60Fps: testBinary1RecommendedFpsIs60(),
     labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),
     denseBinaryMixedReplayPass1SourceOnly: testDenseBinaryMixedReplayPass1SourceOnly(),

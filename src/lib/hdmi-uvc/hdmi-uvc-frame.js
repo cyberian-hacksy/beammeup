@@ -62,6 +62,7 @@ const DENSE_BINARY_REF_STRIP_WIDTH_4X4 = 1
 const DENSE_BINARY_REF_STRIP_PX = DENSE_BINARY_REF_STRIP_WIDTH_4X4 * DENSE_BINARY_HEADER_BLOCK_SIZE
 const LUMA1_GRAY_SYMBOL_TO_LEVEL = [0, 1, 3, 2]
 const LUMA1_GRAY_LEVEL_TO_SYMBOL = [0, 1, 3, 2]
+const LUMA1_LEVEL_COUNT = 4
 
 function isDenseBinaryMode(mode) {
   return mode === HDMI_MODE.BINARY_3 ||
@@ -247,6 +248,45 @@ function decodeLuma1Symbol(sample, blackLevel = 0, whiteLevel = 255) {
   return LUMA1_GRAY_LEVEL_TO_SYMBOL[decodeGray2(sample, blackLevel, whiteLevel)]
 }
 
+function getDefaultLuma1Levels(blackLevel = 0, whiteLevel = 255) {
+  const minLevel = Math.max(0, Math.min(blackLevel, whiteLevel))
+  const maxLevel = Math.min(255, Math.max(blackLevel, whiteLevel))
+  const span = Math.max(64, maxLevel - minLevel)
+  return GRAY2_LEVEL_FRACTIONS.map((fraction) => minLevel + span * fraction)
+}
+
+function normalizeLuma1Levels(levels, blackLevel = 0, whiteLevel = 255) {
+  const fallback = getDefaultLuma1Levels(blackLevel, whiteLevel)
+  const normalized = fallback.slice()
+  if (levels && levels.length >= LUMA1_LEVEL_COUNT) {
+    for (let i = 0; i < LUMA1_LEVEL_COUNT; i++) {
+      if (Number.isFinite(levels[i])) normalized[i] = levels[i]
+    }
+  }
+
+  for (let i = 1; i < LUMA1_LEVEL_COUNT; i++) {
+    if (normalized[i] <= normalized[i - 1] + 2) return fallback
+  }
+  if (normalized[LUMA1_LEVEL_COUNT - 1] - normalized[0] < 48) return fallback
+  return normalized
+}
+
+function decodeLuma1SymbolFromLevels(sample, levels, blackLevel = 0, whiteLevel = 255) {
+  const normalized = levels && levels.length >= LUMA1_LEVEL_COUNT
+    ? levels
+    : getDefaultLuma1Levels(blackLevel, whiteLevel)
+  let bestLevel = 0
+  let bestDistance = Infinity
+  for (let level = 0; level < LUMA1_LEVEL_COUNT; level++) {
+    const distance = Math.abs(sample - normalized[level])
+    if (distance < bestDistance) {
+      bestDistance = distance
+      bestLevel = level
+    }
+  }
+  return LUMA1_GRAY_LEVEL_TO_SYMBOL[bestLevel]
+}
+
 function encodeRgb3(symbol) {
   return RGB3_PALETTE[symbol & 0x7]
 }
@@ -372,6 +412,23 @@ function fillRectSolid(imageData, width, startX, startY, rectWidth, rectHeight, 
       imageData[i] = r
       imageData[i + 1] = g
       imageData[i + 2] = b
+    }
+  }
+}
+
+function renderLuma1ReferenceStrip(imageData, width, startX, startY, stripWidth, stripHeight, reverse = false) {
+  for (let dx = 0; dx < stripWidth; dx++) {
+    const levelSlot = Math.min(
+      LUMA1_LEVEL_COUNT - 1,
+      Math.floor((dx * LUMA1_LEVEL_COUNT) / Math.max(1, stripWidth))
+    )
+    const level = reverse ? (LUMA1_LEVEL_COUNT - 1 - levelSlot) : levelSlot
+    const val = encodeGray2(level)
+    for (let dy = 0; dy < stripHeight; dy++) {
+      const i = ((startY + dy) * width + (startX + dx)) * 4
+      imageData[i] = val
+      imageData[i + 1] = val
+      imageData[i + 2] = val
     }
   }
 }
@@ -799,12 +856,18 @@ function buildDenseBinaryFrame(payload, mode, width, height, fps, symbolId, targ
   const payloadBandHeight = Math.max(0, dr.h - headerBandHeightPx)
   const stripRows = Math.floor(payloadBandHeight / DENSE_BINARY_HEADER_BLOCK_SIZE)
   const rightStripX = dr.x + dr.w - DENSE_BINARY_REF_STRIP_PX
+  const isLuma1 = isDenseLuma1Mode(mode)
   for (let row = 0; row < stripRows; row++) {
-    const leftVal = (row & 1) ? 255 : 0
-    const rightVal = leftVal ? 0 : 255
     const y = dr.y + headerBandHeightPx + row * DENSE_BINARY_HEADER_BLOCK_SIZE
-    fillRectSolid(imageData, width, dr.x, y, DENSE_BINARY_REF_STRIP_PX, DENSE_BINARY_HEADER_BLOCK_SIZE, leftVal, leftVal, leftVal)
-    fillRectSolid(imageData, width, rightStripX, y, DENSE_BINARY_REF_STRIP_PX, DENSE_BINARY_HEADER_BLOCK_SIZE, rightVal, rightVal, rightVal)
+    if (isLuma1) {
+      renderLuma1ReferenceStrip(imageData, width, dr.x, y, DENSE_BINARY_REF_STRIP_PX, DENSE_BINARY_HEADER_BLOCK_SIZE, false)
+      renderLuma1ReferenceStrip(imageData, width, rightStripX, y, DENSE_BINARY_REF_STRIP_PX, DENSE_BINARY_HEADER_BLOCK_SIZE, true)
+    } else {
+      const leftVal = (row & 1) ? 255 : 0
+      const rightVal = leftVal ? 0 : 255
+      fillRectSolid(imageData, width, dr.x, y, DENSE_BINARY_REF_STRIP_PX, DENSE_BINARY_HEADER_BLOCK_SIZE, leftVal, leftVal, leftVal)
+      fillRectSolid(imageData, width, rightStripX, y, DENSE_BINARY_REF_STRIP_PX, DENSE_BINARY_HEADER_BLOCK_SIZE, rightVal, rightVal, rightVal)
+    }
   }
 
   const payloadX = dr.x + DENSE_BINARY_REF_STRIP_PX
@@ -813,7 +876,6 @@ function buildDenseBinaryFrame(payload, mode, width, height, fps, symbolId, targ
   const payloadCellsX = Math.floor(payloadW / payloadBlockSize)
   const payloadCellsY = Math.floor(payloadBandHeight / payloadBlockSize)
   const bitsPerPayloadCell = getModeBitsPerBlock(mode) || 1
-  const isLuma1 = isDenseLuma1Mode(mode)
   const payloadBitLength = payload.length * BITS_PER_BYTE
   let payloadBitPos = 0
 
@@ -1367,6 +1429,53 @@ function sampleDenseReferenceLevels(imageData, width, height, leftX, rightX, y, 
     : { black: leftVal, white: rightVal }
 }
 
+function sampleLuma1ReferenceColumn(imageData, width, height, stripX, y, bs, column) {
+  const x0 = Math.round(stripX + (column * bs) / LUMA1_LEVEL_COUNT)
+  const x1 = Math.max(
+    x0 + 1,
+    Math.round(stripX + ((column + 1) * bs) / LUMA1_LEVEL_COUNT)
+  )
+  const y0 = Math.round(y)
+  const y1 = Math.max(y0 + 1, Math.round(y + bs))
+  let sum = 0
+  let count = 0
+
+  for (let py = Math.max(0, y0); py < Math.min(height, y1); py++) {
+    for (let px = Math.max(0, x0); px < Math.min(width, x1); px++) {
+      sum += imageData[(py * width + px) * 4]
+      count++
+    }
+  }
+
+  return count > 0 ? sum / count : NaN
+}
+
+function sampleLuma1ReferenceLevels(imageData, width, height, leftX, rightX, y, bs, fallbackBlack, fallbackWhite) {
+  const sums = new Float32Array(LUMA1_LEVEL_COUNT)
+  const counts = new Uint8Array(LUMA1_LEVEL_COUNT)
+
+  for (let column = 0; column < LUMA1_LEVEL_COUNT; column++) {
+    const leftVal = sampleLuma1ReferenceColumn(imageData, width, height, leftX, y, bs, column)
+    if (Number.isFinite(leftVal)) {
+      sums[column] += leftVal
+      counts[column]++
+    }
+
+    const rightVal = sampleLuma1ReferenceColumn(imageData, width, height, rightX, y, bs, column)
+    const rightLevel = LUMA1_LEVEL_COUNT - 1 - column
+    if (Number.isFinite(rightVal)) {
+      sums[rightLevel] += rightVal
+      counts[rightLevel]++
+    }
+  }
+
+  const levels = getDefaultLuma1Levels(fallbackBlack, fallbackWhite)
+  for (let level = 0; level < LUMA1_LEVEL_COUNT; level++) {
+    if (counts[level] > 0) levels[level] = sums[level] / counts[level]
+  }
+  return normalizeLuma1Levels(levels, fallbackBlack, fallbackWhite)
+}
+
 function readDenseBinary1PayloadLockedNativeGrid({
   imageData,
   width,
@@ -1535,6 +1644,7 @@ function readDenseLuma1PayloadLockedNativeGrid({
   let lastStripIdx = -1
   let black = fallbackBlack
   let white = fallbackWhite
+  let lumaLevels = getDefaultLuma1Levels(fallbackBlack, fallbackWhite)
 
   for (let cy = 0; cy < payloadCellsY && byteIdx < payloadLength; cy++) {
     const stripIdx = Math.min(
@@ -1543,7 +1653,7 @@ function readDenseLuma1PayloadLockedNativeGrid({
     )
     if (stripIdx !== lastStripIdx) {
       const refY = payloadStartY + Math.round(stripIdx * headerStepY)
-      const levels = sampleDenseReferenceLevels(
+      lumaLevels = sampleLuma1ReferenceLevels(
         imageData,
         width,
         height,
@@ -1551,12 +1661,9 @@ function readDenseLuma1PayloadLockedNativeGrid({
         rightStripX,
         refY,
         headerBs,
-        stripIdx,
         fallbackBlack,
         fallbackWhite
       )
-      black = levels.black
-      white = levels.white
       lastStripIdx = stripIdx
     }
 
@@ -1574,17 +1681,17 @@ function readDenseLuma1PayloadLockedNativeGrid({
         const fullBytes = Math.min(payloadLength - byteIdx, (payloadCellsX - cx) >> 2)
         for (let i = 0; i < fullBytes; i++) {
           payload[byteIdx++] =
-            (decodeLuma1Symbol(imageData[base], black, white) << 6) |
-            (decodeLuma1Symbol(imageData[base + byteStep], black, white) << 4) |
-            (decodeLuma1Symbol(imageData[base + byteStep * 2], black, white) << 2) |
-            decodeLuma1Symbol(imageData[base + byteStep * 3], black, white)
+            (decodeLuma1SymbolFromLevels(imageData[base], lumaLevels, black, white) << 6) |
+            (decodeLuma1SymbolFromLevels(imageData[base + byteStep], lumaLevels, black, white) << 4) |
+            (decodeLuma1SymbolFromLevels(imageData[base + byteStep * 2], lumaLevels, black, white) << 2) |
+            decodeLuma1SymbolFromLevels(imageData[base + byteStep * 3], lumaLevels, black, white)
           base += byteStep * 4
         }
         cx += fullBytes * 4
         continue
       }
 
-      bitBuffer = (bitBuffer << 2) | decodeLuma1Symbol(imageData[base], black, white)
+      bitBuffer = (bitBuffer << 2) | decodeLuma1SymbolFromLevels(imageData[base], lumaLevels, black, white)
       bitCount += 2
       base += byteStep
       cx++
@@ -1846,6 +1953,7 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
   let threshold = fallbackThreshold
   let black = fallbackBlack
   let white = fallbackWhite
+  let lumaLevels = getDefaultLuma1Levels(fallbackBlack, fallbackWhite)
 
   for (let cy = 0; cy < payloadCellsY && decodeState.index < payloadLength; cy++) {
     const stripIdx = Math.min(
@@ -1855,7 +1963,7 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
     if (stripIdx !== lastStripIdx) {
       const refY = payloadStartY + Math.round(stripIdx * headerStepY)
       if (frameMode === HDMI_MODE.LUMA_1) {
-        const levels = sampleDenseReferenceLevels(
+        lumaLevels = sampleLuma1ReferenceLevels(
           imageData,
           width,
           imgHeight,
@@ -1863,12 +1971,9 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
           rightStripX,
           refY,
           headerBs,
-          stripIdx,
           fallbackBlack,
           fallbackWhite
         )
-        black = levels.black
-        white = levels.white
       } else {
         threshold = sampleBinary2ReferenceThreshold(
           imageData,
@@ -1892,7 +1997,7 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
         ? sampleBlockAt(imageData, width, px, py, payloadBs)
         : sampleBinary2PayloadCellFast(imageData, width, imgHeight, px, py)
       const symbol = frameMode === HDMI_MODE.LUMA_1
-        ? decodeLuma1Symbol(val, black, white)
+        ? decodeLuma1SymbolFromLevels(val, lumaLevels, black, white)
         : (val >= threshold ? 1 : 0)
       appendSymbolBits(payload, decodeState, symbol, bitsPerPayloadCell)
     }
@@ -1952,9 +2057,26 @@ function readDenseBinaryPayload(
       Math.max(0, ref.stripRows - 1),
       Math.max(0, Math.round((cy * payloadStepY) / headerStepY))
     )
-    const black = Number.isFinite(ref.rowBlackLevels[stripIdx]) ? ref.rowBlackLevels[stripIdx] : ref.headerLevels.blackLevel
-    const white = Number.isFinite(ref.rowWhiteLevels[stripIdx]) ? ref.rowWhiteLevels[stripIdx] : ref.headerLevels.whiteLevel
+    const black = header.mode === HDMI_MODE.LUMA_1
+      ? ref.headerLevels.blackLevel
+      : (Number.isFinite(ref.rowBlackLevels[stripIdx]) ? ref.rowBlackLevels[stripIdx] : ref.headerLevels.blackLevel)
+    const white = header.mode === HDMI_MODE.LUMA_1
+      ? ref.headerLevels.whiteLevel
+      : (Number.isFinite(ref.rowWhiteLevels[stripIdx]) ? ref.rowWhiteLevels[stripIdx] : ref.headerLevels.whiteLevel)
     const threshold = (black + white) * 0.5
+    const lumaLevels = header.mode === HDMI_MODE.LUMA_1
+      ? sampleLuma1ReferenceLevels(
+          imageData,
+          width,
+          imgHeight,
+          rx,
+          payloadEndX,
+          payloadStartY + Math.round(stripIdx * headerStepY),
+          headerBs,
+          black,
+          white
+        )
+      : null
 
     for (let cx = 0; cx < payloadCellsX && decodeState.index < header.payloadLength; cx++) {
       const offsetIdx = (cy * payloadCellsX + cx) * 2
@@ -1970,7 +2092,7 @@ function readDenseBinaryPayload(
         val = sampleBlockAt(imageData, width, px, py, payloadBs)
       }
       const symbol = header.mode === HDMI_MODE.LUMA_1
-        ? decodeLuma1Symbol(val, black, white)
+        ? decodeLuma1SymbolFromLevels(val, lumaLevels, black, white)
         : (val >= threshold ? 1 : 0)
       if (confidence && confidenceIdx < confidence.length) {
         confidence[confidenceIdx++] = binaryConfidence(val, threshold)
@@ -3705,6 +3827,55 @@ export function testLuma1FrameRoundtrip() {
     return pass
   } catch (err) {
     console.log('LUMA_1 roundtrip test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+function warpLuma1IntermediateLevels(imageData) {
+  const warped = new Uint8ClampedArray(imageData)
+  for (let i = 0; i < warped.length; i += 4) {
+    const value = warped[i]
+    let mapped = value
+    if (value >= 80 && value <= 105) mapped = 136
+    else if (value >= 150 && value <= 175) mapped = 178
+    if (mapped !== value) {
+      warped[i] = mapped
+      warped[i + 1] = mapped
+      warped[i + 2] = mapped
+    }
+  }
+  return warped
+}
+
+export function testLuma1WarpedIntermediateLevelsDecode() {
+  try {
+    const width = 640
+    const height = 407
+    const payload = new Uint8Array(1500)
+    payload.fill(0x55)
+
+    const frame = warpLuma1IntermediateLevels(
+      buildFrame(payload, HDMI_MODE.LUMA_1, width, height, 30, 49)
+    )
+    const anchors = detectAnchors(frame, width, height)
+    if (anchors.length < 2) {
+      console.log('LUMA_1 warped intermediate decode test: FAIL (anchors)')
+      return false
+    }
+    const region = dataRegionFromAnchors(anchors)
+    if (!region) {
+      console.log('LUMA_1 warped intermediate decode test: FAIL (region)')
+      return false
+    }
+    const result = decodeDataRegion(frame, width, region)
+    const pass = result && result.crcValid &&
+      result.header.mode === HDMI_MODE.LUMA_1 &&
+      result.payload.length === payload.length &&
+      result.payload.every((v, i) => v === payload[i])
+    console.log('LUMA_1 warped intermediate decode test:', pass ? 'PASS' : 'FAIL')
+    return pass
+  } catch (err) {
+    console.log('LUMA_1 warped intermediate decode test: FAIL', err?.message || err)
     return false
   }
 }
