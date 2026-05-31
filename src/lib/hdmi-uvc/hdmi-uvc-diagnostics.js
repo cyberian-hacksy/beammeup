@@ -15,6 +15,7 @@
 //   denseBinaryPass3Mix 'balanced'|'source'                  live    (?dense-pass3=)
 //   denseBinaryDegree   'classic'|'ripple'                   reload  (?dense-degree=, set on BOTH ends)
 //   denseBinaryLateMix  'balanced'|'source'|'fountain'       live    (?dense-late=)
+//   txPace              'timer'|'raf'                        live    (?tx-pace=)
 //
 // "Live" settings are re-read by the consumer per call; "reload" settings
 // are captured at module init time and the UI surfaces a Reload prompt
@@ -124,6 +125,14 @@ const DEFINITIONS = {
     reloadRequired: true,
     labels: { classic: 'classic', ripple: 'ripple' },
     title: 'Dense Degree'
+  },
+  txPace: {
+    urlKey: 'tx-pace',
+    default: 'timer',
+    allowed: ['timer', 'raf'],
+    reloadRequired: false,
+    labels: { timer: 'timer', raf: 'raf' },
+    title: 'TX Pace'
   }
 }
 
@@ -228,12 +237,12 @@ export function getDenseBinaryPass3Mix() { return getDiagnostic('denseBinaryPass
 // Fountain degree distribution. Read by BOTH encoder (sender) and decoder
 // (receiver) — they must match, so set ?dense-degree= identically on both pages.
 export function getDenseBinaryDegree() { return getDiagnostic('denseBinaryDegree') }
+export function getTxPace() { return getDiagnostic('txPace') }
 
 // Render a segmented-button diagnostics panel into `container`. `keys` is
-// the ordered list of setting keys to show — sender uses just ['pass2'],
-// receiver uses the full set minus 'pass2'. The panel re-renders itself
-// on state change, and surfaces a Reload button when any reload-required
-// setting differs from the value captured at module init time.
+// the ordered list of setting keys to show. The panel re-renders itself on
+// state change, and surfaces a Reload button when any reload-required setting
+// differs from the value captured at module init time.
 export function renderDiagnosticsPanel(container, keys, options = {}) {
   if (!container) return
   if (typeof document === 'undefined') return

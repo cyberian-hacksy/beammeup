@@ -29,6 +29,7 @@ import {
   getDenseBinaryPass3Mix,
   getDenseBinaryProfile,
   getDenseBinaryDegree,
+  getTxPace,
   getDiagnosticDefinition,
   getPass2Variant,
   setDiagnostic,
@@ -51,7 +52,6 @@ const TX_PERF_LOG_INTERVAL_FRAMES = 60
 const BINARY1_SYNC_PORCH_FRAMES = 0
 const BINARY1_PASS2_SOURCE_WARMUP_FRAMES = 0
 const DISPLAY_PACED_MIN_FPS = 55
-const DISPLAY_PACED_RENDER_ENABLED = false
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -118,7 +118,11 @@ function createSenderPerfState() {
     lastFrameStartMs: 0,
     overBudgetCount: 0,
     rafSkipCount: 0,
-    displayPacedFrames: 0
+    displayPacedFrames: 0,
+    timerPacedFrames: 0,
+    sameFrameSignatures: 0,
+    newFrameSignatures: 0,
+    lastFrameSignature: null
   }
 }
 
@@ -133,6 +137,9 @@ function clearSenderPerfSamples(perf) {
   perf.overBudgetCount = 0
   perf.rafSkipCount = 0
   perf.displayPacedFrames = 0
+  perf.timerPacedFrames = 0
+  perf.sameFrameSignatures = 0
+  perf.newFrameSignatures = 0
 }
 
 function resetSenderPerfState() {
@@ -173,7 +180,24 @@ function logSenderSessionMetrics(phase, metrics, capacity) {
   )
 }
 
-function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fps, canvasWidth, canvasHeight, displayPaced = false) {
+function getSenderFrameSignatureSummary(perf) {
+  if (!perf) return 'txSig=same0/0 new0/0'
+  const frames = Math.max(1, perf.sameFrameSignatures + perf.newFrameSignatures)
+  return `txSig=same${perf.sameFrameSignatures}/${frames} new${perf.newFrameSignatures}/${frames}`
+}
+
+function noteSenderFrameSignature(perf, symbolIds) {
+  if (!perf) return
+  const signature = Array.isArray(symbolIds) ? symbolIds.join(',') : ''
+  if (perf.lastFrameSignature !== null && perf.lastFrameSignature === signature) {
+    perf.sameFrameSignatures++
+  } else {
+    perf.newFrameSignatures++
+  }
+  perf.lastFrameSignature = signature
+}
+
+function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fps, canvasWidth, canvasHeight, renderPace = 'timer') {
   const perf = state.txPerf
   if (!perf) return
   const targetIntervalMs = 1000 / fps.fps
@@ -190,7 +214,8 @@ function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fp
   recordPerfSample(perf.blitMs, blitMs)
   recordPerfSample(perf.totalMs, totalMs)
   if (totalMs > targetIntervalMs) perf.overBudgetCount++
-  if (displayPaced) perf.displayPacedFrames++
+  if (renderPace === 'raf') perf.displayPacedFrames++
+  else perf.timerPacedFrames++
   perf.framesSinceLog++
 
   if (perf.framesSinceLog < TX_PERF_LOG_INTERVAL_FRAMES) return
@@ -206,6 +231,7 @@ function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fp
     `total=${averagePerfWindow(perf.totalMs).toFixed(2)}ms ` +
     `overBudget=${perf.overBudgetCount}/${perf.totalMs.count} ` +
     `pace=${perf.displayPacedFrames > 0 ? 'raf' : 'timer'} rafSkip=${perf.rafSkipCount} ` +
+    `${getSenderFrameSignatureSummary(perf)} ` +
     `canvas=${canvasWidth}x${canvasHeight}`
   )
 
@@ -1039,10 +1065,15 @@ function resetRenderSchedule() {
   state.nextFrameDueMs = 0
 }
 
+function getSenderRenderPace(mode = state.mode, fps = getFps(), requestedPace = getTxPace()) {
+  if (requestedPace !== 'raf') return 'timer'
+  if (mode !== HDMI_MODE.BINARY_1) return 'timer'
+  if ((fps?.fps || 0) < DISPLAY_PACED_MIN_FPS) return 'timer'
+  return 'raf'
+}
+
 function shouldUseDisplayPacedRender(mode = state.mode, fps = getFps()) {
-  return DISPLAY_PACED_RENDER_ENABLED &&
-    mode === HDMI_MODE.BINARY_1 &&
-    (fps?.fps || 0) >= DISPLAY_PACED_MIN_FPS
+  return getSenderRenderPace(mode, fps) === 'raf'
 }
 
 function scheduleNextRender() {
@@ -2061,7 +2092,9 @@ function renderFrame() {
   try {
     const nextFrameNumber = state.frameCount + 1
     const frameStartMs = performance.now()
+    const renderPace = getSenderRenderPace(state.mode, fps)
     const batch = buildFramePacketBatch(nextFrameNumber)
+    noteSenderFrameSignature(state.txPerf, batch.symbolIds)
     const batchReadyMs = performance.now()
 
     const frameImageData = ensureHdmiFrameResources(cw, ch)
@@ -2115,7 +2148,7 @@ function renderFrame() {
       fps,
       cw,
       ch,
-      shouldUseDisplayPacedRender(state.mode, fps)
+      renderPace
     )
 
     scheduleNextRender()
@@ -2266,6 +2299,7 @@ async function startSending() {
 
     debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
     debugLog(`Pass-2 variant: ${getPass2Variant()}`)
+    debugLog(`TX pacing: ${getSenderRenderPace(state.mode, selectedFps)} (tx-pace=${getTxPace()})`)
     debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
     debugLog(
       `Batch profile: ${batchingProfile.id ? `${batchingProfile.id}, ` : ''}` +
@@ -2691,11 +2725,12 @@ export function initHdmiUvcSender(errorHandler) {
   }
   const diagPanel = document.getElementById('hdmi-uvc-sender-diagnostics')
   if (diagPanel) {
-    renderDiagnosticsPanel(diagPanel, ['pass2', 'denseBinaryProfile', 'denseBinaryPass3Mix', 'denseBinaryLateMix', 'denseBinaryDegree'], { title: 'Diagnostics (sender)' })
+    renderDiagnosticsPanel(diagPanel, ['pass2', 'denseBinaryProfile', 'denseBinaryPass3Mix', 'denseBinaryLateMix', 'denseBinaryDegree', 'txPace'], { title: 'Diagnostics (sender)' })
   }
 
   debugLog('HDMI-UVC Sender initialized')
   debugLog(`Pass-2 variant: ${getPass2Variant()}`)
+  debugLog(`TX pace: ${getTxPace()}`)
 }
 
 // Pure function tests so the two-stage pass-2 schedule and parity-sweep wrap
@@ -3184,11 +3219,33 @@ export function testBinary1Pass2StartsMixedReplay() {
 }
 
 export function testBinary1UsesTimerPacedRender() {
-  const pass = shouldUseDisplayPacedRender(HDMI_MODE.BINARY_1, { fps: 60 }) === false &&
-    shouldUseDisplayPacedRender(HDMI_MODE.BINARY_1, { fps: 58 }) === false &&
-    shouldUseDisplayPacedRender(HDMI_MODE.BINARY_2, { fps: 60 }) === false &&
-    shouldUseDisplayPacedRender(HDMI_MODE.BINARY_1, { fps: 30 }) === false
+  const pass = getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 60 }, 'timer') === 'timer' &&
+    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 58 }, 'timer') === 'timer' &&
+    getSenderRenderPace(HDMI_MODE.BINARY_2, { fps: 60 }, 'timer') === 'timer' &&
+    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 30 }, 'timer') === 'timer'
   console.log('BINARY_1 timer-paced render policy test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testBinary1PacingDiagnosticAllowsRaf() {
+  const pass = getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 60 }, 'timer') === 'timer' &&
+    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 60 }, 'raf') === 'raf' &&
+    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 58 }, 'raf') === 'raf' &&
+    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 30 }, 'raf') === 'timer' &&
+    getSenderRenderPace(HDMI_MODE.BINARY_2, { fps: 60 }, 'raf') === 'timer'
+  console.log('BINARY_1 pacing diagnostic test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testSenderFrameSignatureSummary() {
+  const perf = createSenderPerfState()
+  noteSenderFrameSignature(perf, [1, 2, 3])
+  noteSenderFrameSignature(perf, [1, 2, 3])
+  noteSenderFrameSignature(perf, [4, 5, 6])
+  const summary = getSenderFrameSignatureSummary(perf)
+  const pass = summary.includes('txSig=same1/3') &&
+    summary.includes('new2/3')
+  console.log('Sender frame-signature summary test:', pass ? 'PASS' : `FAIL ${summary}`)
   return pass
 }
 
