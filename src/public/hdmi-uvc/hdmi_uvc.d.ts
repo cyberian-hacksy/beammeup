@@ -61,6 +61,19 @@ declare namespace __AdaptedExports {
    */
   export function packBinary1Payload(pixelsPtr: number, width: number, height: number, rowStartsPtr: number, thresholdsPtr: number, payloadCellsX: number, payloadCellsY: number, payloadLength: number, outPtr: number): number;
   /**
+   * wasm/hdmi-uvc/src/index/probeExpectedPackets
+   * @param framePtr `u32`
+   * @param frameLength `u32`
+   * @param packetSize `u32`
+   * @param fileIdFilter `u32`
+   * @param kFilter `u32`
+   * @param filterFlags `u32`
+   * @param outPtr `u32`
+   * @param maxSlots `u32`
+   * @returns `u32`
+   */
+  export function probeExpectedPackets(framePtr: number, frameLength: number, packetSize: number, fileIdFilter: number, kFilter: number, filterFlags: number, outPtr: number, maxSlots: number): number;
+  /**
    * wasm/hdmi-uvc/src/index/scanBrightRuns
    * @param pixelsPtr `u32`
    * @param width `u32`

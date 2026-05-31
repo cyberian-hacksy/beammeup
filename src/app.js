@@ -76,6 +76,7 @@ import {
   testDenseBinaryLockedLayoutOffsetsCoverBinary2,
   testLockedFastPerfBreakdownSummary,
   testReceiverFrameUseSummary,
+  testReceiverFrameSignatureSummary,
   testReceiverHeaderOnlyFrameCanLock,
   testReceiverAnchorDiagnosticsQuietByDefault,
   testStallCounterTicksOnDuplicateFrames
@@ -159,6 +160,7 @@ import {
   testWasmScanBrightRunsMatchesJs,
   testWasmClassifiersMatchJs,
   testWasmPackBinary1PayloadMatchesJs,
+  testWasmProbeExpectedPacketsMatchesJs,
   testWasmVsJsDetectAnchorsEquivalent,
   testWasmVsJsDecodeDataRegionEquivalent
 } from './lib/hdmi-uvc/hdmi-uvc-wasm.js'
@@ -241,6 +243,7 @@ window.testReceiverFrameAcceptSignals = testReceiverFrameAcceptSignals
 window.testDenseBinaryLockedLayoutOffsetsCoverBinary2 = testDenseBinaryLockedLayoutOffsetsCoverBinary2
 window.testLockedFastPerfBreakdownSummary = testLockedFastPerfBreakdownSummary
 window.testReceiverFrameUseSummary = testReceiverFrameUseSummary
+window.testReceiverFrameSignatureSummary = testReceiverFrameSignatureSummary
 window.testReceiverHeaderOnlyFrameCanLock = testReceiverHeaderOnlyFrameCanLock
 window.testReceiverAnchorDiagnosticsQuietByDefault = testReceiverAnchorDiagnosticsQuietByDefault
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
@@ -311,6 +314,7 @@ window.testFrameCrcWasmIntegration = testFrameCrcWasmIntegration
 window.testWasmScanBrightRunsMatchesJs = testWasmScanBrightRunsMatchesJs
 window.testWasmClassifiersMatchJs = testWasmClassifiersMatchJs
 window.testWasmPackBinary1PayloadMatchesJs = testWasmPackBinary1PayloadMatchesJs
+window.testWasmProbeExpectedPacketsMatchesJs = testWasmProbeExpectedPacketsMatchesJs
 window.testWasmVsJsDetectAnchorsEquivalent = testWasmVsJsDetectAnchorsEquivalent
 window.testWasmVsJsDecodeDataRegionEquivalent = testWasmVsJsDecodeDataRegionEquivalent
 window.testBuildCardBinary4Geometry = testBuildCardBinary4Geometry
@@ -493,6 +497,7 @@ async function runAllTests() {
     denseBinaryLockedLayoutOffsets: testDenseBinaryLockedLayoutOffsetsCoverBinary2(),
     lockedFastPerfBreakdownSummary: testLockedFastPerfBreakdownSummary(),
     receiverFrameUseSummary: testReceiverFrameUseSummary(),
+    receiverFrameSignatureSummary: testReceiverFrameSignatureSummary(),
     receiverHeaderOnlyFrameCanLock: testReceiverHeaderOnlyFrameCanLock(),
     receiverAnchorDiagnosticsQuietDefault: testReceiverAnchorDiagnosticsQuietByDefault(),
     stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames(),
@@ -565,6 +570,7 @@ async function runAllTests() {
     wasmScanBrightRuns: await testWasmScanBrightRunsMatchesJs(),
     wasmClassifiers: await testWasmClassifiersMatchJs(),
     wasmBinary1Packer: await testWasmPackBinary1PayloadMatchesJs(),
+    wasmExpectedPacketProbe: await testWasmProbeExpectedPacketsMatchesJs(),
     wasmVsJsDetectAnchors: await testWasmVsJsDetectAnchorsEquivalent(),
     wasmVsJsDecodeDataRegion: await testWasmVsJsDecodeDataRegionEquivalent(),
     labBinary4Geometry: testBuildCardBinary4Geometry(),

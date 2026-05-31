@@ -772,6 +772,7 @@ function handleWorkerDecoderDelta(msg) {
     state.expectedPacketCount = 0
     state.fixedLayout = null
     state.preferredLayout = null
+    state.lastReceiverFrameSignature = null
     clearDenseBinaryLock()
     state.lockedLayoutFastPathMisses = 0
     state.decodeFailCount = 0
@@ -1212,7 +1213,11 @@ function createReceiverPerfState() {
     acceptedFrames: 0,
     innovatingFrames: 0,
     duplicateAcceptedFrames: 0,
-    emptyFrames: 0
+    emptyFrames: 0,
+    repeatedAcceptedFrames: 0,
+    changedDuplicateFrames: 0,
+    changedInnovatingFrames: 0,
+    unknownAcceptedFrames: 0
   }
 }
 
@@ -1260,6 +1265,10 @@ function clearReceiverPerfSamples(perf) {
   perf.innovatingFrames = 0
   perf.duplicateAcceptedFrames = 0
   perf.emptyFrames = 0
+  perf.repeatedAcceptedFrames = 0
+  perf.changedDuplicateFrames = 0
+  perf.changedInnovatingFrames = 0
+  perf.unknownAcceptedFrames = 0
 }
 
 function resetReceiverPerfState() {
@@ -1352,6 +1361,7 @@ function maybeRebenchmarkSlowRoiCapture() {
   const tuning = state.captureTuning
   const perf = state.rxPerf
   if (!tuning || !perf) return
+  if (state.completedFile) return
   const avgHotCaptureMs = averagePerfWindow(perf.hotCaptureMs)
   if (!shouldRebenchmarkReceiverRoiCapture({
     canUseVideoFrame: tuning.canUseVideoFrame,
@@ -1529,6 +1539,81 @@ function getReceiverFrameUseSummary(perf) {
     `empty${perf.emptyFrames || 0}/${frames}`
 }
 
+export function classifyReceiverFrameSignature(prevSignature, { signature, accepted, innovated } = {}) {
+  if (!accepted) return { nextSignature: prevSignature || null, kind: 'empty' }
+  if (!signature) return { nextSignature: prevSignature || null, kind: 'unknown' }
+  if (prevSignature && prevSignature === signature) {
+    return { nextSignature: signature, kind: 'repeat' }
+  }
+  return { nextSignature: signature, kind: innovated ? 'changedInnovating' : 'changedDuplicate' }
+}
+
+function noteReceiverFrameSignature(signature, accepted, innovated) {
+  const perf = state.rxPerf
+  if (!perf) return
+
+  const classified = classifyReceiverFrameSignature(state.lastReceiverFrameSignature, {
+    signature,
+    accepted,
+    innovated
+  })
+  state.lastReceiverFrameSignature = classified.nextSignature
+  switch (classified.kind) {
+    case 'repeat':
+      perf.repeatedAcceptedFrames++
+      break
+    case 'changedDuplicate':
+      perf.changedDuplicateFrames++
+      break
+    case 'changedInnovating':
+      perf.changedInnovatingFrames++
+      break
+    case 'unknown':
+      perf.unknownAcceptedFrames++
+      break
+  }
+}
+
+function getReceiverFrameSignatureSummary(perf) {
+  if (!perf) return 'frameSig=same0/0 newDup0/0 newInnov0/0 unk0/0'
+  const acceptedFrames = Math.max(1, perf.acceptedFrames || 0)
+  return `frameSig=same${perf.repeatedAcceptedFrames || 0}/${acceptedFrames} ` +
+    `newDup${perf.changedDuplicateFrames || 0}/${acceptedFrames} ` +
+    `newInnov${perf.changedInnovatingFrames || 0}/${acceptedFrames} ` +
+    `unk${perf.unknownAcceptedFrames || 0}/${acceptedFrames}`
+}
+
+function getReceiverPacketYieldSummary(perf, expectedPacketCount) {
+  const expected = Number.isFinite(expectedPacketCount) ? expectedPacketCount : 0
+  if (!perf || expected <= 0 || perf.framesSinceLog <= 0) return 'yield=n/a'
+  const possiblePackets = perf.framesSinceLog * expected
+  const usefulPackets = perf.acceptedPackets || 0
+  const pct = possiblePackets > 0 ? (usefulPackets / possiblePackets) * 100 : 0
+  return `yield=${pct.toFixed(0)}%(${usefulPackets}/${possiblePackets})`
+}
+
+function buildReceiverPacketFrameSignature(parsedList, fallbackSymbolId = null, acceptedPacketCount = 0) {
+  if (!Array.isArray(parsedList) || parsedList.length === 0) {
+    return fallbackSymbolId == null ? null : `fallback:${fallbackSymbolId}:${acceptedPacketCount}`
+  }
+  const first = parsedList[0]
+  const last = parsedList[parsedList.length - 1]
+  if (!first || !last) return null
+  return [
+    first.fileId ?? 'f?',
+    first.k ?? 'k?',
+    first.symbolId ?? 's?',
+    last.symbolId ?? 's?',
+    parsedList.length
+  ].join(':')
+}
+
+function buildReceiverPreIngestedFrameSignature(preIngestedResult, fallbackSymbolId = null, acceptedPacketCount = 0) {
+  const h = preIngestedResult?.header
+  if (!h) return fallbackSymbolId == null ? null : `pre:${fallbackSymbolId}:${acceptedPacketCount}`
+  return `outer:${h.mode ?? 'm?'}:${h.symbolId ?? 's?'}:${acceptedPacketCount}`
+}
+
 function shouldUseHeaderOnlyFrameForLock(result) {
   return !!result?.crcValid &&
     result.header?.payloadLength === 0 &&
@@ -1606,6 +1691,8 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `:${(perf.lockedFastRecoveryPackets / frameBase).toFixed(2)}`
   const lockedFastStageSummary = getLockedFastStageSummary(perf)
   const frameUseSummary = getReceiverFrameUseSummary(perf)
+  const frameSignatureSummary = getReceiverFrameSignatureSummary(perf)
+  const packetYieldSummary = getReceiverPacketYieldSummary(perf, state.expectedPacketCount)
 
   const t = state.decoder?.telemetry
   const telemetrySummary = t
@@ -1622,8 +1709,8 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `acceptCall=${averagePerfWindow(perf.acceptMs).toFixed(2)}ms ` +
     `total=${averagePerfWindow(perf.totalMs).toFixed(2)}ms ` +
     `${hotSummary} ` +
-    `acceptCalls=${avgAcceptCalls.toFixed(2)}/frame pkts=${avgAcceptedPackets.toFixed(2)}/frame ` +
-    `${recoverySummary} ${lockedFastSummary} ${lockedFastStageSummary} ${frameUseSummary} method=${perf.lastCaptureMethod || 'n/a'} ` +
+    `acceptCalls=${avgAcceptCalls.toFixed(2)}/frame pkts=${avgAcceptedPackets.toFixed(2)}/frame ${packetYieldSummary} ` +
+    `${recoverySummary} ${lockedFastSummary} ${lockedFastStageSummary} ${frameUseSummary} ${frameSignatureSummary} method=${perf.lastCaptureMethod || 'n/a'} ` +
     `${telemetrySummary}`
   )
 
@@ -2030,7 +2117,10 @@ async function tryLockedLayoutFastPath(imageData, width, region) {
   )
   const exactPackets = exact?.probe?.packets || []
   if (exactPackets.length > 0) {
-    if (await acceptPackets(exactPackets, state.frameCount, true, state.expectedPacketCount)) {
+    if (await acceptPackets(exactPackets, state.frameCount, true, state.expectedPacketCount, null, {
+      salvaged: exact.probe?.salvaged || 0,
+      parsedPackets: exact.probe?.parsedPackets || null
+    })) {
       noteLockedLayoutFastPath('exactHit', exactPackets.length)
       state.lockedLayoutFastPathMisses = 0
       if (exact.layout) {
@@ -2069,7 +2159,10 @@ async function tryLockedLayoutFastPath(imageData, width, region) {
     state.preferredLayout = { ...best.layout }
   }
 
-  if (await acceptPackets(packets, state.frameCount, true, state.expectedPacketCount)) {
+  if (await acceptPackets(packets, state.frameCount, true, state.expectedPacketCount, null, {
+    salvaged: best.probe?.salvaged || 0,
+    parsedPackets: best.probe?.parsedPackets || null
+  })) {
     noteLockedLayoutFastPath('recoveryHit', packets.length)
     state.lockedLayoutFastPathMisses = 0
     if (state.decoder?.isComplete()) return true
@@ -2092,6 +2185,7 @@ async function acceptPackets(
   let accepted = false
   let innovationCount = 0
   const softSalvagedPacketCount = (packetStats?.salvaged || preIngestedResult?.salvaged || 0)
+  let frameSignature = null
 
   try {
     if (!preIngestedResult && packets.length === 0) return false
@@ -2121,15 +2215,32 @@ async function acceptPackets(
       } else {
         lastParsed = { symbolId: fallbackSymbolId }
       }
+      frameSignature = buildReceiverPreIngestedFrameSignature(
+        preIngestedResult,
+        fallbackSymbolId,
+        acceptedPacketCount
+      )
     } else {
-      for (const packet of packets) {
-        const parsed = parsePacket(packet)
-        if (!parsed) continue
-        lastParsed = parsed
-        parsedList.push(parsed)
+      const suppliedParsedPackets = Array.isArray(packetStats?.parsedPackets)
+        ? packetStats.parsedPackets
+        : null
+      if (suppliedParsedPackets && suppliedParsedPackets.length > 0) {
+        for (const parsed of suppliedParsedPackets) {
+          if (!parsed) continue
+          lastParsed = parsed
+          parsedList.push(parsed)
+        }
+      } else {
+        for (const packet of packets) {
+          const parsed = parsePacket(packet)
+          if (!parsed) continue
+          lastParsed = parsed
+          parsedList.push(parsed)
+        }
       }
       if (!lastParsed) return false
       acceptedPacketCount = parsedList.length
+      frameSignature = buildReceiverPacketFrameSignature(parsedList, fallbackSymbolId, acceptedPacketCount)
     }
 
     if (preIngestedResult) {
@@ -2175,6 +2286,7 @@ async function acceptPackets(
           state.expectedPacketCount = 0
           state.fixedLayout = null
           state.preferredLayout = null
+          state.lastReceiverFrameSignature = null
           clearDenseBinaryLock()
           state.lockedLayoutFastPathMisses = 0
           state.decodeFailCount = 0
@@ -2186,6 +2298,7 @@ async function acceptPackets(
       }
     }
     const anyInnovation = innovationCount > 0
+    noteReceiverFrameSignature(frameSignature, true, anyInnovation)
 
     if (countAsValidFrame) {
       state.validFrames++
@@ -2307,6 +2420,7 @@ const state = {
   workerCaptureStartPendingAfterStop: false,
   frameAcceptedThisFrame: false,
   frameInnovatedThisFrame: false,
+  lastReceiverFrameSignature: null,
   lastImageData: null,
   lastImageDataSeq: 0,
   lastImageDataCapturedAtMs: 0,
@@ -3091,7 +3205,10 @@ async function processFrame(now, metadata) {
         true,
         totalFramePackets,
         null,
-        { salvaged: packetProbe.salvaged || 0 }
+        {
+          salvaged: packetProbe.salvaged || 0,
+          parsedPackets: packetProbe.parsedPackets || null
+        }
       )
     }
 
@@ -3493,6 +3610,7 @@ function resetReceiver() {
   state.activeCaptureMethod = null
   state.fixedLayout = null
   state.preferredLayout = null
+  state.lastReceiverFrameSignature = null
   clearDenseBinaryLock()
   state.lockedLayoutFastPathMisses = 0
   state.expectedPacketCount = 0
@@ -3768,6 +3886,36 @@ export function testReceiverFrameUseSummary() {
     return pass
   } finally {
     state.rxPerf = oldPerf
+  }
+}
+
+export function testReceiverFrameSignatureSummary() {
+  const oldPerf = state.rxPerf
+  const oldSignature = state.lastReceiverFrameSignature
+  try {
+    state.rxPerf = createReceiverPerfState()
+    state.lastReceiverFrameSignature = null
+    noteReceiverFrameUse(true, true)
+    noteReceiverFrameSignature('a', true, true)
+    noteReceiverFrameUse(true, false)
+    noteReceiverFrameSignature('a', true, false)
+    noteReceiverFrameUse(true, false)
+    noteReceiverFrameSignature('b', true, false)
+    const summary = getReceiverFrameSignatureSummary(state.rxPerf)
+    const classified = classifyReceiverFrameSignature('b', {
+      signature: 'b',
+      accepted: true,
+      innovated: false
+    })
+    const pass = summary.includes('frameSig=same1/3') &&
+      summary.includes('newDup1/3') &&
+      summary.includes('newInnov1/3') &&
+      classified.kind === 'repeat'
+    console.log('Receiver frame-signature summary test:', pass ? 'PASS' : `FAIL ${summary}`)
+    return pass
+  } finally {
+    state.rxPerf = oldPerf
+    state.lastReceiverFrameSignature = oldSignature
   }
 }
 

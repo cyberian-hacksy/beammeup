@@ -6,6 +6,10 @@
 
 import { createPacket, PACKET_HEADER_SIZE, parsePacket } from '../packet.js'
 import { tryParseOrSalvage } from './hdmi-uvc-salvage.js'
+import {
+  isHdmiUvcWasmActive,
+  wasmProbeExpectedPackets
+} from './hdmi-uvc-wasm.js'
 
 export const MAX_FRAME_PACKET_SLOTS = 64
 
@@ -83,6 +87,16 @@ export function probeFramePackets(framePayload, expectedPacketSize = null, optio
   if (expectedPacketSize && expectedPacketSize >= PACKET_HEADER_SIZE) {
     if (framePayload.length % expectedPacketSize !== 0) {
       return { packets: [], parsedPackets: [], slotCount: null, packetSize: expectedPacketSize, strategy: 'expected', salvaged: 0 }
+    }
+
+    if (!opts.confidence && isHdmiUvcWasmActive()) {
+      try {
+        const wasmProbe = wasmProbeExpectedPackets(framePayload, expectedPacketSize, opts)
+        if (wasmProbe) return wasmProbe
+      } catch (_) {
+        // Fall through to the JS probe if the WASM helper is unavailable or
+        // rejects the geometry. Keeping this silent avoids per-frame log noise.
+      }
     }
 
     const packets = []

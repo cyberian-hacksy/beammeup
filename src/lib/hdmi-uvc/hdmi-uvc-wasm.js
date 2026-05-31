@@ -11,6 +11,11 @@
 // without stomping on each other within one call chain.
 
 import { crc32 as jsCrc32 } from './crc32.js'
+import {
+  createPacket,
+  PACKET_HEADER_SIZE,
+  parsePacket
+} from '../packet.js'
 
 const WASM_FILENAME = 'hdmi_uvc.wasm'
 
@@ -408,6 +413,134 @@ export function wasmPackBinary1Payload(pixels, width, height, rowStarts, thresho
   ) >>> 0
   if (written !== payloadLength) return null
   return new Uint8Array(wasmModule.memory.buffer.slice(outPtr, outPtr + payloadLength))
+}
+
+export function wasmProbeExpectedPackets(framePayload, expectedPacketSize, options = {}) {
+  if (!wasmModule || forceJsFallbackForTesting) throw new Error('hdmi-uvc wasm: not active')
+  if (!framePayload || !expectedPacketSize || expectedPacketSize <= PACKET_HEADER_SIZE) return null
+  if (framePayload.length % expectedPacketSize !== 0) {
+    return {
+      packets: [],
+      parsedPackets: [],
+      slotCount: null,
+      packetSize: expectedPacketSize,
+      strategy: 'expected-wasm',
+      salvaged: 0
+    }
+  }
+
+  const slotCount = Math.floor(framePayload.length / expectedPacketSize)
+  const maxSlots = slotCount
+  const recordBytes = slotCount * 24
+  const total = framePayload.length + recordBytes
+  ensureMemoryFor(total)
+  wasmBytesView.set(framePayload, wasmScratchBase)
+
+  const outPtr = wasmScratchBase + framePayload.length
+  const session = options.session || null
+  const kFilter = session?.k ?? session?.K_prime ?? 0
+  let filterFlags = 0
+  if (session?.fileId != null) filterFlags |= 1
+  if (session?.k != null || session?.K_prime != null) filterFlags |= 2
+
+  const count = wasmModule.probeExpectedPackets(
+    wasmScratchBase,
+    framePayload.length >>> 0,
+    expectedPacketSize >>> 0,
+    (session?.fileId ?? 0) >>> 0,
+    kFilter >>> 0,
+    filterFlags >>> 0,
+    outPtr,
+    maxSlots >>> 0
+  ) >>> 0
+
+  const records = new DataView(wasmModule.memory.buffer, outPtr, count * 24)
+  const packets = []
+  const parsedPackets = []
+  for (let i = 0; i < count; i++) {
+    const base = i * 24
+    const slotIndex = records.getUint32(base, true)
+    const offset = slotIndex * expectedPacketSize
+    if (offset < 0 || offset + expectedPacketSize > framePayload.length) continue
+    const packet = framePayload.subarray(offset, offset + expectedPacketSize)
+    const versionAndFlags = records.getUint32(base + 16, true)
+    const payload = packet.subarray(PACKET_HEADER_SIZE)
+    packets.push(packet)
+    parsedPackets.push({
+      fileId: records.getUint32(base + 4, true),
+      k: records.getUint32(base + 8, true),
+      symbolId: records.getUint32(base + 12, true),
+      blockSize: expectedPacketSize - PACKET_HEADER_SIZE,
+      isMetadata: (versionAndFlags & 1) === 1,
+      mode: (versionAndFlags >> 1) & 0x03,
+      payloadCrc: records.getUint32(base + 20, true),
+      payload
+    })
+  }
+
+  return {
+    packets,
+    parsedPackets,
+    slotCount,
+    packetSize: expectedPacketSize,
+    strategy: 'expected-wasm',
+    salvaged: 0
+  }
+}
+
+export async function testWasmProbeExpectedPacketsMatchesJs() {
+  try {
+    await loadHdmiUvcWasm()
+  } catch (err) {
+    console.log('WASM expected packet probe test: FAIL (load)', err?.message || err)
+    return false
+  }
+
+  const fileId = 0x12345678
+  const k = 849
+  const blockSize = 31
+  const slotCount = 4
+  const packetSize = PACKET_HEADER_SIZE + blockSize
+  const framePayload = new Uint8Array(slotCount * packetSize)
+  for (let slot = 0; slot < slotCount; slot++) {
+    const payload = new Uint8Array(blockSize)
+    payload.fill((slot + 17) & 0xff)
+    const packet = createPacket(fileId, k, slot + 1, payload, false, blockSize)
+    framePayload.set(packet, slot * packetSize)
+  }
+
+  const wasmProbe = wasmProbeExpectedPackets(framePayload, packetSize, {
+    session: { fileId, k },
+    maxPackets: 64
+  })
+  const jsParsed = []
+  for (let offset = 0; offset < framePayload.length; offset += packetSize) {
+    const parsed = parsePacket(framePayload.subarray(offset, offset + packetSize))
+    if (parsed) jsParsed.push(parsed)
+  }
+  const mismatchProbe = wasmProbeExpectedPackets(framePayload, packetSize, {
+    session: { fileId: fileId ^ 1, k },
+    maxPackets: 64
+  })
+
+  const pass = wasmProbe?.packets.length === slotCount &&
+    wasmProbe?.parsedPackets.length === jsParsed.length &&
+    wasmProbe?.parsedPackets.every((parsed, idx) =>
+      parsed.fileId === jsParsed[idx].fileId &&
+      parsed.k === jsParsed[idx].k &&
+      parsed.symbolId === jsParsed[idx].symbolId &&
+      parsed.blockSize === jsParsed[idx].blockSize &&
+      parsed.payloadCrc === jsParsed[idx].payloadCrc &&
+      parsed.payload.length === jsParsed[idx].payload.length
+    ) &&
+    mismatchProbe?.packets.length === 0
+
+  console.log('WASM expected packet probe test:', pass ? 'PASS' : 'FAIL', {
+    wasmPackets: wasmProbe?.packets.length,
+    jsPackets: jsParsed.length,
+    mismatchPackets: mismatchProbe?.packets.length
+  })
+  return pass
 }
 
 export async function testWasmPackBinary1PayloadMatchesJs() {

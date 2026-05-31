@@ -18,6 +18,10 @@ const CRC_TABLE_BYTES: u32 = 256 * 4
 const CLASSIFY_SCRATCH_ADDR: u32 = CRC_TABLE_BYTES      // 1024
 const CLASSIFY_SCRATCH_BYTES: u32 = 4 * 4               // 4 f32
 const SCRATCH_START: u32 = CRC_TABLE_BYTES + CLASSIFY_SCRATCH_BYTES
+const PROTOCOL_VERSION: u32 = 1
+const PACKET_HEADER_SIZE: u32 = 15
+const PROBE_FILTER_FILE_ID: u32 = 1
+const PROBE_FILTER_K: u32 = 2
 
 const classifyScratch: u32 = CLASSIFY_SCRATCH_ADDR
 
@@ -290,6 +294,75 @@ export function packBinary1Payload(
   }
 
   return byteIdx
+}
+
+// Validates fixed-size inner Beam Me Up packet slots inside an already decoded
+// HDMI-UVC frame payload. Writes one 24-byte record per valid slot:
+//   u32 slotIndex, fileId, k, symbolId, versionAndFlags, payloadCrc
+// This keeps the hot expected-size probe in WASM and lets JS build parsed
+// packet views without re-running CRC32 in parsePacket().
+export function probeExpectedPackets(
+  framePtr: u32,
+  frameLength: u32,
+  packetSize: u32,
+  fileIdFilter: u32,
+  kFilter: u32,
+  filterFlags: u32,
+  outPtr: u32,
+  maxSlots: u32
+): u32 {
+  if (packetSize <= PACKET_HEADER_SIZE) return 0
+  if (frameLength < packetSize) return 0
+  if (frameLength % packetSize !== 0) return 0
+
+  const payloadLength: u32 = packetSize - PACKET_HEADER_SIZE
+  let slotCount: u32 = frameLength / packetSize
+  if (slotCount > maxSlots) slotCount = maxSlots
+  const useFileId: bool = (filterFlags & PROBE_FILTER_FILE_ID) !== 0
+  const useK: bool = (filterFlags & PROBE_FILTER_K) !== 0
+
+  let count: u32 = 0
+  for (let slot: u32 = 0; slot < slotCount; slot++) {
+    const base: u32 = framePtr + slot * packetSize
+    const versionAndFlags: u32 = <u32>load<u8>(base)
+    if ((versionAndFlags >>> 3) !== PROTOCOL_VERSION) continue
+
+    const fileId: u32 = loadU32BE(base + 1)
+    if (useFileId && fileId !== fileIdFilter) continue
+
+    const k: u32 = loadU24BE(base + 5)
+    if (useK && k !== kFilter) continue
+
+    const symbolId: u32 = loadU24BE(base + 8)
+    const payloadCrc: u32 = loadU32BE(base + 11)
+    if (crc32(base + PACKET_HEADER_SIZE, payloadLength) !== payloadCrc) continue
+
+    const record: u32 = outPtr + count * 24
+    store<u32>(record, slot)
+    store<u32>(record + 4, fileId)
+    store<u32>(record + 8, k)
+    store<u32>(record + 12, symbolId)
+    store<u32>(record + 16, versionAndFlags)
+    store<u32>(record + 20, payloadCrc)
+    count++
+  }
+
+  return count
+}
+
+// @inline
+function loadU24BE(ptr: u32): u32 {
+  return ((<u32>load<u8>(ptr)) << 16) |
+    ((<u32>load<u8>(ptr + 1)) << 8) |
+    (<u32>load<u8>(ptr + 2))
+}
+
+// @inline
+function loadU32BE(ptr: u32): u32 {
+  return ((<u32>load<u8>(ptr)) << 24) |
+    ((<u32>load<u8>(ptr + 1)) << 16) |
+    ((<u32>load<u8>(ptr + 2)) << 8) |
+    (<u32>load<u8>(ptr + 3))
 }
 
 // @inline
