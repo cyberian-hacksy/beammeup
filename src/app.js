@@ -134,6 +134,7 @@ import {
   testReceiverSlowRoiCaptureTriggersRebenchmark,
   testReceiverActiveTransferSuppressesSlowRoiRebenchmark,
   testReceiverHeaderOnlyFrameStartsRoiWarmupBenchmark,
+  testReceiverPreSignalRoiStartsWarmupBenchmark,
   testReceiverHotPerfFrameGate,
   testReceiverCapturePathBenchmarkSuppressesChurn,
   testComputeLockedCaptureRect,
@@ -291,6 +292,7 @@ window.testReceiverRoiCaptureBenchmarksWhenVideoFrameAvailable = testReceiverRoi
 window.testReceiverSlowRoiCaptureTriggersRebenchmark = testReceiverSlowRoiCaptureTriggersRebenchmark
 window.testReceiverActiveTransferSuppressesSlowRoiRebenchmark = testReceiverActiveTransferSuppressesSlowRoiRebenchmark
 window.testReceiverHeaderOnlyFrameStartsRoiWarmupBenchmark = testReceiverHeaderOnlyFrameStartsRoiWarmupBenchmark
+window.testReceiverPreSignalRoiStartsWarmupBenchmark = testReceiverPreSignalRoiStartsWarmupBenchmark
 window.testReceiverHotPerfFrameGate = testReceiverHotPerfFrameGate
 window.testReceiverCapturePathBenchmarkSuppressesChurn = testReceiverCapturePathBenchmarkSuppressesChurn
 window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
@@ -544,6 +546,7 @@ async function runAllTests() {
     receiverSlowRoiCaptureRebenchmark: testReceiverSlowRoiCaptureTriggersRebenchmark(),
     receiverActiveTransferRoiRebenchmarkSuppression: testReceiverActiveTransferSuppressesSlowRoiRebenchmark(),
     receiverHeaderOnlyRoiWarmupBenchmark: testReceiverHeaderOnlyFrameStartsRoiWarmupBenchmark(),
+    receiverPreSignalRoiWarmupBenchmark: testReceiverPreSignalRoiStartsWarmupBenchmark(),
     receiverHotPerfFrameGate: testReceiverHotPerfFrameGate(),
     receiverCapturePathChurnSuppression: testReceiverCapturePathBenchmarkSuppressesChurn(),
     computeLockedCaptureRect: testComputeLockedCaptureRect(),

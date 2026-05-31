@@ -1389,7 +1389,11 @@ function startRoiCaptureBenchmark(reason) {
   return true
 }
 
-function maybeStartRoiWarmupBenchmark(headerOnlyFrame = false) {
+function maybeStartRoiWarmupBenchmark({
+  headerOnlyFrame = false,
+  roiCaptureAvailable = false,
+  reason = 'ROI warmup'
+} = {}) {
   const tuning = state.captureTuning
   if (!tuning) return false
   if (!shouldStartReceiverRoiWarmupBenchmark({
@@ -1398,11 +1402,12 @@ function maybeStartRoiWarmupBenchmark(headerOnlyFrame = false) {
     roiBenchmarkRemaining: tuning.roiBenchmarkRemaining,
     roiSlowRebenchDone: tuning.roiSlowRebenchDone,
     transferActive: !!state.startTime && !state.completedFile,
-    headerOnlyFrame
+    headerOnlyFrame,
+    roiCaptureAvailable
   })) {
     return false
   }
-  return startRoiCaptureBenchmark('sync header')
+  return startRoiCaptureBenchmark(reason)
 }
 
 // innovationCount counts packets that delivered a new symbol to the decoder
@@ -2728,6 +2733,10 @@ async function processFrame(now, metadata) {
     lockedCapture = state.anchorBounds
       ? state.lockedCaptureRegion
       : state.tentativeLockedCaptureRegion
+    maybeStartRoiWarmupBenchmark({
+      roiCaptureAvailable: !!lockedCapture,
+      reason: 'pre-signal ROI'
+    })
   }
 
   // Try ImageCapture API first while scanning for initial lock
@@ -3115,7 +3124,10 @@ async function processFrame(now, metadata) {
       if (result._diag) state.fixedLayout = { ...result._diag }
       if (result._diag) state.preferredLayout = { ...result._diag }
       applyDenseBinaryLock(result, region)
-      maybeStartRoiWarmupBenchmark(true)
+      maybeStartRoiWarmupBenchmark({
+        headerOnlyFrame: true,
+        reason: 'sync header'
+      })
       debugCurrent(`#${state.frameCount} sync header`)
     } else {
       // CRC-valid outer frame but zero inner packets accepted (wrong block

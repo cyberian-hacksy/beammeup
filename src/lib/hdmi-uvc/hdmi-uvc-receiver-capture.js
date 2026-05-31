@@ -162,9 +162,10 @@ export function shouldStartReceiverRoiWarmupBenchmark({
   roiBenchmarkRemaining = 0,
   roiSlowRebenchDone = false,
   transferActive = false,
-  headerOnlyFrame = false
+  headerOnlyFrame = false,
+  roiCaptureAvailable = false
 } = {}) {
-  return !!headerOnlyFrame &&
+  return (!!headerOnlyFrame || !!roiCaptureAvailable) &&
     !!canUseVideoFrame &&
     roiPreferredMethod === 'video' &&
     roiBenchmarkRemaining === 0 &&
@@ -265,6 +266,23 @@ export function testReceiverHeaderOnlyFrameStartsRoiWarmupBenchmark() {
     shouldStartReceiverRoiWarmupBenchmark({ ...warmup, roiSlowRebenchDone: true }) === false &&
     shouldStartReceiverRoiWarmupBenchmark({ ...warmup, canUseVideoFrame: false }) === false
   console.log('Receiver header-only ROI warmup benchmark test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testReceiverPreSignalRoiStartsWarmupBenchmark() {
+  const warmup = {
+    canUseVideoFrame: true,
+    roiPreferredMethod: 'video',
+    roiBenchmarkRemaining: 0,
+    roiSlowRebenchDone: false,
+    transferActive: false,
+    roiCaptureAvailable: true
+  }
+  const pass = shouldStartReceiverRoiWarmupBenchmark(warmup) === true &&
+    shouldStartReceiverRoiWarmupBenchmark({ ...warmup, roiCaptureAvailable: false }) === false &&
+    shouldStartReceiverRoiWarmupBenchmark({ ...warmup, transferActive: true }) === false &&
+    shouldStartReceiverRoiWarmupBenchmark({ ...warmup, roiPreferredMethod: null }) === false
+  console.log('Receiver pre-signal ROI warmup benchmark test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 
