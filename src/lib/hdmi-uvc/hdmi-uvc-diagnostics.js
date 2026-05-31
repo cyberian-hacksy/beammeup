@@ -13,6 +13,7 @@
 //   pass2           'p2'|'legacy'|'mix'                  live    (?pass2=)
 //   denseBinaryProfile  'safe'|'fill99'|'medium'|'large'|'xlarge'|'xxlarge'|'huge'  live  (?dense-profile=)
 //   denseBinaryPass3Mix 'balanced'|'source'                  live    (?dense-pass3=)
+//   denseBinaryPass2SweepMix 'balanced'|'parity'|'even'|'fountain' live (?dense-pass2=)
 //   denseBinaryDegree   'classic'|'ripple'                   reload  (?dense-degree=, set on BOTH ends)
 //   denseBinaryLateMix  'balanced'|'source'|'fountain'       live    (?dense-late=)
 //   txPace              'timer'|'raf'                        live    (?tx-pace=)
@@ -117,6 +118,19 @@ const DEFINITIONS = {
       source: 'source'
     },
     title: 'Dense P3'
+  },
+  denseBinaryPass2SweepMix: {
+    urlKey: 'dense-pass2',
+    default: 'balanced',
+    allowed: ['balanced', 'parity', 'even', 'fountain'],
+    reloadRequired: false,
+    labels: {
+      balanced: 'balanced',
+      parity: 'parity',
+      even: 'even',
+      fountain: 'fountain'
+    },
+    title: 'Dense P2'
   },
   denseBinaryDegree: {
     urlKey: 'dense-degree',
@@ -234,6 +248,7 @@ export function getPass2Variant() { return getDiagnostic('pass2') }
 export function getDenseBinaryProfile() { return getDiagnostic('denseBinaryProfile') }
 export function getDenseBinaryLateMix() { return getDiagnostic('denseBinaryLateMix') }
 export function getDenseBinaryPass3Mix() { return getDiagnostic('denseBinaryPass3Mix') }
+export function getDenseBinaryPass2SweepMix() { return getDiagnostic('denseBinaryPass2SweepMix') }
 // Fountain degree distribution. Read by BOTH encoder (sender) and decoder
 // (receiver) — they must match, so set ?dense-degree= identically on both pages.
 export function getDenseBinaryDegree() { return getDiagnostic('denseBinaryDegree') }

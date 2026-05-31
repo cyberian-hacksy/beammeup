@@ -26,6 +26,7 @@ import { buildCard, CARD_KIND } from './hdmi-uvc-lab.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
 import {
   getDenseBinaryLateMix,
+  getDenseBinaryPass2SweepMix,
   getDenseBinaryPass3Mix,
   getDenseBinaryProfile,
   getDenseBinaryDegree,
@@ -122,6 +123,10 @@ function createSenderPerfState() {
     timerPacedFrames: 0,
     sameFrameSignatures: 0,
     newFrameSignatures: 0,
+    metadataSymbols: 0,
+    sourceSymbols: 0,
+    paritySymbols: 0,
+    fountainSymbols: 0,
     lastFrameSignature: null
   }
 }
@@ -140,6 +145,10 @@ function clearSenderPerfSamples(perf) {
   perf.timerPacedFrames = 0
   perf.sameFrameSignatures = 0
   perf.newFrameSignatures = 0
+  perf.metadataSymbols = 0
+  perf.sourceSymbols = 0
+  perf.paritySymbols = 0
+  perf.fountainSymbols = 0
 }
 
 function resetSenderPerfState() {
@@ -197,6 +206,27 @@ function noteSenderFrameSignature(perf, symbolIds) {
   perf.lastFrameSignature = signature
 }
 
+function getSenderSymbolKindSummary(perf) {
+  if (!perf) return 'txKinds=src0 par0 fou0 meta0'
+  return `txKinds=src${perf.sourceSymbols || 0} ` +
+    `par${perf.paritySymbols || 0} ` +
+    `fou${perf.fountainSymbols || 0} ` +
+    `meta${perf.metadataSymbols || 0}`
+}
+
+function noteSenderFrameSymbols(perf, symbolIds, encoder) {
+  if (!perf) return
+  noteSenderFrameSignature(perf, symbolIds)
+  if (!Array.isArray(symbolIds)) return
+  for (const symbolId of symbolIds) {
+    if (symbolId === 0) perf.metadataSymbols++
+    else if (!encoder) perf.sourceSymbols++
+    else if (symbolId <= encoder.K) perf.sourceSymbols++
+    else if (symbolId <= encoder.K_prime) perf.paritySymbols++
+    else perf.fountainSymbols++
+  }
+}
+
 function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fps, canvasWidth, canvasHeight, renderPace = 'timer') {
   const perf = state.txPerf
   if (!perf) return
@@ -232,6 +262,7 @@ function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fp
     `overBudget=${perf.overBudgetCount}/${perf.totalMs.count} ` +
     `pace=${perf.displayPacedFrames > 0 ? 'raf' : 'timer'} rafSkip=${perf.rafSkipCount} ` +
     `${getSenderFrameSignatureSummary(perf)} ` +
+    `${getSenderSymbolKindSummary(perf)} ` +
     `canvas=${canvasWidth}x${canvasHeight}`
   )
 
@@ -1708,9 +1739,23 @@ function getDenseBinaryPass3MixRatios(pass3Mix = getDenseBinaryPass3Mix()) {
   return { source: 0.65, parity: 0.15, fountain: 0.20 }
 }
 
+function getDenseBinaryPass2SweepMixRatios(pass2SweepMix = getDenseBinaryPass2SweepMix()) {
+  if (pass2SweepMix === 'parity') {
+    return { source: 0.625, parity: 0.375, fountain: 0 }
+  }
+  if (pass2SweepMix === 'even') {
+    return { source: 0.50, parity: 0.50, fountain: 0 }
+  }
+  if (pass2SweepMix === 'fountain') {
+    return { source: 0.50, parity: 0.25, fountain: 0.25 }
+  }
+  return { source: 0.75, parity: 0.25, fountain: 0 }
+}
+
 function getDenseBinarySlotMixPatternForPass(passNumber, slots, paritySweepsInPass, {
   lateMix = getDenseBinaryLateMix(),
-  pass3Mix = getDenseBinaryPass3Mix()
+  pass3Mix = getDenseBinaryPass3Mix(),
+  pass2SweepMix = getDenseBinaryPass2SweepMix()
 } = {}) {
   const slotCount = Math.max(0, Math.floor(slots || 0))
   const fountainTail = lateMix === 'fountain'
@@ -1720,11 +1765,10 @@ function getDenseBinarySlotMixPatternForPass(passNumber, slots, paritySweepsInPa
   if (passNumber === 2) {
     if (paritySweepsInPass === 0) {
       // First sweep still delivers every parity row once, whatever the tail mix.
-      return buildSlotMix(slotCount, slotCountsFromRatios(slotCount, {
-        source: 0.75,
-        parity: 0.25,
-        fountain: 0
-      }))
+      return buildSlotMix(slotCount, slotCountsFromRatios(
+        slotCount,
+        getDenseBinaryPass2SweepMixRatios(pass2SweepMix)
+      ))
     }
     if (fountainTail) {
       // On a fast link the receiver is already in recovery by pass 2, so this
@@ -1759,11 +1803,16 @@ function getSlotMixPatternForPass(passNumber, {
   slots = 6,
   mode = state.mode,
   lateMix = getDenseBinaryLateMix(),
-  pass3Mix = getDenseBinaryPass3Mix()
+  pass3Mix = getDenseBinaryPass3Mix(),
+  pass2SweepMix = getDenseBinaryPass2SweepMix()
 } = {}) {
   if (!usesMixedSlotReplay(mode)) return null
   if (isDenseBinaryMode(mode)) {
-    return getDenseBinarySlotMixPatternForPass(passNumber, slots, paritySweepsInPass, { lateMix, pass3Mix })
+    return getDenseBinarySlotMixPatternForPass(passNumber, slots, paritySweepsInPass, {
+      lateMix,
+      pass3Mix,
+      pass2SweepMix
+    })
   }
   if (passNumber <= 1) return ['source', 'source', 'source', 'source', 'source', 'source']
   if (passNumber === 2) {
@@ -2094,7 +2143,7 @@ function renderFrame() {
     const frameStartMs = performance.now()
     const renderPace = getSenderRenderPace(state.mode, fps)
     const batch = buildFramePacketBatch(nextFrameNumber)
-    noteSenderFrameSignature(state.txPerf, batch.symbolIds)
+    noteSenderFrameSymbols(state.txPerf, batch.symbolIds, state.encoder)
     const batchReadyMs = performance.now()
 
     const frameImageData = ensureHdmiFrameResources(cw, ch)
@@ -2299,6 +2348,7 @@ async function startSending() {
 
     debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
     debugLog(`Pass-2 variant: ${getPass2Variant()}`)
+    debugLog(`Dense pass-2 sweep mix: ${getDenseBinaryPass2SweepMix()}`)
     debugLog(`TX pacing: ${getSenderRenderPace(state.mode, selectedFps)} (tx-pace=${getTxPace()})`)
     debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
     debugLog(
@@ -2725,11 +2775,12 @@ export function initHdmiUvcSender(errorHandler) {
   }
   const diagPanel = document.getElementById('hdmi-uvc-sender-diagnostics')
   if (diagPanel) {
-    renderDiagnosticsPanel(diagPanel, ['pass2', 'denseBinaryProfile', 'denseBinaryPass3Mix', 'denseBinaryLateMix', 'denseBinaryDegree', 'txPace'], { title: 'Diagnostics (sender)' })
+    renderDiagnosticsPanel(diagPanel, ['pass2', 'denseBinaryProfile', 'denseBinaryPass2SweepMix', 'denseBinaryPass3Mix', 'denseBinaryLateMix', 'denseBinaryDegree', 'txPace'], { title: 'Diagnostics (sender)' })
   }
 
   debugLog('HDMI-UVC Sender initialized')
   debugLog(`Pass-2 variant: ${getPass2Variant()}`)
+  debugLog(`Dense pass-2 sweep mix: ${getDenseBinaryPass2SweepMix()}`)
   debugLog(`TX pace: ${getTxPace()}`)
 }
 
@@ -3246,6 +3297,77 @@ export function testSenderFrameSignatureSummary() {
   const pass = summary.includes('txSig=same1/3') &&
     summary.includes('new2/3')
   console.log('Sender frame-signature summary test:', pass ? 'PASS' : `FAIL ${summary}`)
+  return pass
+}
+
+export function testSenderFrameSymbolKindSummary() {
+  const perf = createSenderPerfState()
+  const encoder = { K: 10, K_prime: 13 }
+  noteSenderFrameSymbols(perf, [0, 1, 10, 11, 13, 14], encoder)
+  const summary = getSenderSymbolKindSummary(perf)
+  const pass = summary.includes('txKinds=src2') &&
+    summary.includes('par2') &&
+    summary.includes('fou1') &&
+    summary.includes('meta1')
+  console.log('Sender symbol-kind summary test:', pass ? 'PASS' : `FAIL ${summary}`)
+  return pass
+}
+
+export function testDenseBinaryPass2SweepMixDiagnostic() {
+  const def = getDiagnosticDefinition('denseBinaryPass2SweepMix')
+  const pass = def?.default === 'balanced' &&
+    def.allowed?.includes('balanced') &&
+    def.allowed?.includes('parity') &&
+    def.allowed?.includes('even') &&
+    def.allowed?.includes('fountain')
+  console.log('dense-binary pass-2 sweep mix diagnostic test:', pass ? 'PASS' : 'FAIL', {
+    definition: def
+  })
+  return pass
+}
+
+export function testDenseBinaryPass2SweepMixPatterns() {
+  const countSlots = (pattern) => {
+    const counts = { source: 0, parity: 0, fountain: 0 }
+    for (const slot of pattern) if (counts[slot] !== undefined) counts[slot]++
+    return counts
+  }
+
+  const balanced = countSlots(getSlotMixPatternForPass(2, {
+    mode: HDMI_MODE.BINARY_1,
+    slots: 8,
+    paritySweepsInPass: 0,
+    pass2SweepMix: 'balanced'
+  }) || [])
+  const parity = countSlots(getSlotMixPatternForPass(2, {
+    mode: HDMI_MODE.BINARY_1,
+    slots: 8,
+    paritySweepsInPass: 0,
+    pass2SweepMix: 'parity'
+  }) || [])
+  const even = countSlots(getSlotMixPatternForPass(2, {
+    mode: HDMI_MODE.BINARY_1,
+    slots: 8,
+    paritySweepsInPass: 0,
+    pass2SweepMix: 'even'
+  }) || [])
+  const fountain = countSlots(getSlotMixPatternForPass(2, {
+    mode: HDMI_MODE.BINARY_1,
+    slots: 8,
+    paritySweepsInPass: 0,
+    pass2SweepMix: 'fountain'
+  }) || [])
+
+  const pass = balanced.source === 6 && balanced.parity === 2 && balanced.fountain === 0 &&
+    parity.source === 5 && parity.parity === 3 && parity.fountain === 0 &&
+    even.source === 4 && even.parity === 4 && even.fountain === 0 &&
+    fountain.source === 4 && fountain.parity === 2 && fountain.fountain === 2
+  console.log('dense-binary pass-2 sweep mix pattern test:', pass ? 'PASS' : 'FAIL', {
+    balanced,
+    parity,
+    even,
+    fountain
+  })
   return pass
 }
 
