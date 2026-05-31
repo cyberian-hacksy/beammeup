@@ -39,8 +39,7 @@ import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
 import {
   isPerfMode,
   getWorkerMode,
-  getCaptureMethod as getCaptureMethodSetting,
-  renderDiagnosticsPanel
+  getCaptureMethod as getCaptureMethodSetting
 } from './hdmi-uvc-diagnostics.js'
 import {
   clearDenseBinaryLockState,
@@ -60,10 +59,9 @@ loadHdmiUvcWasm().catch(() => {})
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
 const MAX_DEBUG_LINES = 500
-// All three come from the diagnostics module (which reads URL → localStorage
-// → default). Captured at init time because each controls an interval or
-// pipeline baked in for the session; the diagnostics panel shows a Reload
-// prompt when the user changes one so the next load picks it up cleanly.
+// These come from the diagnostics module (which reads URL -> localStorage ->
+// default). Captured at init time because each controls an interval or
+// pipeline baked in for the session.
 const PERF_MODE = isPerfMode()
 const RX_PERF_LOG_INTERVAL_FRAMES = PERF_MODE ? 240 : 60
 const RX_PROGRESS_LOG_INTERVAL_FRAMES = PERF_MODE ? 40 : 10
@@ -3750,15 +3748,6 @@ export function initHdmiUvcReceiver(errorHandler) {
       debugLog(`Frame count at clear: ${state.frameCount}`)
     }
   }
-  const diagPanel = document.getElementById('hdmi-uvc-receiver-diagnostics')
-  if (diagPanel) {
-    renderDiagnosticsPanel(
-      diagPanel,
-      ['captureMethod', 'wasmClassifier', 'perf', 'worker', 'denseBinaryDegree'],
-      { title: 'Diagnostics (receiver)' }
-    )
-  }
-
   debugLog('HDMI-UVC Receiver initialized')
   debugLog(
     `Capture method chosen: ${CAPTURE_METHOD} ` +

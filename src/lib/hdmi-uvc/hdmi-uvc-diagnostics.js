@@ -1,26 +1,21 @@
-// HDMI-UVC diagnostic settings. Single source of truth for the runtime
-// A/B toggles exposed on the sender/receiver screens.
+// HDMI-UVC diagnostic settings. Single source of truth for hidden runtime
+// switches and locked sender defaults.
 //
 // Precedence: URL params (highest, for shareable one-off links) →
 // localStorage (persistent user choice) → module default. Setters write
 // both localStorage and the URL (via history.replaceState) so a copy of
-// the current URL reproduces the config.
+// the current URL reproduces the config. Sender experiment settings allow only
+// the live baseline, so stale URL/localStorage values are ignored.
 //
 //   captureMethod   'auto'|'main'|'worker'|'offscreen'   reload  (?capture=)
 //   wasmClassifier  'on'|'off'                           live    (?wasm-classifier=)
 //   perf            'on'|'off'                           reload  (?perf=)
 //   worker          'off'|'hash'|'anchors'|'full'        reload  (?worker=)
-//   pass2           'p2'|'legacy'|'mix'                  live    (?pass2=)
-//   denseBinaryProfile  'safe'|'fill99'|'medium'|'large'|'xlarge'|'xxlarge'|'huge'  live  (?dense-profile=)
-//   denseBinaryPass3Mix 'balanced'|'source'                  live    (?dense-pass3=)
-//   denseBinaryPass2SweepMix 'balanced'|'source7'|'source8'|'parity'|'even'|'fountain' live (?dense-pass2=)
-//   denseBinaryDegree   'classic'|'ripple'                   reload  (?dense-degree=, set on BOTH ends)
-//   denseBinaryLateMix  'balanced'|'source'|'fountain'       live    (?dense-late=)
-//   txPace              'timer'|'raf'                        live    (?tx-pace=)
+// Sender experiment settings are intentionally locked to the current live
+// baseline. Older tests can still exercise explicit helper arguments.
 //
 // "Live" settings are re-read by the consumer per call; "reload" settings
-// are captured at module init time and the UI surfaces a Reload prompt
-// when the user changes one so the session picks it up cleanly.
+// are captured at module init time.
 
 const STORAGE_PREFIX = 'hdmi-uvc-diag-'
 
@@ -75,35 +70,27 @@ const DEFINITIONS = {
   pass2: {
     urlKey: 'pass2',
     default: 'p2',
-    allowed: ['p2', 'legacy', 'mix'],
+    allowed: ['p2'],
     reloadRequired: false,
-    labels: { p2: 'p2 (4S/2P)', legacy: 'legacy (5S/1P)', mix: 'mix (2S/2P/2F)' },
+    labels: { p2: 'p2 (4S/2P)' },
     title: 'Pass-2'
   },
   denseBinaryProfile: {
     urlKey: 'dense-profile',
     default: 'xlarge',
-    allowed: ['safe', 'fill99', 'medium', 'large', 'xlarge', 'xxlarge', 'huge'],
+    allowed: ['xlarge'],
     reloadRequired: false,
     labels: {
-      safe: 'safe',
-      fill99: 'fill99',
-      medium: 'medium',
-      large: 'large',
-      xlarge: 'xlarge',
-      xxlarge: 'xxlarge',
-      huge: 'huge'
+      xlarge: 'xlarge'
     },
     title: 'Dense Batch'
   },
   denseBinaryLateMix: {
     urlKey: 'dense-late',
     default: 'fountain',
-    allowed: ['balanced', 'source', 'fountain'],
+    allowed: ['fountain'],
     reloadRequired: false,
     labels: {
-      balanced: 'balanced',
-      source: 'source',
       fountain: 'fountain'
     },
     title: 'Dense Tail'
@@ -111,43 +98,37 @@ const DEFINITIONS = {
   denseBinaryPass3Mix: {
     urlKey: 'dense-pass3',
     default: 'balanced',
-    allowed: ['balanced', 'source'],
+    allowed: ['balanced'],
     reloadRequired: false,
     labels: {
-      balanced: 'balanced',
-      source: 'source'
+      balanced: 'balanced'
     },
     title: 'Dense P3'
   },
   denseBinaryPass2SweepMix: {
     urlKey: 'dense-pass2',
-    default: 'balanced',
-    allowed: ['balanced', 'source7', 'source8', 'parity', 'even', 'fountain'],
+    default: 'source7',
+    allowed: ['source7'],
     reloadRequired: false,
     labels: {
-      balanced: 'balanced',
-      source7: '7S/1P',
-      source8: '8S',
-      parity: 'parity',
-      even: 'even',
-      fountain: 'fountain'
+      source7: '7S/1P'
     },
     title: 'Dense P2'
   },
   denseBinaryDegree: {
     urlKey: 'dense-degree',
     default: 'classic',
-    allowed: ['classic', 'ripple'],
+    allowed: ['classic'],
     reloadRequired: true,
-    labels: { classic: 'classic', ripple: 'ripple' },
+    labels: { classic: 'classic' },
     title: 'Dense Degree'
   },
   txPace: {
     urlKey: 'tx-pace',
     default: 'timer',
-    allowed: ['timer', 'raf'],
+    allowed: ['timer'],
     reloadRequired: false,
-    labels: { timer: 'timer', raf: 'raf' },
+    labels: { timer: 'timer' },
     title: 'TX Pace'
   }
 }
@@ -252,80 +233,6 @@ export function getDenseBinaryLateMix() { return getDiagnostic('denseBinaryLateM
 export function getDenseBinaryPass3Mix() { return getDiagnostic('denseBinaryPass3Mix') }
 export function getDenseBinaryPass2SweepMix() { return getDiagnostic('denseBinaryPass2SweepMix') }
 // Fountain degree distribution. Read by BOTH encoder (sender) and decoder
-// (receiver) — they must match, so set ?dense-degree= identically on both pages.
+// (receiver), locked to the shared classic baseline.
 export function getDenseBinaryDegree() { return getDiagnostic('denseBinaryDegree') }
 export function getTxPace() { return getDiagnostic('txPace') }
-
-// Render a segmented-button diagnostics panel into `container`. `keys` is
-// the ordered list of setting keys to show. The panel re-renders itself on
-// state change, and surfaces a Reload button when any reload-required setting
-// differs from the value captured at module init time.
-export function renderDiagnosticsPanel(container, keys, options = {}) {
-  if (!container) return
-  if (typeof document === 'undefined') return
-
-  const title = options.title || 'Diagnostics'
-
-  const refresh = () => {
-    container.textContent = ''
-
-    const heading = document.createElement('div')
-    heading.className = 'hdmi-diagnostics-title'
-    heading.textContent = title
-    container.appendChild(heading)
-
-    let anyDirty = false
-    for (const key of keys) {
-      const def = DEFINITIONS[key]
-      if (!def) continue
-
-      const row = document.createElement('div')
-      row.className = 'hdmi-diagnostics-row'
-
-      const label = document.createElement('div')
-      label.className = 'hdmi-diagnostics-label'
-      label.textContent = def.title
-      row.appendChild(label)
-
-      const buttons = document.createElement('div')
-      buttons.className = 'hdmi-diagnostics-buttons'
-
-      const current = state[key]
-      for (const value of def.allowed) {
-        const btn = document.createElement('button')
-        btn.type = 'button'
-        btn.textContent = def.labels?.[value] ?? value
-        if (value === current) btn.classList.add('active')
-        btn.addEventListener('click', () => {
-          if (setDiagnostic(key, value)) refresh()
-        })
-        buttons.appendChild(btn)
-      }
-      row.appendChild(buttons)
-
-      if (def.reloadRequired && current !== frozenAtInit[key]) {
-        anyDirty = true
-        const hint = document.createElement('span')
-        hint.className = 'hdmi-diagnostics-hint'
-        hint.textContent = '(reload)'
-        row.appendChild(hint)
-      }
-
-      container.appendChild(row)
-    }
-
-    if (anyDirty) {
-      const reload = document.createElement('button')
-      reload.type = 'button'
-      reload.className = 'hdmi-diagnostics-badge'
-      reload.textContent = 'Reload to apply'
-      reload.addEventListener('click', () => {
-        if (typeof location !== 'undefined') location.reload()
-      })
-      container.appendChild(reload)
-    }
-  }
-
-  refresh()
-  return refresh
-}

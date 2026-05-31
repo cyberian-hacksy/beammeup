@@ -120,7 +120,7 @@ export const FPS_PRESETS = [
   { name: '58 fps', fps: 58, interval: 17 },
   { name: '60 fps', fps: 60, interval: 16 }
 ]
-export const DEFAULT_FPS_PRESET = 2
+export const DEFAULT_FPS_PRESET = 5
 
 export const RENDER_SIZE_PRESETS = [
   { id: 'viewport', name: 'Viewport', width: 0, height: 0 },

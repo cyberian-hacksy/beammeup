@@ -5,8 +5,8 @@
 // structurally impossible — previously it was duplicated verbatim in
 // encoder.js and decoder.js.
 //
-// The degree distribution is selected by the denseBinaryDegree diagnostic
-// (?dense-degree=, default 'classic'), read identically by encoder and decoder.
+// The degree distribution is locked to the shared dense-binary default, read
+// identically by encoder and decoder.
 
 import { createPRNG } from './prng.js'
 import { FOUNTAIN_DEGREE, DEGREE_ONE_PROBABILITY } from './constants.js'

@@ -264,39 +264,12 @@
 
       <div class="sender-controls" id="hdmi-uvc-sender-controls">
         <div class="slider-group">
-          <label>HDMI Mode</label>
-          <div class="mode-selector" id="hdmi-uvc-mode-selector">
-            <button class="mode-btn" data-mode="0">Color4</button>
-            <button class="mode-btn" data-mode="1">Gray2</button>
-            <button class="mode-btn" data-mode="2">4x4</button>
-            <button class="mode-btn" data-mode="3">Luma2</button>
-            <button class="mode-btn" data-mode="5">Tile3</button>
-            <button class="mode-btn" data-mode="6">Glyph5</button>
-            <button class="mode-btn" data-mode="8" title="Requires native 1080p fullscreen presentation">3x3</button>
-            <button class="mode-btn" data-mode="9" title="Experimental black/white 2x2 payload cells">2x2</button>
-            <button class="mode-btn active" data-mode="10" title="Experimental black/white 1x1 payload cells">1x1</button>
-          </div>
-        </div>
-        <div class="slider-group">
-          <label for="hdmi-uvc-render-size-select">Render</label>
-          <select id="hdmi-uvc-render-size-select">
-            <option value="viewport">Viewport</option>
-            <option value="720p">720p</option>
-            <option value="1080p" selected>1080p</option>
-          </select>
-        </div>
-        <div class="slider-group">
           <label for="hdmi-uvc-external-display-toggle">Display</label>
           <label class="inline-toggle">
             <input type="checkbox" id="hdmi-uvc-external-display-toggle" checked>
             External screen
           </label>
           <span id="hdmi-uvc-presentation-status" class="estimate">Auto</span>
-        </div>
-        <div class="slider-group">
-          <label for="hdmi-uvc-fps-slider">Frame Rate</label>
-          <input type="range" id="hdmi-uvc-fps-slider" min="0" max="5" value="5" step="1">
-          <span id="hdmi-uvc-fps-display">60 fps</span>
         </div>
         <div class="file-status">
           <span id="hdmi-uvc-file-info">No file</span>
@@ -307,22 +280,6 @@
           <button id="btn-hdmi-uvc-stop" class="secondary" disabled>Stop</button>
         </div>
       </div>
-      <div id="hdmi-uvc-lab-controls" class="lab-panel">
-        <label for="hdmi-uvc-lab-card-select">Lab card</label>
-        <select id="hdmi-uvc-lab-card-select">
-          <option value="">Off</option>
-          <option value="binary4">Card 1: 4x4 binary baseline</option>
-          <option value="binary3">Card 2: 3x3 binary</option>
-          <option value="binary2">Card 3: 2x2 binary diagnostic</option>
-          <option value="binary1">Card 3b: 1x1 binary diagnostic</option>
-          <option value="luma2">Card 4: LUMA_2</option>
-          <option value="codebook3">Card 5: CODEBOOK_3</option>
-          <option value="glyph5">Card 6: GLYPH_5</option>
-          <option value="candidate">Card 7: low-frequency candidate</option>
-        </select>
-        <button id="btn-hdmi-uvc-lab-render" class="secondary">Render card</button>
-      </div>
-      <div id="hdmi-uvc-sender-diagnostics" class="hdmi-diagnostics"></div>
       <div id="hdmi-uvc-sender-debug" style="margin-top:8px;border:2px solid #00d4ff;border-radius:4px;">
         <div style="display:flex;align-items:center;background:#16213e;border-bottom:1px solid #333;">
           <div id="hdmi-uvc-sender-debug-current" style="flex:1;font-size:14px;color:#00d4ff;padding:6px 8px;font-family:monospace;text-align:center;">waiting...</div>
@@ -346,27 +303,6 @@
         <label for="hdmi-uvc-device-dropdown">Capture Device</label>
         <select id="hdmi-uvc-device-dropdown"></select>
       </div>
-      <div id="hdmi-uvc-lab-receiver-controls" class="lab-panel">
-        <label for="hdmi-uvc-lab-rx-card">Expected card</label>
-        <select id="hdmi-uvc-lab-rx-card">
-          <option value="binary4">Card 1: 4x4 binary</option>
-          <option value="binary3">Card 2: 3x3 binary</option>
-          <option value="binary2">Card 3: 2x2 binary</option>
-          <option value="binary1">Card 3b: 1x1 binary</option>
-          <option value="luma2">Card 4: LUMA_2</option>
-          <option value="codebook3">Card 5: CODEBOOK_3</option>
-          <option value="glyph5">Card 6: GLYPH_5</option>
-          <option value="candidate">Card 7: low-frequency candidate</option>
-        </select>
-        <label for="hdmi-uvc-lab-rx-sender-w">Sender W</label>
-        <input id="hdmi-uvc-lab-rx-sender-w" type="number" value="1920" min="320" max="3840" step="1">
-        <label for="hdmi-uvc-lab-rx-sender-h">Sender H</label>
-        <input id="hdmi-uvc-lab-rx-sender-h" type="number" value="1080" min="240" max="2160" step="1">
-        <button id="btn-hdmi-uvc-lab-rx-start" class="secondary">Start accumulation</button>
-        <button id="btn-hdmi-uvc-lab-rx-stop" class="secondary" disabled>Stop</button>
-        <pre id="hdmi-uvc-lab-rx-results" class="lab-results"></pre>
-      </div>
-      <div id="hdmi-uvc-receiver-diagnostics" class="hdmi-diagnostics"></div>
       <div id="hdmi-uvc-receiver-debug" style="margin-top:8px;border:2px solid #00d4ff;border-radius:4px;">
         <div style="display:flex;align-items:center;background:#16213e;border-bottom:1px solid #333;">
           <div id="hdmi-uvc-receiver-debug-current" style="flex:1;font-size:14px;color:#00d4ff;padding:6px 8px;font-family:monospace;text-align:center;">waiting...</div>

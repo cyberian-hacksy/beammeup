@@ -30,11 +30,9 @@ import {
   getDenseBinaryPass3Mix,
   getDenseBinaryProfile,
   getDenseBinaryDegree,
-  getTxPace,
   getDiagnosticDefinition,
   getPass2Variant,
-  setDiagnostic,
-  renderDiagnosticsPanel
+  setDiagnostic
 } from './hdmi-uvc-diagnostics.js'
 
 // Kick off WASM instantiation when the sender module loads so buildFrame's
@@ -44,15 +42,12 @@ loadHdmiUvcWasm().catch(() => {})
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
-// Pass-2 slot-mix variant lives in the diagnostics module: default `p2` (4S/2P)
-// per the clean-run feedback, with `legacy` (5S/1P historical) and `mix`
-// (2S/2P/2F aggressive) available via the sender diagnostics panel. The
-// value is read per-pass so changes apply on the next TX session without a
-// reload. See docs/plans/2026-04-17-hdmi-tail-solver-and-rx-hardening.md Phase 3.
+// Sender experiments are now locked to the best live baseline. Keep the
+// helper plumbing for tests and stale URL/localStorage cleanup, but do not
+// expose runtime variants in the UI.
 const TX_PERF_LOG_INTERVAL_FRAMES = 60
 const BINARY1_SYNC_PORCH_FRAMES = 0
 const BINARY1_PASS2_SOURCE_WARMUP_FRAMES = 0
-const DISPLAY_PACED_MIN_FPS = 55
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -570,7 +565,7 @@ async function restoreSenderReadyState() {
     elements.placeholderIcon.textContent = '+'
     elements.placeholderText.textContent = 'Drop file here or tap to select'
   }
-  elements.fpsSlider.disabled = false
+  if (elements.fpsSlider) elements.fpsSlider.disabled = false
   updateActionButton()
   updateModeSelector()
   updateRenderSizeSelector()
@@ -1096,11 +1091,8 @@ function resetRenderSchedule() {
   state.nextFrameDueMs = 0
 }
 
-function getSenderRenderPace(mode = state.mode, fps = getFps(), requestedPace = getTxPace()) {
-  if (requestedPace !== 'raf') return 'timer'
-  if (mode !== HDMI_MODE.BINARY_1) return 'timer'
-  if ((fps?.fps || 0) < DISPLAY_PACED_MIN_FPS) return 'timer'
-  return 'raf'
+function getSenderRenderPace() {
+  return 'timer'
 }
 
 function shouldUseDisplayPacedRender(mode = state.mode, fps = getFps()) {
@@ -1175,8 +1167,11 @@ function formatBytes(bytes) {
 }
 
 function getFps() {
-  const index = parseInt(elements.fpsSlider.value)
-  return FPS_PRESETS[index]
+  const fallbackIndex = Number(getRecommendedFpsPreset(state.mode))
+  const index = elements?.fpsSlider
+    ? parseInt(elements.fpsSlider.value, 10)
+    : fallbackIndex
+  return FPS_PRESETS[index] || FPS_PRESETS[fallbackIndex] || FPS_PRESETS[DEFAULT_FPS_PRESET]
 }
 
 function updateDropZoneState() {
@@ -1229,9 +1224,10 @@ function updateModeSelector() {
 }
 
 function updateRenderSizeSelector() {
-  if (!elements?.renderSizeSelect) return
-  elements.renderSizeSelect.value = getRenderSizePreset().id
-  elements.renderSizeSelect.disabled = state.isSending || state.isPaused || state.isAwaitingStart
+  if (elements?.renderSizeSelect) {
+    elements.renderSizeSelect.value = getRenderSizePreset().id
+    elements.renderSizeSelect.disabled = state.isSending || state.isPaused || state.isAwaitingStart
+  }
   if (elements.labCardSelect) {
     elements.labCardSelect.disabled = state.isSending || state.isPaused || state.isAwaitingStart
   }
@@ -2224,7 +2220,7 @@ function armPreparedStart(autoStartDelayMs = 0) {
   showArmedStartPrompt()
   setSignalLive(false)
 
-  elements.fpsSlider.disabled = true
+  if (elements.fpsSlider) elements.fpsSlider.disabled = true
   updateActionButton()
   updateModeSelector()
   updateRenderSizeSelector()
@@ -2254,7 +2250,7 @@ function beginPreparedStart() {
   elements.placeholder.style.display = 'none'
   setSignalLive(true)
 
-  elements.fpsSlider.disabled = true
+  if (elements.fpsSlider) elements.fpsSlider.disabled = true
   updateActionButton()
   updateModeSelector()
   updateRenderSizeSelector()
@@ -2355,7 +2351,7 @@ async function startSending() {
     debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
     debugLog(`Pass-2 variant: ${getPass2Variant()}`)
     debugLog(`Dense pass-2 sweep mix: ${getDenseBinaryPass2SweepMix()}`)
-    debugLog(`TX pacing: ${getSenderRenderPace(state.mode, selectedFps)} (tx-pace=${getTxPace()})`)
+    debugLog(`TX pacing: ${getSenderRenderPace(state.mode, selectedFps)}`)
     debugLog(`Payload capacity: ${capacity} bytes/frame (max packet payload ${frameBlockSize})`)
     debugLog(
       `Batch profile: ${batchingProfile.id ? `${batchingProfile.id}, ` : ''}` +
@@ -2431,7 +2427,7 @@ async function pauseSending() {
   elements.placeholderIcon.textContent = '⏸'
   elements.placeholderText.textContent = 'Transfer paused - ' + state.frameCount + ' frames sent'
 
-  elements.fpsSlider.disabled = false
+  if (elements.fpsSlider) elements.fpsSlider.disabled = false
   updateActionButton()
   updateModeSelector()
   updateRenderSizeSelector()
@@ -2455,7 +2451,7 @@ async function resumeSending() {
     state.nextFrameDueMs = performance.now() + (1000 / getFps().fps)
     resetSenderPerfState()
 
-    elements.fpsSlider.disabled = true
+    if (elements.fpsSlider) elements.fpsSlider.disabled = true
     updateActionButton()
     updateModeSelector()
     updateRenderSizeSelector()
@@ -2479,7 +2475,7 @@ async function stopSending() {
   state.fileHash = null
   setSignalLive(false)
 
-  elements.fpsSlider.disabled = false
+  if (elements.fpsSlider) elements.fpsSlider.disabled = false
 
   resetCanvasStyles()
   await exitFullscreenSafely()
@@ -2585,7 +2581,7 @@ async function handleDrop(e) {
 
 function handleFpsChange() {
   const preset = getFps()
-  elements.fpsDisplay.textContent = preset.name
+  if (elements.fpsDisplay) elements.fpsDisplay.textContent = preset.name
   updateEstimateSummary()
 }
 
@@ -2712,25 +2708,15 @@ export function initHdmiUvcSender(errorHandler) {
     overlay: document.getElementById('hdmi-uvc-overlay'),
     frameCount: document.getElementById('hdmi-uvc-frame-count'),
     progressDisplay: document.getElementById('hdmi-uvc-progress'),
-    modeSelector: document.getElementById('hdmi-uvc-mode-selector'),
-    renderSizeSelect: document.getElementById('hdmi-uvc-render-size-select'),
     externalDisplayToggle: document.getElementById('hdmi-uvc-external-display-toggle'),
     presentationStatus: document.getElementById('hdmi-uvc-presentation-status'),
-    fpsSlider: document.getElementById('hdmi-uvc-fps-slider'),
-    fpsDisplay: document.getElementById('hdmi-uvc-fps-display'),
     fileInfo: document.getElementById('hdmi-uvc-file-info'),
     estimate: document.getElementById('hdmi-uvc-estimate'),
     btnAction: document.getElementById('btn-hdmi-uvc-action'),
-    btnStop: document.getElementById('btn-hdmi-uvc-stop'),
-    labCardSelect: document.getElementById('hdmi-uvc-lab-card-select'),
-    btnLabRender: document.getElementById('btn-hdmi-uvc-lab-render')
+    btnStop: document.getElementById('btn-hdmi-uvc-stop')
   }
-  elements.modeButtons = Array.from(elements.modeSelector?.querySelectorAll('.mode-btn') || [])
+  elements.modeButtons = []
 
-  elements.fpsSlider.value = getRecommendedFpsPreset(state.mode)
-  if (elements.renderSizeSelect) {
-    elements.renderSizeSelect.value = getRenderSizePreset().id
-  }
   if (elements.externalDisplayToggle) {
     state.useExternalDisplay = elements.externalDisplayToggle.checked
   }
@@ -2742,17 +2728,11 @@ export function initHdmiUvcSender(errorHandler) {
   updateRenderSizeSelector()
 
   elements.fileInput.onchange = handleFileSelect
-  elements.renderSizeSelect.oninput = handleRenderSizeChange
   if (elements.externalDisplayToggle) {
     elements.externalDisplayToggle.onchange = handleExternalDisplayChange
   }
-  elements.fpsSlider.oninput = handleFpsChange
-  elements.modeButtons.forEach(button => {
-    button.onclick = handleModeChange
-  })
   elements.btnAction.onclick = handleActionClick
   elements.btnStop.onclick = stopSending
-  if (elements.btnLabRender) elements.btnLabRender.onclick = handleLabRenderClick
 
   elements.container.onclick = handleDropZoneClick
   elements.container.ondragover = handleDragOver
@@ -2779,15 +2759,10 @@ export function initHdmiUvcSender(errorHandler) {
       }
     }
   }
-  const diagPanel = document.getElementById('hdmi-uvc-sender-diagnostics')
-  if (diagPanel) {
-    renderDiagnosticsPanel(diagPanel, ['pass2', 'denseBinaryProfile', 'denseBinaryPass2SweepMix', 'denseBinaryPass3Mix', 'denseBinaryLateMix', 'denseBinaryDegree', 'txPace'], { title: 'Diagnostics (sender)' })
-  }
-
   debugLog('HDMI-UVC Sender initialized')
   debugLog(`Pass-2 variant: ${getPass2Variant()}`)
   debugLog(`Dense pass-2 sweep mix: ${getDenseBinaryPass2SweepMix()}`)
-  debugLog(`TX pace: ${getTxPace()}`)
+  debugLog(`TX pace: ${getSenderRenderPace()}`)
 }
 
 // Pure function tests so the two-stage pass-2 schedule and parity-sweep wrap
@@ -2796,6 +2771,7 @@ export function initHdmiUvcSender(errorHandler) {
 // subsequent sweep; paritySweepsInPass increments when paritySystematicIndex
 // wraps from paritySpan-1 back to 0.
 export function testPass2TwoStageSchedule() {
+  const pass2Def = getDiagnosticDefinition('pass2')
   const sweep0 = getSlotMixPatternForPass(2, { mode: HDMI_MODE.COMPAT_4, paritySweepsInPass: 0 })
   const sweep1 = getSlotMixPatternForPass(2, { mode: HDMI_MODE.COMPAT_4, paritySweepsInPass: 1 })
   const sweep7 = getSlotMixPatternForPass(2, { mode: HDMI_MODE.COMPAT_4, paritySweepsInPass: 7 })
@@ -2822,9 +2798,12 @@ export function testPass2TwoStageSchedule() {
   const okPass1 = c1Pass.source === 6 && c1Pass.parity === 0 && c1Pass.fountain === 0
   const okPass3 = c3Pass.source === 4 && c3Pass.parity === 1 && c3Pass.fountain === 1
 
-  const pass = ok0 && ok1 && ok7 && okPass1 && okPass3
+  const pass2Locked = pass2Def?.default === 'p2' &&
+    pass2Def.allowed?.length === 1 &&
+    pass2Def.allowed[0] === 'p2'
+  const pass = ok0 && ok1 && ok7 && okPass1 && okPass3 && pass2Locked
   console.log('Two-stage pass-2 schedule test:', pass ? 'PASS' : 'FAIL',
-    { c0, c1, c7, c1Pass, c3Pass })
+    { c0, c1, c7, c1Pass, c3Pass, pass2Def })
   return pass
 }
 
@@ -3118,32 +3097,28 @@ export function testDenseBinaryMixedReplayPass1SourceOnly() {
 
 export function testDenseBinaryMixedReplayPass2ChangesAfterParitySweep() {
   const snapshot = snapshotSchedulerState()
-  const originalLateMix = getDenseBinaryLateMix()
   try {
-    setDiagnostic('denseBinaryLateMix', 'source')
     setupSchedulerTestState({ systematicPass: 2, paritySweepsInPass: 0 })
     const sweep0 = countSymbolKinds(buildFramePacketBatch(5).symbolIds, state.encoder)
 
     Object.assign(state, snapshot)
-    setDiagnostic('denseBinaryLateMix', 'source')
     setupSchedulerTestState({ systematicPass: 2, paritySweepsInPass: 1 })
     const sweep1 = countSymbolKinds(buildFramePacketBatch(5).symbolIds, state.encoder)
 
     const pass = sweep0.metadata === 0 &&
-      sweep0.source === 18 &&
-      sweep0.parity === 6 &&
+      sweep0.source === 21 &&
+      sweep0.parity === 3 &&
       sweep0.fountain === 0 &&
       sweep1.metadata === 0 &&
-      sweep1.source === 18 &&
-      sweep1.parity === 3 &&
-      sweep1.fountain === 3
+      sweep1.source === 4 &&
+      sweep1.parity === 1 &&
+      sweep1.fountain === 19
     console.log('dense-binary mixed replay pass 2 parity-sweep transition test:', pass ? 'PASS' : 'FAIL', {
       sweep0,
       sweep1
     })
     return pass
   } finally {
-    setDiagnostic('denseBinaryLateMix', originalLateMix)
     Object.assign(state, snapshot)
   }
 }
@@ -3284,13 +3259,16 @@ export function testBinary1UsesTimerPacedRender() {
   return pass
 }
 
-export function testBinary1PacingDiagnosticAllowsRaf() {
-  const pass = getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 60 }, 'timer') === 'timer' &&
-    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 60 }, 'raf') === 'raf' &&
-    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 58 }, 'raf') === 'raf' &&
-    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 30 }, 'raf') === 'timer' &&
+export function testBinary1PacingLocksTimer() {
+  const def = getDiagnosticDefinition('txPace')
+  const pass = def?.default === 'timer' &&
+    def.allowed?.length === 1 &&
+    def.allowed[0] === 'timer' &&
+    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 60 }, 'timer') === 'timer' &&
+    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 60 }, 'raf') === 'timer' &&
+    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 58 }, 'raf') === 'timer' &&
     getSenderRenderPace(HDMI_MODE.BINARY_2, { fps: 60 }, 'raf') === 'timer'
-  console.log('BINARY_1 pacing diagnostic test:', pass ? 'PASS' : 'FAIL')
+  console.log('BINARY_1 timer-only pacing test:', pass ? 'PASS' : 'FAIL', { definition: def })
   return pass
 }
 
@@ -3321,13 +3299,9 @@ export function testSenderFrameSymbolKindSummary() {
 
 export function testDenseBinaryPass2SweepMixDiagnostic() {
   const def = getDiagnosticDefinition('denseBinaryPass2SweepMix')
-  const pass = def?.default === 'balanced' &&
-    def.allowed?.includes('balanced') &&
-    def.allowed?.includes('source7') &&
-    def.allowed?.includes('source8') &&
-    def.allowed?.includes('parity') &&
-    def.allowed?.includes('even') &&
-    def.allowed?.includes('fountain')
+  const pass = def?.default === 'source7' &&
+    def.allowed?.length === 1 &&
+    def.allowed[0] === 'source7'
   console.log('dense-binary pass-2 sweep mix diagnostic test:', pass ? 'PASS' : 'FAIL', {
     definition: def
   })
@@ -3422,62 +3396,56 @@ export function testDenseBinaryBatchingProfile() {
 }
 
 export function testBinary2BatchingAndSchedule() {
-  const originalProfile = getDenseBinaryProfile()
-  setDiagnostic('denseBinaryProfile', 'large')
-  try {
-    const countPattern = (pattern, value) => (pattern || []).filter((item) => item === value).length
-    const profile = getBatchingProfile(HDMI_MODE.BINARY_2)
-    const pass2 = getSlotMixPatternForPass(2, {
-      mode: HDMI_MODE.BINARY_2,
-      slots: 29,
-      paritySweepsInPass: 1,
-      lateMix: 'source'
-    })
-    const pass3 = getSlotMixPatternForPass(3, {
-      mode: HDMI_MODE.BINARY_2,
-      slots: 29,
-      lateMix: 'source'
-    })
-    const pass4 = getSlotMixPatternForPass(4, {
-      mode: HDMI_MODE.BINARY_2,
-      slots: 29,
-      lateMix: 'source'
-    })
-    const selected = selectFrameBatching({
-      capacity: getPayloadCapacity(1920, 1080, HDMI_MODE.BINARY_2),
-      fileSize: 5.5 * 1024 * 1024,
-      profile
-    })
-    const pass = HDMI_MODE.BINARY_2 === 9 &&
-      profile.id === 'large' &&
-      profile.minPacketsPerFrame === 4 &&
-      profile.maxPacketsPerFrame === 32 &&
-      profile.targetFrameFill === 0.99 &&
-      profile.maxBlockSize === 2048 &&
-      selected.packetsPerFrame === 29 &&
-      selected.blockSize === 2028 &&
-      selected.usedBytes === 59247 &&
-      selected.payloadPerFrame === 58812 &&
-      countPattern(pass2, 'source') === 22 &&
-      countPattern(pass2, 'parity') === 4 &&
-      countPattern(pass2, 'fountain') === 3 &&
-      countPattern(pass3, 'source') === 19 &&
-      countPattern(pass3, 'parity') === 4 &&
-      countPattern(pass3, 'fountain') === 6 &&
-      countPattern(pass4, 'source') === 18 &&
-      countPattern(pass4, 'parity') === 2 &&
-      countPattern(pass4, 'fountain') === 9
-    console.log('BINARY_2 batching/schedule test:', pass ? 'PASS' : 'FAIL', {
-      profile,
-      selected,
-      pass2: describeSlotMixPattern(pass2),
-      pass3: describeSlotMixPattern(pass3),
-      pass4: describeSlotMixPattern(pass4)
-    })
-    return pass
-  } finally {
-    setDiagnostic('denseBinaryProfile', originalProfile)
-  }
+  const countPattern = (pattern, value) => (pattern || []).filter((item) => item === value).length
+  const profile = getDenseBinaryBatchingProfile('large', HDMI_MODE.BINARY_2, { useModeDefault: false })
+  const pass2 = getSlotMixPatternForPass(2, {
+    mode: HDMI_MODE.BINARY_2,
+    slots: 29,
+    paritySweepsInPass: 1,
+    lateMix: 'source'
+  })
+  const pass3 = getSlotMixPatternForPass(3, {
+    mode: HDMI_MODE.BINARY_2,
+    slots: 29,
+    lateMix: 'source'
+  })
+  const pass4 = getSlotMixPatternForPass(4, {
+    mode: HDMI_MODE.BINARY_2,
+    slots: 29,
+    lateMix: 'source'
+  })
+  const selected = selectFrameBatching({
+    capacity: getPayloadCapacity(1920, 1080, HDMI_MODE.BINARY_2),
+    fileSize: 5.5 * 1024 * 1024,
+    profile
+  })
+  const pass = HDMI_MODE.BINARY_2 === 9 &&
+    profile.id === 'large' &&
+    profile.minPacketsPerFrame === 4 &&
+    profile.maxPacketsPerFrame === 32 &&
+    profile.targetFrameFill === 0.99 &&
+    profile.maxBlockSize === 2048 &&
+    selected.packetsPerFrame === 29 &&
+    selected.blockSize === 2028 &&
+    selected.usedBytes === 59247 &&
+    selected.payloadPerFrame === 58812 &&
+    countPattern(pass2, 'source') === 22 &&
+    countPattern(pass2, 'parity') === 4 &&
+    countPattern(pass2, 'fountain') === 3 &&
+    countPattern(pass3, 'source') === 19 &&
+    countPattern(pass3, 'parity') === 4 &&
+    countPattern(pass3, 'fountain') === 6 &&
+    countPattern(pass4, 'source') === 18 &&
+    countPattern(pass4, 'parity') === 2 &&
+    countPattern(pass4, 'fountain') === 9
+  console.log('BINARY_2 batching/schedule test:', pass ? 'PASS' : 'FAIL', {
+    profile,
+    selected,
+    pass2: describeSlotMixPattern(pass2),
+    pass3: describeSlotMixPattern(pass3),
+    pass4: describeSlotMixPattern(pass4)
+  })
+  return pass
 }
 
 export function testDenseBinaryBatchingProfileMath() {
@@ -3568,33 +3536,24 @@ export function testBinary2UsesDenseBatchingProfile() {
 export function testDenseBinaryProfileLadderShrinksK() {
   const capacity = getPayloadCapacity(1920, 1080, HDMI_MODE.BINARY_2)
   const fileSize = 10 * 1024 * 1024
-  const original = getDenseBinaryProfile()
-  // Drive each profile through the REAL 2x2 sender path (getBatchingProfile),
-  // not getDenseBinaryBatchingProfile in isolation — that gap let the missing
-  // BINARY_2 case hide for several rounds.
   const measure = (id) => {
-    setDiagnostic('denseBinaryProfile', id)
-    const profile = getBatchingProfile(HDMI_MODE.BINARY_2)
+    const profile = getDenseBinaryBatchingProfile(id, HDMI_MODE.BINARY_2, { useModeDefault: false })
     const batched = selectFrameBatching({ capacity, fileSize, profile })
     return { id: profile.id, packets: batched.packetsPerFrame, K: Math.ceil(fileSize / batched.blockSize) }
   }
-  try {
-    const r = {
-      large: measure('large'),
-      xlarge: measure('xlarge'),
-      xxlarge: measure('xxlarge'),
-      huge: measure('huge')
-    }
-    const pass =
-      r.large.id === 'large' && r.xlarge.id === 'xlarge' &&
-      r.xxlarge.id === 'xxlarge' && r.huge.id === 'huge' &&
-      r.huge.K < r.xxlarge.K && r.xxlarge.K < r.xlarge.K && r.xlarge.K < r.large.K &&
-      r.huge.packets >= 4
-    console.log('dense-binary profile ladder test:', pass ? 'PASS' : 'FAIL', r)
-    return pass
-  } finally {
-    setDiagnostic('denseBinaryProfile', original)
+  const r = {
+    large: measure('large'),
+    xlarge: measure('xlarge'),
+    xxlarge: measure('xxlarge'),
+    huge: measure('huge')
   }
+  const pass =
+    r.large.id === 'large' && r.xlarge.id === 'xlarge' &&
+    r.xxlarge.id === 'xxlarge' && r.huge.id === 'huge' &&
+    r.huge.K < r.xxlarge.K && r.xxlarge.K < r.xlarge.K && r.xlarge.K < r.large.K &&
+    r.huge.packets >= 4
+  console.log('dense-binary profile ladder test:', pass ? 'PASS' : 'FAIL', r)
+  return pass
 }
 
 export function testBinary1XlargeFillsFrame() {
@@ -3653,7 +3612,6 @@ export function testDenseBinaryBatchingProfileDiagnostic() {
   const diagGetterExists = typeof getDenseBinaryProfile === 'function'
   const defExists = typeof getDiagnosticDefinition === 'function'
   const def = defExists ? getDiagnosticDefinition('denseBinaryProfile') : null
-  const expectedAllowed = ['safe', 'fill99', 'medium', 'large', 'xlarge', 'xxlarge', 'huge']
   const profileById = helperExists
     ? {
         safe: getDenseBinaryBatchingProfile('safe'),
@@ -3669,7 +3627,8 @@ export function testDenseBinaryBatchingProfileDiagnostic() {
   const pass = helperExists &&
     diagGetterExists &&
     def?.default === 'xlarge' &&
-    expectedAllowed.every((value) => def.allowed?.includes(value)) &&
+    def.allowed?.length === 1 &&
+    def.allowed[0] === 'xlarge' &&
     profileById.safe?.maxBlockSize === 1024 &&
     profileById.safe?.targetFrameFill === 0.90 &&
     profileById.fill99?.maxBlockSize === 1024 &&
@@ -3698,9 +3657,8 @@ export function testDenseBinaryLateMixDiagnostic() {
   const def = getDiagnosticDefinition('denseBinaryLateMix')
   const pass = diagGetterExists &&
     def?.default === 'fountain' &&
-    def.allowed?.includes('balanced') &&
-    def.allowed?.includes('source') &&
-    def.allowed?.includes('fountain')
+    def.allowed?.length === 1 &&
+    def.allowed[0] === 'fountain'
   console.log('dense-binary late mix diagnostic test:', pass ? 'PASS' : 'FAIL', {
     diagGetterExists,
     definition: def
@@ -3713,8 +3671,8 @@ export function testDenseBinaryDegreeDiagnostic() {
   const def = getDiagnosticDefinition('denseBinaryDegree')
   const pass = diagGetterExists &&
     def?.default === 'classic' &&
-    def.allowed?.includes('classic') &&
-    def.allowed?.includes('ripple')
+    def.allowed?.length === 1 &&
+    def.allowed[0] === 'classic'
   console.log('dense-binary degree diagnostic test:', pass ? 'PASS' : 'FAIL', {
     diagGetterExists,
     definition: def
@@ -3756,8 +3714,8 @@ export function testDenseBinaryLateMixPatterns() {
 export function testDenseBinaryPass3MixDiagnostic() {
   const def = getDiagnosticDefinition('denseBinaryPass3Mix')
   const pass = def?.default === 'balanced' &&
-    def.allowed?.includes('balanced') &&
-    def.allowed?.includes('source')
+    def.allowed?.length === 1 &&
+    def.allowed[0] === 'balanced'
   console.log('dense-binary pass-3 mix diagnostic test:', pass ? 'PASS' : 'FAIL', {
     definition: def
   })
