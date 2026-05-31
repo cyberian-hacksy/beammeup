@@ -1740,6 +1740,12 @@ function getDenseBinaryPass3MixRatios(pass3Mix = getDenseBinaryPass3Mix()) {
 }
 
 function getDenseBinaryPass2SweepMixRatios(pass2SweepMix = getDenseBinaryPass2SweepMix()) {
+  if (pass2SweepMix === 'source8') {
+    return { source: 1.0, parity: 0, fountain: 0 }
+  }
+  if (pass2SweepMix === 'source7') {
+    return { source: 0.875, parity: 0.125, fountain: 0 }
+  }
   if (pass2SweepMix === 'parity') {
     return { source: 0.625, parity: 0.375, fountain: 0 }
   }
@@ -3317,6 +3323,8 @@ export function testDenseBinaryPass2SweepMixDiagnostic() {
   const def = getDiagnosticDefinition('denseBinaryPass2SweepMix')
   const pass = def?.default === 'balanced' &&
     def.allowed?.includes('balanced') &&
+    def.allowed?.includes('source7') &&
+    def.allowed?.includes('source8') &&
     def.allowed?.includes('parity') &&
     def.allowed?.includes('even') &&
     def.allowed?.includes('fountain')
@@ -3339,6 +3347,18 @@ export function testDenseBinaryPass2SweepMixPatterns() {
     paritySweepsInPass: 0,
     pass2SweepMix: 'balanced'
   }) || [])
+  const source7 = countSlots(getSlotMixPatternForPass(2, {
+    mode: HDMI_MODE.BINARY_1,
+    slots: 8,
+    paritySweepsInPass: 0,
+    pass2SweepMix: 'source7'
+  }) || [])
+  const source8 = countSlots(getSlotMixPatternForPass(2, {
+    mode: HDMI_MODE.BINARY_1,
+    slots: 8,
+    paritySweepsInPass: 0,
+    pass2SweepMix: 'source8'
+  }) || [])
   const parity = countSlots(getSlotMixPatternForPass(2, {
     mode: HDMI_MODE.BINARY_1,
     slots: 8,
@@ -3359,11 +3379,15 @@ export function testDenseBinaryPass2SweepMixPatterns() {
   }) || [])
 
   const pass = balanced.source === 6 && balanced.parity === 2 && balanced.fountain === 0 &&
+    source7.source === 7 && source7.parity === 1 && source7.fountain === 0 &&
+    source8.source === 8 && source8.parity === 0 && source8.fountain === 0 &&
     parity.source === 5 && parity.parity === 3 && parity.fountain === 0 &&
     even.source === 4 && even.parity === 4 && even.fountain === 0 &&
     fountain.source === 4 && fountain.parity === 2 && fountain.fountain === 2
   console.log('dense-binary pass-2 sweep mix pattern test:', pass ? 'PASS' : 'FAIL', {
     balanced,
+    source7,
+    source8,
     parity,
     even,
     fountain

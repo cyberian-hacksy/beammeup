@@ -13,7 +13,7 @@
 //   pass2           'p2'|'legacy'|'mix'                  live    (?pass2=)
 //   denseBinaryProfile  'safe'|'fill99'|'medium'|'large'|'xlarge'|'xxlarge'|'huge'  live  (?dense-profile=)
 //   denseBinaryPass3Mix 'balanced'|'source'                  live    (?dense-pass3=)
-//   denseBinaryPass2SweepMix 'balanced'|'parity'|'even'|'fountain' live (?dense-pass2=)
+//   denseBinaryPass2SweepMix 'balanced'|'source7'|'source8'|'parity'|'even'|'fountain' live (?dense-pass2=)
 //   denseBinaryDegree   'classic'|'ripple'                   reload  (?dense-degree=, set on BOTH ends)
 //   denseBinaryLateMix  'balanced'|'source'|'fountain'       live    (?dense-late=)
 //   txPace              'timer'|'raf'                        live    (?tx-pace=)
@@ -122,10 +122,12 @@ const DEFINITIONS = {
   denseBinaryPass2SweepMix: {
     urlKey: 'dense-pass2',
     default: 'balanced',
-    allowed: ['balanced', 'parity', 'even', 'fountain'],
+    allowed: ['balanced', 'source7', 'source8', 'parity', 'even', 'fountain'],
     reloadRequired: false,
     labels: {
       balanced: 'balanced',
+      source7: '7S/1P',
+      source8: '8S',
       parity: 'parity',
       even: 'even',
       fountain: 'fountain'
