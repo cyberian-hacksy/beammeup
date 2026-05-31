@@ -39,8 +39,8 @@ const classifierPerfNow = (typeof performance !== 'undefined' && typeof performa
 
 const BITS_PER_BYTE = 8
 const HEADER_BLOCKS = HEADER_SIZE * BITS_PER_BYTE // 22 bytes × 8 bits = 176 blocks
-const GRAY2_LEVEL_FRACTIONS = [0.08, 0.36, 0.64, 0.92]
-const GRAY2_THRESHOLD_FRACTIONS = [0.22, 0.50, 0.78]
+const GRAY2_LEVEL_FRACTIONS = [0.00, 0.333, 0.667, 1.00]
+const GRAY2_THRESHOLD_FRACTIONS = [0.167, 0.50, 0.833]
 const RGB3_PALETTE = [
   [255, 255, 255],
   [255, 0, 0],
@@ -3847,6 +3847,31 @@ function warpLuma1IntermediateLevels(imageData) {
   return warped
 }
 
+function blurLuma1PayloadBand(imageData, width, height) {
+  const blurred = new Uint8ClampedArray(imageData)
+  const dr = getDataRegion(width, height)
+  const headerCellsX = Math.floor(dr.w / DENSE_BINARY_HEADER_BLOCK_SIZE)
+  const headerBandRows = getDenseBinaryHeaderBandRows(headerCellsX)
+  const y0 = dr.y + headerBandRows * DENSE_BINARY_HEADER_BLOCK_SIZE
+  const y1 = dr.y + dr.h
+
+  for (let y = y0; y < y1; y++) {
+    for (let x = dr.x + 1; x < dr.x + dr.w - 1; x++) {
+      const i = (y * width + x) * 4
+      const value = Math.round(
+        imageData[i - 4] * 0.35 +
+        imageData[i] * 0.30 +
+        imageData[i + 4] * 0.35
+      )
+      blurred[i] = value
+      blurred[i + 1] = value
+      blurred[i + 2] = value
+    }
+  }
+
+  return blurred
+}
+
 export function testLuma1WarpedIntermediateLevelsDecode() {
   try {
     const width = 640
@@ -3876,6 +3901,41 @@ export function testLuma1WarpedIntermediateLevelsDecode() {
     return pass
   } catch (err) {
     console.log('LUMA_1 warped intermediate decode test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+export function testLuma1BlurredPayloadBandDecode() {
+  try {
+    const width = 640
+    const height = 407
+    const payload = new Uint8Array(1500)
+    payload.fill(0x55)
+
+    const frame = blurLuma1PayloadBand(
+      buildFrame(payload, HDMI_MODE.LUMA_1, width, height, 30, 51),
+      width,
+      height
+    )
+    const anchors = detectAnchors(frame, width, height)
+    if (anchors.length < 2) {
+      console.log('LUMA_1 blurred payload band decode test: FAIL (anchors)')
+      return false
+    }
+    const region = dataRegionFromAnchors(anchors)
+    if (!region) {
+      console.log('LUMA_1 blurred payload band decode test: FAIL (region)')
+      return false
+    }
+    const result = decodeDataRegion(frame, width, region)
+    const pass = result && result.crcValid &&
+      result.header.mode === HDMI_MODE.LUMA_1 &&
+      result.payload.length === payload.length &&
+      result.payload.every((v, i) => v === payload[i])
+    console.log('LUMA_1 blurred payload band decode test:', pass ? 'PASS' : 'FAIL')
+    return pass
+  } catch (err) {
+    console.log('LUMA_1 blurred payload band decode test: FAIL', err?.message || err)
     return false
   }
 }
