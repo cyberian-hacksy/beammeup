@@ -87,6 +87,32 @@ export function getLuma1SenderLevels() {
   return LUMA1_SENDER_LEVELS.slice()
 }
 
+// Fixed pseudo-random calibration payload. The sender transmits it in
+// calibration mode; the receiver regenerates it to compute exact per-cell
+// error maps and measure the channel's mixing behavior directly.
+const LUMA1_CAL_SEED = 0xC0FFEE42
+let luma1CalCache = new Uint8Array(0)
+export function getLuma1CalibrationPayload(length) {
+  if (luma1CalCache.length < length) {
+    const buf = new Uint8Array(length)
+    let s = LUMA1_CAL_SEED
+    for (let i = 0; i < length; i++) {
+      s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0
+      buf[i] = s & 0xff
+    }
+    luma1CalCache = buf
+  }
+  return luma1CalCache.length === length ? luma1CalCache : luma1CalCache.subarray(0, length)
+}
+
+// Sweep budget: while the receiver is in CRC-failure backoff, full blind
+// sweeps (all phase/guard combos ≈ 0.5s) would still saturate the main
+// thread. Fast mode reads only strip-identified phases at the default guard.
+let luma1SweepBudgetFast = false
+export function setLuma1SweepBudgetFast(fast) {
+  luma1SweepBudgetFast = !!fast
+}
+
 function isDenseBinaryMode(mode) {
   return mode === HDMI_MODE.BINARY_3 ||
     mode === HDMI_MODE.BINARY_2 ||
@@ -2116,7 +2142,8 @@ function buildLuma1DecodeDebug({
   payloadCellsY,
   stripWidthCapture,
   phases,
-  mode
+  mode,
+  payloadLength
 }) {
   const rowIndices = [...new Set([
     0,
@@ -2266,6 +2293,102 @@ function buildLuma1DecodeDebug({
     purityCols = ks.map((k, i) => ({ k, pct: toPercent(pureCounts[i].cols, totals[i].cols) }))
   }
 
+  // Calibration analysis: if the sender transmits the fixed calibration
+  // payload, every cell's true symbol is known, so errors and the mixing
+  // fraction become direct measurements instead of inferences. Detection is
+  // automatic — symbol match rate ≫ chance (25%) means this is a calibration
+  // frame. Per cell we regress the blend fraction f against the row below
+  // and above (v = (1-f)·own + f·neighbor) wherever the expected contrast is
+  // large enough to make f well-conditioned.
+  let cal = null
+  if (refLevels && payloadLength > 0 && payloadCellsY > 1) {
+    const expected = getLuma1CalibrationPayload(payloadLength)
+    const bitLen = payloadLength * BITS_PER_BYTE
+    const expectedLevelAt = (cy, cx) => {
+      const bitPos = (cy * payloadCellsX + cx) * 2
+      if (bitPos + 2 > bitLen) return -1
+      const sym = (expected[bitPos >> 3] >> (6 - (bitPos & 7))) & 3
+      return LUMA1_GRAY_SYMBOL_TO_LEVEL[sym]
+    }
+    const BANDS = 16
+    const modKs = [2, 3, 4, 5, 6]
+    const errMod = modKs.map((k) => ({ k, err: new Array(k).fill(0), n: new Array(k).fill(0) }))
+    const errBands = { err: new Array(BANDS).fill(0), n: new Array(BANDS).fill(0) }
+    // Per-band f samples; reported as medians. A mean would be contaminated
+    // by the ~25% of cells whose other-side neighbor shares the level of the
+    // true mixing partner.
+    const fBelowSamples = Array.from({ length: BANDS }, () => [])
+    const fAboveSamples = Array.from({ length: BANDS }, () => [])
+    const fHist = new Array(14).fill(0)
+    let match = 0
+    let total = 0
+
+    for (let cy = 0; cy < payloadCellsY; cy++) {
+      const py = payloadStartY + Math.round(cy * payloadStepY)
+      if (py < 0 || py >= imgHeight) continue
+      const band = Math.min(BANDS - 1, Math.floor((cy * BANDS) / payloadCellsY))
+      for (let cx = 0; cx < payloadCellsX; cx += 17) {
+        const ownLevel = expectedLevelAt(cy, cx)
+        if (ownLevel < 0) continue
+        const px = payloadStartXBase + Math.round(cx * payloadStepX) + purityPhase
+        if (px < 0 || px >= width) continue
+        const val = sampleBlockAt(imageData, width, px, py, payloadBs)
+        let best = 0
+        let bestDist = Infinity
+        for (let level = 0; level < LUMA1_LEVEL_COUNT; level++) {
+          const dist = Math.abs(val - refLevels[level])
+          if (dist < bestDist) { bestDist = dist; best = level }
+        }
+        const ok = best === ownLevel
+        total++
+        if (ok) match++
+        for (const entry of errMod) {
+          entry.n[cy % entry.k]++
+          if (!ok) entry.err[cy % entry.k]++
+        }
+        errBands.n[band]++
+        if (!ok) errBands.err[band]++
+
+        const own = refLevels[ownLevel]
+        const belowLevel = cy + 1 < payloadCellsY ? expectedLevelAt(cy + 1, cx) : -1
+        const aboveLevel = cy > 0 ? expectedLevelAt(cy - 1, cx) : -1
+        // Direction discrimination requires the two vertical neighbors to
+        // differ: when they share a level, mixing with either one looks
+        // identical and would contaminate the opposite-direction estimate.
+        const neighborsDiffer = belowLevel >= 0 && aboveLevel >= 0 &&
+          Math.abs(refLevels[belowLevel] - refLevels[aboveLevel]) >= 60
+        if (neighborsDiffer && Math.abs(refLevels[belowLevel] - own) >= 60) {
+          const f = (val - own) / (refLevels[belowLevel] - own)
+          fBelowSamples[band].push(f)
+          const bin = Math.min(13, Math.max(0, Math.floor((f + 0.2) * 10)))
+          fHist[bin]++
+        }
+        if (neighborsDiffer && Math.abs(refLevels[aboveLevel] - own) >= 60) {
+          const f = (val - own) / (refLevels[aboveLevel] - own)
+          fAboveSamples[band].push(f)
+        }
+      }
+    }
+
+    if (total > 500 && match / total > 0.45) {
+      const pct = (err, n) => err.map((e, i) => (n[i] > 0 ? Math.round((100 * e) / n[i]) : -1))
+      const fMedian = (samplesPerBand) => samplesPerBand.map((samples) => {
+        if (samples.length < 8) return null
+        samples.sort((a, b) => a - b)
+        return Math.round(100 * samples[samples.length >> 1]) / 100
+      })
+      cal = {
+        match: Math.round((1000 * match) / total) / 10,
+        total,
+        errRowMod: errMod.map((entry) => ({ k: entry.k, pct: pct(entry.err, entry.n) })),
+        errRowBands: pct(errBands.err, errBands.n),
+        fBelowBands: fMedian(fBelowSamples),
+        fAboveBands: fMedian(fAboveSamples),
+        fHist
+      }
+    }
+  }
+
   return {
     strips,
     hist,
@@ -2275,7 +2398,8 @@ function buildLuma1DecodeDebug({
     vEdgeColumns,
     purityRows,
     purityCols,
-    purityPhase
+    purityPhase,
+    cal
   }
 }
 
@@ -2450,15 +2574,22 @@ function readDenseBinaryPayload(
       ))
     ))
     if (usable.size > 0 && usable.size < phases.length) {
-      phaseOrder = [
-        ...phases.filter((phase) => usable.has(phase)),
-        ...phases.filter((phase) => !usable.has(phase))
-      ]
+      phaseOrder = luma1SweepBudgetFast
+        ? phases.filter((phase) => usable.has(phase))
+        : [
+            ...phases.filter((phase) => usable.has(phase)),
+            ...phases.filter((phase) => !usable.has(phase))
+          ]
+    } else if (luma1SweepBudgetFast) {
+      phaseOrder = phases.slice(0, 1)
     }
   }
+  const guardOrder = luma1SweepBudgetFast && guardOptions.length > 1
+    ? guardOptions.slice(0, 1)
+    : guardOptions
 
   let firstResult = null
-  for (const guardCells of guardOptions) {
+  for (const guardCells of guardOrder) {
     for (const phase of phaseOrder) {
       const result = makeResult(phase, guardCells)
       if (!firstResult) firstResult = result
@@ -2493,7 +2624,8 @@ function readDenseBinaryPayload(
       payloadCellsY,
       stripWidthCapture,
       phases,
-      mode: header.mode
+      mode: header.mode,
+      payloadLength: header.payloadLength
     })
   }
   return firstResult
@@ -4464,6 +4596,50 @@ export function testLuma1FailedDecodeAttachesDebug() {
     return pass
   } catch (err) {
     console.log('LUMA_1 failed-decode debug test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+// The calibration analysis must auto-detect a calibration frame and measure
+// an injected vertical mix fraction. Mixes every row with 30% of the row
+// below: CRC fails, but the per-band f-below regression should read ~0.3
+// while f-above stays near zero.
+export function testLuma1CalibrationFrameAnalysis() {
+  try {
+    const width = 640
+    const height = 407
+    const cap = getPayloadCapacity(width, height, HDMI_MODE.LUMA_1)
+    const payload = getLuma1CalibrationPayload(cap)
+    const frame = buildFrame(payload, HDMI_MODE.LUMA_1, width, height, 30, 71)
+
+    const mixed = new Uint8ClampedArray(frame)
+    for (let y = 0; y < height - 1; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4
+        const j = ((y + 1) * width + x) * 4
+        const v = Math.round(0.7 * frame[i] + 0.3 * frame[j])
+        mixed[i] = mixed[i + 1] = mixed[i + 2] = v
+      }
+    }
+
+    const anchors = detectAnchors(mixed, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    const result = region ? decodeDataRegion(mixed, width, region) : null
+    const cal = result?._diag?.lumaDebug?.cal
+    const fBelow = (cal?.fBelowBands || []).filter((v) => v !== null)
+    const fAbove = (cal?.fAboveBands || []).filter((v) => v !== null)
+    const mean = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : NaN)
+    const fBelowMean = mean(fBelow)
+    const fAboveMean = mean(fAbove)
+    const pass = result && !result.crcValid &&
+      cal && cal.match > 45 &&
+      fBelow.length >= 8 &&
+      fBelowMean > 0.2 && fBelowMean < 0.4 &&
+      Math.abs(fAboveMean) < 0.1
+    console.log('LUMA_1 calibration frame analysis test:', pass ? 'PASS' : 'FAIL', { match: cal?.match, fBelowMean: Number.isFinite(fBelowMean) ? fBelowMean.toFixed(3) : null, fAboveMean: Number.isFinite(fAboveMean) ? fAboveMean.toFixed(3) : null })
+    return pass
+  } catch (err) {
+    console.log('LUMA_1 calibration frame analysis test: FAIL', err?.message || err)
     return false
   }
 }

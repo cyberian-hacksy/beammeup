@@ -119,6 +119,7 @@ import {
   testLuma1LegacyNoGuardDecode,
   testLuma1OffsetLayoutSamplesStripsWithPhase,
   testLuma1FailedDecodeAttachesDebug,
+  testLuma1CalibrationFrameAnalysis,
   testDecodeDataRegionPropagatesDenseBinaryLevels,
   testDenseBinaryLockedLayoutMatchesBlindSweep,
   testDenseBinaryPrecomputedOffsetsMatchUncached,
@@ -242,6 +243,7 @@ window.testLuma1BlurredPayloadBandDecode = testLuma1BlurredPayloadBandDecode
 window.testLuma1LegacyNoGuardDecode = testLuma1LegacyNoGuardDecode
 window.testLuma1OffsetLayoutSamplesStripsWithPhase = testLuma1OffsetLayoutSamplesStripsWithPhase
 window.testLuma1FailedDecodeAttachesDebug = testLuma1FailedDecodeAttachesDebug
+window.testLuma1CalibrationFrameAnalysis = testLuma1CalibrationFrameAnalysis
 window.testDecodeDataRegionPropagatesDenseBinaryLevels = testDecodeDataRegionPropagatesDenseBinaryLevels
 window.testDenseBinaryLockedLayoutMatchesBlindSweep = testDenseBinaryLockedLayoutMatchesBlindSweep
 window.testDenseBinaryPrecomputedOffsetsMatchUncached = testDenseBinaryPrecomputedOffsetsMatchUncached
@@ -507,6 +509,7 @@ async function runAllTests() {
     hdmiLuma1LegacyNoGuardDecode: testLuma1LegacyNoGuardDecode(),
     hdmiLuma1OffsetLayoutStripPhase: testLuma1OffsetLayoutSamplesStripsWithPhase(),
     hdmiLuma1FailedDecodeDebug: testLuma1FailedDecodeAttachesDebug(),
+    hdmiLuma1CalibrationAnalysis: testLuma1CalibrationFrameAnalysis(),
     hdmiDenseBinaryLevelsPropagation: testDecodeDataRegionPropagatesDenseBinaryLevels(),
     hdmiDenseBinaryLockedLayout: testDenseBinaryLockedLayoutMatchesBlindSweep(),
     hdmiDenseBinaryPrecomputedOffsets: testDenseBinaryPrecomputedOffsetsMatchUncached(),

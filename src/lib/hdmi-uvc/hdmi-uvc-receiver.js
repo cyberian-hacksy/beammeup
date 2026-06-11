@@ -16,6 +16,7 @@ import {
   decodeDataRegion,
   readPayloadWithLayout,
   resetClassifierPerfAccumulator,
+  setLuma1SweepBudgetFast,
   getClassifierPerfAccumulator
 } from './hdmi-uvc-frame.js'
 import ReceiverWorker from './hdmi-uvc-receiver-worker.js?worker&inline'
@@ -2701,13 +2702,19 @@ const LUMA1_SWEEP_BACKOFF_MS = 400
 function noteLuma1SweepOutcome(result) {
   if (result?.crcValid) {
     state.luma1SweepFailStreak = 0
+    state.luma1InvalidationCount = 0
+    setLuma1SweepBudgetFast(false)
     return
   }
   if (result?.header?.mode !== HDMI_MODE.LUMA_1) return
   state.luma1SweepFailStreak = (state.luma1SweepFailStreak || 0) + 1
-  state.luma1NextSweepAtMs = performance.now() + LUMA1_SWEEP_BACKOFF_MS
+  // Escalate once the layout has been invalidated repeatedly: the channel is
+  // persistently broken, so trade scan latency for an interactive page.
+  const backoffMs = (state.luma1InvalidationCount || 0) >= 2 ? 1500 : LUMA1_SWEEP_BACKOFF_MS
+  state.luma1NextSweepAtMs = performance.now() + backoffMs
   if (state.luma1SweepFailStreak === LUMA1_SWEEP_BACKOFF_AFTER_FAILS) {
-    debugLog(`[HDMI-RX] Luma4 sweep backoff engaged after ${LUMA1_SWEEP_BACKOFF_AFTER_FAILS} consecutive CRC fails - decoding at most every ${LUMA1_SWEEP_BACKOFF_MS}ms until a frame passes`)
+    setLuma1SweepBudgetFast(true)
+    debugLog(`[HDMI-RX] Luma4 sweep backoff engaged after ${LUMA1_SWEEP_BACKOFF_AFTER_FAILS} consecutive CRC fails - fast sweeps at most every ${backoffMs}ms until a frame passes`)
   }
 }
 
@@ -2723,6 +2730,9 @@ function noteDenseBinaryLockFailure(result) {
     LOCKED_BINARY3_INVALIDATE_AFTER_FAILS
   )
   if (outcome.invalidated) {
+    if (result?._diag?.frameMode === HDMI_MODE.LUMA_1) {
+      state.luma1InvalidationCount = (state.luma1InvalidationCount || 0) + 1
+    }
     const modeName = HDMI_MODE_NAMES[result?._diag?.frameMode] || 'dense binary'
     const diag = result?._diag || {}
     const detail = diag.frameMode === HDMI_MODE.LUMA_1
@@ -2762,6 +2772,14 @@ function logLuma1DecodeDebug(lumaDebug) {
     const fmt = (entries) => entries.map((e) => `k${e.k}=[${e.pct.join('/')}]`).join(' ')
     debugLog(`[HDMI-RX] Luma4 purity by row class (% of samples on a strip level, phase ${lumaDebug.purityPhase}): ${fmt(lumaDebug.purityRows)}`)
     debugLog(`[HDMI-RX] Luma4 purity by col class: ${fmt(lumaDebug.purityCols)}`)
+  }
+  const cal = lumaDebug.cal
+  if (cal) {
+    const fmtMod = cal.errRowMod.map((e) => `k${e.k}=[${e.pct.join('/')}]`).join(' ')
+    debugLog(`[HDMI-RX] Luma4 CAL detected: symbol match=${cal.match}% (n=${cal.total}) err% by row mod: ${fmtMod}`)
+    debugLog(`[HDMI-RX] Luma4 CAL err% by row band (top->bottom, 16): [${cal.errRowBands.join('/')}]`)
+    debugLog(`[HDMI-RX] Luma4 CAL mix fraction by row band: f-below=[${cal.fBelowBands.map((v) => v ?? 'x').join('/')}] f-above=[${cal.fAboveBands.map((v) => v ?? 'x').join('/')}] (0=clean, +=blended toward that neighbor)`)
+    debugLog(`[HDMI-RX] Luma4 CAL f-below histogram (f=-0.2..1.2 step 0.1): [${cal.fHist.join('/')}]`)
   }
 }
 

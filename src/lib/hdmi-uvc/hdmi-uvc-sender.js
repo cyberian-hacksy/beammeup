@@ -18,6 +18,7 @@ import {
   buildNativeGeometryGuidance,
   createFrameBuffer,
   getDataRegion,
+  getLuma1CalibrationPayload,
   getLuma1SenderLevels,
   getPayloadCapacity,
   hasEffectiveOneToOnePresentation,
@@ -183,6 +184,25 @@ export function resolveInitialLuma1Mids(
   stored = readStoredPreference(LUMA1_MIDS_STORAGE_KEY)
 ) {
   return parseLuma1MidsParam(search) ?? parseLuma1MidsValue(stored) ?? DEFAULT_LUMA1_MIDS.slice()
+}
+
+// Calibration mode: the sender transmits the fixed receiver-known LUMA_1
+// test pattern instead of file data, turning receiver-side error analysis
+// into direct measurement. ?luma-cal=1, persisted like the other options.
+const LUMA1_CAL_STORAGE_KEY = 'hdmi-uvc-luma-cal'
+
+export function resolveInitialLumaCal(
+  search = getCurrentSearch(),
+  stored = readStoredPreference(LUMA1_CAL_STORAGE_KEY)
+) {
+  let params = null
+  try {
+    params = new URLSearchParams(search || '')
+  } catch (_) { /* fall through */ }
+  const raw = params ? params.get('luma-cal') : null
+  if (raw === '1' || raw === 'true') return true
+  if (raw === '0' || raw === 'false') return false
+  return stored === '1'
 }
 
 // FPS preset: ?tx-fps=<fps value> (e.g. 30) → stored preset index → mode
@@ -451,6 +471,7 @@ const state = {
   dataPacketCount: 0,
   frameCount: 0,
   mode: resolveInitialHdmiMode(),
+  lumaCalibration: resolveInitialLumaCal(),
   renderSizePresetId: DEFAULT_RENDER_SIZE_PRESET,
   systematicPass: 1,
   tailStartFrame: 0,
@@ -2338,7 +2359,10 @@ function renderFrame() {
     const batchReadyMs = performance.now()
 
     const frameImageData = ensureHdmiFrameResources(cw, ch)
-    buildFrame(batch.payload, state.mode, cw, ch, fps.fps, batch.outerSymbolId, state.frameBuffer)
+    const framePayload = state.lumaCalibration && state.mode === HDMI_MODE.LUMA_1
+      ? getLuma1CalibrationPayload(batch.payload.length)
+      : batch.payload
+    buildFrame(framePayload, state.mode, cw, ch, fps.fps, batch.outerSymbolId, state.frameBuffer)
     const buildDoneMs = performance.now()
 
     const ctx = canvas.getContext('2d')
@@ -2540,6 +2564,9 @@ async function startSending() {
     debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
     if (state.mode === HDMI_MODE.LUMA_1) {
       debugLog(`Luma4 sender levels: [${getLuma1SenderLevels().join(', ')}] (override with ?luma-mids=m1,m2)`)
+      if (state.lumaCalibration) {
+        debugLog('Luma4 CALIBRATION MODE: frames carry the fixed test pattern, not file data')
+      }
     }
     debugLog(`Pass-2 variant: ${getPass2Variant()}`)
     debugLog(`Dense pass-2 sweep mix: ${getDenseBinaryPass2SweepMix()}`)
@@ -2950,6 +2977,19 @@ export function initHdmiUvcSender(errorHandler) {
   if (elements.lumaMid1) elements.lumaMid1.onchange = handleLumaMidsChange
   if (elements.lumaMid2) elements.lumaMid2.onchange = handleLumaMidsChange
 
+  elements.lumaCalToggle = document.getElementById('hdmi-uvc-luma-cal')
+  if (elements.lumaCalToggle) {
+    elements.lumaCalToggle.checked = state.lumaCalibration
+    elements.lumaCalToggle.onchange = () => {
+      state.lumaCalibration = elements.lumaCalToggle.checked
+      writeStoredPreference(LUMA1_CAL_STORAGE_KEY, state.lumaCalibration ? '1' : '0')
+      writeUrlParam('luma-cal', state.lumaCalibration ? '1' : '0')
+      debugLog(state.lumaCalibration
+        ? 'Luma4 CALIBRATION pattern ON: transmitting fixed test pattern (no file data goes through)'
+        : 'Luma4 calibration pattern off')
+    }
+  }
+
   const fpsSelect = document.getElementById('hdmi-uvc-fps-select')
   if (fpsSelect) {
     FPS_PRESETS.forEach((preset, index) => {
@@ -3278,7 +3318,12 @@ export function testHdmiUvcSenderPreferencePersistence() {
     resolveInitialFpsPreset('?tx-fps=30', null, HDMI_MODE.LUMA_1) === '2' &&
     resolveInitialFpsPreset('', '2', HDMI_MODE.LUMA_1) === '2' &&
     resolveInitialFpsPreset('', null, HDMI_MODE.LUMA_1) === getRecommendedFpsPreset(HDMI_MODE.LUMA_1) &&
-    resolveInitialFpsPreset('?tx-fps=999', '99', HDMI_MODE.LUMA_1) === getRecommendedFpsPreset(HDMI_MODE.LUMA_1)
+    resolveInitialFpsPreset('?tx-fps=999', '99', HDMI_MODE.LUMA_1) === getRecommendedFpsPreset(HDMI_MODE.LUMA_1) &&
+    // calibration: URL > stored > off
+    resolveInitialLumaCal('', null) === false &&
+    resolveInitialLumaCal('', '1') === true &&
+    resolveInitialLumaCal('?luma-cal=1', null) === true &&
+    resolveInitialLumaCal('?luma-cal=0', '1') === false
   console.log('HDMI-UVC sender preference persistence test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
