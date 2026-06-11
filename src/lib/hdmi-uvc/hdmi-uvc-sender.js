@@ -18,9 +18,11 @@ import {
   buildNativeGeometryGuidance,
   createFrameBuffer,
   getDataRegion,
+  getLuma1SenderLevels,
   getPayloadCapacity,
   hasEffectiveOneToOnePresentation,
-  isNative1080pGeometry
+  isNative1080pGeometry,
+  setLuma1SenderMidLevels
 } from './hdmi-uvc-frame.js'
 import { buildCard, CARD_KIND } from './hdmi-uvc-lab.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
@@ -80,6 +82,29 @@ export function resolveDefaultHdmiMode(search = getCurrentSearch()) {
       return DEFAULT_HDMI_MODE
   }
 }
+
+// LUMA_1 gamma pre-compensation: ?luma-mids=53,154 sets the two intermediate
+// sender gray values so the *captured* levels come out evenly spaced. The
+// receiver's invalidation log prints the measured levels
+// (levels=[b/l1/l2/w]); pick mids that pull l1/l2 toward the even spacing
+// b + (w-b)/3 and b + 2(w-b)/3. Returns the applied [mid1, mid2] or null.
+export function resolveLuma1MidLevels(search = getCurrentSearch()) {
+  let params
+  try {
+    params = new URLSearchParams(search || '')
+  } catch (_) {
+    return null
+  }
+
+  const raw = (params.get('luma-mids') || '').trim()
+  if (!raw) return null
+  const parts = raw.split(/[,/:]/).map((part) => Number.parseInt(part.trim(), 10))
+  if (parts.length !== 2) return null
+  if (!setLuma1SenderMidLevels(parts[0], parts[1])) return null
+  return [parts[0], parts[1]]
+}
+
+resolveLuma1MidLevels()
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -2389,6 +2414,9 @@ async function startSending() {
     } = selectedBatching
 
     debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
+    if (state.mode === HDMI_MODE.LUMA_1) {
+      debugLog(`Luma4 sender levels: [${getLuma1SenderLevels().join(', ')}] (override with ?luma-mids=m1,m2)`)
+    }
     debugLog(`Pass-2 variant: ${getPass2Variant()}`)
     debugLog(`Dense pass-2 sweep mix: ${getDenseBinaryPass2SweepMix()}`)
     debugLog(`TX pacing: ${getSenderRenderPace(state.mode, selectedFps)}`)
@@ -3028,6 +3056,23 @@ export function testHdmiUvcSenderModeUrlOverride() {
     resolveDefaultHdmiMode('?hdmi-mode=luma1') === HDMI_MODE.LUMA_1 &&
     resolveDefaultHdmiMode('?tx-mode=unknown') === HDMI_MODE.BINARY_1
   console.log('HDMI-UVC sender mode URL override test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testLuma1MidLevelUrlOverride() {
+  const applied = resolveLuma1MidLevels('?luma-mids=53,154')
+  const levels = getLuma1SenderLevels()
+  const rejectedEmpty = resolveLuma1MidLevels('') === null
+  const rejectedUnordered = resolveLuma1MidLevels('?luma-mids=200,100') === null
+  const rejectedEndpoint = resolveLuma1MidLevels('?luma-mids=0,255') === null
+  const rejectedNoise = resolveLuma1MidLevels('?luma-mids=abc') === null
+  setLuma1SenderMidLevels(85, 170)
+  const restored = getLuma1SenderLevels()
+  const pass = applied?.[0] === 53 && applied?.[1] === 154 &&
+    levels[0] === 0 && levels[1] === 53 && levels[2] === 154 && levels[3] === 255 &&
+    rejectedEmpty && rejectedUnordered && rejectedEndpoint && rejectedNoise &&
+    restored[1] === 85 && restored[2] === 170
+  console.log('LUMA_1 mid-level URL override test:', pass ? 'PASS' : 'FAIL', { applied, levels })
   return pass
 }
 

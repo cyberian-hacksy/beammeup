@@ -64,6 +64,28 @@ const DENSE_BINARY_REF_STRIP_PX = DENSE_BINARY_REF_STRIP_WIDTH_4X4 * DENSE_BINAR
 const LUMA1_GRAY_SYMBOL_TO_LEVEL = [0, 1, 3, 2]
 const LUMA1_GRAY_LEVEL_TO_SYMBOL = [0, 1, 3, 2]
 const LUMA1_LEVEL_COUNT = 4
+// Sender-side output values per luma level. The capture chain applies a
+// nonlinear luma transform (display gamma/ICC) that binary endpoints survive
+// but intermediate levels do not — measured live: 85 lands near 136 and 170
+// near 178, collapsing the L1/L2 gap. The mid levels are therefore tunable so
+// the sender can pre-compensate until the *captured* levels are evenly spaced.
+// The receiver needs no matching constant: it learns levels from the ramp
+// strips, which are rendered from this same table.
+const LUMA1_SENDER_LEVELS = GRAY2_LEVEL_FRACTIONS.map((f) => Math.round(255 * f))
+
+export function setLuma1SenderMidLevels(mid1, mid2) {
+  const lo = Math.round(mid1)
+  const hi = Math.round(mid2)
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return false
+  if (lo <= 0 || hi <= lo || hi >= 255) return false
+  LUMA1_SENDER_LEVELS[1] = lo
+  LUMA1_SENDER_LEVELS[2] = hi
+  return true
+}
+
+export function getLuma1SenderLevels() {
+  return LUMA1_SENDER_LEVELS.slice()
+}
 
 function isDenseBinaryMode(mode) {
   return mode === HDMI_MODE.BINARY_3 ||
@@ -248,7 +270,7 @@ function decodeGray2(sample, blackLevel = 0, whiteLevel = 255) {
 }
 
 function encodeLuma1Symbol(symbol) {
-  return encodeGray2(LUMA1_GRAY_SYMBOL_TO_LEVEL[symbol & 0x3])
+  return LUMA1_SENDER_LEVELS[LUMA1_GRAY_SYMBOL_TO_LEVEL[symbol & 0x3]]
 }
 
 function decodeLuma1Symbol(sample, blackLevel = 0, whiteLevel = 255) {
@@ -430,7 +452,7 @@ function renderLuma1ReferenceStrip(imageData, width, startX, startY, stripWidth,
       Math.floor((dx * LUMA1_LEVEL_COUNT) / Math.max(1, stripWidth))
     )
     const level = reverse ? (LUMA1_LEVEL_COUNT - 1 - levelSlot) : levelSlot
-    const val = encodeGray2(level)
+    const val = LUMA1_SENDER_LEVELS[level]
     for (let dy = 0; dy < stripHeight; dy++) {
       const i = ((startY + dy) * width + (startX + dx)) * 4
       imageData[i] = val
@@ -1928,8 +1950,8 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
           headerStepY,
           payloadStepY,
           payloadStartY,
-          rx,
-          rightStripX,
+          rx: rx + payloadPhaseX,
+          rightStripX: rightStripX + payloadPhaseX,
           headerBs,
           fallbackBlack,
           fallbackWhite,
@@ -2007,12 +2029,14 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
     if (stripIdx !== lastStripIdx) {
       const refY = payloadStartY + Math.round(stripIdx * headerStepY)
       if (frameMode === HDMI_MODE.LUMA_1) {
+        // Strip columns are payload-cell wide; follow the locked layout's
+        // phase correction like the payload offsets do.
         lumaLevels = sampleLuma1ReferenceLevels(
           imageData,
           width,
           imgHeight,
-          rx,
-          rightStripX,
+          rx + payloadPhaseX,
+          rightStripX + payloadPhaseX,
           refY,
           headerBs,
           fallbackBlack,
@@ -2097,6 +2121,7 @@ function readDenseBinaryPayload(
       : null
     const decodeState = { index: 0, bitBuffer: 0, bitCount: 0 }
     let confidenceIdx = 0
+    let measuredLumaLevels = null
 
     for (let cy = 0; cy < payloadCellsY && decodeState.index < header.payloadLength; cy++) {
       const stripIdx = Math.min(
@@ -2110,19 +2135,25 @@ function readDenseBinaryPayload(
         ? ref.headerLevels.whiteLevel
         : (Number.isFinite(ref.rowWhiteLevels[stripIdx]) ? ref.rowWhiteLevels[stripIdx] : ref.headerLevels.whiteLevel)
       const threshold = (black + white) * 0.5
+      // The ramp-strip columns are a single payload cell wide, so the strip
+      // read must follow the same sub-cell phase correction as the payload
+      // grid. Sampling them at the unphased rx is what produced garbage
+      // centroids (and a silent linear fallback) whenever the header probe
+      // settled one pixel off.
       const lumaLevels = header.mode === HDMI_MODE.LUMA_1
         ? sampleLuma1ReferenceLevels(
             imageData,
             width,
             imgHeight,
-            rx,
-            rightStripX,
+            rx + payloadPhaseX,
+            rightStripX + payloadPhaseX,
             payloadStartY + Math.round(stripIdx * headerStepY),
             headerBs,
             black,
             white
           )
         : null
+      if (lumaLevels && !measuredLumaLevels) measuredLumaLevels = lumaLevels
 
       for (let cx = 0; cx < payloadCellsX && decodeState.index < header.payloadLength; cx++) {
         const offsetIdx = (cy * payloadCellsX + cx) * 2
@@ -2175,6 +2206,7 @@ function readDenseBinaryPayload(
         yOff: ry - region.y,
         payloadPhaseX,
         payloadEdgeGuardCells: edgeGuardCells,
+        lumaLevels: measuredLumaLevels ? measuredLumaLevels.map((v) => Math.round(v)) : undefined,
         blackLevel: ref.headerLevels.blackLevel,
         whiteLevel: ref.headerLevels.whiteLevel,
         stripRows: ref.stripRows
@@ -3246,6 +3278,7 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
           whiteLevel: innerDiag.whiteLevel,
           payloadEdgeGuardCells: innerDiag.payloadEdgeGuardCells,
           payloadPhaseX: innerDiag.payloadPhaseX,
+          lumaLevels: innerDiag.lumaLevels,
           stripRows: innerDiag.stripRows
         }
       }
@@ -3419,6 +3452,7 @@ function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout, 
           whiteLevel: innerDiag.whiteLevel,
           payloadEdgeGuardCells: innerDiag.payloadEdgeGuardCells,
           payloadPhaseX: innerDiag.payloadPhaseX,
+          lumaLevels: innerDiag.lumaLevels,
           stripRows: innerDiag.stripRows
         }
       }
@@ -3582,6 +3616,7 @@ export function decodeDataRegion(imageData, width, region, options = {}) {
               whiteLevel: innerDiag.whiteLevel,
               payloadEdgeGuardCells: innerDiag.payloadEdgeGuardCells,
               payloadPhaseX: innerDiag.payloadPhaseX,
+              lumaLevels: innerDiag.lumaLevels,
               stripRows: innerDiag.stripRows
             }
           }
@@ -4047,6 +4082,70 @@ export function testLuma1LegacyNoGuardDecode() {
     return pass
   } catch (err) {
     console.log('LUMA_1 legacy no-guard decode test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+// Mild full-frame horizontal blur (5% side taps) approximating MJPEG capture
+// smear. Gentle enough that 1px payload cells survive with correct centroids,
+// harsh enough that a one-pixel-misaligned strip read yields broken levels.
+function blurLuma1FrameMild(imageData, width, height) {
+  const blurred = new Uint8ClampedArray(imageData)
+  for (let y = 0; y < height; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const i = (y * width + x) * 4
+      const value = Math.round(
+        imageData[i - 4] * 0.05 +
+        imageData[i] * 0.90 +
+        imageData[i + 4] * 0.05
+      )
+      blurred[i] = value
+      blurred[i + 1] = value
+      blurred[i + 2] = value
+    }
+  }
+  return blurred
+}
+
+// Live regression: the header probe routinely settles one pixel left of the
+// true grid (xOff=-1) and the payload phase search corrects it with
+// payloadPhaseX=+1. The ramp strips must follow that phase correction —
+// reading them unphased yields garbage centroids, and under a warped+blurred
+// channel that misclassifies mid-level cells.
+export function testLuma1OffsetLayoutSamplesStripsWithPhase() {
+  try {
+    const width = 640
+    const height = 407
+    const payload = new Uint8Array(1500)
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 73 + 5) & 0xff
+
+    const frame = blurLuma1FrameMild(
+      warpLuma1IntermediateLevels(
+        buildFrame(payload, HDMI_MODE.LUMA_1, width, height, 30, 59)
+      ),
+      width,
+      height
+    )
+    const anchors = detectAnchors(frame, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    const baseline = region ? decodeDataRegion(frame, width, region) : null
+    if (!baseline?.crcValid) {
+      console.log('LUMA_1 offset-layout strip phase test: FAIL (baseline decode)')
+      return false
+    }
+
+    const layout = {
+      ...baseline._diag,
+      xOff: (baseline._diag.xOff || 0) - 1,
+      payloadPhaseX: (baseline._diag.payloadPhaseX || 0) + 1
+    }
+    const got = readPayloadWithLayout(frame, width, region, layout, payload.length, null)
+    const pass = got?.length === payload.length &&
+      got.every((v, i) => v === payload[i])
+    console.log('LUMA_1 offset-layout strip phase test:', pass ? 'PASS' : 'FAIL')
+    return pass
+  } catch (err) {
+    console.log('LUMA_1 offset-layout strip phase test: FAIL', err?.message || err)
     return false
   }
 }

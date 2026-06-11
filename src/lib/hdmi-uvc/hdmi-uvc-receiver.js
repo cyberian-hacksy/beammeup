@@ -2701,7 +2701,7 @@ function noteDenseBinaryLockFailure(result) {
     const modeName = HDMI_MODE_NAMES[result?._diag?.frameMode] || 'dense binary'
     const diag = result?._diag || {}
     const detail = diag.frameMode === HDMI_MODE.LUMA_1
-      ? ` guard=${diag.payloadEdgeGuardCells ?? 'n/a'} phase=${diag.payloadPhaseX ?? 'n/a'} grid=${diag.blocksX || '?'}x${diag.blocksY || '?'} len=${result?.header?.payloadLength ?? '?'}`
+      ? ` guard=${diag.payloadEdgeGuardCells ?? 'n/a'} phase=${diag.payloadPhaseX ?? 'n/a'} grid=${diag.blocksX || '?'}x${diag.blocksY || '?'} len=${result?.header?.payloadLength ?? '?'} levels=[${Array.isArray(diag.lumaLevels) ? diag.lumaLevels.join('/') : 'n/a'}] bw=${Math.round(diag.blackLevel ?? -1)}/${Math.round(diag.whiteLevel ?? -1)}`
       : ''
     debugLog(`[HDMI-RX] ${modeName} layout invalidated after ${LOCKED_BINARY3_INVALIDATE_AFTER_FAILS} unrecovered CRC fails${detail} - re-sweeping next frame`)
   }
