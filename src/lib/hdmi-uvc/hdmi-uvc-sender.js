@@ -110,10 +110,12 @@ export function resolveDefaultHdmiMode(search = getCurrentSearch()) {
 // URL param (shareable, wins) → localStorage (last UI choice) → default.
 const SENDER_MODE_STORAGE_KEY = 'hdmi-uvc-tx-mode'
 const LUMA1_MIDS_STORAGE_KEY = 'hdmi-uvc-luma-mids'
-// Default mids pre-compensate the measured channel warp (sent 85 captures
-// near 136, sent 170 near 178): sending 53/154 lands the captured levels
-// close to even thirds. Neutral 85/170 is known-broken on this rig.
-const DEFAULT_LUMA1_MIDS = [53, 154]
+const FPS_STORAGE_KEY = 'hdmi-uvc-tx-fps'
+// Default mids pre-compensate the measured channel curve. Live strip readout
+// 2026-06-10 (sent [0,53,154,255] captured as [0,34,137,255], a darkening
+// gamma ~1.3): piecewise-linear inversion puts the even-thirds capture
+// targets (85, 170) at sender values 103 and 182.
+const DEFAULT_LUMA1_MIDS = [103, 182]
 
 function readStoredPreference(key) {
   try {
@@ -181,6 +183,27 @@ export function resolveInitialLuma1Mids(
   stored = readStoredPreference(LUMA1_MIDS_STORAGE_KEY)
 ) {
   return parseLuma1MidsParam(search) ?? parseLuma1MidsValue(stored) ?? DEFAULT_LUMA1_MIDS.slice()
+}
+
+// FPS preset: ?tx-fps=<fps value> (e.g. 30) → stored preset index → mode
+// recommendation. Returns a FPS_PRESETS index as a string (slider contract).
+export function resolveInitialFpsPreset(
+  search = getCurrentSearch(),
+  stored = readStoredPreference(FPS_STORAGE_KEY),
+  mode = state.mode
+) {
+  let params = null
+  try {
+    params = new URLSearchParams(search || '')
+  } catch (_) { /* fall through */ }
+  const urlFps = params ? Number.parseInt(params.get('tx-fps'), 10) : NaN
+  const urlIndex = FPS_PRESETS.findIndex((preset) => preset.fps === urlFps)
+  if (urlIndex >= 0) return String(urlIndex)
+  const storedIndex = Number.parseInt(stored, 10)
+  if (Number.isInteger(storedIndex) && storedIndex >= 0 && storedIndex < FPS_PRESETS.length) {
+    return String(storedIndex)
+  }
+  return getRecommendedFpsPreset(mode)
 }
 
 {
@@ -1382,6 +1405,9 @@ function updateModeSelector() {
   }
   if (elements.lumaLevelsLabel) {
     elements.lumaLevelsLabel.textContent = `levels [${senderLevels.join(', ')}]`
+  }
+  if (elements.fpsSlider) {
+    elements.fpsSlider.disabled = disabled
   }
 }
 
@@ -2778,6 +2804,7 @@ function handleModeChange(e) {
   const recommendedFpsPreset = getRecommendedFpsPreset(state.mode)
   if (elements.fpsSlider && elements.fpsSlider.value !== recommendedFpsPreset) {
     elements.fpsSlider.value = recommendedFpsPreset
+    writeStoredPreference(FPS_STORAGE_KEY, recommendedFpsPreset)
     handleFpsChange()
   }
   updateModeSelector()
@@ -2922,6 +2949,24 @@ export function initHdmiUvcSender(errorHandler) {
   }
   if (elements.lumaMid1) elements.lumaMid1.onchange = handleLumaMidsChange
   if (elements.lumaMid2) elements.lumaMid2.onchange = handleLumaMidsChange
+
+  const fpsSelect = document.getElementById('hdmi-uvc-fps-select')
+  if (fpsSelect) {
+    FPS_PRESETS.forEach((preset, index) => {
+      const option = document.createElement('option')
+      option.value = String(index)
+      option.textContent = preset.name
+      fpsSelect.appendChild(option)
+    })
+    fpsSelect.value = resolveInitialFpsPreset()
+    fpsSelect.onchange = () => {
+      writeStoredPreference(FPS_STORAGE_KEY, fpsSelect.value)
+      writeUrlParam('tx-fps', String(getFps().fps))
+      handleFpsChange()
+      debugLog(`FPS preset selected: ${getFps().name}`)
+    }
+    elements.fpsSlider = fpsSelect
+  }
 
   if (elements.externalDisplayToggle) {
     state.useExternalDisplay = elements.externalDisplayToggle.checked
@@ -3225,10 +3270,15 @@ export function testHdmiUvcSenderPreferencePersistence() {
     resolveInitialHdmiMode('?tx-mode=1x1', 'luma4') === HDMI_MODE.BINARY_1 &&
     resolveInitialHdmiMode('?tx-mode=junk', 'junk') === DEFAULT_HDMI_MODE &&
     // mids: URL > stored > pre-compensation default
-    resolveInitialLuma1Mids('', null).join(',') === '53,154' &&
+    resolveInitialLuma1Mids('', null).join(',') === '103,182' &&
     resolveInitialLuma1Mids('', '60,150').join(',') === '60,150' &&
     resolveInitialLuma1Mids('?luma-mids=40,160', '60,150').join(',') === '40,160' &&
-    resolveInitialLuma1Mids('', '200,100').join(',') === '53,154'
+    resolveInitialLuma1Mids('', '200,100').join(',') === '103,182' &&
+    // fps: URL fps value > stored index > mode recommendation
+    resolveInitialFpsPreset('?tx-fps=30', null, HDMI_MODE.LUMA_1) === '2' &&
+    resolveInitialFpsPreset('', '2', HDMI_MODE.LUMA_1) === '2' &&
+    resolveInitialFpsPreset('', null, HDMI_MODE.LUMA_1) === getRecommendedFpsPreset(HDMI_MODE.LUMA_1) &&
+    resolveInitialFpsPreset('?tx-fps=999', '99', HDMI_MODE.LUMA_1) === getRecommendedFpsPreset(HDMI_MODE.LUMA_1)
   console.log('HDMI-UVC sender preference persistence test:', pass ? 'PASS' : 'FAIL')
   return pass
 }

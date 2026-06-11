@@ -2691,6 +2691,31 @@ function applyDenseBinaryRecoveredLayout(layout, header, currentRegion) {
   logDenseBinaryLockOutcome(outcome)
 }
 
+// LUMA_1 blind sweeps cost hundreds of ms each; when they fail repeatedly the
+// main thread saturates and the page stops responding to clicks. After a few
+// consecutive failures, rate-limit further sweep attempts — capture keeps
+// running and any CRC-valid decode lifts the throttle immediately.
+const LUMA1_SWEEP_BACKOFF_AFTER_FAILS = 3
+const LUMA1_SWEEP_BACKOFF_MS = 400
+
+function noteLuma1SweepOutcome(result) {
+  if (result?.crcValid) {
+    state.luma1SweepFailStreak = 0
+    return
+  }
+  if (result?.header?.mode !== HDMI_MODE.LUMA_1) return
+  state.luma1SweepFailStreak = (state.luma1SweepFailStreak || 0) + 1
+  state.luma1NextSweepAtMs = performance.now() + LUMA1_SWEEP_BACKOFF_MS
+  if (state.luma1SweepFailStreak === LUMA1_SWEEP_BACKOFF_AFTER_FAILS) {
+    debugLog(`[HDMI-RX] Luma4 sweep backoff engaged after ${LUMA1_SWEEP_BACKOFF_AFTER_FAILS} consecutive CRC fails - decoding at most every ${LUMA1_SWEEP_BACKOFF_MS}ms until a frame passes`)
+  }
+}
+
+function shouldSkipLuma1SweepForBackoff(now = performance.now()) {
+  if ((state.luma1SweepFailStreak || 0) < LUMA1_SWEEP_BACKOFF_AFTER_FAILS) return false
+  return now < (state.luma1NextSweepAtMs || 0)
+}
+
 function noteDenseBinaryLockFailure(result) {
   const outcome = noteDenseBinaryUnrecoveredCrcFailure(
     state,
@@ -2730,6 +2755,9 @@ function logLuma1DecodeDebug(lumaDebug) {
   debugLog(`[HDMI-RX] Luma4 payload hist (binW=4, n=${lumaDebug.sampled}): ${bins}`)
   const peaks = (lumaDebug.peaks || []).map((peak) => `${peak.v}(${peak.n})`).join(' ')
   debugLog(`[HDMI-RX] Luma4 payload peaks: ${peaks || 'none'}`)
+  if (lumaDebug.vEdge) {
+    debugLog(`[HDMI-RX] Luma4 vertical edge margin->header rows[-3..+4]: [${lumaDebug.vEdge.join('/')}] over ${lumaDebug.vEdgeColumns} column(s) (hard 0->255 step = vertically sharp; intermediate row value = vertical blend weight)`)
+  }
 }
 
 function logDenseBinaryLockOutcome(outcome) {
@@ -3148,6 +3176,12 @@ async function processFrame(now, metadata) {
   }
 
   // === DECODE DATA REGION ===
+  if (shouldSkipLuma1SweepForBackoff()) {
+    scheduleNextFrame()
+    finalizeFramePerf()
+    return
+  }
+
   region.preferredLayout = state.lockedDenseBinaryLayout || state.preferredLayout
   let result = null
   let workerDecodedFrame = false
@@ -3196,6 +3230,7 @@ async function processFrame(now, metadata) {
     decodeMs += performance.now() - decodeStartMs
     classifierMs += getClassifierPerfAccumulator()
   }
+  noteLuma1SweepOutcome(result)
   logDenseBinaryConfidence(result)
 
   if (result && result.crcValid) {

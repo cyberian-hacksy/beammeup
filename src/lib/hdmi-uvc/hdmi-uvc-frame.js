@@ -2103,8 +2103,10 @@ function buildLuma1DecodeDebug({
   imgHeight,
   region,
   rx,
+  ry,
   rightStripX,
   payloadStartY,
+  headerStepX,
   headerStepY,
   headerBs,
   stripRows,
@@ -2182,11 +2184,47 @@ function buildLuma1DecodeDebug({
     peaks.push({ bin: i, score: smooth[i], n: hist[i] })
   }
 
+  // Vertical edge profile across the static black-margin → header-band
+  // boundary, averaged over columns whose first header block is white this
+  // frame. The transition row(s) expose the capture's vertical kernel
+  // directly: a hard step = vertically sharp; one intermediate value = 2-tap
+  // blend (its level IS the blend weight); several = wider blur. Because the
+  // structure is static, cross-frame mixing cannot show up here — payload
+  // mixing with a sharp edge profile means temporal blending.
+  let vEdge = null
+  let vEdgeColumns = 0
+  if (Number.isFinite(ry) && headerStepX > 0) {
+    const profiles = []
+    const headerMidY = Math.round(ry + headerStepY / 2)
+    for (let k = 1; profiles.length < 24; k += 2) {
+      const x = Math.round(rx + k * headerStepX + headerStepX / 2)
+      if (x >= width || x >= rightStripX) break
+      if (headerMidY < 0 || headerMidY >= imgHeight || ry - 3 < 0) break
+      const inHeader = imageData[(headerMidY * width + x) * 4]
+      const aboveMargin = imageData[((ry - 3) * width + x) * 4]
+      if (inHeader <= 200 || aboveMargin >= 40) continue
+      const profile = []
+      for (let dy = -3; dy <= 4; dy++) {
+        const y = ry + dy
+        profile.push(y >= 0 && y < imgHeight ? imageData[(y * width + x) * 4] : -1)
+      }
+      profiles.push(profile)
+    }
+    vEdgeColumns = profiles.length
+    if (profiles.length) {
+      vEdge = profiles[0].map((_, i) =>
+        Math.round(profiles.reduce((sum, p) => sum + p[i], 0) / profiles.length)
+      )
+    }
+  }
+
   return {
     strips,
     hist,
     sampled,
-    peaks: peaks.map((p) => ({ v: p.bin * 4 + 2, n: p.n }))
+    peaks: peaks.map((p) => ({ v: p.bin * 4 + 2, n: p.n })),
+    vEdge,
+    vEdgeColumns
   }
 }
 
@@ -2338,9 +2376,39 @@ function readDenseBinaryPayload(
   const guardOptions = header.mode === HDMI_MODE.LUMA_1 && Number.isFinite(options.payloadEdgeGuardCells)
     ? [options.payloadEdgeGuardCells]
     : header.mode === HDMI_MODE.LUMA_1 ? [LUMA1_EDGE_GUARD_CELLS, 0] : [0]
+
+  // The ramp strips identify the most plausible phases up front: try phases
+  // with a monotone strip readout first so a decodable frame passes CRC on
+  // the first or second attempt instead of after several full-frame reads.
+  // Phases are only reordered, never dropped — degraded strips can still
+  // decode via the per-row fallback levels.
+  let phaseOrder = phases
+  if (header.mode === HDMI_MODE.LUMA_1 && phases.length > 1) {
+    const rowsToCheck = [0, Math.max(0, Math.floor(ref.stripRows / 2))]
+    const usable = new Set(phases.filter((phase) =>
+      rowsToCheck.some((stripIdx) => isLuma1LevelSetUsable(
+        measureLuma1ReferenceLevelsRaw(
+          imageData,
+          width,
+          imgHeight,
+          rx + phase,
+          rightStripX + phase,
+          payloadStartY + Math.round(stripIdx * headerStepY),
+          headerBs
+        )
+      ))
+    ))
+    if (usable.size > 0 && usable.size < phases.length) {
+      phaseOrder = [
+        ...phases.filter((phase) => usable.has(phase)),
+        ...phases.filter((phase) => !usable.has(phase))
+      ]
+    }
+  }
+
   let firstResult = null
   for (const guardCells of guardOptions) {
-    for (const phase of phases) {
+    for (const phase of phaseOrder) {
       const result = makeResult(phase, guardCells)
       if (!firstResult) firstResult = result
       if (result.crcValid) return result
@@ -2349,8 +2417,11 @@ function readDenseBinaryPayload(
 
   // Every phase/guard combination failed CRC. Attach the channel evidence an
   // investigation needs: per-phase raw strip readouts (are the ramp strips
-  // even readable, and at which phase?) and a luma histogram of the payload
-  // band (does the capture preserve four separable levels at all?).
+  // even readable, and at which phase?), a luma histogram of the payload
+  // band (does the capture preserve four separable levels at all?), and a
+  // vertical edge profile across the static margin→header boundary (is the
+  // capture blending rows spatially? — payload mixing without edge blur
+  // points at cross-frame mixing instead).
   if (header.mode === HDMI_MODE.LUMA_1 && firstResult) {
     firstResult._diag.lumaDebug = buildLuma1DecodeDebug({
       imageData,
@@ -2358,8 +2429,10 @@ function readDenseBinaryPayload(
       imgHeight,
       region,
       rx,
+      ry,
       rightStripX,
       payloadStartY,
+      headerStepX,
       headerStepY,
       headerBs,
       stripRows: ref.stripRows,
@@ -4326,8 +4399,14 @@ export function testLuma1FailedDecodeAttachesDebug() {
       dbg.strips.every((s) => Array.isArray(s.rows) && s.rows.length >= 1 &&
         s.rows.every((r) => r.raw.length === 4)) &&
       dbg.sampled > 0 && histSum === dbg.sampled &&
-      Array.isArray(dbg.peaks) && dbg.peaks.length >= 2
-    console.log('LUMA_1 failed-decode debug test:', pass ? 'PASS' : 'FAIL', pass ? '' : JSON.stringify({ crc: result?.crcValid, strips: dbg?.strips?.length, sampled: dbg?.sampled, peaks: dbg?.peaks }))
+      Array.isArray(dbg.peaks) && dbg.peaks.length >= 2 &&
+      // synthetic frame: margin->header edge is a hard vertical step. Indices
+      // 0-2 are margin rows, 3-6 the first (white-selected) header row; index
+      // 7 falls into the next header row whose bit varies, so skip it.
+      Array.isArray(dbg.vEdge) && dbg.vEdge.length === 8 &&
+      dbg.vEdgeColumns > 0 && dbg.vEdge[0] <= 40 && dbg.vEdge[2] <= 40 &&
+      dbg.vEdge[3] >= 200 && dbg.vEdge[6] >= 200
+    console.log('LUMA_1 failed-decode debug test:', pass ? 'PASS' : 'FAIL', pass ? '' : JSON.stringify({ crc: result?.crcValid, strips: dbg?.strips?.length, sampled: dbg?.sampled, peaks: dbg?.peaks, vEdge: dbg?.vEdge, vEdgeColumns: dbg?.vEdgeColumns }))
     return pass
   } catch (err) {
     console.log('LUMA_1 failed-decode debug test: FAIL', err?.message || err)
