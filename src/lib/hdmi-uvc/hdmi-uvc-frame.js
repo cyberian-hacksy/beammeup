@@ -2322,6 +2322,14 @@ function buildLuma1DecodeDebug({
     const fHist = new Array(14).fill(0)
     let match = 0
     let total = 0
+    // Sharpening fit: deviation d = v − own regressed against the expected
+    // horizontal/vertical Laplacians (ph = own − (L+R)/2, pv = own −
+    // (A+B)/2). An unsharp-mask ISP gives d ≈ λh·ph + λv·pv with high R²,
+    // and subtracting the fitted term predicts the corrected error rate.
+    const sharpVals = []
+    const sharpOwn = []
+    const sharpPh = []
+    const sharpPv = []
 
     for (let cy = 0; cy < payloadCellsY; cy++) {
       const py = payloadStartY + Math.round(cy * payloadStepY)
@@ -2367,6 +2375,17 @@ function buildLuma1DecodeDebug({
           const f = (val - own) / (refLevels[aboveLevel] - own)
           fAboveSamples[band].push(f)
         }
+
+        if (aboveLevel >= 0 && belowLevel >= 0 && cx > 0) {
+          const leftLevel = expectedLevelAt(cy, cx - 1)
+          const rightLevel = expectedLevelAt(cy, cx + 1)
+          if (leftLevel >= 0 && rightLevel >= 0) {
+            sharpVals.push(val)
+            sharpOwn.push(ownLevel)
+            sharpPh.push(own - (refLevels[leftLevel] + refLevels[rightLevel]) / 2)
+            sharpPv.push(own - (refLevels[aboveLevel] + refLevels[belowLevel]) / 2)
+          }
+        }
       }
     }
 
@@ -2377,6 +2396,67 @@ function buildLuma1DecodeDebug({
         samples.sort((a, b) => a - b)
         return Math.round(100 * samples[samples.length >> 1]) / 100
       })
+      let sharpen = null
+      if (sharpVals.length > 2000) {
+        // Fit only on mid-level cells: rail cells (levels 0/3) clamp their
+        // overshoot at 0/255, zeroing the deviation and biasing the slope.
+        // Mid cells are also where all the classification errors live.
+        let a = 0, b = 0, c = 0, e = 0, g = 0, dd = 0
+        for (let i = 0; i < sharpVals.length; i++) {
+          if (sharpOwn[i] === 0 || sharpOwn[i] === LUMA1_LEVEL_COUNT - 1) continue
+          const d = sharpVals[i] - refLevels[sharpOwn[i]]
+          a += sharpPh[i] * sharpPh[i]
+          b += sharpPh[i] * sharpPv[i]
+          c += sharpPv[i] * sharpPv[i]
+          e += d * sharpPh[i]
+          g += d * sharpPv[i]
+          dd += d * d
+        }
+        const det = a * c - b * b
+        if (det > 1e-3 && dd > 1e-3) {
+          const lh = (e * c - g * b) / det
+          const lv = (g * a - e * b) / det
+          let residual = 0
+          let errBefore = 0
+          let errAfter = 0
+          const railLo = refLevels[0] + 25
+          const railHi = refLevels[LUMA1_LEVEL_COUNT - 1] - 25
+          for (let i = 0; i < sharpVals.length; i++) {
+            const own = refLevels[sharpOwn[i]]
+            const d = sharpVals[i] - own
+            const pred = lh * sharpPh[i] + lv * sharpPv[i]
+            if (sharpOwn[i] !== 0 && sharpOwn[i] !== LUMA1_LEVEL_COUNT - 1) {
+              residual += (d - pred) * (d - pred)
+            }
+            // Rail-adjacent raw values had their overshoot clamped away, so
+            // applying the correction there would re-introduce it.
+            const corrected = sharpVals[i] > railLo && sharpVals[i] < railHi
+              ? sharpVals[i] - pred
+              : sharpVals[i]
+            let best = 0
+            let bestDist = Infinity
+            let bestRaw = 0
+            let bestRawDist = Infinity
+            for (let level = 0; level < LUMA1_LEVEL_COUNT; level++) {
+              const dist = Math.abs(corrected - refLevels[level])
+              if (dist < bestDist) { bestDist = dist; best = level }
+              const rawDist = Math.abs(sharpVals[i] - refLevels[level])
+              if (rawDist < bestRawDist) { bestRawDist = rawDist; bestRaw = level }
+            }
+            if (best !== sharpOwn[i]) errAfter++
+            if (bestRaw !== sharpOwn[i]) errBefore++
+          }
+          sharpen = {
+            lh: Math.round(100 * lh) / 100,
+            lv: Math.round(100 * lv) / 100,
+            r2: Math.round(100 * (1 - residual / dd)) / 100,
+            errBefore: Math.round((1000 * errBefore) / sharpVals.length) / 10,
+            errAfter: Math.round((1000 * errAfter) / sharpVals.length) / 10,
+            n: sharpVals.length
+          }
+        }
+      }
+
       cal = {
         match: Math.round((1000 * match) / total) / 10,
         total,
@@ -2384,7 +2464,8 @@ function buildLuma1DecodeDebug({
         errRowBands: pct(errBands.err, errBands.n),
         fBelowBands: fMedian(fBelowSamples),
         fAboveBands: fMedian(fAboveSamples),
-        fHist
+        fHist,
+        sharpen
       }
     }
   }
@@ -4640,6 +4721,48 @@ export function testLuma1CalibrationFrameAnalysis() {
     return pass
   } catch (err) {
     console.log('LUMA_1 calibration frame analysis test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+// Applying a synthetic unsharp mask (the suspected dongle ISP behavior) to a
+// calibration frame: the sharpen fit must recover the injected strength and
+// the unsharp correction must remove most classification errors.
+export function testLuma1CalibrationSharpenFit() {
+  try {
+    const width = 640
+    const height = 407
+    const lambda = 0.4
+    const cap = getPayloadCapacity(width, height, HDMI_MODE.LUMA_1)
+    const payload = getLuma1CalibrationPayload(cap)
+    const frame = buildFrame(payload, HDMI_MODE.LUMA_1, width, height, 30, 73)
+
+    const sharpened = new Uint8ClampedArray(frame)
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const i = (y * width + x) * 4
+        const own = frame[i]
+        const avg4 = (frame[i - 4] + frame[i + 4] + frame[i - width * 4] + frame[i + width * 4]) / 4
+        const v = Math.round(own + lambda * (own - avg4))
+        sharpened[i] = sharpened[i + 1] = sharpened[i + 2] = v
+      }
+    }
+
+    const anchors = detectAnchors(sharpened, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    const result = region ? decodeDataRegion(sharpened, width, region) : null
+    // v = own + λ·(own − avg4) decomposes as d = (λ/2)·ph + (λ/2)·pv, so the
+    // fit should recover λh ≈ λv ≈ λ/2 (clamping at the rails blurs it some).
+    const s = result?._diag?.lumaDebug?.cal?.sharpen
+    const pass = result && !result.crcValid && s &&
+      Math.abs(s.lh - lambda / 2) < 0.1 &&
+      Math.abs(s.lv - lambda / 2) < 0.1 &&
+      s.r2 > 0.5 &&
+      s.errAfter < s.errBefore / 2
+    console.log('LUMA_1 calibration sharpen fit test:', pass ? 'PASS' : 'FAIL', s || '(no sharpen fit)')
+    return pass
+  } catch (err) {
+    console.log('LUMA_1 calibration sharpen fit test: FAIL', err?.message || err)
     return false
   }
 }

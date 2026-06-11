@@ -51,6 +51,9 @@ import {
 import {
   probeFramePackets
 } from './hdmi-uvc-packet-probe.js'
+import {
+  createReceiverDebugLogBuffer
+} from './hdmi-uvc-debug-log.js'
 
 // Kick off WASM instantiation on the main thread so the ?capture=main fallback
 // path (which runs decodeDataRegion on the main thread) uses the WASM CRC32
@@ -64,6 +67,7 @@ const MAX_DEBUG_LINES = 500
 // default). Captured at init time because each controls an interval or
 // pipeline baked in for the session.
 const PERF_MODE = isPerfMode()
+const VISIBLE_DEBUG_LINES = PERF_MODE ? 80 : 120
 const RX_PERF_LOG_INTERVAL_FRAMES = PERF_MODE ? 240 : 60
 const RX_PROGRESS_LOG_INTERVAL_FRAMES = PERF_MODE ? 40 : 10
 const DEBUG_RENDER_INTERVAL_MS = PERF_MODE ? 480 : 120
@@ -97,14 +101,17 @@ const CAPTURE_METHOD = (() => {
 // Frames between diagnostic hash probes. Probing every frame is wasteful for
 // a pure diagnostic; every ~30 frames is enough to confirm transport.
 const WORKER_PROBE_INTERVAL_FRAMES = 30
-const debugLines = []
+const debugLogBuffer = createReceiverDebugLogBuffer({
+  maxLines: MAX_DEBUG_LINES,
+  visibleLines: VISIBLE_DEBUG_LINES
+})
 let debugRenderTimer = null
 
 function renderDebugLog() {
   const el = document.getElementById('hdmi-uvc-receiver-debug-log')
   if (!el) return
-  el.textContent = debugLines.join('\n')
-  el.scrollTop = el.scrollHeight
+  el.textContent = debugLogBuffer.getRenderText()
+  el.scrollTop = 1e9
 }
 
 function scheduleDebugLogRender() {
@@ -133,10 +140,7 @@ function debugLog(text) {
     second: '2-digit',
     fractionalSecondDigits: 3
   })
-  debugLines.push(timestamp + ' ' + text)
-  if (debugLines.length > MAX_DEBUG_LINES) {
-    debugLines.splice(0, debugLines.length - MAX_DEBUG_LINES)
-  }
+  debugLogBuffer.append(timestamp + ' ' + text)
   scheduleDebugLogRender()
   if (DEBUG_CONSOLE) {
     console.log('[HDMI-RX]', text)
@@ -147,6 +151,22 @@ function debugCurrent(text) {
   if (!DEBUG_MODE) return
   const el = document.getElementById('hdmi-uvc-receiver-debug-current')
   if (el) el.textContent = text
+}
+
+async function copyReceiverDebugLog(copyBtn) {
+  const text = debugLogBuffer.getCopyText()
+  if (!text) return
+
+  try {
+    copyBtn.textContent = 'Copying...'
+    await navigator.clipboard.writeText(text)
+    copyBtn.textContent = 'Copied!'
+    setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
+  } catch (e) {
+    copyBtn.textContent = 'Copy failed'
+    setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
+    console.error('Copy failed:', e)
+  }
 }
 
 function shouldUpdateReceiverUi(lastUpdateMs, nowMs, force = false) {
@@ -2780,6 +2800,10 @@ function logLuma1DecodeDebug(lumaDebug) {
     debugLog(`[HDMI-RX] Luma4 CAL err% by row band (top->bottom, 16): [${cal.errRowBands.join('/')}]`)
     debugLog(`[HDMI-RX] Luma4 CAL mix fraction by row band: f-below=[${cal.fBelowBands.map((v) => v ?? 'x').join('/')}] f-above=[${cal.fAboveBands.map((v) => v ?? 'x').join('/')}] (0=clean, +=blended toward that neighbor)`)
     debugLog(`[HDMI-RX] Luma4 CAL f-below histogram (f=-0.2..1.2 step 0.1): [${cal.fHist.join('/')}]`)
+    if (cal.sharpen) {
+      const s = cal.sharpen
+      debugLog(`[HDMI-RX] Luma4 CAL sharpen fit: lambdaH=${s.lh} lambdaV=${s.lv} R2=${s.r2} err ${s.errBefore}% -> ${s.errAfter}% after unsharp correction (n=${s.n})`)
+    }
   }
 }
 
@@ -3819,22 +3843,18 @@ export function initHdmiUvcReceiver(errorHandler) {
   // Debug panel buttons
   const copyBtn = document.getElementById('btn-hdmi-uvc-receiver-copy-log')
   if (copyBtn) {
-    copyBtn.onclick = async () => {
-      if (debugLines.length > 0) {
-        try {
-          await navigator.clipboard.writeText(debugLines.join('\n'))
-          copyBtn.textContent = 'Copied!'
-          setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
-        } catch (e) {
-          console.error('Copy failed:', e)
-        }
-      }
+    copyBtn.addEventListener('pointerdown', (event) => {
+      event.preventDefault()
+      copyReceiverDebugLog(copyBtn)
+    })
+    copyBtn.onclick = (event) => {
+      if (event.detail === 0) copyReceiverDebugLog(copyBtn)
     }
   }
   const clearBtn = document.getElementById('btn-hdmi-uvc-receiver-clear-log')
   if (clearBtn) {
     clearBtn.onclick = () => {
-      debugLines.length = 0
+      debugLogBuffer.clear()
       flushDebugLogRender()
       debugLog('=== LOG CLEARED ===')
       debugLog(`Frame count at clear: ${state.frameCount}`)
