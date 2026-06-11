@@ -2699,7 +2699,11 @@ function noteDenseBinaryLockFailure(result) {
   )
   if (outcome.invalidated) {
     const modeName = HDMI_MODE_NAMES[result?._diag?.frameMode] || 'dense binary'
-    debugLog(`[HDMI-RX] ${modeName} layout invalidated after ${LOCKED_BINARY3_INVALIDATE_AFTER_FAILS} unrecovered CRC fails - re-sweeping next frame`)
+    const diag = result?._diag || {}
+    const detail = diag.frameMode === HDMI_MODE.LUMA_1
+      ? ` guard=${diag.payloadEdgeGuardCells ?? 'n/a'} phase=${diag.payloadPhaseX ?? 'n/a'} grid=${diag.blocksX || '?'}x${diag.blocksY || '?'} len=${result?.header?.payloadLength ?? '?'}`
+      : ''
+    debugLog(`[HDMI-RX] ${modeName} layout invalidated after ${LOCKED_BINARY3_INVALIDATE_AFTER_FAILS} unrecovered CRC fails${detail} - re-sweeping next frame`)
   }
 }
 

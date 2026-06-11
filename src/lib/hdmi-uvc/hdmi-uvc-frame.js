@@ -76,8 +76,10 @@ function isDenseLuma1Mode(mode) {
   return mode === HDMI_MODE.LUMA_1
 }
 
-function getDenseBinaryPayloadEdgeGuardCells(mode) {
-  return mode === HDMI_MODE.LUMA_1 ? LUMA1_EDGE_GUARD_CELLS : 0
+function getDenseBinaryPayloadEdgeGuardCells(mode, explicit = null) {
+  return Number.isFinite(explicit) && explicit >= 0
+    ? explicit
+    : mode === HDMI_MODE.LUMA_1 ? LUMA1_EDGE_GUARD_CELLS : 0
 }
 
 function getDenseBinaryPayloadBlockSize(mode) {
@@ -811,7 +813,7 @@ export function createFrameBuffer(width, height) {
   return imageData
 }
 
-function buildDenseBinaryFrame(payload, mode, width, height, fps, symbolId, targetBuffer = null) {
+function buildDenseBinaryFrame(payload, mode, width, height, fps, symbolId, targetBuffer = null, edgeGuardOverride = null) {
   const payloadCrc = crc32(payload)
   const headerBytes = buildHeader(mode, width, height, fps, symbolId, payload.length, payloadCrc)
   const payloadBlockSize = getDenseBinaryPayloadBlockSize(mode)
@@ -879,7 +881,7 @@ function buildDenseBinaryFrame(payload, mode, width, height, fps, symbolId, targ
   const payloadX = dr.x + DENSE_BINARY_REF_STRIP_PX
   const payloadY = dr.y + headerBandHeightPx
   const payloadW = dr.w - 2 * DENSE_BINARY_REF_STRIP_PX
-  const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(mode)
+  const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(mode, edgeGuardOverride)
   const payloadCellsX = Math.max(0, Math.floor(payloadW / payloadBlockSize) - edgeGuardCells * 2)
   const payloadCellsY = Math.floor(payloadBandHeight / payloadBlockSize)
   const payloadDataX = payloadX + edgeGuardCells * payloadBlockSize
@@ -1378,7 +1380,7 @@ export function precomputeDenseBinarySampleOffsets(layout, region) {
   const headerBlocksX = layout.headerBlocksX || Math.floor(region.w / headerStepX)
   const headerBandRows = getDenseBinaryHeaderBandRows(headerBlocksX)
   const stripWidthCapture = headerStepX * DENSE_BINARY_REF_STRIP_WIDTH_4X4
-  const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(layout.frameMode)
+  const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(layout.frameMode, layout.payloadEdgeGuardCells)
   const payloadPhaseX = layout.payloadPhaseX || 0
   const payloadStepX = layout.stepX || (headerStepX * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE))
   const payloadStepY = layout.stepY || (headerStepY * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE))
@@ -1890,7 +1892,7 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
   const headerBandRows = getDenseBinaryHeaderBandRows(headerBlocksX)
   const headerBandHeightCapture = headerBandRows * headerStepY
   const stripWidthCapture = headerStepX * DENSE_BINARY_REF_STRIP_WIDTH_4X4
-  const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(frameMode)
+  const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(frameMode, layout.payloadEdgeGuardCells)
   const payloadPhaseX = layout.payloadPhaseX || 0
   const payloadStartX = rx + stripWidthCapture + edgeGuardCells * payloadStepX + payloadPhaseX
   const payloadStartY = ry + headerBandHeightCapture
@@ -2067,9 +2069,6 @@ function readDenseBinaryPayload(
   const payloadStepY = headerStepY * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE)
   const payloadBs = headerBs * (payloadBlockSize / DENSE_BINARY_HEADER_BLOCK_SIZE)
   const stripWidthCapture = headerStepX * DENSE_BINARY_REF_STRIP_WIDTH_4X4
-  const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(header.mode)
-  const payloadStartXBase = rx + stripWidthCapture + edgeGuardCells * payloadStepX
-
   const ref = sampleDenseBinaryReferenceRows(
     imageData,
     width,
@@ -2084,13 +2083,14 @@ function readDenseBinaryPayload(
   )
   const payloadStartY = ry + ref.headerBandHeightCapture
   const rightStripX = rx + region.w - stripWidthCapture
-  const payloadEndX = rightStripX - edgeGuardCells * payloadStepX
-  const payloadCellsX = Math.max(0, Math.floor((payloadEndX - payloadStartXBase) / payloadStepX))
   const payloadCellsY = Math.max(0, Math.floor((region.h - ref.headerBandHeightCapture) / payloadStepY))
   const bitsPerPayloadCell = getModeBitsPerBlock(header.mode) || 1
   const imgHeight = imageData.length / (width * 4)
 
-  const makeResult = (payloadPhaseX = 0) => {
+  const makeResult = (payloadPhaseX = 0, edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(header.mode)) => {
+    const payloadStartXBase = rx + stripWidthCapture + edgeGuardCells * payloadStepX
+    const payloadEndX = rightStripX - edgeGuardCells * payloadStepX
+    const payloadCellsX = Math.max(0, Math.floor((payloadEndX - payloadStartXBase) / payloadStepX))
     const payload = new Uint8Array(header.payloadLength)
     const confidence = options.collectConfidence !== false && bitsPerPayloadCell === 1
       ? new Uint8Array(header.payloadLength * BITS_PER_BYTE)
@@ -2174,6 +2174,7 @@ function readDenseBinaryPayload(
         xOff: rx - region.x,
         yOff: ry - region.y,
         payloadPhaseX,
+        payloadEdgeGuardCells: edgeGuardCells,
         blackLevel: ref.headerLevels.blackLevel,
         whiteLevel: ref.headerLevels.whiteLevel,
         stripRows: ref.stripRows
@@ -2186,11 +2187,16 @@ function readDenseBinaryPayload(
   const phases = header.mode === HDMI_MODE.LUMA_1 && Number.isFinite(options.payloadPhaseX)
     ? [options.payloadPhaseX]
     : header.mode === HDMI_MODE.LUMA_1 ? [0, 1, -1, 2, -2] : [0]
+  const guardOptions = header.mode === HDMI_MODE.LUMA_1 && Number.isFinite(options.payloadEdgeGuardCells)
+    ? [options.payloadEdgeGuardCells]
+    : header.mode === HDMI_MODE.LUMA_1 ? [LUMA1_EDGE_GUARD_CELLS, 0] : [0]
   let firstResult = null
-  for (const phase of phases) {
-    const result = makeResult(phase)
-    if (!firstResult) firstResult = result
-    if (result.crcValid) return result
+  for (const guardCells of guardOptions) {
+    for (const phase of phases) {
+      const result = makeResult(phase, guardCells)
+      if (!firstResult) firstResult = result
+      if (result.crcValid) return result
+    }
   }
   return firstResult
 }
@@ -2810,7 +2816,12 @@ export function readPayloadWithLayout(imageData, width, region, layout, payloadL
       headerBs,
       headerBlocksX,
       header,
-      { collectConfidence: false, ...options, payloadPhaseX: layout.payloadPhaseX || 0 },
+      {
+        collectConfidence: false,
+        ...options,
+        payloadPhaseX: layout.payloadPhaseX || 0,
+        payloadEdgeGuardCells: getDenseBinaryPayloadEdgeGuardCells(frameMode, layout.payloadEdgeGuardCells)
+      },
       safePrecomputedOffsets
     )
     return result?.payload?.length === payloadLength ? result.payload : null
@@ -2936,6 +2947,7 @@ function summarizeDecisionCandidate(result, region) {
     payloadLength: result.header.payloadLength,
     xOff: diag.xOff,
     yOff: diag.yOff,
+    payloadEdgeGuardCells: diag.payloadEdgeGuardCells,
     payloadPhaseX: diag.payloadPhaseX,
     dataBs: diag.dataBs,
     stepX: diag.stepX,
@@ -3232,6 +3244,7 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
           headerBlocksY: innerDiag.headerBlocksY,
           blackLevel: innerDiag.blackLevel,
           whiteLevel: innerDiag.whiteLevel,
+          payloadEdgeGuardCells: innerDiag.payloadEdgeGuardCells,
           payloadPhaseX: innerDiag.payloadPhaseX,
           stripRows: innerDiag.stripRows
         }
@@ -3404,6 +3417,7 @@ function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout, 
           headerBlocksY: innerDiag.headerBlocksY,
           blackLevel: innerDiag.blackLevel,
           whiteLevel: innerDiag.whiteLevel,
+          payloadEdgeGuardCells: innerDiag.payloadEdgeGuardCells,
           payloadPhaseX: innerDiag.payloadPhaseX,
           stripRows: innerDiag.stripRows
         }
@@ -3566,6 +3580,7 @@ export function decodeDataRegion(imageData, width, region, options = {}) {
               headerBlocksY: innerDiag.headerBlocksY,
               blackLevel: innerDiag.blackLevel,
               whiteLevel: innerDiag.whiteLevel,
+              payloadEdgeGuardCells: innerDiag.payloadEdgeGuardCells,
               payloadPhaseX: innerDiag.payloadPhaseX,
               stripRows: innerDiag.stripRows
             }
@@ -4000,6 +4015,38 @@ export function testLuma1BlurredPayloadBandDecode() {
     return pass
   } catch (err) {
     console.log('LUMA_1 blurred payload band decode test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+export function testLuma1LegacyNoGuardDecode() {
+  try {
+    const width = 640
+    const height = 407
+    const payload = new Uint8Array(1500)
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 73 + 19) & 0xff
+
+    const frame = buildDenseBinaryFrame(payload, HDMI_MODE.LUMA_1, width, height, 30, 53, null, 0)
+    const anchors = detectAnchors(frame, width, height)
+    if (anchors.length < 2) {
+      console.log('LUMA_1 legacy no-guard decode test: FAIL (anchors)')
+      return false
+    }
+    const region = dataRegionFromAnchors(anchors)
+    if (!region) {
+      console.log('LUMA_1 legacy no-guard decode test: FAIL (region)')
+      return false
+    }
+    const result = decodeDataRegion(frame, width, region)
+    const pass = result && result.crcValid &&
+      result.header.mode === HDMI_MODE.LUMA_1 &&
+      result._diag?.payloadEdgeGuardCells === 0 &&
+      result.payload.length === payload.length &&
+      result.payload.every((v, i) => v === payload[i])
+    console.log('LUMA_1 legacy no-guard decode test:', pass ? 'PASS' : 'FAIL')
+    return pass
+  } catch (err) {
+    console.log('LUMA_1 legacy no-guard decode test: FAIL', err?.message || err)
     return false
   }
 }

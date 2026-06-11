@@ -37,6 +37,7 @@ function normalizeDenseBinaryLayout(layoutInput, header = null) {
     headerBs: layoutInput.headerBs,
     xOff: layoutInput.xOff || 0,
     yOff: layoutInput.yOff || 0,
+    payloadEdgeGuardCells: Number.isFinite(layoutInput.payloadEdgeGuardCells) ? layoutInput.payloadEdgeGuardCells : undefined,
     payloadPhaseX: layoutInput.payloadPhaseX || 0,
     blackLevel: layoutInput.blackLevel,
     whiteLevel: layoutInput.whiteLevel,
