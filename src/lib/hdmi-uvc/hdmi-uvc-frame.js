@@ -1514,7 +1514,10 @@ function sampleLuma1ReferenceColumn(imageData, width, height, stripX, y, bs, col
   return count > 0 ? sum / count : NaN
 }
 
-function sampleLuma1ReferenceLevels(imageData, width, height, leftX, rightX, y, bs, fallbackBlack, fallbackWhite) {
+// Raw strip readout: per-level averages of the ramp columns, NaN where the
+// strip was unreadable. Diagnostics use this directly; the decode path runs
+// it through default-filling + normalizeLuma1Levels below.
+function measureLuma1ReferenceLevelsRaw(imageData, width, height, leftX, rightX, y, bs) {
   const sums = new Float32Array(LUMA1_LEVEL_COUNT)
   const counts = new Uint8Array(LUMA1_LEVEL_COUNT)
 
@@ -1533,9 +1536,26 @@ function sampleLuma1ReferenceLevels(imageData, width, height, leftX, rightX, y, 
     }
   }
 
+  const raw = new Array(LUMA1_LEVEL_COUNT)
+  for (let level = 0; level < LUMA1_LEVEL_COUNT; level++) {
+    raw[level] = counts[level] > 0 ? sums[level] / counts[level] : NaN
+  }
+  return raw
+}
+
+function isLuma1LevelSetUsable(levels) {
+  for (let i = 1; i < LUMA1_LEVEL_COUNT; i++) {
+    if (!Number.isFinite(levels[i]) || !Number.isFinite(levels[i - 1])) return false
+    if (levels[i] <= levels[i - 1] + 2) return false
+  }
+  return levels[LUMA1_LEVEL_COUNT - 1] - levels[0] >= 48
+}
+
+function sampleLuma1ReferenceLevels(imageData, width, height, leftX, rightX, y, bs, fallbackBlack, fallbackWhite) {
+  const raw = measureLuma1ReferenceLevelsRaw(imageData, width, height, leftX, rightX, y, bs)
   const levels = getDefaultLuma1Levels(fallbackBlack, fallbackWhite)
   for (let level = 0; level < LUMA1_LEVEL_COUNT; level++) {
-    if (counts[level] > 0) levels[level] = sums[level] / counts[level]
+    if (Number.isFinite(raw[level])) levels[level] = raw[level]
   }
   return normalizeLuma1Levels(levels, fallbackBlack, fallbackWhite)
 }
@@ -2074,6 +2094,102 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
   return decodeState.index === payloadLength ? payload : null
 }
 
+// Diagnostics for a fully CRC-failed LUMA_1 decode. Cost is bounded (a few
+// hundred strip samples + a sparse payload sweep) and it only runs after all
+// phase/guard attempts already failed, so it never taxes the happy path.
+function buildLuma1DecodeDebug({
+  imageData,
+  width,
+  imgHeight,
+  region,
+  rx,
+  rightStripX,
+  payloadStartY,
+  headerStepY,
+  headerBs,
+  stripRows,
+  payloadStepX,
+  payloadStepY,
+  payloadBs,
+  payloadCellsY,
+  stripWidthCapture,
+  phases,
+  mode
+}) {
+  const rowIndices = [...new Set([
+    0,
+    Math.max(0, Math.floor(stripRows / 2)),
+    Math.max(0, stripRows - 1)
+  ])]
+
+  const strips = phases.map((phase) => ({
+    phase,
+    rows: rowIndices.map((stripIdx) => {
+      const refY = payloadStartY + Math.round(stripIdx * headerStepY)
+      const raw = measureLuma1ReferenceLevelsRaw(
+        imageData,
+        width,
+        imgHeight,
+        rx + phase,
+        rightStripX + phase,
+        refY,
+        headerBs
+      )
+      return {
+        row: stripIdx,
+        raw: raw.map((v) => (Number.isFinite(v) ? Math.round(v) : -1)),
+        usable: isLuma1LevelSetUsable(raw)
+      }
+    })
+  }))
+
+  // Sparse payload-band luma histogram at phase 0 / mode-default guard. Bin
+  // width 4 keeps centroid resolution while staying log-friendly.
+  const edgeGuardCells = getDenseBinaryPayloadEdgeGuardCells(mode)
+  const payloadStartXBase = rx + stripWidthCapture + edgeGuardCells * payloadStepX
+  const payloadEndX = rightStripX - edgeGuardCells * payloadStepX
+  const payloadCellsX = Math.max(0, Math.floor((payloadEndX - payloadStartXBase) / payloadStepX))
+  const hist = new Array(64).fill(0)
+  let sampled = 0
+  for (let cy = 0; cy < payloadCellsY; cy += 8) {
+    const py = payloadStartY + Math.round(cy * payloadStepY)
+    if (py < 0 || py >= imgHeight) continue
+    for (let cx = 0; cx < payloadCellsX; cx += 8) {
+      const px = payloadStartXBase + Math.round(cx * payloadStepX)
+      if (px < 0 || px >= width) continue
+      const val = sampleBlockAt(imageData, width, px, py, payloadBs)
+      hist[Math.min(63, Math.max(0, val >> 2))]++
+      sampled++
+    }
+  }
+
+  // Peak summary: local maxima of the 3-bin-smoothed histogram. Four clean
+  // peaks => channel preserves the levels and the bug is geometric; a smear
+  // => the modulation itself is below the channel noise floor.
+  const smooth = hist.map((_, i) =>
+    (hist[i - 1] || 0) * 0.25 + hist[i] * 0.5 + (hist[i + 1] || 0) * 0.25
+  )
+  const minPeak = Math.max(4, sampled * 0.005)
+  const peaks = []
+  for (let i = 0; i < 64; i++) {
+    if (smooth[i] < minPeak) continue
+    if ((smooth[i - 1] || 0) > smooth[i] || (smooth[i + 1] || 0) > smooth[i]) continue
+    const last = peaks[peaks.length - 1]
+    if (last && i - last.bin <= 2) {
+      if (smooth[i] > last.score) peaks[peaks.length - 1] = { bin: i, score: smooth[i], n: hist[i] }
+      continue
+    }
+    peaks.push({ bin: i, score: smooth[i], n: hist[i] })
+  }
+
+  return {
+    strips,
+    hist,
+    sampled,
+    peaks: peaks.map((p) => ({ v: p.bin * 4 + 2, n: p.n }))
+  }
+}
+
 function readDenseBinaryPayload(
   imageData,
   width,
@@ -2229,6 +2345,32 @@ function readDenseBinaryPayload(
       if (!firstResult) firstResult = result
       if (result.crcValid) return result
     }
+  }
+
+  // Every phase/guard combination failed CRC. Attach the channel evidence an
+  // investigation needs: per-phase raw strip readouts (are the ramp strips
+  // even readable, and at which phase?) and a luma histogram of the payload
+  // band (does the capture preserve four separable levels at all?).
+  if (header.mode === HDMI_MODE.LUMA_1 && firstResult) {
+    firstResult._diag.lumaDebug = buildLuma1DecodeDebug({
+      imageData,
+      width,
+      imgHeight,
+      region,
+      rx,
+      rightStripX,
+      payloadStartY,
+      headerStepY,
+      headerBs,
+      stripRows: ref.stripRows,
+      payloadStepX,
+      payloadStepY,
+      payloadBs,
+      payloadCellsY,
+      stripWidthCapture,
+      phases,
+      mode: header.mode
+    })
   }
   return firstResult
 }
@@ -3279,6 +3421,7 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
           payloadEdgeGuardCells: innerDiag.payloadEdgeGuardCells,
           payloadPhaseX: innerDiag.payloadPhaseX,
           lumaLevels: innerDiag.lumaLevels,
+          lumaDebug: innerDiag.lumaDebug,
           stripRows: innerDiag.stripRows
         }
       }
@@ -3453,6 +3596,7 @@ function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout, 
           payloadEdgeGuardCells: innerDiag.payloadEdgeGuardCells,
           payloadPhaseX: innerDiag.payloadPhaseX,
           lumaLevels: innerDiag.lumaLevels,
+          lumaDebug: innerDiag.lumaDebug,
           stripRows: innerDiag.stripRows
         }
       }
@@ -3617,6 +3761,7 @@ export function decodeDataRegion(imageData, width, region, options = {}) {
               payloadEdgeGuardCells: innerDiag.payloadEdgeGuardCells,
               payloadPhaseX: innerDiag.payloadPhaseX,
               lumaLevels: innerDiag.lumaLevels,
+              lumaDebug: innerDiag.lumaDebug,
               stripRows: innerDiag.stripRows
             }
           }
@@ -4146,6 +4291,46 @@ export function testLuma1OffsetLayoutSamplesStripsWithPhase() {
     return pass
   } catch (err) {
     console.log('LUMA_1 offset-layout strip phase test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+// A fully CRC-failed LUMA_1 decode must carry the channel evidence needed for
+// remote diagnosis: per-phase raw strip readouts and a payload luma histogram.
+export function testLuma1FailedDecodeAttachesDebug() {
+  try {
+    const width = 640
+    const height = 407
+    const payload = new Uint8Array(1500)
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 73 + 29) & 0xff
+
+    const frame = buildFrame(payload, HDMI_MODE.LUMA_1, width, height, 30, 61)
+    // Corrupt a horizontal band of the payload area (strips stay intact) so
+    // every phase/guard attempt fails CRC.
+    const dr = getDataRegion(width, height)
+    for (let y = dr.y + 12; y < dr.y + 40; y++) {
+      for (let x = dr.x + 8; x < dr.x + dr.w - 8; x++) {
+        const i = (y * width + x) * 4
+        frame[i] = frame[i + 1] = frame[i + 2] = 200
+      }
+    }
+
+    const anchors = detectAnchors(frame, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    const result = region ? decodeDataRegion(frame, width, region) : null
+    const dbg = result?._diag?.lumaDebug
+    const histSum = dbg?.hist?.reduce((sum, n) => sum + n, 0) ?? 0
+    const pass = result && !result.crcValid &&
+      result.header?.mode === HDMI_MODE.LUMA_1 &&
+      Array.isArray(dbg?.strips) && dbg.strips.length === 5 &&
+      dbg.strips.every((s) => Array.isArray(s.rows) && s.rows.length >= 1 &&
+        s.rows.every((r) => r.raw.length === 4)) &&
+      dbg.sampled > 0 && histSum === dbg.sampled &&
+      Array.isArray(dbg.peaks) && dbg.peaks.length >= 2
+    console.log('LUMA_1 failed-decode debug test:', pass ? 'PASS' : 'FAIL', pass ? '' : JSON.stringify({ crc: result?.crcValid, strips: dbg?.strips?.length, sampled: dbg?.sampled, peaks: dbg?.peaks }))
+    return pass
+  } catch (err) {
+    console.log('LUMA_1 failed-decode debug test: FAIL', err?.message || err)
     return false
   }
 }

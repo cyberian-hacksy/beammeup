@@ -59,16 +59,8 @@ function getCurrentSearch() {
   }
 }
 
-export function resolveDefaultHdmiMode(search = getCurrentSearch()) {
-  let params
-  try {
-    params = new URLSearchParams(search || '')
-  } catch (_) {
-    return DEFAULT_HDMI_MODE
-  }
-
-  const rawMode = (params.get('tx-mode') || params.get('hdmi-mode') || '').trim().toLowerCase()
-  switch (rawMode) {
+function parseHdmiModeName(raw) {
+  switch ((raw || '').trim().toLowerCase()) {
     case 'luma1':
     case 'luma-1':
     case 'luma4':
@@ -78,9 +70,98 @@ export function resolveDefaultHdmiMode(search = getCurrentSearch()) {
     case 'binary-1':
     case '1x1':
       return HDMI_MODE.BINARY_1
+    case 'binary2':
+    case 'binary-2':
+    case '2x2':
+      return HDMI_MODE.BINARY_2
+    case 'binary3':
+    case 'binary-3':
+    case '3x3':
+      return HDMI_MODE.BINARY_3
     default:
-      return DEFAULT_HDMI_MODE
+      return null
   }
+}
+
+function hdmiModeToParamValue(mode) {
+  switch (mode) {
+    case HDMI_MODE.LUMA_1: return 'luma4'
+    case HDMI_MODE.BINARY_2: return '2x2'
+    case HDMI_MODE.BINARY_3: return '3x3'
+    default: return '1x1'
+  }
+}
+
+function parseHdmiModeParam(search) {
+  let params
+  try {
+    params = new URLSearchParams(search || '')
+  } catch (_) {
+    return null
+  }
+  return parseHdmiModeName(params.get('tx-mode') || params.get('hdmi-mode'))
+}
+
+export function resolveDefaultHdmiMode(search = getCurrentSearch()) {
+  return parseHdmiModeParam(search) ?? DEFAULT_HDMI_MODE
+}
+
+// Selections persist so test iterations don't require re-picking everything:
+// URL param (shareable, wins) → localStorage (last UI choice) → default.
+const SENDER_MODE_STORAGE_KEY = 'hdmi-uvc-tx-mode'
+const LUMA1_MIDS_STORAGE_KEY = 'hdmi-uvc-luma-mids'
+// Default mids pre-compensate the measured channel warp (sent 85 captures
+// near 136, sent 170 near 178): sending 53/154 lands the captured levels
+// close to even thirds. Neutral 85/170 is known-broken on this rig.
+const DEFAULT_LUMA1_MIDS = [53, 154]
+
+function readStoredPreference(key) {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null
+  } catch (_) {
+    return null
+  }
+}
+
+function writeStoredPreference(key, value) {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(key, value)
+  } catch (_) { /* private mode */ }
+}
+
+function writeUrlParam(key, value) {
+  try {
+    if (typeof history === 'undefined' || typeof location === 'undefined') return
+    const url = new URL(location.href)
+    url.searchParams.set(key, value)
+    history.replaceState(null, '', url)
+  } catch (_) { /* sandboxed */ }
+}
+
+export function resolveInitialHdmiMode(
+  search = getCurrentSearch(),
+  stored = readStoredPreference(SENDER_MODE_STORAGE_KEY)
+) {
+  return parseHdmiModeParam(search) ?? parseHdmiModeName(stored) ?? DEFAULT_HDMI_MODE
+}
+
+function parseLuma1MidsValue(raw) {
+  if (!raw || typeof raw !== 'string') return null
+  const parts = raw.split(/[,/:]/).map((part) => Number.parseInt(part.trim(), 10))
+  if (parts.length !== 2) return null
+  if (!Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) return null
+  if (parts[0] <= 0 || parts[1] <= parts[0] || parts[1] >= 255) return null
+  return [parts[0], parts[1]]
+}
+
+function parseLuma1MidsParam(search) {
+  let params
+  try {
+    params = new URLSearchParams(search || '')
+  } catch (_) {
+    return null
+  }
+  return parseLuma1MidsValue(params.get('luma-mids'))
 }
 
 // LUMA_1 gamma pre-compensation: ?luma-mids=53,154 sets the two intermediate
@@ -89,22 +170,23 @@ export function resolveDefaultHdmiMode(search = getCurrentSearch()) {
 // (levels=[b/l1/l2/w]); pick mids that pull l1/l2 toward the even spacing
 // b + (w-b)/3 and b + 2(w-b)/3. Returns the applied [mid1, mid2] or null.
 export function resolveLuma1MidLevels(search = getCurrentSearch()) {
-  let params
-  try {
-    params = new URLSearchParams(search || '')
-  } catch (_) {
-    return null
-  }
-
-  const raw = (params.get('luma-mids') || '').trim()
-  if (!raw) return null
-  const parts = raw.split(/[,/:]/).map((part) => Number.parseInt(part.trim(), 10))
-  if (parts.length !== 2) return null
-  if (!setLuma1SenderMidLevels(parts[0], parts[1])) return null
-  return [parts[0], parts[1]]
+  const mids = parseLuma1MidsParam(search)
+  if (!mids) return null
+  if (!setLuma1SenderMidLevels(mids[0], mids[1])) return null
+  return mids
 }
 
-resolveLuma1MidLevels()
+export function resolveInitialLuma1Mids(
+  search = getCurrentSearch(),
+  stored = readStoredPreference(LUMA1_MIDS_STORAGE_KEY)
+) {
+  return parseLuma1MidsParam(search) ?? parseLuma1MidsValue(stored) ?? DEFAULT_LUMA1_MIDS.slice()
+}
+
+{
+  const initialMids = resolveInitialLuma1Mids()
+  setLuma1SenderMidLevels(initialMids[0], initialMids[1])
+}
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -345,7 +427,7 @@ const state = {
   fountainSymbolId: 0,
   dataPacketCount: 0,
   frameCount: 0,
-  mode: resolveDefaultHdmiMode(),
+  mode: resolveInitialHdmiMode(),
   renderSizePresetId: DEFAULT_RENDER_SIZE_PRESET,
   systematicPass: 1,
   tailStartFrame: 0,
@@ -1284,6 +1366,22 @@ function updateModeSelector() {
     const mode = parseInt(button.dataset.mode, 10)
     button.classList.toggle('active', mode === state.mode)
     button.disabled = disabled
+  }
+
+  if (elements.lumaMidsGroup) {
+    elements.lumaMidsGroup.style.display = state.mode === HDMI_MODE.LUMA_1 ? '' : 'none'
+  }
+  const senderLevels = getLuma1SenderLevels()
+  if (elements.lumaMid1) {
+    elements.lumaMid1.value = senderLevels[1]
+    elements.lumaMid1.disabled = disabled
+  }
+  if (elements.lumaMid2) {
+    elements.lumaMid2.value = senderLevels[2]
+    elements.lumaMid2.disabled = disabled
+  }
+  if (elements.lumaLevelsLabel) {
+    elements.lumaLevelsLabel.textContent = `levels [${senderLevels.join(', ')}]`
   }
 }
 
@@ -2674,6 +2772,9 @@ function handleModeChange(e) {
   if (state.isSending || state.isPaused || state.isAwaitingStart) return
 
   state.mode = newMode
+  const paramValue = hdmiModeToParamValue(state.mode)
+  writeStoredPreference(SENDER_MODE_STORAGE_KEY, paramValue)
+  writeUrlParam('tx-mode', paramValue)
   const recommendedFpsPreset = getRecommendedFpsPreset(state.mode)
   if (elements.fpsSlider && elements.fpsSlider.value !== recommendedFpsPreset) {
     elements.fpsSlider.value = recommendedFpsPreset
@@ -2682,6 +2783,24 @@ function handleModeChange(e) {
   updateModeSelector()
   updateRenderSizeSelector()
   debugLog(`HDMI mode selected: ${HDMI_MODE_NAMES[state.mode]}`)
+}
+
+function handleLumaMidsChange() {
+  if (state.isSending || state.isPaused || state.isAwaitingStart) {
+    updateModeSelector()
+    return
+  }
+  const mid1 = Number.parseInt(elements.lumaMid1?.value, 10)
+  const mid2 = Number.parseInt(elements.lumaMid2?.value, 10)
+  if (!setLuma1SenderMidLevels(mid1, mid2)) {
+    debugLog(`Luma4 mids rejected: ${mid1},${mid2} (need 0 < m1 < m2 < 255)`)
+    updateModeSelector()
+    return
+  }
+  writeStoredPreference(LUMA1_MIDS_STORAGE_KEY, `${mid1},${mid2}`)
+  writeUrlParam('luma-mids', `${mid1},${mid2}`)
+  debugLog(`Luma4 mids set: levels=[${getLuma1SenderLevels().join(', ')}]`)
+  updateModeSelector()
 }
 
 function handleRenderSizeChange(e) {
@@ -2781,9 +2900,28 @@ export function initHdmiUvcSender(errorHandler) {
     fileInfo: document.getElementById('hdmi-uvc-file-info'),
     estimate: document.getElementById('hdmi-uvc-estimate'),
     btnAction: document.getElementById('btn-hdmi-uvc-action'),
-    btnStop: document.getElementById('btn-hdmi-uvc-stop')
+    btnStop: document.getElementById('btn-hdmi-uvc-stop'),
+    lumaMidsGroup: document.getElementById('hdmi-uvc-luma-mids-group'),
+    lumaMid1: document.getElementById('hdmi-uvc-luma-mid1'),
+    lumaMid2: document.getElementById('hdmi-uvc-luma-mid2'),
+    lumaLevelsLabel: document.getElementById('hdmi-uvc-luma-levels')
   }
   elements.modeButtons = []
+
+  const modeButtonsContainer = document.getElementById('hdmi-uvc-mode-buttons')
+  if (modeButtonsContainer) {
+    for (const mode of [HDMI_MODE.BINARY_3, HDMI_MODE.BINARY_2, HDMI_MODE.BINARY_1, HDMI_MODE.LUMA_1]) {
+      const button = document.createElement('button')
+      button.className = 'mode-btn'
+      button.dataset.mode = String(mode)
+      button.textContent = HDMI_MODE_NAMES[mode]
+      button.onclick = handleModeChange
+      modeButtonsContainer.appendChild(button)
+      elements.modeButtons.push(button)
+    }
+  }
+  if (elements.lumaMid1) elements.lumaMid1.onchange = handleLumaMidsChange
+  if (elements.lumaMid2) elements.lumaMid2.onchange = handleLumaMidsChange
 
   if (elements.externalDisplayToggle) {
     state.useExternalDisplay = elements.externalDisplayToggle.checked
@@ -2828,6 +2966,7 @@ export function initHdmiUvcSender(errorHandler) {
     }
   }
   debugLog('HDMI-UVC Sender initialized')
+  debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]} (url > saved > default), Luma4 levels [${getLuma1SenderLevels().join(', ')}]`)
   debugLog(`Pass-2 variant: ${getPass2Variant()}`)
   debugLog(`Dense pass-2 sweep mix: ${getDenseBinaryPass2SweepMix()}`)
   debugLog(`TX pace: ${getSenderRenderPace()}`)
@@ -3060,19 +3199,37 @@ export function testHdmiUvcSenderModeUrlOverride() {
 }
 
 export function testLuma1MidLevelUrlOverride() {
-  const applied = resolveLuma1MidLevels('?luma-mids=53,154')
+  const prior = getLuma1SenderLevels()
+  const applied = resolveLuma1MidLevels('?luma-mids=60,150')
   const levels = getLuma1SenderLevels()
   const rejectedEmpty = resolveLuma1MidLevels('') === null
   const rejectedUnordered = resolveLuma1MidLevels('?luma-mids=200,100') === null
   const rejectedEndpoint = resolveLuma1MidLevels('?luma-mids=0,255') === null
   const rejectedNoise = resolveLuma1MidLevels('?luma-mids=abc') === null
-  setLuma1SenderMidLevels(85, 170)
+  setLuma1SenderMidLevels(prior[1], prior[2])
   const restored = getLuma1SenderLevels()
-  const pass = applied?.[0] === 53 && applied?.[1] === 154 &&
-    levels[0] === 0 && levels[1] === 53 && levels[2] === 154 && levels[3] === 255 &&
+  const pass = applied?.[0] === 60 && applied?.[1] === 150 &&
+    levels[0] === 0 && levels[1] === 60 && levels[2] === 150 && levels[3] === 255 &&
     rejectedEmpty && rejectedUnordered && rejectedEndpoint && rejectedNoise &&
-    restored[1] === 85 && restored[2] === 170
+    restored[1] === prior[1] && restored[2] === prior[2]
   console.log('LUMA_1 mid-level URL override test:', pass ? 'PASS' : 'FAIL', { applied, levels })
+  return pass
+}
+
+export function testHdmiUvcSenderPreferencePersistence() {
+  const pass =
+    // URL beats stored beats default
+    resolveInitialHdmiMode('', null) === DEFAULT_HDMI_MODE &&
+    resolveInitialHdmiMode('', 'luma4') === HDMI_MODE.LUMA_1 &&
+    resolveInitialHdmiMode('', '2x2') === HDMI_MODE.BINARY_2 &&
+    resolveInitialHdmiMode('?tx-mode=1x1', 'luma4') === HDMI_MODE.BINARY_1 &&
+    resolveInitialHdmiMode('?tx-mode=junk', 'junk') === DEFAULT_HDMI_MODE &&
+    // mids: URL > stored > pre-compensation default
+    resolveInitialLuma1Mids('', null).join(',') === '53,154' &&
+    resolveInitialLuma1Mids('', '60,150').join(',') === '60,150' &&
+    resolveInitialLuma1Mids('?luma-mids=40,160', '60,150').join(',') === '40,160' &&
+    resolveInitialLuma1Mids('', '200,100').join(',') === '53,154'
+  console.log('HDMI-UVC sender preference persistence test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

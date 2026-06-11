@@ -40,6 +40,7 @@ import {
   testHdmiUvcSenderDefaults,
   testHdmiUvcSenderModeUrlOverride,
   testLuma1MidLevelUrlOverride,
+  testHdmiUvcSenderPreferencePersistence,
   testBinary1RecommendedFpsIs60,
   testLabCardFullscreenExitRequiresReadyRestore,
   testDenseBinaryMixedReplayPass1SourceOnly,
@@ -117,6 +118,7 @@ import {
   testLuma1BlurredPayloadBandDecode,
   testLuma1LegacyNoGuardDecode,
   testLuma1OffsetLayoutSamplesStripsWithPhase,
+  testLuma1FailedDecodeAttachesDebug,
   testDecodeDataRegionPropagatesDenseBinaryLevels,
   testDenseBinaryLockedLayoutMatchesBlindSweep,
   testDenseBinaryPrecomputedOffsetsMatchUncached,
@@ -239,6 +241,7 @@ window.testLuma1WarpedIntermediateLevelsDecode = testLuma1WarpedIntermediateLeve
 window.testLuma1BlurredPayloadBandDecode = testLuma1BlurredPayloadBandDecode
 window.testLuma1LegacyNoGuardDecode = testLuma1LegacyNoGuardDecode
 window.testLuma1OffsetLayoutSamplesStripsWithPhase = testLuma1OffsetLayoutSamplesStripsWithPhase
+window.testLuma1FailedDecodeAttachesDebug = testLuma1FailedDecodeAttachesDebug
 window.testDecodeDataRegionPropagatesDenseBinaryLevels = testDecodeDataRegionPropagatesDenseBinaryLevels
 window.testDenseBinaryLockedLayoutMatchesBlindSweep = testDenseBinaryLockedLayoutMatchesBlindSweep
 window.testDenseBinaryPrecomputedOffsetsMatchUncached = testDenseBinaryPrecomputedOffsetsMatchUncached
@@ -282,6 +285,7 @@ window.testExternalPreparedStartUsesManualGate = testExternalPreparedStartUsesMa
 window.testHdmiUvcSenderDefaults = testHdmiUvcSenderDefaults
 window.testHdmiUvcSenderModeUrlOverride = testHdmiUvcSenderModeUrlOverride
 window.testLuma1MidLevelUrlOverride = testLuma1MidLevelUrlOverride
+window.testHdmiUvcSenderPreferencePersistence = testHdmiUvcSenderPreferencePersistence
 window.testBinary1RecommendedFpsIs60 = testBinary1RecommendedFpsIs60
 window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
 window.testDenseBinaryMixedReplayPass1SourceOnly = testDenseBinaryMixedReplayPass1SourceOnly
@@ -502,6 +506,7 @@ async function runAllTests() {
     hdmiLuma1BlurredPayloadBandDecode: testLuma1BlurredPayloadBandDecode(),
     hdmiLuma1LegacyNoGuardDecode: testLuma1LegacyNoGuardDecode(),
     hdmiLuma1OffsetLayoutStripPhase: testLuma1OffsetLayoutSamplesStripsWithPhase(),
+    hdmiLuma1FailedDecodeDebug: testLuma1FailedDecodeAttachesDebug(),
     hdmiDenseBinaryLevelsPropagation: testDecodeDataRegionPropagatesDenseBinaryLevels(),
     hdmiDenseBinaryLockedLayout: testDenseBinaryLockedLayoutMatchesBlindSweep(),
     hdmiDenseBinaryPrecomputedOffsets: testDenseBinaryPrecomputedOffsetsMatchUncached(),
@@ -545,6 +550,7 @@ async function runAllTests() {
     hdmiUvcSenderDefaults: testHdmiUvcSenderDefaults(),
     hdmiUvcSenderModeUrlOverride: testHdmiUvcSenderModeUrlOverride(),
     hdmiLuma1MidLevelUrlOverride: testLuma1MidLevelUrlOverride(),
+    hdmiUvcSenderPreferencePersistence: testHdmiUvcSenderPreferencePersistence(),
     binary1Recommended60Fps: testBinary1RecommendedFpsIs60(),
     labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),
     denseBinaryMixedReplayPass1SourceOnly: testDenseBinaryMixedReplayPass1SourceOnly(),

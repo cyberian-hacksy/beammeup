@@ -264,6 +264,16 @@
 
       <div class="sender-controls" id="hdmi-uvc-sender-controls">
         <div class="slider-group">
+          <label>Mode</label>
+          <div class="mode-selector" id="hdmi-uvc-mode-buttons"></div>
+        </div>
+        <div class="slider-group" id="hdmi-uvc-luma-mids-group">
+          <label for="hdmi-uvc-luma-mid1">Luma mids</label>
+          <input type="number" id="hdmi-uvc-luma-mid1" min="1" max="253" step="1" style="width:64px;">
+          <input type="number" id="hdmi-uvc-luma-mid2" min="2" max="254" step="1" style="width:64px;">
+          <span id="hdmi-uvc-luma-levels" class="estimate"></span>
+        </div>
+        <div class="slider-group">
           <label for="hdmi-uvc-external-display-toggle">Display</label>
           <label class="inline-toggle">
             <input type="checkbox" id="hdmi-uvc-external-display-toggle" checked>

@@ -2704,7 +2704,32 @@ function noteDenseBinaryLockFailure(result) {
       ? ` guard=${diag.payloadEdgeGuardCells ?? 'n/a'} phase=${diag.payloadPhaseX ?? 'n/a'} grid=${diag.blocksX || '?'}x${diag.blocksY || '?'} len=${result?.header?.payloadLength ?? '?'} levels=[${Array.isArray(diag.lumaLevels) ? diag.lumaLevels.join('/') : 'n/a'}] bw=${Math.round(diag.blackLevel ?? -1)}/${Math.round(diag.whiteLevel ?? -1)}`
       : ''
     debugLog(`[HDMI-RX] ${modeName} layout invalidated after ${LOCKED_BINARY3_INVALIDATE_AFTER_FAILS} unrecovered CRC fails${detail} - re-sweeping next frame`)
+    logLuma1DecodeDebug(diag.lumaDebug)
   }
+}
+
+// Channel evidence from a fully-failed LUMA_1 decode (built in frame.js):
+// raw ramp-strip readouts per probe phase ('!' = unusable, fell back to
+// linear defaults) and a sparse payload-band luma histogram with detected
+// peaks. Four clean peaks near even spacing => geometry bug; squeezed or
+// merged peaks => fix the sender ?luma-mids; a smear => modulation below
+// the channel noise floor.
+function logLuma1DecodeDebug(lumaDebug) {
+  if (!lumaDebug) return
+  for (const strip of lumaDebug.strips || []) {
+    const sign = strip.phase >= 0 ? `+${strip.phase}` : `${strip.phase}`
+    const rows = strip.rows
+      .map((row) => `r${row.row}=[${row.raw.join('/')}]${row.usable ? '' : '!'}`)
+      .join(' ')
+    debugLog(`[HDMI-RX] Luma4 strips p${sign}: ${rows}`)
+  }
+  const bins = (lumaDebug.hist || [])
+    .map((count, bin) => (count ? `${bin * 4}:${count}` : null))
+    .filter(Boolean)
+    .join(' ')
+  debugLog(`[HDMI-RX] Luma4 payload hist (binW=4, n=${lumaDebug.sampled}): ${bins}`)
+  const peaks = (lumaDebug.peaks || []).map((peak) => `${peak.v}(${peak.n})`).join(' ')
+  debugLog(`[HDMI-RX] Luma4 payload peaks: ${peaks || 'none'}`)
 }
 
 function logDenseBinaryLockOutcome(outcome) {
