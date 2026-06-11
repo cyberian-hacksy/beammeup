@@ -2218,13 +2218,64 @@ function buildLuma1DecodeDebug({
     }
   }
 
+  // Per-row-class / per-column-class purity: the fraction of payload samples
+  // sitting within ±10 of a measured strip level, bucketed by (row mod k)
+  // and (col mod k). A fixed-phase resampler with period k shows one clean
+  // class and k-1 contaminated ones; uniform impurity across every k rules
+  // out a positional phase structure. Column step 17 is coprime with all
+  // tested k so each class is sampled evenly.
+  let purityRows = null
+  let purityCols = null
+  let purityPhase = 0
+  let refLevels = null
+  for (const strip of strips) {
+    const usableRow = strip.rows.find((row) => row.usable)
+    if (usableRow) {
+      refLevels = usableRow.raw
+      purityPhase = strip.phase
+      break
+    }
+  }
+  if (refLevels) {
+    const ks = [2, 3, 4, 5, 6, 7, 8]
+    const pureCounts = ks.map((k) => ({ rows: new Array(k).fill(0), cols: new Array(k).fill(0) }))
+    const totals = ks.map((k) => ({ rows: new Array(k).fill(0), cols: new Array(k).fill(0) }))
+    for (let cy = 0; cy < payloadCellsY; cy++) {
+      const py = payloadStartY + Math.round(cy * payloadStepY)
+      if (py < 0 || py >= imgHeight) continue
+      for (let cx = 0; cx < payloadCellsX; cx += 17) {
+        const px = payloadStartXBase + Math.round(cx * payloadStepX) + purityPhase
+        if (px < 0 || px >= width) continue
+        const val = sampleBlockAt(imageData, width, px, py, payloadBs)
+        const pure = refLevels.some((level) => Math.abs(val - level) <= 10)
+        for (let i = 0; i < ks.length; i++) {
+          const k = ks[i]
+          totals[i].rows[cy % k]++
+          totals[i].cols[cx % k]++
+          if (pure) {
+            pureCounts[i].rows[cy % k]++
+            pureCounts[i].cols[cx % k]++
+          }
+        }
+      }
+    }
+    const toPercent = (counts, total) => counts.map((n, i) =>
+      total[i] > 0 ? Math.round((100 * n) / total[i]) : -1
+    )
+    purityRows = ks.map((k, i) => ({ k, pct: toPercent(pureCounts[i].rows, totals[i].rows) }))
+    purityCols = ks.map((k, i) => ({ k, pct: toPercent(pureCounts[i].cols, totals[i].cols) }))
+  }
+
   return {
     strips,
     hist,
     sampled,
     peaks: peaks.map((p) => ({ v: p.bin * 4 + 2, n: p.n })),
     vEdge,
-    vEdgeColumns
+    vEdgeColumns,
+    purityRows,
+    purityCols,
+    purityPhase
   }
 }
 
@@ -4405,7 +4456,10 @@ export function testLuma1FailedDecodeAttachesDebug() {
       // 7 falls into the next header row whose bit varies, so skip it.
       Array.isArray(dbg.vEdge) && dbg.vEdge.length === 8 &&
       dbg.vEdgeColumns > 0 && dbg.vEdge[0] <= 40 && dbg.vEdge[2] <= 40 &&
-      dbg.vEdge[3] >= 200 && dbg.vEdge[6] >= 200
+      dbg.vEdge[3] >= 200 && dbg.vEdge[6] >= 200 &&
+      Array.isArray(dbg.purityRows) && dbg.purityRows.length === 7 &&
+      dbg.purityRows.some((e) => e.k === 5 && e.pct.length === 5) &&
+      Array.isArray(dbg.purityCols) && dbg.purityCols.length === 7
     console.log('LUMA_1 failed-decode debug test:', pass ? 'PASS' : 'FAIL', pass ? '' : JSON.stringify({ crc: result?.crcValid, strips: dbg?.strips?.length, sampled: dbg?.sampled, peaks: dbg?.peaks, vEdge: dbg?.vEdge, vEdgeColumns: dbg?.vEdgeColumns }))
     return pass
   } catch (err) {

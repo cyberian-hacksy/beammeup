@@ -2758,6 +2758,11 @@ function logLuma1DecodeDebug(lumaDebug) {
   if (lumaDebug.vEdge) {
     debugLog(`[HDMI-RX] Luma4 vertical edge margin->header rows[-3..+4]: [${lumaDebug.vEdge.join('/')}] over ${lumaDebug.vEdgeColumns} column(s) (hard 0->255 step = vertically sharp; intermediate row value = vertical blend weight)`)
   }
+  if (lumaDebug.purityRows) {
+    const fmt = (entries) => entries.map((e) => `k${e.k}=[${e.pct.join('/')}]`).join(' ')
+    debugLog(`[HDMI-RX] Luma4 purity by row class (% of samples on a strip level, phase ${lumaDebug.purityPhase}): ${fmt(lumaDebug.purityRows)}`)
+    debugLog(`[HDMI-RX] Luma4 purity by col class: ${fmt(lumaDebug.purityCols)}`)
+  }
 }
 
 function logDenseBinaryLockOutcome(outcome) {
