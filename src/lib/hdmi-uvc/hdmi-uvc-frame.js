@@ -176,11 +176,6 @@ function getLuma1RowBuffer(n) {
   return luma1RowBuffer
 }
 
-// In-place row deconvolution. Values at the rails are pinned (u = v): the
-// ISP clamps rail overshoot, mid levels cannot reach the rails under this
-// model, and a pinned cell splits the row into independently solvable
-// segments with exact Dirichlet boundaries. Row ends use a Neumann boundary
-// — the edge guard cells mirror the first/last data cell by construction.
 // Rail-pinning headroom. The deconvolution pins rail-valued samples as exact
 // (u = v), which is only sound while no mid-level cell can overshoot past the
 // pin threshold under the current lambda — past that, clamping makes a hot
@@ -197,6 +192,11 @@ export function getLuma1SharpenRailHeadroom(lumaLevels, lambda) {
   return Math.round((white - 6) - maxMidObs)
 }
 
+// In-place row deconvolution. Values at the rails are pinned (u = v): the
+// ISP clamps rail overshoot, mid levels cannot reach the rails under this
+// model, and a pinned cell splits the row into independently solvable
+// segments with exact Dirichlet boundaries. Row ends use a Neumann boundary
+// — the edge guard cells mirror the first/last data cell by construction.
 export function unsharpenLuma1Row(vals, count, lambda, railLo, railHi) {
   const sub = -lambda / 2
   const diagMain = 1 + lambda
@@ -224,6 +224,20 @@ export function unsharpenLuma1Row(vals, count, lambda, railLo, railHi) {
       if (rightPinned) rhs -= sub * vals[segEnd + 1]
       else diag += sub
       vals[segStart] = rhs / diag
+      segStart = segEnd + 1
+      continue
+    }
+    if (n === 2) {
+      // Closed-form 2x2 — with rails on half the cells, runs of one or two
+      // mids hold most of the work, so skipping the scratch sweep here is a
+      // measurable win on the hot locked-read path.
+      const dA = leftPinned ? diagMain : diagEnd
+      const dB = rightPinned ? diagMain : diagEnd
+      const rA = vals[segStart] - (leftPinned ? sub * vals[segStart - 1] : 0)
+      const rB = vals[segEnd] - (rightPinned ? sub * vals[segEnd + 1] : 0)
+      const inv = 1 / (dA * dB - sub * sub)
+      vals[segStart] = (rA * dB - sub * rB) * inv
+      vals[segEnd] = (dA * rB - sub * rA) * inv
       segStart = segEnd + 1
       continue
     }
@@ -462,6 +476,40 @@ function normalizeLuma1Levels(levels, blackLevel = 0, whiteLevel = 255) {
   }
   if (normalized[LUMA1_LEVEL_COUNT - 1] - normalized[0] < 48) return fallback
   return normalized
+}
+
+// Nearest-centroid classification over four fixed levels is a pure function
+// of the (integer) sample, so the per-cell Math.abs scan collapses into a
+// 256-entry lookup table — the locked Luma4 reader classifies ~1.9M cells per
+// 1080p frame, making this the hottest call in the receive path. Rebuilt only
+// when the strip levels actually change (they're stable within a frame).
+// Ties at exact midpoints resolve to the lower level, matching the strict-<
+// comparison in decodeLuma1SymbolFromLevels.
+let luma1ClassifyLut = null
+const luma1ClassifyLutLevels = [NaN, NaN, NaN, NaN]
+function getLuma1ClassifyLut(levels) {
+  if (
+    luma1ClassifyLut &&
+    luma1ClassifyLutLevels[0] === levels[0] &&
+    luma1ClassifyLutLevels[1] === levels[1] &&
+    luma1ClassifyLutLevels[2] === levels[2] &&
+    luma1ClassifyLutLevels[3] === levels[3]
+  ) {
+    return luma1ClassifyLut
+  }
+  if (!luma1ClassifyLut) luma1ClassifyLut = new Uint8Array(256)
+  const t01 = (levels[0] + levels[1]) / 2
+  const t12 = (levels[1] + levels[2]) / 2
+  const t23 = (levels[2] + levels[3]) / 2
+  for (let v = 0; v < 256; v++) {
+    const level = v <= t01 ? 0 : v <= t12 ? 1 : v <= t23 ? 2 : 3
+    luma1ClassifyLut[v] = LUMA1_GRAY_LEVEL_TO_SYMBOL[level]
+  }
+  luma1ClassifyLutLevels[0] = levels[0]
+  luma1ClassifyLutLevels[1] = levels[1]
+  luma1ClassifyLutLevels[2] = levels[2]
+  luma1ClassifyLutLevels[3] = levels[3]
+  return luma1ClassifyLut
 }
 
 function decodeLuma1SymbolFromLevels(sample, levels, blackLevel = 0, whiteLevel = 255) {
@@ -1923,30 +1971,37 @@ function readDenseLuma1PayloadLockedNativeGrid({
     if (lastSampleX >= width) return null
 
     let base = ((rowY * width) + rowX) * 4
+    const lut = getLuma1ClassifyLut(lumaLevels)
     if (luma1SharpenLambda) {
       // Deconvolve the horizontal peaking before classification. Gather the
-      // row, invert, then classify from the corrected buffer.
+      // row, invert, then classify from the corrected buffer. The solve
+      // returns floats that can stray a hair past the rails — clamp and
+      // round before the table lookup.
       const rowBuf = getLuma1RowBuffer(payloadCellsX)
       let p = base
       for (let cx = 0; cx < payloadCellsX; cx++, p += byteStep) {
         rowBuf[cx] = imageData[p]
       }
       unsharpenLuma1Row(rowBuf, payloadCellsX, luma1SharpenLambda, lumaLevels[0] + 6, lumaLevels[3] - 6)
+      for (let cx = 0; cx < payloadCellsX; cx++) {
+        const v = rowBuf[cx]
+        rowBuf[cx] = v <= 0 ? 0 : v >= 255 ? 255 : (v + 0.5) | 0
+      }
       let cx = 0
       while (cx < payloadCellsX && byteIdx < payloadLength) {
         if (bitCount === 0 && cx + 4 <= payloadCellsX) {
           const fullBytes = Math.min(payloadLength - byteIdx, (payloadCellsX - cx) >> 2)
           for (let i = 0; i < fullBytes; i++) {
             payload[byteIdx++] =
-              (decodeLuma1SymbolFromLevels(rowBuf[cx], lumaLevels, black, white) << 6) |
-              (decodeLuma1SymbolFromLevels(rowBuf[cx + 1], lumaLevels, black, white) << 4) |
-              (decodeLuma1SymbolFromLevels(rowBuf[cx + 2], lumaLevels, black, white) << 2) |
-              decodeLuma1SymbolFromLevels(rowBuf[cx + 3], lumaLevels, black, white)
+              (lut[rowBuf[cx]] << 6) |
+              (lut[rowBuf[cx + 1]] << 4) |
+              (lut[rowBuf[cx + 2]] << 2) |
+              lut[rowBuf[cx + 3]]
             cx += 4
           }
           continue
         }
-        bitBuffer = (bitBuffer << 2) | decodeLuma1SymbolFromLevels(rowBuf[cx], lumaLevels, black, white)
+        bitBuffer = (bitBuffer << 2) | lut[rowBuf[cx]]
         bitCount += 2
         cx++
         if (bitCount >= BITS_PER_BYTE) {
@@ -1963,17 +2018,17 @@ function readDenseLuma1PayloadLockedNativeGrid({
         const fullBytes = Math.min(payloadLength - byteIdx, (payloadCellsX - cx) >> 2)
         for (let i = 0; i < fullBytes; i++) {
           payload[byteIdx++] =
-            (decodeLuma1SymbolFromLevels(imageData[base], lumaLevels, black, white) << 6) |
-            (decodeLuma1SymbolFromLevels(imageData[base + byteStep], lumaLevels, black, white) << 4) |
-            (decodeLuma1SymbolFromLevels(imageData[base + byteStep * 2], lumaLevels, black, white) << 2) |
-            decodeLuma1SymbolFromLevels(imageData[base + byteStep * 3], lumaLevels, black, white)
+            (lut[imageData[base]] << 6) |
+            (lut[imageData[base + byteStep]] << 4) |
+            (lut[imageData[base + byteStep * 2]] << 2) |
+            lut[imageData[base + byteStep * 3]]
           base += byteStep * 4
         }
         cx += fullBytes * 4
         continue
       }
 
-      bitBuffer = (bitBuffer << 2) | decodeLuma1SymbolFromLevels(imageData[base], lumaLevels, black, white)
+      bitBuffer = (bitBuffer << 2) | lut[imageData[base]]
       bitCount += 2
       base += byteStep
       cx++
