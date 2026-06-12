@@ -17,8 +17,11 @@ import {
   readPayloadWithLayout,
   resetClassifierPerfAccumulator,
   setLuma1SweepBudgetFast,
+  setLuma1SweepTimeBudgetMs,
+  setLuma1DebugCapture,
   setLuma1SharpenCorrection,
   getLuma1SharpenCorrection,
+  isLuma1CalibrationPayload,
   getClassifierPerfAccumulator
 } from './hdmi-uvc-frame.js'
 import ReceiverWorker from './hdmi-uvc-receiver-worker.js?worker&inline'
@@ -2432,6 +2435,9 @@ const state = {
   denseBinaryLockFailStreak: 0,
   lastDenseBinaryConfidenceLogFrame: 0,
   lockedLayoutFastPathMisses: 0,
+  luma1CalPassCount: 0,       // Consecutive CRC-valid calibration frames
+  luma1CalHoldUntilMs: 0,     // Decode throttle while cal frames keep passing
+  luma1CalLastLogMs: 0,
   progressSamples: [],
   lastReceivingUiUpdateMs: 0,
   rxPerf: createReceiverPerfState(),
@@ -2729,6 +2735,7 @@ function noteLuma1SweepOutcome(result) {
     return
   }
   if (result?.header?.mode !== HDMI_MODE.LUMA_1) return
+  state.luma1CalPassCount = 0
   state.luma1SweepFailStreak = (state.luma1SweepFailStreak || 0) + 1
   // Escalate once the layout has been invalidated repeatedly: the channel is
   // persistently broken, so trade scan latency for an interactive page.
@@ -2745,6 +2752,52 @@ function shouldSkipLuma1SweepForBackoff(now = performance.now()) {
   return now < (state.luma1NextSweepAtMs || 0)
 }
 
+// Calibration frames pass CRC but carry the fixed cal pattern instead of
+// packets, so the packet pipeline would score them as "empty CRC-valid"
+// failures and tear the lock down. Treat them as link-validation success:
+// keep the lock, reset failure counters, and throttle further decodes — one
+// confirmation per second is plenty for a static pattern and keeps the page
+// responsive. The throttle self-clears the moment real data arrives (the
+// next decoded frame parses packets and never re-arms the hold).
+const LUMA1_CAL_DECODE_HOLD_MS = 1000
+const LUMA1_CAL_LOG_INTERVAL_MS = 5000
+
+function shouldSkipDecodeForLuma1CalHold(now = performance.now()) {
+  return now < (state.luma1CalHoldUntilMs || 0)
+}
+
+function noteLuma1CalibrationPass(result, region, frameWidth, frameHeight, candidateRegion, candidateAnchors) {
+  state.decodeFailCount = 0
+  state.luma1CalPassCount = (state.luma1CalPassCount || 0) + 1
+  const now = performance.now()
+  state.luma1CalHoldUntilMs = now + LUMA1_CAL_DECODE_HOLD_MS
+  if (!state.anchorBounds && (candidateRegion || state.tentativeAnchorBounds)) {
+    lockAnchorRegion(
+      candidateRegion || state.tentativeAnchorBounds,
+      frameWidth,
+      frameHeight,
+      candidateAnchors || state.tentativeAnchors
+    )
+  }
+  if (result._diag) state.fixedLayout = { ...result._diag }
+  if (result._diag) state.preferredLayout = { ...result._diag }
+  applyDenseBinaryLock(result, region)
+  if (
+    state.luma1CalPassCount <= 3 ||
+    now - (state.luma1CalLastLogMs || 0) > LUMA1_CAL_LOG_INTERVAL_MS
+  ) {
+    state.luma1CalLastLogMs = now
+    const lambda = getLuma1SharpenCorrection()
+    const levels = Array.isArray(result._diag?.lumaLevels) ? ` levels=[${result._diag.lumaLevels.join('/')}]` : ''
+    debugLog(
+      `[HDMI-RX] Luma4 CAL frame CRC OK #${state.luma1CalPassCount} ` +
+      `(sharpen lambda=${lambda ?? 'off'}${levels}) - link validated, ` +
+      `uncheck Cal pattern on the sender to transfer real data`
+    )
+  }
+  debugCurrent(`#${state.frameCount} CAL OK`)
+}
+
 function noteDenseBinaryLockFailure(result) {
   const outcome = noteDenseBinaryUnrecoveredCrcFailure(
     state,
@@ -2758,7 +2811,7 @@ function noteDenseBinaryLockFailure(result) {
     const modeName = HDMI_MODE_NAMES[result?._diag?.frameMode] || 'dense binary'
     const diag = result?._diag || {}
     const detail = diag.frameMode === HDMI_MODE.LUMA_1
-      ? ` guard=${diag.payloadEdgeGuardCells ?? 'n/a'} phase=${diag.payloadPhaseX ?? 'n/a'} grid=${diag.blocksX || '?'}x${diag.blocksY || '?'} len=${result?.header?.payloadLength ?? '?'} levels=[${Array.isArray(diag.lumaLevels) ? diag.lumaLevels.join('/') : 'n/a'}] bw=${Math.round(diag.blackLevel ?? -1)}/${Math.round(diag.whiteLevel ?? -1)}`
+      ? ` guard=${diag.payloadEdgeGuardCells ?? 'n/a'} phase=${diag.payloadPhaseX ?? 'n/a'} grid=${diag.blocksX || '?'}x${diag.blocksY || '?'} len=${result?.header?.payloadLength ?? '?'} levels=[${Array.isArray(diag.lumaLevels) ? diag.lumaLevels.join('/') : 'n/a'}] bw=${Math.round(diag.blackLevel ?? -1)}/${Math.round(diag.whiteLevel ?? -1)} swept=${diag.sweepTried ?? 'n/a'}${diag.sweepBudgetHit ? '(budget)' : ''}`
       : ''
     debugLog(`[HDMI-RX] ${modeName} layout invalidated after ${LOCKED_BINARY3_INVALIDATE_AFTER_FAILS} unrecovered CRC fails${detail} - re-sweeping next frame`)
     logLuma1DecodeDebug(diag.lumaDebug)
@@ -2806,6 +2859,13 @@ function logLuma1DecodeDebug(lumaDebug) {
       const s = cal.sharpen
       const solveDetail = s.solve ? ` rowSolve err ${s.solve.raw}% -> ${s.solve.solved}% (n=${s.solve.n})` : ''
       debugLog(`[HDMI-RX] Luma4 CAL sharpen fit: lambdaH=${s.lh} lambdaV=${s.lv} R2=${s.r2} err ${s.errBefore}% -> ${s.errAfter}% after unsharp correction (n=${s.n})${solveDetail}`)
+      if (Number.isFinite(s.railHeadroom) && s.railHeadroom < 6) {
+        // Rail pinning needs the top mid's peaking overshoot to stay below
+        // white-6; past that, clamped mids become indistinguishable from
+        // true white and the deconvolution degrades. Lower the upper
+        // ?luma-mids value on the sender to buy headroom back.
+        debugLog(`[HDMI-RX] Luma4 WARNING: sharpen overshoot headroom is ${s.railHeadroom} gray (top mid level too close to white for lambda=${s.lh}) - lower the second ?luma-mids value on the sender`)
+      }
       maybeArmLuma1SharpenCorrection(s)
     }
   }
@@ -3275,7 +3335,7 @@ async function processFrame(now, metadata) {
   }
 
   // === DECODE DATA REGION ===
-  if (shouldSkipLuma1SweepForBackoff()) {
+  if (shouldSkipLuma1SweepForBackoff() || shouldSkipDecodeForLuma1CalHold()) {
     scheduleNextFrame()
     finalizeFramePerf()
     return
@@ -3324,6 +3384,12 @@ async function processFrame(now, metadata) {
 
   if (!result) {
     resetClassifierPerfAccumulator()
+    // The failed-sweep evidence block costs ~100ms to build but is only
+    // printed when the lock invalidates — capture it just for the sweep
+    // whose failure will push the streak over the invalidation threshold.
+    setLuma1DebugCapture(
+      (state.denseBinaryLockFailStreak || 0) >= LOCKED_BINARY3_INVALIDATE_AFTER_FAILS - 1
+    )
     const decodeStartMs = performance.now()
     result = decodeDataRegion(imageData.data, frameWidth, region)
     decodeMs += performance.now() - decodeStartMs
@@ -3337,6 +3403,21 @@ async function processFrame(now, metadata) {
       width: result.header.width,
       height: result.header.height
     })
+
+    // Calibration frames are link-validation success, not packet carriers —
+    // divert them before the packet pipeline scores them as empty failures.
+    // (Worker decode ships payload=null on CRC-valid frames, so this check
+    // only engages on main-thread decodes; worker mode is off by default.)
+    if (
+      result.header.mode === HDMI_MODE.LUMA_1 &&
+      result.payload &&
+      isLuma1CalibrationPayload(result.payload)
+    ) {
+      noteLuma1CalibrationPass(result, region, frameWidth, frameHeight, candidateRegion, candidateAnchors)
+      scheduleNextFrame()
+      finalizeFramePerf()
+      return
+    }
 
     let frameAccepted = false
     let softSalvagedPacketCount = 0
@@ -3779,6 +3860,9 @@ function resetReceiver() {
   state.lastReceiverFrameSignature = null
   clearDenseBinaryLock()
   state.lockedLayoutFastPathMisses = 0
+  state.luma1CalPassCount = 0
+  state.luma1CalHoldUntilMs = 0
+  state.luma1CalLastLogMs = 0
   state.expectedPacketCount = 0
   state.progressSamples = []
   state.lastReceivingUiUpdateMs = 0
@@ -3914,6 +3998,10 @@ export function initHdmiUvcReceiver(errorHandler) {
   }
   debugLog('HDMI-UVC Receiver initialized')
   restoreLuma1SharpenCorrection()
+  // One blind-sweep call may not block the main thread longer than this —
+  // the strips order the true phase first, so real frames still lock on the
+  // first candidate; only doomed sweeps get truncated.
+  setLuma1SweepTimeBudgetMs(120)
   debugLog(
     `Capture method chosen: ${CAPTURE_METHOD} ` +
     `(capabilities=${JSON.stringify(CAPTURE_CAPABILITIES)})`
@@ -4091,6 +4179,94 @@ export function testReceiverHeaderOnlyFrameCanLock() {
     }) === false
   console.log('Receiver header-only lock frame test:', pass ? 'PASS' : 'FAIL')
   return pass
+}
+
+// A CRC-valid calibration frame must count as success: failure counters
+// reset, layout locks, and further decodes throttle — instead of the packet
+// pipeline scoring it "empty CRC-valid" and tearing the lock down (the
+// relock thrash observed live once the sharpen correction started passing
+// cal frames).
+export function testReceiverLuma1CalFrameTreatedAsSuccess() {
+  const saved = {
+    decodeFailCount: state.decodeFailCount,
+    luma1CalPassCount: state.luma1CalPassCount,
+    luma1CalHoldUntilMs: state.luma1CalHoldUntilMs,
+    luma1CalLastLogMs: state.luma1CalLastLogMs,
+    luma1SweepFailStreak: state.luma1SweepFailStreak,
+    luma1NextSweepAtMs: state.luma1NextSweepAtMs,
+    luma1InvalidationCount: state.luma1InvalidationCount,
+    anchorBounds: state.anchorBounds,
+    fixedLayout: state.fixedLayout,
+    preferredLayout: state.preferredLayout,
+    lockedDenseBinaryLayout: state.lockedDenseBinaryLayout,
+    lockedDenseBinaryOffsets: state.lockedDenseBinaryOffsets,
+    denseBinaryLockFailStreak: state.denseBinaryLockFailStreak
+  }
+  try {
+    const layout = {
+      frameMode: HDMI_MODE.LUMA_1,
+      blocksX: 16,
+      blocksY: 8,
+      headerBlocksX: 16,
+      headerBlocksY: 2,
+      bitsPerBlock: 2,
+      stepX: 1,
+      stepY: 1,
+      dataBs: 1,
+      headerStepX: 4,
+      headerStepY: 4,
+      headerBs: 4,
+      xOff: 0,
+      yOff: 0,
+      payloadPhaseX: 1,
+      payloadEdgeGuardCells: 1,
+      blackLevel: 2,
+      whiteLevel: 252,
+      lumaLevels: [0, 91, 169, 255]
+    }
+    const result = {
+      crcValid: true,
+      header: { mode: HDMI_MODE.LUMA_1, width: 1920, height: 1080, fps: 60, payloadLength: 64 },
+      _diag: layout
+    }
+    const region = { x: 24, y: 24, w: 64, h: 40 }
+
+    state.decodeFailCount = 7
+    state.denseBinaryLockFailStreak = 4
+    state.luma1CalPassCount = 0
+    state.luma1CalHoldUntilMs = 0
+    state.luma1CalLastLogMs = 0
+    state.anchorBounds = { x: 0, y: 0, w: 64, h: 40 } // already locked: skip lockAnchorRegion
+    state.lockedDenseBinaryLayout = null
+
+    noteLuma1CalibrationPass(result, region, 1920, 1080, null, null)
+
+    const afterPass = state.decodeFailCount === 0 &&
+      state.luma1CalPassCount === 1 &&
+      state.denseBinaryLockFailStreak === 0 &&
+      state.lockedDenseBinaryLayout?.frameMode === HDMI_MODE.LUMA_1 &&
+      shouldSkipDecodeForLuma1CalHold() === true &&
+      shouldSkipDecodeForLuma1CalHold(performance.now() + 2000) === false
+
+    // A later LUMA_1 CRC failure breaks the consecutive-pass count.
+    noteLuma1SweepOutcome({ crcValid: false, header: { mode: HDMI_MODE.LUMA_1 } })
+    const afterFail = state.luma1CalPassCount === 0
+
+    const pass = afterPass && afterFail
+    console.log('Receiver Luma4 cal-frame success test:', pass ? 'PASS' : 'FAIL', pass ? '' : JSON.stringify({
+      decodeFailCount: state.decodeFailCount,
+      calPassCount: state.luma1CalPassCount,
+      lockMode: state.lockedDenseBinaryLayout?.frameMode,
+      lockStreak: state.denseBinaryLockFailStreak,
+      afterFail
+    }))
+    return pass
+  } catch (err) {
+    console.log('Receiver Luma4 cal-frame success test: FAIL', err?.message || err)
+    return false
+  } finally {
+    Object.assign(state, saved)
+  }
 }
 
 export function testReceiverAnchorDiagnosticsQuietByDefault() {

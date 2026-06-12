@@ -105,12 +105,46 @@ export function getLuma1CalibrationPayload(length) {
   return luma1CalCache.length === length ? luma1CalCache : luma1CalCache.subarray(0, length)
 }
 
+// A CRC-valid frame whose payload IS the calibration pattern carries no
+// packets by design — the receiver must treat it as link-validation success
+// instead of routing it into the packet pipeline (where zero ingested
+// packets reads as failure and tears the lock down).
+export function isLuma1CalibrationPayload(payload) {
+  if (!payload || payload.length === 0) return false
+  const expected = getLuma1CalibrationPayload(payload.length)
+  for (let i = 0; i < payload.length; i++) {
+    if (payload[i] !== expected[i]) return false
+  }
+  return true
+}
+
 // Sweep budget: while the receiver is in CRC-failure backoff, full blind
 // sweeps (all phase/guard combos ≈ 0.5s) would still saturate the main
 // thread. Fast mode reads only strip-identified phases at the default guard.
 let luma1SweepBudgetFast = false
 export function setLuma1SweepBudgetFast(fast) {
   luma1SweepBudgetFast = !!fast
+}
+
+// Hard wall-clock cap for one blind sweep call. Each phase/guard candidate is
+// a full-frame payload read (~80ms at 1080p), so an uncapped sweep blocks the
+// main thread for most of a second. The strips pre-order the true phase
+// first, so a decodable frame still passes on the first candidate; the budget
+// only truncates sweeps that were going to fail anyway. null = unlimited
+// (Node tests and sims sweep exhaustively).
+let luma1SweepTimeBudgetMs = null
+export function setLuma1SweepTimeBudgetMs(ms) {
+  luma1SweepTimeBudgetMs = Number.isFinite(ms) && ms > 0 ? ms : null
+  return luma1SweepTimeBudgetMs
+}
+
+// The failed-sweep evidence block (strips/histogram/purity/CAL analysis) costs
+// ~100ms to build but is only ever printed on layout invalidation. The
+// receiver enables capture just for the sweep whose failure will invalidate;
+// default on so Node tests and sims always get the evidence.
+let luma1DebugCaptureEnabled = true
+export function setLuma1DebugCapture(enabled) {
+  luma1DebugCaptureEnabled = !!enabled
 }
 
 // Horizontal-peaking correction. The capture dongle applies a 1D unsharp
@@ -147,6 +181,22 @@ function getLuma1RowBuffer(n) {
 // model, and a pinned cell splits the row into independently solvable
 // segments with exact Dirichlet boundaries. Row ends use a Neumann boundary
 // — the edge guard cells mirror the first/last data cell by construction.
+// Rail-pinning headroom. The deconvolution pins rail-valued samples as exact
+// (u = v), which is only sound while no mid-level cell can overshoot past the
+// pin threshold under the current lambda — past that, clamping makes a hot
+// mid (e.g. 182*1.45 = 264 -> clamps to 255) indistinguishable from true
+// white and the solve degrades badly in BOTH directions (unpinning instead
+// sacrifices true whites, whose clamped overshoot is even larger). Live
+// captured levels [0/91/169/255] leave ~6 gray of headroom; this probe turns
+// a drift toward the rails into a log warning instead of a silent failure.
+export function getLuma1SharpenRailHeadroom(lumaLevels, lambda) {
+  const black = lumaLevels[0]
+  const white = lumaLevels[LUMA1_LEVEL_COUNT - 1]
+  const topMid = lumaLevels[LUMA1_LEVEL_COUNT - 2]
+  const maxMidObs = topMid + lambda * (topMid - black) // both neighbors black
+  return Math.round((white - 6) - maxMidObs)
+}
+
 export function unsharpenLuma1Row(vals, count, lambda, railLo, railHi) {
   const sub = -lambda / 2
   const diagMain = 1 + lambda
@@ -2623,6 +2673,7 @@ function buildLuma1DecodeDebug({
             errBefore: Math.round((1000 * errBefore) / sharpVals.length) / 10,
             errAfter: Math.round((1000 * errAfter) / sharpVals.length) / 10,
             n: sharpVals.length,
+            railHeadroom: getLuma1SharpenRailHeadroom(refLevels, lh),
             solve
           }
         }
@@ -2865,11 +2916,23 @@ function readDenseBinaryPayload(
     : guardOptions
 
   let firstResult = null
-  for (const guardCells of guardOrder) {
+  const sweepStartMs = luma1SweepTimeBudgetMs !== null ? performance.now() : 0
+  let sweepTried = 0
+  let sweepBudgetHit = false
+  outer: for (const guardCells of guardOrder) {
     for (const phase of phaseOrder) {
       const result = makeResult(phase, guardCells)
+      sweepTried++
       if (!firstResult) firstResult = result
       if (result.crcValid) return result
+      if (
+        luma1SweepTimeBudgetMs !== null &&
+        header.mode === HDMI_MODE.LUMA_1 &&
+        performance.now() - sweepStartMs > luma1SweepTimeBudgetMs
+      ) {
+        sweepBudgetHit = true
+        break outer
+      }
     }
   }
 
@@ -2881,6 +2944,10 @@ function readDenseBinaryPayload(
   // capture blending rows spatially? — payload mixing without edge blur
   // points at cross-frame mixing instead).
   if (header.mode === HDMI_MODE.LUMA_1 && firstResult) {
+    firstResult._diag.sweepTried = sweepTried
+    firstResult._diag.sweepBudgetHit = sweepBudgetHit
+  }
+  if (header.mode === HDMI_MODE.LUMA_1 && firstResult && luma1DebugCaptureEnabled) {
     firstResult._diag.lumaDebug = buildLuma1DecodeDebug({
       imageData,
       width,
@@ -3954,6 +4021,8 @@ function refineCandidateFromHeader(imageData, width, region, header, rx, ry, hyp
           payloadPhaseX: innerDiag.payloadPhaseX,
           lumaLevels: innerDiag.lumaLevels,
           lumaDebug: innerDiag.lumaDebug,
+          sweepTried: innerDiag.sweepTried,
+          sweepBudgetHit: innerDiag.sweepBudgetHit,
           stripRows: innerDiag.stripRows
         }
       }
@@ -4129,6 +4198,8 @@ function tryPreferredExperimentalLayoutDecode(imageData, width, region, layout, 
           payloadPhaseX: innerDiag.payloadPhaseX,
           lumaLevels: innerDiag.lumaLevels,
           lumaDebug: innerDiag.lumaDebug,
+          sweepTried: innerDiag.sweepTried,
+          sweepBudgetHit: innerDiag.sweepBudgetHit,
           stripRows: innerDiag.stripRows
         }
       }
@@ -4294,6 +4365,8 @@ export function decodeDataRegion(imageData, width, region, options = {}) {
               payloadPhaseX: innerDiag.payloadPhaseX,
               lumaLevels: innerDiag.lumaLevels,
               lumaDebug: innerDiag.lumaDebug,
+              sweepTried: innerDiag.sweepTried,
+              sweepBudgetHit: innerDiag.sweepBudgetHit,
               stripRows: innerDiag.stripRows
             }
           }
@@ -4876,6 +4949,87 @@ export function testLuma1FailedDecodeAttachesDebug() {
   }
 }
 
+// Calibration-frame detection must accept the exact pattern (in a plain copy,
+// as the decoder produces) and reject any corruption. A CRC-valid frame that
+// matches is link-validation success, not packet data.
+export function testLuma1CalibrationPayloadDetection() {
+  const cal = getLuma1CalibrationPayload(4096)
+  const copy = new Uint8Array(cal)
+  const corrupted = new Uint8Array(cal)
+  corrupted[1000] ^= 1
+  const pass = isLuma1CalibrationPayload(copy) === true &&
+    isLuma1CalibrationPayload(corrupted) === false &&
+    isLuma1CalibrationPayload(new Uint8Array(0)) === false &&
+    isLuma1CalibrationPayload(null) === false
+  console.log('LUMA_1 calibration payload detection test:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+// The sweep time budget caps a failing blind sweep's main-thread cost (the
+// receiver arms ~120ms; each candidate is a full-frame read), and the
+// failed-sweep evidence block only builds when capture is enabled. A clean
+// frame must still decode with the budget armed — the true phase is tried
+// first, and the budget check runs after the CRC test.
+export function testLuma1SweepBudgetAndDebugGate() {
+  try {
+    const width = 640
+    const height = 407
+    const payload = new Uint8Array(1500)
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 73 + 29) & 0xff
+
+    const cleanFrame = buildFrame(payload, HDMI_MODE.LUMA_1, width, height, 30, 62)
+    const corrupt = new Uint8ClampedArray(cleanFrame)
+    const dr = getDataRegion(width, height)
+    for (let y = dr.y + 12; y < dr.y + 40; y++) {
+      for (let x = dr.x + 8; x < dr.x + dr.w - 8; x++) {
+        const i = (y * width + x) * 4
+        corrupt[i] = corrupt[i + 1] = corrupt[i + 2] = 200
+      }
+    }
+    const anchors = detectAnchors(corrupt, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    if (!region) throw new Error('no region')
+
+    // Unlimited budget, debug capture off: full sweep, no evidence block.
+    setLuma1DebugCapture(false)
+    const full = decodeDataRegion(corrupt, width, region)
+    // Tiny budget, capture on: one candidate, evidence still attached.
+    setLuma1SweepTimeBudgetMs(0.0001)
+    setLuma1DebugCapture(true)
+    const truncated = decodeDataRegion(corrupt, width, region)
+    // Budget still armed: a clean frame decodes on the first candidate.
+    const cleanResult = decodeDataRegion(cleanFrame, width, region)
+
+    const pass = full && !full.crcValid &&
+      full._diag?.sweepTried === 10 &&
+      full._diag?.sweepBudgetHit === false &&
+      full._diag?.lumaDebug === undefined &&
+      truncated && !truncated.crcValid &&
+      // performance.now() is coarsened in browsers, so the first elapsed
+      // check can read 0 and admit an extra candidate or two.
+      truncated._diag?.sweepTried <= 3 &&
+      truncated._diag?.sweepBudgetHit === true &&
+      !!truncated._diag?.lumaDebug &&
+      cleanResult?.crcValid === true
+    console.log('LUMA_1 sweep budget + debug gate test:', pass ? 'PASS' : 'FAIL', pass ? '' : JSON.stringify({
+      fullTried: full?._diag?.sweepTried,
+      fullBudgetHit: full?._diag?.sweepBudgetHit,
+      fullDebug: !!full?._diag?.lumaDebug,
+      truncTried: truncated?._diag?.sweepTried,
+      truncBudgetHit: truncated?._diag?.sweepBudgetHit,
+      truncDebug: !!truncated?._diag?.lumaDebug,
+      cleanCrc: cleanResult?.crcValid
+    }))
+    return pass
+  } catch (err) {
+    console.log('LUMA_1 sweep budget + debug gate test: FAIL', err?.message || err)
+    return false
+  } finally {
+    setLuma1SweepTimeBudgetMs(null)
+    setLuma1DebugCapture(true)
+  }
+}
+
 // The calibration analysis must auto-detect a calibration frame and measure
 // an injected vertical mix fraction. Mixes every row with 30% of the row
 // below: CRC fails, but the per-band f-below regression should read ~0.3
@@ -4967,10 +5121,21 @@ export function testLuma1CalibrationSharpenFit() {
 // decode perfectly — generic and locked readers — once the correction is
 // armed with the same λ.
 export function testLuma1SharpenCorrectionRoundtrip() {
+  // Rail pinning is only sound while the top mid's peaking overshoot stays
+  // inside the rails (headroom > 0) — render at the default levels, which
+  // satisfy that like the live captured levels do. In the browser the sender
+  // module's init shifts the module-wide mids to the gamma-precompensated
+  // 103/182, whose overshoot clamps at white (headroom < 0) and is
+  // indistinguishable from true white — out of the model's reach by design
+  // (the receiver warns on thin live headroom instead).
+  const priorLevels = getLuma1SenderLevels()
   try {
     const width = 640
     const height = 407
     const lambda = 0.45
+    setLuma1SenderMidLevels(85, 170)
+    const headroomOk = getLuma1SharpenRailHeadroom([0, 85, 170, 255], lambda) > 0 &&
+      getLuma1SharpenRailHeadroom([0, 103, 182, 255], lambda) < 0
     const cap = getPayloadCapacity(width, height, HDMI_MODE.LUMA_1)
     const payload = new Uint8Array(cap)
     for (let i = 0; i < payload.length; i++) payload[i] = (i * 73 + 41) & 0xff
@@ -5007,13 +5172,15 @@ export function testLuma1SharpenCorrectionRoundtrip() {
       corrected && corrected.crcValid &&
       corrected.payload.length === payload.length &&
       corrected.payload.every((v, i) => v === payload[i]) &&
-      lockedOk
-    console.log('LUMA_1 sharpen correction roundtrip test:', pass ? 'PASS' : 'FAIL', { uncorrectedCrc: uncorrected?.crcValid, correctedCrc: corrected?.crcValid, lockedOk })
+      lockedOk && headroomOk
+    console.log('LUMA_1 sharpen correction roundtrip test:', pass ? 'PASS' : 'FAIL', { uncorrectedCrc: uncorrected?.crcValid, correctedCrc: corrected?.crcValid, lockedOk, headroomOk })
     return pass
   } catch (err) {
     setLuma1SharpenCorrection(null)
     console.log('LUMA_1 sharpen correction roundtrip test: FAIL', err?.message || err)
     return false
+  } finally {
+    setLuma1SenderMidLevels(priorLevels[1], priorLevels[2])
   }
 }
 

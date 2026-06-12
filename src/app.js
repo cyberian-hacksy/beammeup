@@ -86,6 +86,7 @@ import {
   testReceiverFrameUseSummary,
   testReceiverFrameSignatureSummary,
   testReceiverHeaderOnlyFrameCanLock,
+  testReceiverLuma1CalFrameTreatedAsSuccess,
   testReceiverAnchorDiagnosticsQuietByDefault,
   testStallCounterTicksOnDuplicateFrames
 } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
@@ -119,6 +120,8 @@ import {
   testLuma1LegacyNoGuardDecode,
   testLuma1OffsetLayoutSamplesStripsWithPhase,
   testLuma1FailedDecodeAttachesDebug,
+  testLuma1CalibrationPayloadDetection,
+  testLuma1SweepBudgetAndDebugGate,
   testLuma1CalibrationFrameAnalysis,
   testLuma1CalibrationSharpenFit,
   testLuma1SharpenCorrectionRoundtrip,
@@ -245,6 +248,8 @@ window.testLuma1BlurredPayloadBandDecode = testLuma1BlurredPayloadBandDecode
 window.testLuma1LegacyNoGuardDecode = testLuma1LegacyNoGuardDecode
 window.testLuma1OffsetLayoutSamplesStripsWithPhase = testLuma1OffsetLayoutSamplesStripsWithPhase
 window.testLuma1FailedDecodeAttachesDebug = testLuma1FailedDecodeAttachesDebug
+window.testLuma1CalibrationPayloadDetection = testLuma1CalibrationPayloadDetection
+window.testLuma1SweepBudgetAndDebugGate = testLuma1SweepBudgetAndDebugGate
 window.testLuma1CalibrationFrameAnalysis = testLuma1CalibrationFrameAnalysis
 window.testLuma1CalibrationSharpenFit = testLuma1CalibrationSharpenFit
 window.testLuma1SharpenCorrectionRoundtrip = testLuma1SharpenCorrectionRoundtrip
@@ -275,6 +280,7 @@ window.testLockedFastPerfBreakdownSummary = testLockedFastPerfBreakdownSummary
 window.testReceiverFrameUseSummary = testReceiverFrameUseSummary
 window.testReceiverFrameSignatureSummary = testReceiverFrameSignatureSummary
 window.testReceiverHeaderOnlyFrameCanLock = testReceiverHeaderOnlyFrameCanLock
+window.testReceiverLuma1CalFrameTreatedAsSuccess = testReceiverLuma1CalFrameTreatedAsSuccess
 window.testReceiverAnchorDiagnosticsQuietByDefault = testReceiverAnchorDiagnosticsQuietByDefault
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
 window.testBinary3RecoveredLayoutKeepsLock = testBinary3RecoveredLayoutKeepsLock
@@ -513,6 +519,8 @@ async function runAllTests() {
     hdmiLuma1LegacyNoGuardDecode: testLuma1LegacyNoGuardDecode(),
     hdmiLuma1OffsetLayoutStripPhase: testLuma1OffsetLayoutSamplesStripsWithPhase(),
     hdmiLuma1FailedDecodeDebug: testLuma1FailedDecodeAttachesDebug(),
+    hdmiLuma1CalibrationPayloadDetection: testLuma1CalibrationPayloadDetection(),
+    hdmiLuma1SweepBudgetAndDebugGate: testLuma1SweepBudgetAndDebugGate(),
     hdmiLuma1CalibrationAnalysis: testLuma1CalibrationFrameAnalysis(),
     hdmiLuma1CalibrationSharpenFit: testLuma1CalibrationSharpenFit(),
     hdmiLuma1SharpenCorrectionRoundtrip: testLuma1SharpenCorrectionRoundtrip(),
@@ -543,6 +551,7 @@ async function runAllTests() {
     receiverFrameUseSummary: testReceiverFrameUseSummary(),
     receiverFrameSignatureSummary: testReceiverFrameSignatureSummary(),
     receiverHeaderOnlyFrameCanLock: testReceiverHeaderOnlyFrameCanLock(),
+    receiverLuma1CalFrameSuccess: testReceiverLuma1CalFrameTreatedAsSuccess(),
     receiverAnchorDiagnosticsQuietDefault: testReceiverAnchorDiagnosticsQuietByDefault(),
     stallCounterDuplicateFrames: await testStallCounterTicksOnDuplicateFrames(),
     binary3RecoveredLayoutKeepsLock: testBinary3RecoveredLayoutKeepsLock(),
