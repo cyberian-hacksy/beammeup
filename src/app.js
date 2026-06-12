@@ -89,6 +89,7 @@ import {
   testReceiverHeaderOnlyFrameCanLock,
   testReceiverLuma1CalFrameTreatedAsSuccess,
   testReceiverWasmCaptureRoundtrip,
+  testReadWorkerDecodesSyntheticFrame,
   testReceiverAnchorDiagnosticsQuietByDefault,
   testStallCounterTicksOnDuplicateFrames
 } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
@@ -286,6 +287,7 @@ window.testReceiverFrameSignatureSummary = testReceiverFrameSignatureSummary
 window.testReceiverHeaderOnlyFrameCanLock = testReceiverHeaderOnlyFrameCanLock
 window.testReceiverLuma1CalFrameTreatedAsSuccess = testReceiverLuma1CalFrameTreatedAsSuccess
 window.testReceiverWasmCaptureRoundtrip = testReceiverWasmCaptureRoundtrip
+window.testReadWorkerDecodesSyntheticFrame = testReadWorkerDecodesSyntheticFrame
 window.testReceiverAnchorDiagnosticsQuietByDefault = testReceiverAnchorDiagnosticsQuietByDefault
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
 window.testBinary3RecoveredLayoutKeepsLock = testBinary3RecoveredLayoutKeepsLock
@@ -642,6 +644,7 @@ async function runAllTests() {
     wasmVsJsDetectAnchors: await testWasmVsJsDetectAnchorsEquivalent(),
     wasmVsJsLuma1Read: await testWasmVsJsLuma1ReadEquivalent(),
     receiverWasmCaptureRoundtrip: await testReceiverWasmCaptureRoundtrip(),
+    readWorkerSyntheticDecode: await testReadWorkerDecodesSyntheticFrame(),
     wasmVsJsDecodeDataRegion: await testWasmVsJsDecodeDataRegionEquivalent(),
     labBinary4Geometry: testBuildCardBinary4Geometry(),
     labCardSelfDecode: testCardSelfDecode(),

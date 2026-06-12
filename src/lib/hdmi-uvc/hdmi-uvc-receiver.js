@@ -25,6 +25,7 @@ import {
   getClassifierPerfAccumulator
 } from './hdmi-uvc-frame.js'
 import ReceiverWorker from './hdmi-uvc-receiver-worker.js?worker&inline'
+import ReadWorker from './hdmi-uvc-read-worker.js?worker&inline'
 import {
   detectCaptureCapabilities,
   chooseCaptureMethod,
@@ -1736,7 +1737,7 @@ function noteReceiverFramePerf(frameStartMs, captureMethod, captureMs, anchorMs,
     `${hotSummary} ` +
     `acceptCalls=${avgAcceptCalls.toFixed(2)}/frame pkts=${avgAcceptedPackets.toFixed(2)}/frame ${packetYieldSummary} ` +
     `${recoverySummary} ${lockedFastSummary} ${lockedFastStageSummary} ${frameUseSummary} ${frameSignatureSummary} method=${perf.lastCaptureMethod || 'n/a'} ` +
-    `${telemetrySummary}`
+    `${telemetrySummary}${getReadPoolSummary()}`
   )
 
   clearReceiverPerfSamples(perf)
@@ -2718,6 +2719,281 @@ function noteWasmCaptureFailure(err) {
   }
 }
 
+// --- Parallel read pool -----------------------------------------------------
+// The locked Luma4 payload read costs ~20ms+ on slower machines — far past
+// the ~16.7ms/frame budget of a 60fps stream — so a single thread caps the
+// decode rate around half the sent frames and the fountain tail pays for the
+// rest. The pool moves that read off the main thread: capture copies the
+// locked ROI into a recycled transferable buffer, an idle read worker runs
+// the kernel pass and packet probe, and the packets come back to the normal
+// main-thread acceptPackets (ingest is cheap there). Frames are independent
+// until ingest and fountain symbols are order-independent, so out-of-order
+// results are fine. The pool only handles the happy path: any read failure
+// yields frames back to the synchronous path so the existing miss/recovery/
+// invalidation logic runs unchanged. LUMA_1 only; ?read-pool=0 disables;
+// ?read-workers=N sizes it (default 2, max 4).
+const READ_POOL_URL_DISABLED = typeof location !== 'undefined' &&
+  /[?&]read-pool=0/.test(location.search)
+const READ_POOL_SIZE = (() => {
+  if (typeof location === 'undefined') return 2
+  const m = location.search.match(/[?&]read-workers=(\d)/)
+  return m ? Math.max(1, Math.min(4, Number.parseInt(m[1], 10) || 2)) : 2
+})()
+const READ_POOL_DISABLE_AFTER_FAILS = 10
+
+let readPool = null
+
+function initReadPool() {
+  if (readPool) return readPool
+  const pool = {
+    workers: [],
+    buffers: [],
+    bufferBytes: 0,
+    configVersion: 0,
+    cfgKey: '',
+    yieldToSync: false,
+    consecutiveFailures: 0,
+    disabled: false,
+    seq: 0,
+    stats: { dispatched: 0, results: 0, failed: 0, skippedBusy: 0, readMsTotal: 0 }
+  }
+  try {
+    for (let i = 0; i < READ_POOL_SIZE; i++) {
+      const worker = new ReadWorker()
+      const slot = { worker, busy: false, ready: false }
+      worker.onmessage = (event) => onReadPoolMessage(slot, event.data)
+      worker.onerror = (event) => {
+        debugLog(`[HDMI-RX] read worker error: ${event.message || 'unknown'} - pool disabled, sync path takes over`)
+        disableReadPool()
+      }
+      try {
+        const wasmUrl = new URL('hdmi-uvc/hdmi_uvc.wasm', document.baseURI).href
+        worker.postMessage({ type: 'configureWasm', url: wasmUrl })
+      } catch (_) { /* worker falls back to JS kernels */ }
+      pool.workers.push(slot)
+    }
+    debugLog(`[HDMI-RX] read pool ready: ${READ_POOL_SIZE} worker(s)`)
+  } catch (err) {
+    debugLog(`[HDMI-RX] read pool construction failed: ${err?.message || err} - sync path only`)
+    pool.disabled = true
+  }
+  readPool = pool
+  return pool
+}
+
+function disableReadPool() {
+  if (!readPool) return
+  readPool.disabled = true
+  for (const slot of readPool.workers) {
+    try { slot.worker.terminate() } catch (_) { /* ignore */ }
+  }
+  readPool.workers = []
+  readPool.buffers = []
+}
+
+function resetReadPoolForNewTransfer() {
+  if (!readPool) return
+  readPool.yieldToSync = false
+  readPool.consecutiveFailures = 0
+  readPool.cfgKey = '' // force a config re-push for the next lock
+  readPool.stats = { dispatched: 0, results: 0, failed: 0, skippedBusy: 0, readMsTotal: 0 }
+}
+
+// Push layout/lambda/packet-size config to every worker when any of them
+// change. The layout is sent WITHOUT its precomputed offsets (~15MB at
+// 1080p); workers precompute their own copy once per config version.
+function ensureReadPoolConfig(region) {
+  const layout = state.lockedDenseBinaryLayout
+  const expectedPacketSize = getExpectedPacketSize()
+  const payloadLength = expectedPacketSize * state.expectedPacketCount
+  const lambda = getLuma1SharpenCorrection()
+  if (!region) return false
+  const cfgKey = `${layout.blocksX}x${layout.blocksY}:${layout.xOff},${layout.yOff},${layout.payloadPhaseX},${layout.payloadEdgeGuardCells}` +
+    `:${region.x},${region.y},${region.w},${region.h}:${expectedPacketSize}x${state.expectedPacketCount}:${lambda ?? 'off'}`
+  if (cfgKey === readPool.cfgKey) return true
+  const strippedLayout = { ...layout }
+  delete strippedLayout.precomputedOffsets
+  delete strippedLayout.precomputedRegion
+  readPool.configVersion++
+  readPool.cfgKey = cfgKey
+  const cfg = {
+    configVersion: readPool.configVersion,
+    layout: strippedLayout,
+    region: { x: region.x, y: region.y, w: region.w, h: region.h },
+    payloadLength,
+    expectedPacketSize,
+    sharpenLambda: lambda
+  }
+  for (const slot of readPool.workers) {
+    slot.worker.postMessage({ type: 'config', cfg })
+  }
+  return true
+}
+
+function readPoolFrameEligible(lockedCapture) {
+  if (READ_POOL_URL_DISABLED || !hasVideoFrame) return false
+  if (state.detectedMode !== HDMI_MODE.LUMA_1) return false
+  if (!state.lockedDenseBinaryLayout || state.expectedPacketCount < 1) return false
+  if (!getExpectedPacketSize()) return false
+  const sr = lockedCapture?.sourceRect
+  if (!sr) return false
+  if (sr.w !== lockedCapture.width || sr.h !== lockedCapture.height) return false
+  if ((sr.x & 1) || (sr.y & 1) || (sr.w & 1) || (sr.h & 1)) return false
+  const pool = initReadPool()
+  if (pool.disabled) return false
+  if (pool.yieldToSync) {
+    // The sync path took over after a failure; hand frames back to the pool
+    // once it has re-proven the lock (a sync accept resets decodeFailCount).
+    if (state.decodeFailCount === 0 && state.lockedDenseBinaryLayout) {
+      pool.yieldToSync = false
+    } else {
+      return false
+    }
+  }
+  // Workers precompute their offsets against the CURRENT decode region — the
+  // ROI-relative one matching the buffers we send them — not the lock-time
+  // region (those differ once ROI capture engages; the sync path handles the
+  // same delta via offset translation).
+  return ensureReadPoolConfig(lockedCapture.region)
+}
+
+function popPoolBuffer(byteLen) {
+  if (readPool.bufferBytes !== byteLen) {
+    // ROI size changed (relock) — drop the old pool, sizes no longer match.
+    readPool.buffers = []
+    readPool.bufferBytes = byteLen
+  }
+  return readPool.buffers.pop() || new ArrayBuffer(byteLen)
+}
+
+function recyclePoolBuffer(buffer) {
+  if (!buffer || buffer.byteLength === 0) return // transferred-away or detached
+  if (buffer.byteLength !== readPool.bufferBytes) return
+  if (readPool.buffers.length < READ_POOL_SIZE + 2) readPool.buffers.push(buffer)
+}
+
+function pickIdleReadWorker() {
+  for (const slot of readPool.workers) {
+    if (slot.ready && !slot.busy) return slot
+  }
+  return null
+}
+
+// Capture the locked ROI into a pool buffer and hand it to `slot`.
+async function capturePoolFrameAndDispatch(source, lockedCapture, timestampUs, slot) {
+  const sr = lockedCapture.sourceRect
+  const byteLen = sr.w * sr.h * 4
+  const buffer = popPoolBuffer(byteLen)
+  try {
+    const view = new Uint8ClampedArray(buffer, 0, byteLen)
+    const frame = new VideoFrame(source, { timestamp: timestampUs || 0 })
+    try {
+      await frame.copyTo(view, {
+        rect: { x: sr.x, y: sr.y, width: sr.w, height: sr.h },
+        format: 'RGBA'
+      })
+    } finally {
+      frame.close()
+    }
+    slot.busy = true
+    readPool.seq++
+    slot.worker.postMessage({
+      type: 'read',
+      seq: readPool.seq,
+      configVersion: readPool.configVersion,
+      buffer,
+      width: sr.w,
+      height: sr.h
+    }, [buffer])
+    readPool.stats.dispatched++
+    return true
+  } catch (err) {
+    recyclePoolBuffer(buffer)
+    noteWasmCaptureFailure(err)
+    return false
+  }
+}
+
+async function onReadPoolMessage(slot, msg) {
+  if (!msg || typeof msg !== 'object' || !readPool) return
+  if (msg.type === 'ready') {
+    slot.ready = true
+    return
+  }
+  if (msg.type === 'error') {
+    debugLog(`[HDMI-RX] read worker reported: ${msg.message}`)
+    return
+  }
+  if (msg.type !== 'result') return
+
+  slot.busy = false
+  recyclePoolBuffer(msg.frameBuffer)
+  if (msg.configVersion !== readPool.configVersion) return // stale lock; not a failure
+
+  if (!msg.ok || !msg.payloadBuffer || !msg.records || msg.records.length === 0) {
+    readPool.stats.failed++
+    readPool.consecutiveFailures++
+    readPool.yieldToSync = true // let the sync path run its recovery/invalidations
+    if (readPool.consecutiveFailures >= READ_POOL_DISABLE_AFTER_FAILS) {
+      debugLog(`[HDMI-RX] read pool disabled after ${READ_POOL_DISABLE_AFTER_FAILS} consecutive failures`)
+      disableReadPool()
+    }
+    return
+  }
+
+  readPool.stats.results++
+  readPool.stats.readMsTotal += msg.readMs || 0
+  const expectedPacketSize = getExpectedPacketSize()
+  const payload = new Uint8Array(msg.payloadBuffer)
+  const records = msg.records
+  const packets = []
+  const parsedPackets = []
+  for (let i = 0; i * 6 < records.length; i++) {
+    const base = i * 6
+    const offset = records[base] * expectedPacketSize
+    if (offset < 0 || offset + expectedPacketSize > payload.length) continue
+    const packet = payload.subarray(offset, offset + expectedPacketSize)
+    const versionAndFlags = records[base + 4]
+    packets.push(packet)
+    parsedPackets.push({
+      fileId: records[base + 1],
+      k: records[base + 2],
+      symbolId: records[base + 3],
+      blockSize: expectedPacketSize - PACKET_HEADER_SIZE,
+      isMetadata: (versionAndFlags & 1) === 1,
+      mode: (versionAndFlags >> 1) & 0x03,
+      payloadCrc: records[base + 5],
+      payload: packet.subarray(PACKET_HEADER_SIZE)
+    })
+  }
+
+  const frameAccepted = await acceptPackets(
+    packets,
+    state.frameCount,
+    true,
+    state.expectedPacketCount,
+    null,
+    { salvaged: msg.salvaged || 0, parsedPackets }
+  )
+  if (frameAccepted) {
+    readPool.consecutiveFailures = 0
+    readPool.yieldToSync = false
+    state.lockedLayoutFastPathMisses = 0
+  } else {
+    readPool.stats.failed++
+    readPool.consecutiveFailures++
+    readPool.yieldToSync = true
+  }
+}
+
+function getReadPoolSummary() {
+  if (!readPool || readPool.disabled) return ''
+  const s = readPool.stats
+  if (!s.dispatched) return ''
+  const avgRead = s.results > 0 ? (s.readMsTotal / s.results).toFixed(1) : 'n/a'
+  return ` pool=w${readPool.workers.length} d${s.dispatched} r${s.results} f${s.failed} skip${s.skippedBusy} read=${avgRead}ms`
+}
+
 export function getLastCapturedFrame() {
   // WASM-backed frames alias the pinned capture region, which the next frame
   // overwrites (and memory growth can detach the view) — hand diagnostics a
@@ -3144,6 +3420,39 @@ async function processFrame(now, metadata) {
       captureMethod = 'ImageCapture'
     } catch (e) {
       // Fall through to other methods
+    }
+  }
+
+  // Parallel read pool: capture the locked ROI into a transferable buffer,
+  // hand it to an idle read worker, and skip ALL main-thread decode for this
+  // frame — packets return asynchronously between frames and feed the same
+  // acceptPackets path. Falls through to the normal paths on any failure.
+  if (!imageData && lockedCapture && metadata && readPoolFrameEligible(lockedCapture)) {
+    const slot = pickIdleReadWorker()
+    if (!slot) {
+      // Every worker busy: this frame would be dropped by the sync path
+      // anyway — skip it cheaply instead of blocking capture with a 20ms+
+      // synchronous decode.
+      readPool.stats.skippedBusy++
+      captureMs = performance.now() - captureStartMs
+      finalizeFramePerf()
+      if (state.isScanning) scheduleNextFrame()
+      return
+    }
+    const dispatched = await capturePoolFrameAndDispatch(
+      video, lockedCapture, metadata.mediaTime * 1000000 || 0, slot
+    )
+    if (dispatched) {
+      state.frameCount++
+      captureMs = performance.now() - captureStartMs
+      captureMethod = 'wasm ROI pool'
+      if (state.activeCaptureMethod !== 'wasm ROI pool') {
+        state.activeCaptureMethod = 'wasm ROI pool'
+        debugLog('Capture path: wasm ROI pool')
+      }
+      finalizeFramePerf()
+      if (state.isScanning) scheduleNextFrame()
+      return
     }
   }
 
@@ -3944,6 +4253,7 @@ function resetReceiver() {
   state.luma1CalPassCount = 0
   state.luma1CalHoldUntilMs = 0
   state.luma1CalLastLogMs = 0
+  resetReadPoolForNewTransfer()
   state.expectedPacketCount = 0
   state.progressSamples = []
   state.lastReceivingUiUpdateMs = 0
@@ -4239,6 +4549,123 @@ export function testReceiverFrameSignatureSummary() {
   } finally {
     state.rxPerf = oldPerf
     state.lastReceiverFrameSignature = oldSignature
+  }
+}
+
+// End-to-end read-pool worker test: a real ReadWorker instance must decode a
+// synthetic sharpened Luma4 frame whose payload is genuine packets, returning
+// records that rebuild into the exact packets the sync path would produce.
+// Exercises the full protocol: config (offsets precomputed worker-side),
+// transferable frame buffer in, payload + records + buffer back.
+export async function testReadWorkerDecodesSyntheticFrame() {
+  const frameLib = await import('./hdmi-uvc-frame.js')
+  const { createPacket } = await import('../packet.js')
+  const priorLevels = frameLib.getLuma1SenderLevels()
+  let worker = null
+  try {
+    const width = 640
+    const height = 407
+    const lambda = 0.45
+    frameLib.setLuma1SenderMidLevels(85, 170)
+    const cap = frameLib.getPayloadCapacity(width, height, HDMI_MODE.LUMA_1)
+    // Fill the frame payload with real packet slots: 10 packets that consume
+    // the exact capacity.
+    const slots = 10
+    const packetSize = Math.floor(cap / slots)
+    const blockSize = packetSize - PACKET_HEADER_SIZE
+    const payload = new Uint8Array(cap)
+    const sentPackets = []
+    for (let s = 0; s < slots; s++) {
+      const body = new Uint8Array(blockSize)
+      for (let i = 0; i < blockSize; i++) body[i] = (i * 31 + s * 7 + 3) & 0xff
+      const pkt = createPacket(0xBEEF0001, 1200, s + 1, body, false, blockSize, 0)
+      payload.set(pkt, s * packetSize)
+      sentPackets.push(pkt)
+    }
+    const frame = frameLib.buildFrame(payload.subarray(0, slots * packetSize), HDMI_MODE.LUMA_1, width, height, 30, 91)
+    const sharpened = new Uint8ClampedArray(frame)
+    for (let y = 0; y < height; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const i = (y * width + x) * 4
+        sharpened[i] = sharpened[i + 1] = sharpened[i + 2] =
+          Math.round(frame[i] + lambda * (frame[i] - (frame[i - 4] + frame[i + 4]) / 2))
+      }
+    }
+    const anchors = detectAnchors(sharpened, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    frameLib.setLuma1SharpenCorrection(lambda)
+    const blind = region ? decodeDataRegion(sharpened, width, region) : null
+    frameLib.setLuma1SharpenCorrection(null)
+    if (!blind?.crcValid) {
+      console.log('Read worker synthetic decode test: FAIL (setup decode)', { crc: blind?.crcValid })
+      return false
+    }
+    const strippedLayout = { ...blind._diag }
+    delete strippedLayout.precomputedOffsets
+    delete strippedLayout.precomputedRegion
+    delete strippedLayout.lumaDebug
+
+    worker = new ReadWorker()
+    const waitFor = (predicate, timeoutMs = 15000) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('worker timeout')), timeoutMs)
+      const prev = worker.onmessage
+      worker.onmessage = (event) => {
+        if (predicate(event.data)) {
+          clearTimeout(timer)
+          worker.onmessage = prev
+          resolve(event.data)
+        }
+      }
+    })
+    const ready = waitFor((m) => m?.type === 'ready')
+    await ready
+    try {
+      worker.postMessage({ type: 'configureWasm', url: new URL('hdmi-uvc/hdmi_uvc.wasm', document.baseURI).href })
+    } catch (_) { /* JS fallback in worker still valid */ }
+    const configured = waitFor((m) => m?.type === 'configured')
+    worker.postMessage({
+      type: 'config',
+      cfg: {
+        configVersion: 1,
+        layout: strippedLayout,
+        region: { x: region.x, y: region.y, w: region.w, h: region.h },
+        payloadLength: slots * packetSize,
+        expectedPacketSize: packetSize,
+        sharpenLambda: lambda
+      }
+    })
+    await configured
+    const resultPromise = waitFor((m) => m?.type === 'result')
+    const frameCopy = sharpened.slice()
+    worker.postMessage({ type: 'read', seq: 1, configVersion: 1, buffer: frameCopy.buffer, width, height }, [frameCopy.buffer])
+    const result = await resultPromise
+
+    if (!result.ok || !result.payloadBuffer || result.records.length !== slots * 6) {
+      console.log('Read worker synthetic decode test: FAIL (result)', { ok: result.ok, records: result.records?.length, slotCount: result.slotCount, error: result.error })
+      return false
+    }
+    const gotPayload = new Uint8Array(result.payloadBuffer)
+    let packetsExact = true
+    for (let s = 0; s < slots; s++) {
+      const slotIdx = result.records[s * 6]
+      const symbolId = result.records[s * 6 + 3]
+      const got = gotPayload.subarray(slotIdx * packetSize, (slotIdx + 1) * packetSize)
+      const want = sentPackets[slotIdx]
+      if (symbolId !== slotIdx + 1 || got.length !== want.length || !got.every((v, i) => v === want[i])) {
+        packetsExact = false
+        break
+      }
+    }
+    const pass = packetsExact && result.slotCount === slots && result.frameBuffer?.byteLength === sharpened.length
+    console.log('Read worker synthetic decode test:', pass ? 'PASS' : 'FAIL', { packetsExact, slotCount: result.slotCount, readMs: Math.round(result.readMs * 10) / 10 })
+    return pass
+  } catch (err) {
+    console.log('Read worker synthetic decode test: FAIL', err?.message || err)
+    return false
+  } finally {
+    frameLib.setLuma1SharpenCorrection(null)
+    frameLib.setLuma1SenderMidLevels(priorLevels[1], priorLevels[2])
+    if (worker) { try { worker.terminate() } catch (_) { /* ignore */ } }
   }
 }
 
