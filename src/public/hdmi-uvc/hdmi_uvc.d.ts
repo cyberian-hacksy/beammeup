@@ -61,6 +61,23 @@ declare namespace __AdaptedExports {
    */
   export function packBinary1Payload(pixelsPtr: number, width: number, height: number, rowStartsPtr: number, thresholdsPtr: number, payloadCellsX: number, payloadCellsY: number, payloadLength: number, outPtr: number): number;
   /**
+   * wasm/hdmi-uvc/src/index/readLuma1Payload
+   * @param pixelsPtr `u32`
+   * @param width `u32`
+   * @param height `u32`
+   * @param rowStartsPtr `u32`
+   * @param rowParamsPtr `u32`
+   * @param payloadCellsX `u32`
+   * @param payloadCellsY `u32`
+   * @param payloadLength `u32`
+   * @param pixelStep `u32`
+   * @param lambda `f64`
+   * @param workPtr `u32`
+   * @param outPtr `u32`
+   * @returns `u32`
+   */
+  export function readLuma1Payload(pixelsPtr: number, width: number, height: number, rowStartsPtr: number, rowParamsPtr: number, payloadCellsX: number, payloadCellsY: number, payloadLength: number, pixelStep: number, lambda: number, workPtr: number, outPtr: number): number;
+  /**
    * wasm/hdmi-uvc/src/index/probeExpectedPackets
    * @param framePtr `u32`
    * @param frameLength `u32`

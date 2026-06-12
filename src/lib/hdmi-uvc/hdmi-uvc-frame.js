@@ -14,6 +14,7 @@ import {
   crc32WithFallback as crc32,
   scanBrightRunsWithFallback,
   isHdmiUvcWasmActive,
+  wasmReadLuma1Payload,
   wasmClassifyCompat4Cells,
   wasmClassifyLuma2Cells,
   wasmPackBinary1Payload
@@ -1929,8 +1930,69 @@ function readDenseLuma1PayloadLockedNativeGrid({
   fallbackBlack,
   fallbackWhite,
   stripRows,
-  nativeStep
+  nativeStep,
+  stats = null
 }) {
+  if (isHdmiUvcWasmActive()) {
+    try {
+      // Same per-row prep as the JS path below (strips sampled from the
+      // original frame), then the gather/deconvolve/classify/pack hot loop
+      // runs in one WASM pass.
+      const rowStarts = new Int32Array(payloadCellsY * 2)
+      const rowParams = new Float64Array(payloadCellsY * 5)
+      let lastStripIdx = -1
+      let levels = getDefaultLuma1Levels(fallbackBlack, fallbackWhite)
+      for (let cy = 0; cy < payloadCellsY; cy++) {
+        const stripIdx = Math.min(
+          stripRows - 1,
+          Math.max(0, Math.floor((cy * payloadStepY) / headerStepY))
+        )
+        if (stripIdx !== lastStripIdx) {
+          const refY = payloadStartY + Math.round(stripIdx * headerStepY)
+          levels = sampleLuma1ReferenceLevels(
+            imageData,
+            width,
+            height,
+            rx,
+            rightStripX,
+            refY,
+            headerBs,
+            fallbackBlack,
+            fallbackWhite
+          )
+          lastStripIdx = stripIdx
+        }
+        const rowOffsetIdx = cy * payloadCellsX * 2
+        rowStarts[cy * 2] = offsets[rowOffsetIdx] + offsetTranslateX
+        rowStarts[cy * 2 + 1] = offsets[rowOffsetIdx + 1] + offsetTranslateY
+        const p = cy * 5
+        rowParams[p] = (levels[0] + levels[1]) / 2
+        rowParams[p + 1] = (levels[1] + levels[2]) / 2
+        rowParams[p + 2] = (levels[2] + levels[3]) / 2
+        rowParams[p + 3] = levels[0] + 6
+        rowParams[p + 4] = levels[3] - 6
+      }
+      const wasmPayload = wasmReadLuma1Payload(
+        imageData,
+        width,
+        height,
+        rowStarts,
+        rowParams,
+        payloadCellsX,
+        payloadCellsY,
+        payloadLength,
+        Math.max(1, Math.round(nativeStep || 1)),
+        luma1SharpenLambda || 0
+      )
+      if (wasmPayload) {
+        if (stats) stats.reader = 'luma1-wasm'
+        return wasmPayload
+      }
+    } catch (_) {
+      // Fall back to the JS reader if the WASM kernel is unavailable or rejects geometry.
+    }
+  }
+
   const payload = new Uint8Array(payloadLength)
   const pixelStep = Math.max(1, Math.round(nativeStep || 1))
   const byteStep = pixelStep * 4
@@ -2229,7 +2291,8 @@ function readDenseBinaryPayloadLocked(imageData, width, region, layout, payloadL
           fallbackBlack,
           fallbackWhite,
           stripRows,
-          nativeStep: payloadStepX
+          nativeStep: payloadStepX,
+          stats: options.stats || null
         })
       : frameMode === HDMI_MODE.BINARY_1
       ? readDenseBinary1PayloadLockedNativeGrid({
@@ -5516,7 +5579,7 @@ export function testLuma1LockedPayloadReaderMatchesGeneric() {
       locked?.length === payload.length &&
       generic.every((v, i) => v === payload[i]) &&
       locked.every((v, i) => v === payload[i]) &&
-      stats.reader === 'luma1-bytepack'
+      (stats.reader === 'luma1-bytepack' || stats.reader === 'luma1-wasm')
     console.log('LUMA_1 locked payload reader test:', pass ? 'PASS' : 'FAIL', { reader: stats.reader })
     return pass
   } catch (err) {

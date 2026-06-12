@@ -415,6 +415,46 @@ export function wasmPackBinary1Payload(pixels, width, height, rowStarts, thresho
   return new Uint8Array(wasmModule.memory.buffer.slice(outPtr, outPtr + payloadLength))
 }
 
+// WASM wrapper for readLuma1Payload — the locked Luma4 native-grid reader
+// (gather + peaking deconvolution + 4-level classify + 2-bit pack) in one
+// linear-memory pass. rowStarts: Int32Array pairs per row; rowParams:
+// Float64Array x5 per row (t01, t12, t23, railLo, railHi). lambda 0 = no
+// deconvolution. Returns the payload bytes or null (bad geometry / kernel
+// missing), letting the caller fall back to the JS reader.
+export function wasmReadLuma1Payload(pixels, width, height, rowStarts, rowParams, payloadCellsX, payloadCellsY, payloadLength, pixelStep, lambda) {
+  if (!wasmModule || forceJsFallbackForTesting) throw new Error('hdmi-uvc wasm: not active')
+  if (typeof wasmModule.readLuma1Payload !== 'function') return null // stale artifact predating the kernel
+  const align8 = (v) => (v + 7) & ~7
+  const rowStartBytes = rowStarts.byteLength
+  const rowParamBytes = rowParams.byteLength
+  const workBytes = payloadCellsX * 12 // f32 row buffer + Thomas c'/d'
+  const total = align8(pixels.length) + rowStartBytes + align8(rowParamBytes) + workBytes + payloadLength + 16
+  ensureMemoryFor(total)
+  wasmBytesView.set(pixels, wasmScratchBase)
+  const rowStartsPtr = align8(wasmScratchBase + pixels.length)
+  const rowParamsPtr = align8(rowStartsPtr + rowStartBytes)
+  const workPtr = rowParamsPtr + rowParamBytes
+  const outPtr = workPtr + workBytes
+  new Uint8Array(wasmModule.memory.buffer).set(new Uint8Array(rowStarts.buffer, rowStarts.byteOffset, rowStartBytes), rowStartsPtr)
+  new Uint8Array(wasmModule.memory.buffer).set(new Uint8Array(rowParams.buffer, rowParams.byteOffset, rowParamBytes), rowParamsPtr)
+  const written = wasmModule.readLuma1Payload(
+    wasmScratchBase,
+    width >>> 0,
+    height >>> 0,
+    rowStartsPtr,
+    rowParamsPtr,
+    payloadCellsX >>> 0,
+    payloadCellsY >>> 0,
+    payloadLength >>> 0,
+    pixelStep >>> 0,
+    lambda,
+    workPtr,
+    outPtr
+  ) >>> 0
+  if (written !== payloadLength) return null
+  return new Uint8Array(wasmModule.memory.buffer.slice(outPtr, outPtr + payloadLength))
+}
+
 export function wasmProbeExpectedPackets(framePayload, expectedPacketSize, options = {}) {
   if (!wasmModule || forceJsFallbackForTesting) throw new Error('hdmi-uvc wasm: not active')
   if (!framePayload || !expectedPacketSize || expectedPacketSize <= PACKET_HEADER_SIZE) return null
@@ -880,6 +920,98 @@ export async function testWasmVsJsDecodeDataRegionEquivalent() {
   }
   console.log('WASM vs JS decodeDataRegion test: PASS')
   return true
+}
+
+// Test: the locked LUMA_1 reader produces byte-identical payloads through the
+// WASM kernel and the JS reference, with the peaking deconvolution both armed
+// and disarmed — on a frame distorted with the live-measured horizontal
+// sharpening, so the rail-pinned Thomas solve is actually exercised.
+export async function testWasmVsJsLuma1ReadEquivalent() {
+  try {
+    await loadHdmiUvcWasm()
+  } catch (err) {
+    console.log('WASM vs JS Luma4 read test: FAIL (load)', err?.message || err)
+    return false
+  }
+  const {
+    buildFrame, detectAnchors, dataRegionFromAnchors, decodeDataRegion,
+    precomputeDenseBinarySampleOffsets, readPayloadWithLayout, getPayloadCapacity,
+    setLuma1SharpenCorrection, setLuma1SenderMidLevels, getLuma1SenderLevels
+  } = await import('./hdmi-uvc-frame.js')
+  const { HDMI_MODE } = await import('./hdmi-uvc-constants.js')
+
+  const priorLevels = getLuma1SenderLevels()
+  try {
+    const width = 640
+    const height = 407
+    const lambda = 0.45
+    setLuma1SenderMidLevels(85, 170) // rail-pinning-safe regime (see sharpen roundtrip test)
+    const cap = getPayloadCapacity(width, height, HDMI_MODE.LUMA_1)
+    const payload = new Uint8Array(cap)
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 73 + 41) & 0xff
+    const frame = buildFrame(payload, HDMI_MODE.LUMA_1, width, height, 30, 83)
+    const sharpened = new Uint8ClampedArray(frame)
+    for (let y = 0; y < height; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const i = (y * width + x) * 4
+        sharpened[i] = sharpened[i + 1] = sharpened[i + 2] =
+          Math.round(frame[i] + lambda * (frame[i] - (frame[i - 4] + frame[i + 4]) / 2))
+      }
+    }
+    const anchors = detectAnchors(sharpened, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    setLuma1SharpenCorrection(lambda)
+    const blind = region ? decodeDataRegion(sharpened, width, region) : null
+    if (!blind?.crcValid) {
+      console.log('WASM vs JS Luma4 read test: FAIL (initial decode)', { crc: blind?.crcValid })
+      return false
+    }
+    const precomputed = precomputeDenseBinarySampleOffsets(blind._diag, region)
+    const layout = { ...blind._diag, precomputedOffsets: precomputed.offsets, precomputedRegion: precomputed.region }
+
+    const cases = [
+      { label: 'armed', lambda, source: sharpened },
+      { label: 'off', lambda: null, source: frame }
+    ]
+    for (const c of cases) {
+      setLuma1SharpenCorrection(c.lambda)
+      __setForceJsFallbackForTesting(false)
+      const wasmStats = {}
+      const viaWasm = readPayloadWithLayout(c.source, width, region, layout, payload.length, precomputed.offsets, { stats: wasmStats })
+      __setForceJsFallbackForTesting(true)
+      const jsStats = {}
+      const viaJs = readPayloadWithLayout(c.source, width, region, layout, payload.length, precomputed.offsets, { stats: jsStats })
+      __setForceJsFallbackForTesting(false)
+      if (wasmStats.reader !== 'luma1-wasm' || jsStats.reader !== 'luma1-bytepack') {
+        console.log('WASM vs JS Luma4 read test: FAIL (reader dispatch)', { case: c.label, wasm: wasmStats.reader, js: jsStats.reader })
+        return false
+      }
+      if (!viaWasm || !viaJs || viaWasm.length !== viaJs.length) {
+        console.log('WASM vs JS Luma4 read test: FAIL (length)', { case: c.label, wasm: viaWasm?.length, js: viaJs?.length })
+        return false
+      }
+      for (let k = 0; k < viaWasm.length; k++) {
+        if (viaWasm[k] !== viaJs[k]) {
+          console.log('WASM vs JS Luma4 read test: FAIL (payload byte)', { case: c.label, k, wasm: viaWasm[k], js: viaJs[k] })
+          return false
+        }
+      }
+      const exact = viaWasm.every((v, k) => v === payload[k])
+      if (!exact) {
+        console.log('WASM vs JS Luma4 read test: FAIL (not exact vs sender payload)', { case: c.label })
+        return false
+      }
+    }
+    console.log('WASM vs JS Luma4 read test: PASS')
+    return true
+  } catch (err) {
+    console.log('WASM vs JS Luma4 read test: FAIL', err?.message || err)
+    return false
+  } finally {
+    setLuma1SharpenCorrection(null)
+    setLuma1SenderMidLevels(priorLevels[1], priorLevels[2])
+    __setForceJsFallbackForTesting(false)
+  }
 }
 
 // Test: detectAnchors() output is bit-identical whether the bright-run scan

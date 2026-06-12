@@ -22,6 +22,10 @@ export async function instantiate(module, imports = {}) {
       // wasm/hdmi-uvc/src/index/packBinary1Payload(u32, u32, u32, u32, u32, u32, u32, u32, u32) => u32
       return exports.packBinary1Payload(pixelsPtr, width, height, rowStartsPtr, thresholdsPtr, payloadCellsX, payloadCellsY, payloadLength, outPtr) >>> 0;
     },
+    readLuma1Payload(pixelsPtr, width, height, rowStartsPtr, rowParamsPtr, payloadCellsX, payloadCellsY, payloadLength, pixelStep, lambda, workPtr, outPtr) {
+      // wasm/hdmi-uvc/src/index/readLuma1Payload(u32, u32, u32, u32, u32, u32, u32, u32, u32, f64, u32, u32) => u32
+      return exports.readLuma1Payload(pixelsPtr, width, height, rowStartsPtr, rowParamsPtr, payloadCellsX, payloadCellsY, payloadLength, pixelStep, lambda, workPtr, outPtr) >>> 0;
+    },
     probeExpectedPackets(framePtr, frameLength, packetSize, fileIdFilter, kFilter, filterFlags, outPtr, maxSlots) {
       // wasm/hdmi-uvc/src/index/probeExpectedPackets(u32, u32, u32, u32, u32, u32, u32, u32) => u32
       return exports.probeExpectedPackets(framePtr, frameLength, packetSize, fileIdFilter, kFilter, filterFlags, outPtr, maxSlots) >>> 0;

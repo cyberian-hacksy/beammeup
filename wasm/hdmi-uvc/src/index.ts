@@ -296,6 +296,234 @@ export function packBinary1Payload(
   return byteIdx
 }
 
+// Four-level Gray-coded classifier for a deconvolved (f32) sample. Thresholds
+// are the midpoints between adjacent reference levels; ties resolve to the
+// lower level (mirrors getLuma1ClassifyLut in hdmi-uvc-frame.js, which uses
+// `v <= t`). The Gray map [0,1,3,2] is exactly level ^ (level >> 1).
+// @inline
+function luma1SymbolFromValue(vi: f64, t01: f64, t12: f64, t23: f64): u32 {
+  const level: u32 = vi <= t01 ? 0 : vi <= t12 ? 1 : vi <= t23 ? 2 : 3
+  return level ^ (level >> 1)
+}
+
+// Clamp + round a post-solve f32 sample the way the JS reader does before its
+// LUT lookup: `v <= 0 ? 0 : v >= 255 ? 255 : (v + 0.5) | 0`.
+// @inline
+function luma1RoundSample(v: f64): f64 {
+  if (v <= 0) return 0
+  if (v >= 255) return 255
+  return <f64><i32>(v + 0.5)
+}
+
+// In-place segmented Thomas deconvolution of one payload row. Bit-for-bit
+// port of unsharpenLuma1Row in hdmi-uvc-frame.js: arithmetic in f64,
+// storage in f32 (the JS row buffer and solve scratch are Float32Arrays, so
+// every intermediate store rounds to f32 there too). Samples at the rails are
+// pinned (u = v) and split the row into independent segments; row ends use a
+// Neumann boundary; n=1 and n=2 segments take closed forms.
+function unsharpenLuma1RowWasm(
+  valsPtr: u32,
+  cPtr: u32,
+  dPtr: u32,
+  count: u32,
+  lambda: f64,
+  railLo: f64,
+  railHi: f64
+): void {
+  const sub: f64 = -lambda / 2
+  const diagMain: f64 = 1 + lambda
+  const diagEnd: f64 = 1 + lambda / 2
+  let segStart: u32 = 0
+  while (segStart < count) {
+    const v0: f64 = <f64>load<f32>(valsPtr + segStart * 4)
+    if (v0 <= railLo || v0 >= railHi) {
+      segStart++
+      continue
+    }
+    let segEnd: u32 = segStart
+    while (segEnd + 1 < count) {
+      const vn: f64 = <f64>load<f32>(valsPtr + (segEnd + 1) * 4)
+      if (vn > railLo && vn < railHi) segEnd++
+      else break
+    }
+    const n: u32 = segEnd - segStart + 1
+    const leftPinned: bool = segStart > 0
+    const rightPinned: bool = segEnd < count - 1
+
+    if (n === 1) {
+      let diag: f64 = diagMain
+      let rhs: f64 = <f64>load<f32>(valsPtr + segStart * 4)
+      if (leftPinned) rhs -= sub * <f64>load<f32>(valsPtr + (segStart - 1) * 4)
+      else diag += sub
+      if (rightPinned) rhs -= sub * <f64>load<f32>(valsPtr + (segEnd + 1) * 4)
+      else diag += sub
+      store<f32>(valsPtr + segStart * 4, <f32>(rhs / diag))
+      segStart = segEnd + 1
+      continue
+    }
+    if (n === 2) {
+      const dA: f64 = leftPinned ? diagMain : diagEnd
+      const dB: f64 = rightPinned ? diagMain : diagEnd
+      const rA: f64 = <f64>load<f32>(valsPtr + segStart * 4) -
+        (leftPinned ? sub * <f64>load<f32>(valsPtr + (segStart - 1) * 4) : 0)
+      const rB: f64 = <f64>load<f32>(valsPtr + segEnd * 4) -
+        (rightPinned ? sub * <f64>load<f32>(valsPtr + (segEnd + 1) * 4) : 0)
+      const inv: f64 = 1 / (dA * dB - sub * sub)
+      store<f32>(valsPtr + segStart * 4, <f32>((rA * dB - sub * rB) * inv))
+      store<f32>(valsPtr + segEnd * 4, <f32>((dA * rB - sub * rA) * inv))
+      segStart = segEnd + 1
+      continue
+    }
+
+    // Thomas forward sweep; c'/d' stored as f32 like the JS scratch.
+    const diag0: f64 = leftPinned ? diagMain : diagEnd
+    const rhs0: f64 = <f64>load<f32>(valsPtr + segStart * 4) -
+      (leftPinned ? sub * <f64>load<f32>(valsPtr + (segStart - 1) * 4) : 0)
+    store<f32>(cPtr, <f32>(sub / diag0))
+    store<f32>(dPtr, <f32>(rhs0 / diag0))
+    for (let i: u32 = 1; i < n; i++) {
+      const isLast: bool = i === n - 1
+      const diag: f64 = isLast ? (rightPinned ? diagMain : diagEnd) : diagMain
+      let rhs: f64 = <f64>load<f32>(valsPtr + (segStart + i) * 4)
+      if (isLast && rightPinned) rhs -= sub * <f64>load<f32>(valsPtr + (segEnd + 1) * 4)
+      const denom: f64 = diag - sub * <f64>load<f32>(cPtr + (i - 1) * 4)
+      store<f32>(cPtr + i * 4, <f32>((isLast ? 0 : sub) / denom))
+      store<f32>(dPtr + i * 4, <f32>((rhs - sub * <f64>load<f32>(dPtr + (i - 1) * 4)) / denom))
+    }
+    // Back substitution.
+    store<f32>(valsPtr + segEnd * 4, load<f32>(dPtr + (n - 1) * 4))
+    for (let i: i32 = <i32>n - 2; i >= 0; i--) {
+      const x: f64 = <f64>load<f32>(dPtr + <u32>i * 4) -
+        <f64>load<f32>(cPtr + <u32>i * 4) * <f64>load<f32>(valsPtr + (segStart + <u32>i + 1) * 4)
+      store<f32>(valsPtr + (segStart + <u32>i) * 4, <f32>x)
+    }
+    segStart = segEnd + 1
+  }
+}
+
+// Locked LUMA_1 (1x1 Luma4) payload reader: per row, gather the R channel,
+// optionally deconvolve the dongle's horizontal peaking (lambda > 0), classify
+// each cell against the row's level thresholds, and pack 2-bit Gray symbols
+// into bytes with the bit buffer carried across rows — mirroring
+// readDenseLuma1PayloadLockedNativeGrid in hdmi-uvc-frame.js byte for byte.
+//
+// rowStartsPtr: i32 pairs (rowX, rowY) per payload row.
+// rowParamsPtr: f64 x5 per row: t01, t12, t23, railLo, railHi.
+// workPtr: f32 x (payloadCellsX * 3) scratch: row buffer + Thomas c'/d'.
+// Returns bytes written (== payloadLength on success, 0 on bad geometry).
+export function readLuma1Payload(
+  pixelsPtr: u32,
+  width: u32,
+  height: u32,
+  rowStartsPtr: u32,
+  rowParamsPtr: u32,
+  payloadCellsX: u32,
+  payloadCellsY: u32,
+  payloadLength: u32,
+  pixelStep: u32,
+  lambda: f64,
+  workPtr: u32,
+  outPtr: u32
+): u32 {
+  const rowStride: u32 = width * 4
+  const byteStep: u32 = pixelStep * 4
+  const rowBufPtr: u32 = workPtr
+  const cPtr: u32 = workPtr + payloadCellsX * 4
+  const dPtr: u32 = workPtr + payloadCellsX * 8
+  let byteIdx: u32 = 0
+  let bitBuffer: u32 = 0
+  let bitCount: u32 = 0
+
+  for (let cy: u32 = 0; cy < payloadCellsY && byteIdx < payloadLength; cy++) {
+    const rowBase: u32 = rowStartsPtr + cy * 8
+    const rowX: i32 = load<i32>(rowBase)
+    const rowY: i32 = load<i32>(rowBase + 4)
+    if (rowX < 0 || rowY < 0) return 0
+    if (<u32>rowY >= height) return 0
+    if (<u32>rowX + (payloadCellsX - 1) * pixelStep >= width) return 0
+
+    const paramBase: u32 = rowParamsPtr + cy * 40
+    const t01: f64 = load<f64>(paramBase)
+    const t12: f64 = load<f64>(paramBase + 8)
+    const t23: f64 = load<f64>(paramBase + 16)
+    const railLo: f64 = load<f64>(paramBase + 24)
+    const railHi: f64 = load<f64>(paramBase + 32)
+
+    let base: u32 = pixelsPtr + <u32>rowY * rowStride + <u32>rowX * 4
+
+    if (lambda > 0) {
+      // Gather the row, deconvolve, then classify from the corrected buffer.
+      let p: u32 = base
+      for (let cx: u32 = 0; cx < payloadCellsX; cx++, p += byteStep) {
+        store<f32>(rowBufPtr + cx * 4, <f32><u32>load<u8>(p))
+      }
+      unsharpenLuma1RowWasm(rowBufPtr, cPtr, dPtr, payloadCellsX, lambda, railLo, railHi)
+
+      let cx: u32 = 0
+      while (cx < payloadCellsX && byteIdx < payloadLength) {
+        if (bitCount === 0 && cx + 4 <= payloadCellsX) {
+          const rowFullBytes: u32 = (payloadCellsX - cx) >> 2
+          const remainingBytes: u32 = payloadLength - byteIdx
+          const fullBytes: u32 = rowFullBytes < remainingBytes ? rowFullBytes : remainingBytes
+          for (let i: u32 = 0; i < fullBytes; i++) {
+            const s0: u32 = luma1SymbolFromValue(luma1RoundSample(<f64>load<f32>(rowBufPtr + cx * 4)), t01, t12, t23)
+            const s1: u32 = luma1SymbolFromValue(luma1RoundSample(<f64>load<f32>(rowBufPtr + (cx + 1) * 4)), t01, t12, t23)
+            const s2: u32 = luma1SymbolFromValue(luma1RoundSample(<f64>load<f32>(rowBufPtr + (cx + 2) * 4)), t01, t12, t23)
+            const s3: u32 = luma1SymbolFromValue(luma1RoundSample(<f64>load<f32>(rowBufPtr + (cx + 3) * 4)), t01, t12, t23)
+            store<u8>(outPtr + byteIdx, <u8>((s0 << 6) | (s1 << 4) | (s2 << 2) | s3))
+            byteIdx++
+            cx += 4
+          }
+          continue
+        }
+        bitBuffer = (bitBuffer << 2) | luma1SymbolFromValue(luma1RoundSample(<f64>load<f32>(rowBufPtr + cx * 4)), t01, t12, t23)
+        bitCount += 2
+        cx++
+        if (bitCount >= 8) {
+          store<u8>(outPtr + byteIdx, <u8>((bitBuffer >> (bitCount - 8)) & 0xff))
+          byteIdx++
+          bitCount -= 8
+          bitBuffer = bitCount > 0 ? (bitBuffer & ((1 << bitCount) - 1)) : 0
+        }
+      }
+      continue
+    }
+
+    // No correction armed: classify raw bytes directly.
+    let cx: u32 = 0
+    while (cx < payloadCellsX && byteIdx < payloadLength) {
+      if (bitCount === 0 && cx + 4 <= payloadCellsX) {
+        const rowFullBytes: u32 = (payloadCellsX - cx) >> 2
+        const remainingBytes: u32 = payloadLength - byteIdx
+        const fullBytes: u32 = rowFullBytes < remainingBytes ? rowFullBytes : remainingBytes
+        for (let i: u32 = 0; i < fullBytes; i++) {
+          const s0: u32 = luma1SymbolFromValue(<f64><u32>load<u8>(base), t01, t12, t23)
+          const s1: u32 = luma1SymbolFromValue(<f64><u32>load<u8>(base + byteStep), t01, t12, t23)
+          const s2: u32 = luma1SymbolFromValue(<f64><u32>load<u8>(base + byteStep * 2), t01, t12, t23)
+          const s3: u32 = luma1SymbolFromValue(<f64><u32>load<u8>(base + byteStep * 3), t01, t12, t23)
+          store<u8>(outPtr + byteIdx, <u8>((s0 << 6) | (s1 << 4) | (s2 << 2) | s3))
+          byteIdx++
+          base += byteStep * 4
+        }
+        cx += fullBytes * 4
+        continue
+      }
+      bitBuffer = (bitBuffer << 2) | luma1SymbolFromValue(<f64><u32>load<u8>(base), t01, t12, t23)
+      bitCount += 2
+      base += byteStep
+      cx++
+      if (bitCount >= 8) {
+        store<u8>(outPtr + byteIdx, <u8>((bitBuffer >> (bitCount - 8)) & 0xff))
+        byteIdx++
+        bitCount -= 8
+        bitBuffer = bitCount > 0 ? (bitBuffer & ((1 << bitCount) - 1)) : 0
+      }
+    }
+  }
+
+  return byteIdx
+}
+
 // Validates fixed-size inner Beam Me Up packet slots inside an already decoded
 // HDMI-UVC frame payload. Writes one 24-byte record per valid slot:
 //   u32 slotIndex, fileId, k, symbolId, versionAndFlags, payloadCrc
