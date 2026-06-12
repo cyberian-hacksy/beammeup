@@ -113,6 +113,94 @@ export function setLuma1SweepBudgetFast(fast) {
   luma1SweepBudgetFast = !!fast
 }
 
+// Horizontal-peaking correction. The capture dongle applies a 1D unsharp
+// mask along rows (measured live: v = u + λ·(u − (L+R)/2), λ≈0.45, R²≈1.0,
+// vertical term ≈ 0). The kernel [−λ/2, 1+λ, −λ/2] is diagonally dominant,
+// so each payload row can be deconvolved exactly with a tridiagonal solve.
+let luma1SharpenLambda = null
+export function setLuma1SharpenCorrection(lambda) {
+  luma1SharpenLambda = Number.isFinite(lambda) && lambda >= 0.05 && lambda <= 1.5 ? lambda : null
+  return luma1SharpenLambda
+}
+export function getLuma1SharpenCorrection() {
+  return luma1SharpenLambda
+}
+
+let luma1SolveScratch = null
+function getLuma1SolveScratch(n) {
+  if (!luma1SolveScratch || luma1SolveScratch.length < n * 2) {
+    luma1SolveScratch = new Float32Array(n * 2)
+  }
+  return luma1SolveScratch
+}
+
+let luma1RowBuffer = null
+function getLuma1RowBuffer(n) {
+  if (!luma1RowBuffer || luma1RowBuffer.length < n) {
+    luma1RowBuffer = new Float32Array(n)
+  }
+  return luma1RowBuffer
+}
+
+// In-place row deconvolution. Values at the rails are pinned (u = v): the
+// ISP clamps rail overshoot, mid levels cannot reach the rails under this
+// model, and a pinned cell splits the row into independently solvable
+// segments with exact Dirichlet boundaries. Row ends use a Neumann boundary
+// — the edge guard cells mirror the first/last data cell by construction.
+export function unsharpenLuma1Row(vals, count, lambda, railLo, railHi) {
+  const sub = -lambda / 2
+  const diagMain = 1 + lambda
+  const diagEnd = 1 + lambda / 2
+  const scratch = getLuma1SolveScratch(count)
+  let segStart = 0
+  while (segStart < count) {
+    if (vals[segStart] <= railLo || vals[segStart] >= railHi) {
+      segStart++
+      continue
+    }
+    let segEnd = segStart
+    while (segEnd + 1 < count && vals[segEnd + 1] > railLo && vals[segEnd + 1] < railHi) {
+      segEnd++
+    }
+    const n = segEnd - segStart + 1
+    const leftPinned = segStart > 0
+    const rightPinned = segEnd < count - 1
+    if (n === 1) {
+      // Single unpinned cell: both boundary terms act on the same equation.
+      let diag = diagMain
+      let rhs = vals[segStart]
+      if (leftPinned) rhs -= sub * vals[segStart - 1]
+      else diag += sub
+      if (rightPinned) rhs -= sub * vals[segEnd + 1]
+      else diag += sub
+      vals[segStart] = rhs / diag
+      segStart = segEnd + 1
+      continue
+    }
+    // Thomas forward sweep. scratch[2i] = c'_i, scratch[2i+1] = d'_i.
+    const diag0 = leftPinned ? diagMain : diagEnd
+    const rhs0 = vals[segStart] - (leftPinned ? sub * vals[segStart - 1] : 0)
+    scratch[0] = sub / diag0
+    scratch[1] = rhs0 / diag0
+    for (let i = 1; i < n; i++) {
+      const isLast = i === n - 1
+      const diag = isLast ? (rightPinned ? diagMain : diagEnd) : diagMain
+      let rhs = vals[segStart + i]
+      if (isLast && rightPinned) rhs -= sub * vals[segEnd + 1]
+      const denom = diag - sub * scratch[(i - 1) * 2]
+      scratch[i * 2] = (isLast ? 0 : sub) / denom
+      scratch[i * 2 + 1] = (rhs - sub * scratch[(i - 1) * 2 + 1]) / denom
+    }
+    // Back substitution.
+    vals[segEnd] = scratch[(n - 1) * 2 + 1]
+    for (let i = n - 2; i >= 0; i--) {
+      vals[segStart + i] = scratch[i * 2 + 1] - scratch[i * 2] * vals[segStart + i + 1]
+    }
+    segStart = segEnd + 1
+  }
+  return vals
+}
+
 function isDenseBinaryMode(mode) {
   return mode === HDMI_MODE.BINARY_3 ||
     mode === HDMI_MODE.BINARY_2 ||
@@ -1785,6 +1873,40 @@ function readDenseLuma1PayloadLockedNativeGrid({
     if (lastSampleX >= width) return null
 
     let base = ((rowY * width) + rowX) * 4
+    if (luma1SharpenLambda) {
+      // Deconvolve the horizontal peaking before classification. Gather the
+      // row, invert, then classify from the corrected buffer.
+      const rowBuf = getLuma1RowBuffer(payloadCellsX)
+      let p = base
+      for (let cx = 0; cx < payloadCellsX; cx++, p += byteStep) {
+        rowBuf[cx] = imageData[p]
+      }
+      unsharpenLuma1Row(rowBuf, payloadCellsX, luma1SharpenLambda, lumaLevels[0] + 6, lumaLevels[3] - 6)
+      let cx = 0
+      while (cx < payloadCellsX && byteIdx < payloadLength) {
+        if (bitCount === 0 && cx + 4 <= payloadCellsX) {
+          const fullBytes = Math.min(payloadLength - byteIdx, (payloadCellsX - cx) >> 2)
+          for (let i = 0; i < fullBytes; i++) {
+            payload[byteIdx++] =
+              (decodeLuma1SymbolFromLevels(rowBuf[cx], lumaLevels, black, white) << 6) |
+              (decodeLuma1SymbolFromLevels(rowBuf[cx + 1], lumaLevels, black, white) << 4) |
+              (decodeLuma1SymbolFromLevels(rowBuf[cx + 2], lumaLevels, black, white) << 2) |
+              decodeLuma1SymbolFromLevels(rowBuf[cx + 3], lumaLevels, black, white)
+            cx += 4
+          }
+          continue
+        }
+        bitBuffer = (bitBuffer << 2) | decodeLuma1SymbolFromLevels(rowBuf[cx], lumaLevels, black, white)
+        bitCount += 2
+        cx++
+        if (bitCount >= BITS_PER_BYTE) {
+          payload[byteIdx++] = (bitBuffer >> (bitCount - BITS_PER_BYTE)) & 0xff
+          bitCount -= BITS_PER_BYTE
+          bitBuffer = bitCount > 0 ? (bitBuffer & ((1 << bitCount) - 1)) : 0
+        }
+      }
+      continue
+    }
     let cx = 0
     while (cx < payloadCellsX && byteIdx < payloadLength) {
       if (bitCount === 0 && cx + 4 <= payloadCellsX) {
@@ -2446,13 +2568,62 @@ function buildLuma1DecodeDebug({
             if (best !== sharpOwn[i]) errAfter++
             if (bestRaw !== sharpOwn[i]) errBefore++
           }
+          // True post-correction floor: run the actual row deconvolution on
+          // full contiguous rows (clamp pinning + boundary handling included)
+          // and count classification errors before/after.
+          let solve = null
+          if (lh > 0.05) {
+            const rowBuf = new Float32Array(payloadCellsX)
+            const rawRow = new Float32Array(payloadCellsX)
+            let sTotal = 0
+            let sRawErr = 0
+            let sSolvedErr = 0
+            const classify = (value) => {
+              let best = 0
+              let bestDist = Infinity
+              for (let level = 0; level < LUMA1_LEVEL_COUNT; level++) {
+                const dist = Math.abs(value - refLevels[level])
+                if (dist < bestDist) { bestDist = dist; best = level }
+              }
+              return best
+            }
+            for (let r = 0; r < 24; r++) {
+              const cy = Math.floor(((r + 0.5) * payloadCellsY) / 24)
+              const py = payloadStartY + Math.round(cy * payloadStepY)
+              if (py < 0 || py >= imgHeight) continue
+              for (let cx = 0; cx < payloadCellsX; cx++) {
+                const px = payloadStartXBase + Math.round(cx * payloadStepX) + purityPhase
+                rowBuf[cx] = px >= 0 && px < width
+                  ? sampleBlockAt(imageData, width, px, py, payloadBs)
+                  : 0
+                rawRow[cx] = rowBuf[cx]
+              }
+              unsharpenLuma1Row(rowBuf, payloadCellsX, lh, refLevels[0] + 6, refLevels[LUMA1_LEVEL_COUNT - 1] - 6)
+              for (let cx = 0; cx < payloadCellsX; cx++) {
+                const ownLevel = expectedLevelAt(cy, cx)
+                if (ownLevel < 0) continue
+                sTotal++
+                if (classify(rawRow[cx]) !== ownLevel) sRawErr++
+                if (classify(rowBuf[cx]) !== ownLevel) sSolvedErr++
+              }
+            }
+            if (sTotal > 1000) {
+              solve = {
+                raw: Math.round((1000 * sRawErr) / sTotal) / 10,
+                solved: Math.round((1000 * sSolvedErr) / sTotal) / 10,
+                n: sTotal
+              }
+            }
+          }
+
           sharpen = {
             lh: Math.round(100 * lh) / 100,
             lv: Math.round(100 * lv) / 100,
             r2: Math.round(100 * (1 - residual / dd)) / 100,
             errBefore: Math.round((1000 * errBefore) / sharpVals.length) / 10,
             errAfter: Math.round((1000 * errAfter) / sharpVals.length) / 10,
-            n: sharpVals.length
+            n: sharpVals.length,
+            solve
           }
         }
       }
@@ -2564,6 +2735,30 @@ function readDenseBinaryPayload(
           )
         : null
       if (lumaLevels && !measuredLumaLevels) measuredLumaLevels = lumaLevels
+
+      if (header.mode === HDMI_MODE.LUMA_1 && luma1SharpenLambda) {
+        // Deconvolve the dongle's horizontal peaking: gather the whole cell
+        // row first (the solve needs full row context), invert, classify.
+        const rowBuf = getLuma1RowBuffer(payloadCellsX)
+        for (let cx = 0; cx < payloadCellsX; cx++) {
+          const offsetIdx = (cy * payloadCellsX + cx) * 2
+          const px = precomputedOffsets && offsetIdx + 1 < precomputedOffsets.length
+            ? precomputedOffsets[offsetIdx] + payloadPhaseX
+            : payloadStartXBase + Math.round(cx * payloadStepX) + payloadPhaseX
+          const py = precomputedOffsets && offsetIdx + 1 < precomputedOffsets.length
+            ? precomputedOffsets[offsetIdx + 1]
+            : payloadStartY + Math.round(cy * payloadStepY)
+          rowBuf[cx] = px >= 0 && px < width && py >= 0 && py < imgHeight
+            ? sampleBlockAt(imageData, width, px, py, payloadBs)
+            : 0
+        }
+        unsharpenLuma1Row(rowBuf, payloadCellsX, luma1SharpenLambda, lumaLevels[0] + 6, lumaLevels[3] - 6)
+        for (let cx = 0; cx < payloadCellsX && decodeState.index < header.payloadLength; cx++) {
+          const symbol = decodeLuma1SymbolFromLevels(rowBuf[cx], lumaLevels, black, white)
+          appendSymbolBits(payload, decodeState, symbol, bitsPerPayloadCell)
+        }
+        continue
+      }
 
       for (let cx = 0; cx < payloadCellsX && decodeState.index < header.payloadLength; cx++) {
         const offsetIdx = (cy * payloadCellsX + cx) * 2
@@ -4763,6 +4958,61 @@ export function testLuma1CalibrationSharpenFit() {
     return pass
   } catch (err) {
     console.log('LUMA_1 calibration sharpen fit test: FAIL', err?.message || err)
+    return false
+  }
+}
+
+// End-to-end fix validation: a frame distorted by the measured horizontal
+// peaking (λ=0.45, with rail clamping) must fail without correction and
+// decode perfectly — generic and locked readers — once the correction is
+// armed with the same λ.
+export function testLuma1SharpenCorrectionRoundtrip() {
+  try {
+    const width = 640
+    const height = 407
+    const lambda = 0.45
+    const cap = getPayloadCapacity(width, height, HDMI_MODE.LUMA_1)
+    const payload = new Uint8Array(cap)
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 73 + 41) & 0xff
+    const frame = buildFrame(payload, HDMI_MODE.LUMA_1, width, height, 30, 79)
+
+    const sharpened = new Uint8ClampedArray(frame)
+    for (let y = 0; y < height; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const i = (y * width + x) * 4
+        const v = Math.round(frame[i] + lambda * (frame[i] - (frame[i - 4] + frame[i + 4]) / 2))
+        sharpened[i] = sharpened[i + 1] = sharpened[i + 2] = v
+      }
+    }
+
+    const anchors = detectAnchors(sharpened, width, height)
+    const region = dataRegionFromAnchors(anchors)
+    const uncorrected = region ? decodeDataRegion(sharpened, width, region) : null
+
+    setLuma1SharpenCorrection(lambda)
+    const corrected = region ? decodeDataRegion(sharpened, width, region) : null
+    let lockedOk = false
+    if (corrected?.crcValid) {
+      const precomputed = precomputeDenseBinarySampleOffsets(corrected._diag, region)
+      const locked = readDenseBinaryPayloadLocked(
+        sharpened, width, region,
+        { ...corrected._diag, precomputedOffsets: precomputed.offsets, precomputedRegion: precomputed.region },
+        payload.length, precomputed.offsets, {}
+      )
+      lockedOk = locked?.length === payload.length && locked.every((v, i) => v === payload[i])
+    }
+    setLuma1SharpenCorrection(null)
+
+    const pass = uncorrected && !uncorrected.crcValid &&
+      corrected && corrected.crcValid &&
+      corrected.payload.length === payload.length &&
+      corrected.payload.every((v, i) => v === payload[i]) &&
+      lockedOk
+    console.log('LUMA_1 sharpen correction roundtrip test:', pass ? 'PASS' : 'FAIL', { uncorrectedCrc: uncorrected?.crcValid, correctedCrc: corrected?.crcValid, lockedOk })
+    return pass
+  } catch (err) {
+    setLuma1SharpenCorrection(null)
+    console.log('LUMA_1 sharpen correction roundtrip test: FAIL', err?.message || err)
     return false
   }
 }

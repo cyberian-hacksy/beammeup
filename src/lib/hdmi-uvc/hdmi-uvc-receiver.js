@@ -17,6 +17,8 @@ import {
   readPayloadWithLayout,
   resetClassifierPerfAccumulator,
   setLuma1SweepBudgetFast,
+  setLuma1SharpenCorrection,
+  getLuma1SharpenCorrection,
   getClassifierPerfAccumulator
 } from './hdmi-uvc-frame.js'
 import ReceiverWorker from './hdmi-uvc-receiver-worker.js?worker&inline'
@@ -2802,7 +2804,57 @@ function logLuma1DecodeDebug(lumaDebug) {
     debugLog(`[HDMI-RX] Luma4 CAL f-below histogram (f=-0.2..1.2 step 0.1): [${cal.fHist.join('/')}]`)
     if (cal.sharpen) {
       const s = cal.sharpen
-      debugLog(`[HDMI-RX] Luma4 CAL sharpen fit: lambdaH=${s.lh} lambdaV=${s.lv} R2=${s.r2} err ${s.errBefore}% -> ${s.errAfter}% after unsharp correction (n=${s.n})`)
+      const solveDetail = s.solve ? ` rowSolve err ${s.solve.raw}% -> ${s.solve.solved}% (n=${s.solve.n})` : ''
+      debugLog(`[HDMI-RX] Luma4 CAL sharpen fit: lambdaH=${s.lh} lambdaV=${s.lv} R2=${s.r2} err ${s.errBefore}% -> ${s.errAfter}% after unsharp correction (n=${s.n})${solveDetail}`)
+      maybeArmLuma1SharpenCorrection(s)
+    }
+  }
+}
+
+// Auto-arm the deconvolution from a confident calibration fit: future LUMA_1
+// decodes (generic and locked) invert the measured horizontal peaking before
+// classification. Persisted so a real transfer after a reload still benefits.
+const LUMA1_SHARPEN_STORAGE_KEY = 'hdmi-uvc-luma-sharpen'
+
+function maybeArmLuma1SharpenCorrection(sharpenFit) {
+  if (!sharpenFit || sharpenFit.r2 < 0.8 || sharpenFit.lh < 0.05) return
+  const current = getLuma1SharpenCorrection()
+  if (current !== null && Math.abs(current - sharpenFit.lh) < 0.03) return
+  const armed = setLuma1SharpenCorrection(sharpenFit.lh)
+  if (armed === null) return
+  try {
+    localStorage.setItem(LUMA1_SHARPEN_STORAGE_KEY, String(armed))
+  } catch (_) { /* private mode */ }
+  debugLog(`[HDMI-RX] Luma4 sharpen correction ARMED: lambda=${armed} (from cal fit, persisted; clear with ?luma-sharpen=0)`)
+}
+
+function restoreLuma1SharpenCorrection() {
+  let urlValue = null
+  try {
+    urlValue = new URLSearchParams(location.search).get('luma-sharpen')
+  } catch (_) { /* no location */ }
+  if (urlValue !== null) {
+    const parsed = Number.parseFloat(urlValue)
+    if (parsed === 0) {
+      setLuma1SharpenCorrection(null)
+      try { localStorage.removeItem(LUMA1_SHARPEN_STORAGE_KEY) } catch (_) { /* ignore */ }
+      debugLog('[HDMI-RX] Luma4 sharpen correction cleared via URL')
+      return
+    }
+    const armed = setLuma1SharpenCorrection(parsed)
+    if (armed !== null) {
+      debugLog(`[HDMI-RX] Luma4 sharpen correction set from URL: lambda=${armed}`)
+      return
+    }
+  }
+  let stored = null
+  try {
+    stored = localStorage.getItem(LUMA1_SHARPEN_STORAGE_KEY)
+  } catch (_) { /* private mode */ }
+  if (stored !== null) {
+    const armed = setLuma1SharpenCorrection(Number.parseFloat(stored))
+    if (armed !== null) {
+      debugLog(`[HDMI-RX] Luma4 sharpen correction restored: lambda=${armed} (saved from a previous cal run)`)
     }
   }
 }
@@ -3861,6 +3913,7 @@ export function initHdmiUvcReceiver(errorHandler) {
     }
   }
   debugLog('HDMI-UVC Receiver initialized')
+  restoreLuma1SharpenCorrection()
   debugLog(
     `Capture method chosen: ${CAPTURE_METHOD} ` +
     `(capabilities=${JSON.stringify(CAPTURE_CAPABILITIES)})`
