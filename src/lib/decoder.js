@@ -2,6 +2,7 @@
 // Decodes fountain-coded symbols back into original file
 
 import { deriveSymbolIndices } from './fountain-symbol.js'
+import { xorBytesInto } from './xor.js'
 import { parsePacket } from './packet.js'
 import { parseMetadataPayload } from './metadata.js'
 import { calculateParityParams, generateParityMap, buildSourceToParityAdjacency } from './precode.js'
@@ -112,10 +113,7 @@ export function createDecoder() {
     for (const idx of symbol.indices) {
       if (decodedBlocks[idx]) {
         // XOR out known block
-        const known = decodedBlocks[idx]
-        for (let i = 0; i < payload.length; i++) {
-          payload[i] ^= known[i]
-        }
+        xorBytesInto(payload, decodedBlocks[idx])
       } else {
         remaining.push(idx)
       }
@@ -203,8 +201,7 @@ export function createDecoder() {
         for (let i = 0; i < srcIndices.length; i++) {
           const s = srcIndices[i]
           if (s === missingIdx) continue
-          const known = decodedBlocks[s]
-          for (let j = 0; j < out.length; j++) out[j] ^= known[j]
+          xorBytesInto(out, decodedBlocks[s])
         }
         decodedBlocks[missingIdx] = out
         solved++

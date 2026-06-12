@@ -2,6 +2,7 @@
 // Generates XOR parity blocks for improved fountain code efficiency
 
 import { PARITY_LAYERS } from './constants.js'
+import { xorBytesInto } from './xor.js'
 
 /**
  * Calculate parity parameters from source block count K
@@ -98,10 +99,7 @@ export function generateParityBlocks(sourceBlocks, parityMap) {
     const parity = new Uint8Array(blockSize)
 
     for (const idx of indices) {
-      const block = sourceBlocks[idx]
-      for (let i = 0; i < blockSize; i++) {
-        parity[i] ^= block[i]
-      }
+      xorBytesInto(parity, sourceBlocks[idx])
     }
 
     parityBlocks.push(parity)
@@ -147,9 +145,7 @@ export function recoverWithParity(decodedBlocks, K, parityMap) {
         // XOR out all known source blocks
         for (const idx of sourceIndices) {
           if (idx !== missingIdx && decodedBlocks[idx]) {
-            for (let i = 0; i < blockSize; i++) {
-              recovered[i] ^= decodedBlocks[idx][i]
-            }
+            xorBytesInto(recovered, decodedBlocks[idx])
           }
         }
 
@@ -387,8 +383,7 @@ export async function testGF2SolverLarge() {
     // Compute payload: XOR of intermediate blocks at these indices.
     const payload = new Uint8Array(blockSize)
     for (const idx of indices) {
-      const src = intermediateBlocks[idx]
-      for (let i = 0; i < blockSize; i++) payload[i] ^= src[i]
+      xorBytesInto(payload, intermediateBlocks[idx])
     }
 
     equations.push({ indices, payload })

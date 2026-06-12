@@ -41,7 +41,7 @@ import {
   shouldStartReceiverRoiWarmupBenchmark,
   shouldLogReceiverCapturePathChange
 } from './hdmi-uvc-receiver-capture.js'
-import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
+import { loadHdmiUvcWasm, acquireWasmFrameView, isHdmiUvcWasmLoaded } from './hdmi-uvc-wasm.js'
 import {
   isPerfMode,
   getWorkerMode,
@@ -2661,10 +2661,73 @@ function rememberCapturedFrame(imageData) {
   state.lastImageDataCapturedAtMs = performance.now()
 }
 
+// --- Capture directly into WASM linear memory ------------------------------
+// VideoFrame.copyTo can convert to RGBA and write straight into a view over
+// WASM memory: no canvas, no per-frame getImageData allocation (~7.8MB of GC
+// churn at 1080p), and the decode kernels then read the pixels in place
+// instead of copying them into scratch. Only used on the steady-state
+// locked-ROI path, where the rect is pixel-exact (computeLockedCaptureRect
+// never scales) — exactly the geometry copyTo can reproduce. Any failure
+// falls back to the canvas paths for that frame and latches the wasm path
+// off after repeated failures. Kill switch: ?wasm-capture=0.
+const WASM_CAPTURE_URL_DISABLED = typeof location !== 'undefined' &&
+  /[?&]wasm-capture=0/.test(location.search)
+const WASM_CAPTURE_FAIL_LATCH = 2
+let wasmCaptureFailCount = 0
+
+function wasmCaptureEligible(lockedCapture) {
+  if (WASM_CAPTURE_URL_DISABLED) return false
+  if (wasmCaptureFailCount >= WASM_CAPTURE_FAIL_LATCH) return false
+  if (!hasVideoFrame || !isHdmiUvcWasmLoaded()) return false
+  const sr = lockedCapture?.sourceRect
+  if (!sr) return false
+  // copyTo cannot scale.
+  if (sr.w !== lockedCapture.width || sr.h !== lockedCapture.height) return false
+  // 4:2:0 camera frames need sample-aligned crop rects.
+  if ((sr.x & 1) || (sr.y & 1) || (sr.w & 1) || (sr.h & 1)) return false
+  return true
+}
+
+// Capture one frame from `source` (the video element, or any
+// CanvasImageSource in tests) into the pinned WASM frame region. Returns an
+// ImageData-shaped POJO whose .data aliases WASM memory — valid until the
+// next capture overwrites the region.
+async function captureFrameIntoWasm(source, lockedCapture, timestampUs) {
+  const sr = lockedCapture.sourceRect
+  const view = acquireWasmFrameView(sr.w * sr.h * 4)
+  if (!view) return null
+  const frame = new VideoFrame(source, { timestamp: timestampUs || 0 })
+  try {
+    await frame.copyTo(view, {
+      rect: { x: sr.x, y: sr.y, width: sr.w, height: sr.h },
+      format: 'RGBA'
+    })
+  } finally {
+    frame.close()
+  }
+  return { data: view, width: sr.w, height: sr.h }
+}
+
+function noteWasmCaptureFailure(err) {
+  wasmCaptureFailCount++
+  if (wasmCaptureFailCount === 1) {
+    debugLog(`[HDMI-RX] wasm capture failed (${err?.name || ''} ${err?.message || err}) - falling back to canvas capture`)
+  }
+  if (wasmCaptureFailCount === WASM_CAPTURE_FAIL_LATCH) {
+    debugLog('[HDMI-RX] wasm capture disabled for this session after repeated failures')
+  }
+}
+
 export function getLastCapturedFrame() {
+  // WASM-backed frames alias the pinned capture region, which the next frame
+  // overwrites (and memory growth can detach the view) — hand diagnostics a
+  // stable copy instead. The wasm path produces a POJO, not an ImageData.
+  const wasmBacked = !!state.lastImageData &&
+    typeof ImageData !== 'undefined' &&
+    !(state.lastImageData instanceof ImageData)
   return state.lastImageData
     ? {
-        data: state.lastImageData.data,
+        data: wasmBacked ? state.lastImageData.data.slice() : state.lastImageData.data,
         width: state.lastImageData.width,
         height: state.lastImageData.height,
         seq: state.lastImageDataSeq,
@@ -3081,6 +3144,24 @@ async function processFrame(now, metadata) {
       captureMethod = 'ImageCapture'
     } catch (e) {
       // Fall through to other methods
+    }
+  }
+
+  // Steady-state fast path: capture the locked ROI straight into WASM memory
+  // (zero-allocation, zero-copy decode). Falls through to the canvas paths
+  // below on any failure.
+  if (!imageData && lockedCapture && metadata && wasmCaptureEligible(lockedCapture)) {
+    try {
+      const wasmFrame = await captureFrameIntoWasm(video, lockedCapture, metadata.mediaTime * 1000000 || 0)
+      if (wasmFrame) {
+        imageData = wasmFrame
+        imageWidth = lockedCapture.width
+        imageHeight = lockedCapture.height
+        decodeRegion = lockedCapture.region
+        captureMethod = 'wasm ROI'
+      }
+    } catch (e) {
+      noteWasmCaptureFailure(e)
     }
   }
 
@@ -4158,6 +4239,72 @@ export function testReceiverFrameSignatureSummary() {
   } finally {
     state.rxPerf = oldPerf
     state.lastReceiverFrameSignature = oldSignature
+  }
+}
+
+// The wasm-capture path must reproduce the canvas path's pixels: draw a known
+// pattern, capture a ROI of it via VideoFrame.copyTo into WASM memory, and
+// compare against getImageData of the same rect. Small per-channel tolerance
+// because a UA may round-trip the VideoFrame through a different pixel
+// format; decode only needs self-consistency, but large deviations would
+// invalidate the strip-calibrated levels.
+export async function testReceiverWasmCaptureRoundtrip() {
+  try {
+    await loadHdmiUvcWasm()
+  } catch (err) {
+    console.log('Receiver wasm-capture roundtrip test: FAIL (wasm load)', err?.message || err)
+    return false
+  }
+  try {
+    if (typeof VideoFrame === 'undefined') {
+      console.log('Receiver wasm-capture roundtrip test: SKIP (no VideoFrame)')
+      return true
+    }
+    const W = 128
+    const H = 64
+    const canvas = document.createElement('canvas')
+    canvas.width = W
+    canvas.height = H
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    const src = ctx.createImageData(W, H)
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4
+        const v = (x * 7 + y * 13) & 0xff
+        src.data[i] = src.data[i + 1] = src.data[i + 2] = v
+        src.data[i + 3] = 255
+      }
+    }
+    ctx.putImageData(src, 0, 0)
+
+    const lockedCapture = {
+      sourceRect: { x: 16, y: 8, w: 96, h: 48 },
+      width: 96,
+      height: 48,
+      region: { x: 0, y: 0, w: 96, h: 48 }
+    }
+    const eligible = wasmCaptureEligible(lockedCapture)
+    const oddRect = wasmCaptureEligible({ sourceRect: { x: 15, y: 8, w: 96, h: 48 }, width: 96, height: 48 })
+    const scaled = wasmCaptureEligible({ sourceRect: { x: 16, y: 8, w: 96, h: 48 }, width: 48, height: 24 })
+
+    const captured = await captureFrameIntoWasm(canvas, lockedCapture, 0)
+    const expected = ctx.getImageData(16, 8, 96, 48)
+    if (!captured || captured.width !== 96 || captured.height !== 48) {
+      console.log('Receiver wasm-capture roundtrip test: FAIL (capture)', { captured: !!captured })
+      return false
+    }
+    let maxDiff = 0
+    for (let i = 0; i < expected.data.length; i++) {
+      if ((i & 3) === 3) continue // alpha
+      const d = Math.abs(captured.data[i] - expected.data[i])
+      if (d > maxDiff) maxDiff = d
+    }
+    const pass = eligible === true && oddRect === false && scaled === false && maxDiff <= 2
+    console.log('Receiver wasm-capture roundtrip test:', pass ? 'PASS' : 'FAIL', { maxDiff, eligible, oddRect, scaled })
+    return pass
+  } catch (err) {
+    console.log('Receiver wasm-capture roundtrip test: FAIL', err?.name || '', err?.message || err)
+    return false
   }
 }
 

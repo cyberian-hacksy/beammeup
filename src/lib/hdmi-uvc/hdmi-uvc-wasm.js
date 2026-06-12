@@ -41,8 +41,21 @@ function refreshMemoryView() {
   wasmMemoryPageCount = wasmModule.memory.buffer.byteLength / 65536
 }
 
+// Pinned frame region. When the receiver captures directly into WASM memory
+// (VideoFrame.copyTo into this region), the frame must survive every kernel
+// call of that frame's processing — so it is reserved at the front of the JS
+// scratch area and all transient kernel inputs/outputs go AFTER it. The
+// reservation also pre-grows generous transient headroom: if a kernel call
+// grew memory mid-frame, the receiver's frame view would detach silently.
+const WASM_FRAME_TRANSIENT_HEADROOM = 8 * 1024 * 1024
+let wasmFrameRegionBytes = 0
+
+function transientBase() {
+  return wasmScratchBase + wasmFrameRegionBytes
+}
+
 function ensureMemoryFor(byteLength) {
-  const required = wasmScratchBase + byteLength
+  const required = transientBase() + byteLength
   const currentBytes = wasmModule.memory.buffer.byteLength
   if (required <= currentBytes) {
     if (!wasmBytesView || wasmBytesView.buffer !== wasmModule.memory.buffer) {
@@ -57,6 +70,25 @@ function ensureMemoryFor(byteLength) {
     throw new Error('hdmi-uvc wasm: memory.grow failed (requested ' + pages + ' pages)')
   }
   refreshMemoryView()
+}
+
+// Reserve (or re-size) the pinned frame region and return a fresh
+// Uint8ClampedArray view over it. The view must be re-acquired every frame:
+// memory growth between frames detaches earlier views (their data survives at
+// the same offset, but the old JS view object goes dead). Returns null until
+// the module is loaded.
+export function acquireWasmFrameView(bytes) {
+  if (!wasmModule) return null
+  const rounded = (bytes + 65535) & ~65535
+  if (rounded > wasmFrameRegionBytes) wasmFrameRegionBytes = rounded
+  ensureMemoryFor(WASM_FRAME_TRANSIENT_HEADROOM)
+  return new Uint8ClampedArray(wasmModule.memory.buffer, wasmScratchBase, bytes)
+}
+
+// True when `view` aliases WASM linear memory — kernels can then use its
+// byteOffset as a pointer instead of copying the pixels into scratch.
+function isWasmBackedView(view) {
+  return !!wasmModule && view && view.buffer === wasmModule.memory.buffer
 }
 
 function resolveWasmUrl() {
@@ -164,8 +196,9 @@ export function wasmCrc32(bytes) {
   const len = bytes.length | 0
   if (len === 0) return jsCrc32(bytes) // 0xFFFFFFFF ^ 0xFFFFFFFF = 0; keep JS path.
   ensureMemoryFor(len)
-  wasmBytesView.set(bytes, wasmScratchBase)
-  return wasmModule.crc32(wasmScratchBase, len) >>> 0
+  const base = transientBase()
+  wasmBytesView.set(bytes, base)
+  return wasmModule.crc32(base, len) >>> 0
 }
 
 // Prefer the WASM path when available; fall back to JS CRC32 if the module
@@ -225,14 +258,21 @@ export function jsScanBrightRuns(pixels, width, height, xStart, xEnd, yStart, yE
 // per corner rectangle.
 export function wasmScanBrightRuns(pixels, width, height, xStart, xEnd, yStart, yEnd, yDir, minRun, maxRun, threshold, maxRuns = 1024) {
   if (!wasmModule || forceJsFallbackForTesting) throw new Error('hdmi-uvc wasm: not active')
-  const pixelBytes = pixels.length
-  // We need room for: pixel buffer + output runs (12 bytes each).
+  // Zero-copy when the frame was captured straight into WASM memory; the
+  // byteOffset is captured before ensureMemoryFor because growth detaches
+  // the JS view while preserving the data at the same offset.
+  const inWasm = isWasmBackedView(pixels)
+  const wasmPixelsPtr = inWasm ? pixels.byteOffset : 0
+  const pixelBytes = inWasm ? 0 : pixels.length
+  // We need room for: (staged) pixel buffer + output runs (12 bytes each).
   const outByteCount = maxRuns * 12
   ensureMemoryFor(pixelBytes + outByteCount)
-  wasmBytesView.set(pixels, wasmScratchBase)
-  const outPtr = wasmScratchBase + pixelBytes
+  const base = transientBase()
+  if (!inWasm) wasmBytesView.set(pixels, base)
+  const pixelsPtr = inWasm ? wasmPixelsPtr : base
+  const outPtr = base + pixelBytes
   const count = wasmModule.scanBrightRuns(
-    wasmScratchBase, width, height,
+    pixelsPtr, width, height,
     xStart >>> 0, xEnd >>> 0,
     yStart | 0, yEnd | 0, yDir | 0,
     minRun >>> 0, maxRun >>> 0, threshold >>> 0,
@@ -364,13 +404,17 @@ export function wasmClassifyCompat4Cells(pixels, width, height, cells) {
   if (!wasmModule || forceJsFallbackForTesting) throw new Error('hdmi-uvc wasm: not active')
   const packed = packCells(cells, 4)
   const cellCount = cells.length
-  const total = pixels.length + packed.byteLength + cellCount
-  ensureMemoryFor(total)
-  wasmBytesView.set(pixels, wasmScratchBase)
-  const cellsPtr = wasmScratchBase + pixels.length
+  const inWasm = isWasmBackedView(pixels)
+  const wasmPixelsPtr = inWasm ? pixels.byteOffset : 0
+  const stagedPixelBytes = inWasm ? 0 : pixels.length
+  ensureMemoryFor(stagedPixelBytes + packed.byteLength + cellCount)
+  const base = transientBase()
+  if (!inWasm) wasmBytesView.set(pixels, base)
+  const pixelsPtr = inWasm ? wasmPixelsPtr : base
+  const cellsPtr = base + stagedPixelBytes
   const outPtr = cellsPtr + packed.byteLength
   new Uint8Array(wasmModule.memory.buffer).set(new Uint8Array(packed.buffer), cellsPtr)
-  wasmModule.classifyCompat4Cells(wasmScratchBase, width, height, cellsPtr, cellCount, outPtr)
+  wasmModule.classifyCompat4Cells(pixelsPtr, width, height, cellsPtr, cellCount, outPtr)
   return new Uint8Array(wasmModule.memory.buffer.slice(outPtr, outPtr + cellCount))
 }
 
@@ -378,13 +422,17 @@ export function wasmClassifyLuma2Cells(pixels, width, height, cells) {
   if (!wasmModule || forceJsFallbackForTesting) throw new Error('hdmi-uvc wasm: not active')
   const packed = packCells(cells, 5)
   const cellCount = cells.length
-  const total = pixels.length + packed.byteLength + cellCount
-  ensureMemoryFor(total)
-  wasmBytesView.set(pixels, wasmScratchBase)
-  const cellsPtr = wasmScratchBase + pixels.length
+  const inWasm = isWasmBackedView(pixels)
+  const wasmPixelsPtr = inWasm ? pixels.byteOffset : 0
+  const stagedPixelBytes = inWasm ? 0 : pixels.length
+  ensureMemoryFor(stagedPixelBytes + packed.byteLength + cellCount)
+  const base = transientBase()
+  if (!inWasm) wasmBytesView.set(pixels, base)
+  const pixelsPtr = inWasm ? wasmPixelsPtr : base
+  const cellsPtr = base + stagedPixelBytes
   const outPtr = cellsPtr + packed.byteLength
   new Uint8Array(wasmModule.memory.buffer).set(new Uint8Array(packed.buffer), cellsPtr)
-  wasmModule.classifyLuma2Cells(wasmScratchBase, width, height, cellsPtr, cellCount, outPtr)
+  wasmModule.classifyLuma2Cells(pixelsPtr, width, height, cellsPtr, cellCount, outPtr)
   return new Uint8Array(wasmModule.memory.buffer.slice(outPtr, outPtr + cellCount))
 }
 
@@ -392,16 +440,20 @@ export function wasmPackBinary1Payload(pixels, width, height, rowStarts, thresho
   if (!wasmModule || forceJsFallbackForTesting) throw new Error('hdmi-uvc wasm: not active')
   const rowStartBytes = rowStarts.byteLength
   const thresholdBytes = thresholds.byteLength
-  const total = pixels.length + rowStartBytes + thresholdBytes + payloadLength
-  ensureMemoryFor(total)
-  wasmBytesView.set(pixels, wasmScratchBase)
-  const rowStartsPtr = wasmScratchBase + pixels.length
+  const inWasm = isWasmBackedView(pixels)
+  const wasmPixelsPtr = inWasm ? pixels.byteOffset : 0
+  const stagedPixelBytes = inWasm ? 0 : pixels.length
+  ensureMemoryFor(stagedPixelBytes + rowStartBytes + thresholdBytes + payloadLength)
+  const base = transientBase()
+  if (!inWasm) wasmBytesView.set(pixels, base)
+  const pixelsPtr = inWasm ? wasmPixelsPtr : base
+  const rowStartsPtr = base + stagedPixelBytes
   const thresholdsPtr = rowStartsPtr + rowStartBytes
   const outPtr = thresholdsPtr + thresholdBytes
   new Uint8Array(wasmModule.memory.buffer).set(new Uint8Array(rowStarts.buffer, rowStarts.byteOffset, rowStartBytes), rowStartsPtr)
   new Uint8Array(wasmModule.memory.buffer).set(new Uint8Array(thresholds.buffer, thresholds.byteOffset, thresholdBytes), thresholdsPtr)
   const written = wasmModule.packBinary1Payload(
-    wasmScratchBase,
+    pixelsPtr,
     width >>> 0,
     height >>> 0,
     rowStartsPtr,
@@ -428,17 +480,21 @@ export function wasmReadLuma1Payload(pixels, width, height, rowStarts, rowParams
   const rowStartBytes = rowStarts.byteLength
   const rowParamBytes = rowParams.byteLength
   const workBytes = payloadCellsX * 12 // f32 row buffer + Thomas c'/d'
-  const total = align8(pixels.length) + rowStartBytes + align8(rowParamBytes) + workBytes + payloadLength + 16
-  ensureMemoryFor(total)
-  wasmBytesView.set(pixels, wasmScratchBase)
-  const rowStartsPtr = align8(wasmScratchBase + pixels.length)
+  const inWasm = isWasmBackedView(pixels)
+  const wasmPixelsPtr = inWasm ? pixels.byteOffset : 0
+  const stagedPixelBytes = inWasm ? 0 : align8(pixels.length)
+  ensureMemoryFor(stagedPixelBytes + rowStartBytes + align8(rowParamBytes) + workBytes + payloadLength + 16)
+  const base = transientBase()
+  if (!inWasm) wasmBytesView.set(pixels, base)
+  const pixelsPtr = inWasm ? wasmPixelsPtr : base
+  const rowStartsPtr = align8(base + stagedPixelBytes)
   const rowParamsPtr = align8(rowStartsPtr + rowStartBytes)
   const workPtr = rowParamsPtr + rowParamBytes
   const outPtr = workPtr + workBytes
   new Uint8Array(wasmModule.memory.buffer).set(new Uint8Array(rowStarts.buffer, rowStarts.byteOffset, rowStartBytes), rowStartsPtr)
   new Uint8Array(wasmModule.memory.buffer).set(new Uint8Array(rowParams.buffer, rowParams.byteOffset, rowParamBytes), rowParamsPtr)
   const written = wasmModule.readLuma1Payload(
-    wasmScratchBase,
+    pixelsPtr,
     width >>> 0,
     height >>> 0,
     rowStartsPtr,
@@ -474,9 +530,10 @@ export function wasmProbeExpectedPackets(framePayload, expectedPacketSize, optio
   const recordBytes = slotCount * 24
   const total = framePayload.length + recordBytes
   ensureMemoryFor(total)
-  wasmBytesView.set(framePayload, wasmScratchBase)
+  const base = transientBase()
+  wasmBytesView.set(framePayload, base)
 
-  const outPtr = wasmScratchBase + framePayload.length
+  const outPtr = base + framePayload.length
   const session = options.session || null
   const kFilter = session?.k ?? session?.K_prime ?? 0
   let filterFlags = 0
@@ -484,7 +541,7 @@ export function wasmProbeExpectedPackets(framePayload, expectedPacketSize, optio
   if (session?.k != null || session?.K_prime != null) filterFlags |= 2
 
   const count = wasmModule.probeExpectedPackets(
-    wasmScratchBase,
+    base,
     framePayload.length >>> 0,
     expectedPacketSize >>> 0,
     (session?.fileId ?? 0) >>> 0,
@@ -1002,6 +1059,19 @@ export async function testWasmVsJsLuma1ReadEquivalent() {
         return false
       }
     }
+
+    // Zero-copy: the frame living IN wasm memory (as the capture path writes
+    // it) must read identically to the staged-copy path.
+    setLuma1SharpenCorrection(lambda)
+    const frameView = acquireWasmFrameView(sharpened.length)
+    frameView.set(sharpened)
+    const zcStats = {}
+    const viaZeroCopy = readPayloadWithLayout(frameView, width, region, layout, payload.length, precomputed.offsets, { stats: zcStats })
+    if (zcStats.reader !== 'luma1-wasm' || !viaZeroCopy || !viaZeroCopy.every((v, k) => v === payload[k])) {
+      console.log('WASM vs JS Luma4 read test: FAIL (zero-copy)', { reader: zcStats.reader, ok: !!viaZeroCopy })
+      return false
+    }
+
     console.log('WASM vs JS Luma4 read test: PASS')
     return true
   } catch (err) {

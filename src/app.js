@@ -4,6 +4,7 @@ import qrcode from 'qrcode-generator'
 // Import test functions
 import { testPRNG } from './lib/prng.js'
 import { testPacketRoundtrip } from './lib/packet.js'
+import { testXorBytesInto } from './lib/xor.js'
 import { testMetadataRoundtrip } from './lib/metadata.js'
 import { testEncoder } from './lib/encoder.js'
 import { testFountainRippleVariant } from './lib/fountain-symbol.js'
@@ -87,6 +88,7 @@ import {
   testReceiverFrameSignatureSummary,
   testReceiverHeaderOnlyFrameCanLock,
   testReceiverLuma1CalFrameTreatedAsSuccess,
+  testReceiverWasmCaptureRoundtrip,
   testReceiverAnchorDiagnosticsQuietByDefault,
   testStallCounterTicksOnDuplicateFrames
 } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
@@ -211,6 +213,7 @@ window['qrcode'] = qrcode
 // Expose tests globally for console verification
 window.testPRNG = testPRNG
 window.testPacketRoundtrip = testPacketRoundtrip
+window.testXorBytesInto = testXorBytesInto
 window.testMetadataRoundtrip = testMetadataRoundtrip
 window.testEncoder = testEncoder
 window.testFountainRippleVariant = testFountainRippleVariant
@@ -282,6 +285,7 @@ window.testReceiverFrameUseSummary = testReceiverFrameUseSummary
 window.testReceiverFrameSignatureSummary = testReceiverFrameSignatureSummary
 window.testReceiverHeaderOnlyFrameCanLock = testReceiverHeaderOnlyFrameCanLock
 window.testReceiverLuma1CalFrameTreatedAsSuccess = testReceiverLuma1CalFrameTreatedAsSuccess
+window.testReceiverWasmCaptureRoundtrip = testReceiverWasmCaptureRoundtrip
 window.testReceiverAnchorDiagnosticsQuietByDefault = testReceiverAnchorDiagnosticsQuietByDefault
 window.testStallCounterTicksOnDuplicateFrames = testStallCounterTicksOnDuplicateFrames
 window.testBinary3RecoveredLayoutKeepsLock = testBinary3RecoveredLayoutKeepsLock
@@ -484,6 +488,7 @@ async function runAllTests() {
   const results = {
     prng: testPRNG(),
     packet: testPacketRoundtrip(),
+    xorBytesInto: testXorBytesInto(),
     metadata: testMetadataRoundtrip(),
     parityMap: testParityMap(),
     parityRecovery: testParityRecovery(),
@@ -636,6 +641,7 @@ async function runAllTests() {
     wasmExpectedPacketProbe: await testWasmProbeExpectedPacketsMatchesJs(),
     wasmVsJsDetectAnchors: await testWasmVsJsDetectAnchorsEquivalent(),
     wasmVsJsLuma1Read: await testWasmVsJsLuma1ReadEquivalent(),
+    receiverWasmCaptureRoundtrip: await testReceiverWasmCaptureRoundtrip(),
     wasmVsJsDecodeDataRegion: await testWasmVsJsDecodeDataRegionEquivalent(),
     labBinary4Geometry: testBuildCardBinary4Geometry(),
     labCardSelfDecode: testCardSelfDecode(),
