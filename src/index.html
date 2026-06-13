@@ -267,6 +267,10 @@
           <span id="hdmi-uvc-file-info">No file</span>
           <span id="hdmi-uvc-estimate" class="estimate"></span>
         </div>
+        <div class="yolo-toggle" style="display:flex;align-items:center;gap:8px;margin:8px 0;">
+          <input type="checkbox" id="hdmi-uvc-yolo-toggle">
+          <label for="hdmi-uvc-yolo-toggle" style="font-size:13px;color:#00d4ff;cursor:pointer;">⚡ YOLO mode — no redundancy (clean channel only)</label>
+        </div>
         <div class="action-buttons">
           <button id="btn-hdmi-uvc-action" disabled>Start</button>
           <button id="btn-hdmi-uvc-stop" class="secondary" disabled>Stop</button>
@@ -317,6 +321,7 @@
         <div class="status-receiving hidden" id="hdmi-uvc-status-receiving">
           <div class="status-file-row">
             <span id="hdmi-uvc-file-name">-</span>
+            <span id="hdmi-uvc-yolo-badge" class="hidden" style="font-size:11px;color:#ffd400;margin-left:8px;">⚡ Direct (no redundancy)</span>
             <span class="stats-inline">
               <span id="hdmi-uvc-stat-progress">0%</span>
               <span id="hdmi-uvc-stat-rate">-</span>

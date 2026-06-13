@@ -9,7 +9,8 @@
 
 import { QR_MODE } from './constants.js'
 
-export function createMetadataPayload(filename, mimeType, fileSize, hash, K, mode = QR_MODE.BW) {
+export function createMetadataPayload(filename, mimeType, fileSize, hash, K, mode = QR_MODE.BW, options = {}) {
+  const { noRedundancy = false } = options
   const encoder = new TextEncoder()
   const filenameBytes = encoder.encode(filename.slice(0, 255))
   const mimeBytes = encoder.encode(mimeType.slice(0, 255))
@@ -34,7 +35,7 @@ export function createMetadataPayload(filename, mimeType, fileSize, hash, K, mod
   new DataView(payload.buffer).setUint32(offset, K, false)
   offset += 4
 
-  payload[offset] = mode & 0x03
+  payload[offset] = (mode & 0x03) | (noRedundancy ? 0x04 : 0)
 
   return payload
 }
@@ -60,10 +61,13 @@ export function parseMetadataPayload(payload) {
   const K = new DataView(payload.buffer, payload.byteOffset + offset, 4).getUint32(0, false)
   offset += 4
 
-  // Mode is optional for backwards compatibility with old metadata frames
-  const mode = offset < payload.length ? (payload[offset] & 0x03) : QR_MODE.BW
+  // Mode byte is optional for backwards compatibility with old metadata frames.
+  // Bits 0-1 = QR mode; bit 2 = no-redundancy (YOLO) flag.
+  const modeByte = offset < payload.length ? payload[offset] : 0
+  const mode = modeByte & 0x03
+  const noRedundancy = (modeByte & 0x04) !== 0
 
-  return { filename, mimeType, fileSize, hash, K, mode }
+  return { filename, mimeType, fileSize, hash, K, mode, noRedundancy }
 }
 
 // Test metadata roundtrip
@@ -97,5 +101,30 @@ export function testMetadataRoundtrip() {
   console.log('  BW mode:', pass1 ? 'PASS' : 'FAIL')
   console.log('  PCCC mode:', pass2 ? 'PASS' : 'FAIL')
   console.log('  Palette mode:', pass3 ? 'PASS' : 'FAIL')
+  return pass
+}
+
+// Test the no-redundancy flag in the mode byte (bit 2), alongside the mode bits.
+export function testMetadataNoRedundancyFlag() {
+  const hash = new Uint8Array(32)
+  hash.fill(0xCD)
+
+  // YOLO on; mode bits (PCCC) must be preserved alongside the flag.
+  const p1 = createMetadataPayload('a.bin', 'application/octet-stream', 100, hash, 50, QR_MODE.PCCC, { noRedundancy: true })
+  const d1 = parseMetadataPayload(p1)
+  const ok1 = d1.noRedundancy === true && d1.mode === QR_MODE.PCCC && d1.K === 50
+
+  // YOLO off (default options): flag false, mode default BW.
+  const p2 = createMetadataPayload('a.bin', 'application/octet-stream', 100, hash, 50)
+  const d2 = parseMetadataPayload(p2)
+  const ok2 = d2.noRedundancy === false && d2.mode === QR_MODE.BW
+
+  // Palette mode + flag together.
+  const p3 = createMetadataPayload('a.bin', 'text/plain', 9, hash, 7, QR_MODE.PALETTE, { noRedundancy: true })
+  const d3 = parseMetadataPayload(p3)
+  const ok3 = d3.noRedundancy === true && d3.mode === QR_MODE.PALETTE
+
+  const pass = ok1 && ok2 && ok3
+  console.log('Metadata no-redundancy flag test:', pass ? 'PASS' : 'FAIL', { d1, d2, d3 })
   return pass
 }

@@ -307,10 +307,17 @@ export function createDecoder() {
         metadata = parseMetadataPayload(parsed.payload)
         // Extract K from metadata and set up parity parameters
         K = metadata.K
-        const params = calculateParityParams(K)
-        G = params.G
-        parityMap = generateParityMap(K, G)
-        // K_prime is K + actual parity count (may differ from estimate)
+        if (metadata.noRedundancy) {
+          // No-redundancy stream: no parity blocks exist. Empty map → K' = K,
+          // exact K-block allocation, and all parity bookkeeping no-ops.
+          G = 0
+          parityMap = []
+        } else {
+          const params = calculateParityParams(K)
+          G = params.G
+          parityMap = generateParityMap(K, G)
+        }
+        // K_prime is K + actual parity count (0 when no-redundancy)
         const newK_prime = K + parityMap.length
 
         // Resize array if needed, preserve existing decoded blocks
@@ -421,6 +428,12 @@ export function createDecoder() {
     else { stallFramesSinceLastSolve = 0; lastSolvedSourceCount = solvedSource }
 
     if (solvedSource >= K) return 0
+
+    // Nothing for the GF(2) solver to work with: no pending equations and no
+    // parity rows. Always true in no-redundancy mode (every symbol is degree-1,
+    // so it is placed directly and never queued as pending). Skip before the
+    // trigger so the tail solver does not spin on empty equation sets.
+    if (pendingSymbols.length === 0 && parityMap.length === 0) return 0
 
     const missing = K - solvedSource
     const signature = (pendingSymbols.length * 0x10000) + solved
@@ -838,5 +851,68 @@ export async function testCodecRoundtripDeferredMetadata() {
     parityNoProgressSweeps: decoder.telemetry.parityNoProgressSweeps,
   })
 
+  return pass
+}
+
+// Full no-redundancy roundtrip: encoder with no parity, decoder fed systematic
+// 1..K only. Must complete, verify, reconstruct exactly, with K'=K and the tail
+// solver never firing.
+export async function testCodecRoundtripNoRedundancy() {
+  const { createEncoder } = await import('./encoder.js')
+  const fileSize = 20000
+  const originalData = new Uint8Array(fileSize)
+  for (let i = 0; i < fileSize; i++) originalData[i] = (i * 7 + 13) & 0xff
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', originalData))
+  const encoder = createEncoder(originalData.buffer, 'yolo.bin', 'application/octet-stream', hash, 200, 0, { noRedundancy: true })
+  const decoder = createDecoder()
+
+  decoder.receive(encoder.generateSymbol(0)) // metadata first
+  decoder.noteFrameBoundary()
+  for (let id = 1; id <= encoder.K && !decoder.isComplete(); id++) {
+    decoder.receive(encoder.generateSymbol(id))
+    decoder.noteFrameBoundary()
+  }
+
+  const complete = decoder.isComplete()
+  const verified = complete && await decoder.verify()
+  const recon = decoder.reconstruct()
+  let match = !!recon && recon.length === originalData.length
+  if (match) for (let i = 0; i < fileSize; i++) if (recon[i] !== originalData[i]) { match = false; break }
+  const kEq = decoder.K_prime === decoder.K
+  const noTail = decoder.telemetry.tailSolveTriggerCount === 0
+
+  const pass = complete && verified && match && kEq && noTail
+  console.log('Codec no-redundancy roundtrip test:', pass ? 'PASS' : 'FAIL',
+    { K: encoder.K, K_prime: decoder.K_prime, kEq, noTail })
+  return pass
+}
+
+// Loop recovery: drop one systematic symbol on pass 1; it arrives on the next
+// loop. Models the sender's "loop raw blocks" behavior under a single drop.
+export async function testNoRedundancyLoopRecovers() {
+  const { createEncoder } = await import('./encoder.js')
+  const fileSize = 20000
+  const originalData = new Uint8Array(fileSize)
+  for (let i = 0; i < fileSize; i++) originalData[i] = (i * 11 + 5) & 0xff
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', originalData))
+  const encoder = createEncoder(originalData.buffer, 'loop.bin', 'application/octet-stream', hash, 200, 0, { noRedundancy: true })
+  const decoder = createDecoder()
+
+  decoder.receive(encoder.generateSymbol(0))
+  const dropId = 3
+  for (let id = 1; id <= encoder.K; id++) {
+    if (id === dropId) continue
+    decoder.receive(encoder.generateSymbol(id))
+    decoder.noteFrameBoundary()
+  }
+  const incompleteAfterPass1 = !decoder.isComplete() && decoder.solved === encoder.K - 1
+
+  // Pass 2 loop delivers the dropped block.
+  decoder.receive(encoder.generateSymbol(dropId))
+  const complete = decoder.isComplete()
+  const verified = complete && await decoder.verify()
+
+  const pass = incompleteAfterPass1 && complete && verified
+  console.log('No-redundancy loop recovery test:', pass ? 'PASS' : 'FAIL', { incompleteAfterPass1, complete })
   return pass
 }

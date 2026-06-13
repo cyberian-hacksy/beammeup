@@ -4156,6 +4156,9 @@ function updateProgress() {
   const progress = state.decoder.progress
 
   elements.fileName.textContent = meta.filename
+  if (elements.yoloBadge) {
+    elements.yoloBadge.classList.toggle('hidden', meta.noRedundancy !== true)
+  }
   const pct = getDisplayProgressPercent(state.decoder)
   elements.statProgress.textContent = pct + '%'
   elements.progressFill.style.width = pct + '%'
@@ -4357,6 +4360,7 @@ export function initHdmiUvcReceiver(errorHandler) {
     statusComplete: document.getElementById('hdmi-uvc-status-complete'),
     statFrames: document.getElementById('hdmi-uvc-stat-frames'),
     fileName: document.getElementById('hdmi-uvc-file-name'),
+    yoloBadge: document.getElementById('hdmi-uvc-yolo-badge'),
     statProgress: document.getElementById('hdmi-uvc-stat-progress'),
     statRate: document.getElementById('hdmi-uvc-stat-rate'),
     progressFill: document.getElementById('hdmi-uvc-progress-fill'),

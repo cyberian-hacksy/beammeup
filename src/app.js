@@ -5,13 +5,15 @@ import qrcode from 'qrcode-generator'
 import { testPRNG } from './lib/prng.js'
 import { testPacketRoundtrip } from './lib/packet.js'
 import { testXorBytesInto } from './lib/xor.js'
-import { testMetadataRoundtrip } from './lib/metadata.js'
-import { testEncoder } from './lib/encoder.js'
+import { testMetadataRoundtrip, testMetadataNoRedundancyFlag } from './lib/metadata.js'
+import { testEncoder, testEncoderNoRedundancy } from './lib/encoder.js'
 import { testFountainRippleVariant } from './lib/fountain-symbol.js'
 import {
   testCodecRoundtrip,
   testCodecRoundtripWithLoss,
   testCodecRoundtripDeferredMetadata,
+  testCodecRoundtripNoRedundancy,
+  testNoRedundancyLoopRecovers,
   testTailSolverTriggerAllowsWiderDenseBinaryTail
 } from './lib/decoder.js'
 import { testParityMap, testParityRecovery, testGF2SolverSmall, testGF2SolverLarge, testSourceToParityAdjacency } from './lib/precode.js'
@@ -42,6 +44,7 @@ import {
   testBinary1RecommendedFpsIs60,
   testLabCardFullscreenExitRequiresReadyRestore,
   testDenseBinaryMixedReplayPass1SourceOnly,
+  testYoloModeSourceOnlyAllPasses,
   testDenseBinaryMixedReplayPass2ChangesAfterParitySweep,
   testCompat4MixedReplayKeepsSixSlotPatterns,
   testDenseBinaryMixedReplayMetadataReducesDataSlots,
@@ -213,11 +216,15 @@ window.testPRNG = testPRNG
 window.testPacketRoundtrip = testPacketRoundtrip
 window.testXorBytesInto = testXorBytesInto
 window.testMetadataRoundtrip = testMetadataRoundtrip
+window.testMetadataNoRedundancyFlag = testMetadataNoRedundancyFlag
 window.testEncoder = testEncoder
+window.testEncoderNoRedundancy = testEncoderNoRedundancy
 window.testFountainRippleVariant = testFountainRippleVariant
 window.testCodecRoundtrip = testCodecRoundtrip
 window.testCodecRoundtripWithLoss = testCodecRoundtripWithLoss
 window.testCodecRoundtripDeferredMetadata = testCodecRoundtripDeferredMetadata
+window.testCodecRoundtripNoRedundancy = testCodecRoundtripNoRedundancy
+window.testNoRedundancyLoopRecovers = testNoRedundancyLoopRecovers
 window.testTailSolverTriggerAllowsWiderDenseBinaryTail = testTailSolverTriggerAllowsWiderDenseBinaryTail
 window.testParityMap = testParityMap
 window.testParityRecovery = testParityRecovery
@@ -302,6 +309,7 @@ window.testHdmiUvcSenderDefaults = testHdmiUvcSenderDefaults
 window.testBinary1RecommendedFpsIs60 = testBinary1RecommendedFpsIs60
 window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
 window.testDenseBinaryMixedReplayPass1SourceOnly = testDenseBinaryMixedReplayPass1SourceOnly
+window.testYoloModeSourceOnlyAllPasses = testYoloModeSourceOnlyAllPasses
 window.testDenseBinaryMixedReplayPass2ChangesAfterParitySweep = testDenseBinaryMixedReplayPass2ChangesAfterParitySweep
 window.testCompat4MixedReplayKeepsSixSlotPatterns = testCompat4MixedReplayKeepsSixSlotPatterns
 window.testDenseBinaryMixedReplayMetadataReducesDataSlots = testDenseBinaryMixedReplayMetadataReducesDataSlots
@@ -486,16 +494,20 @@ async function runAllTests() {
     packet: testPacketRoundtrip(),
     xorBytesInto: testXorBytesInto(),
     metadata: testMetadataRoundtrip(),
+    metadataNoRedundancy: testMetadataNoRedundancyFlag(),
     parityMap: testParityMap(),
     parityRecovery: testParityRecovery(),
     srcParityAdj: testSourceToParityAdjacency(),
     gf2Small: await testGF2SolverSmall(),
     gf2Large: await testGF2SolverLarge(),
     encoder: await testEncoder(),
+    encoderNoRedundancy: await testEncoderNoRedundancy(),
     fountainRippleVariant: testFountainRippleVariant(),
     codec: await testCodecRoundtrip(),
     codecWithLoss: await testCodecRoundtripWithLoss(),
     codecDeferredMetadata: await testCodecRoundtripDeferredMetadata(),
+    codecNoRedundancy: await testCodecRoundtripNoRedundancy(),
+    noRedundancyLoop: await testNoRedundancyLoopRecovers(),
     tailSolverWiderDenseBinaryTail: testTailSolverTriggerAllowsWiderDenseBinaryTail(),
     // HDMI-UVC tests
     crc32: testCrc32(),
@@ -572,6 +584,7 @@ async function runAllTests() {
     binary1Recommended60Fps: testBinary1RecommendedFpsIs60(),
     labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),
     denseBinaryMixedReplayPass1SourceOnly: testDenseBinaryMixedReplayPass1SourceOnly(),
+    yoloModeSourceOnlyAllPasses: testYoloModeSourceOnlyAllPasses(),
     denseBinaryMixedReplayPass2ParitySweepTransition: testDenseBinaryMixedReplayPass2ChangesAfterParitySweep(),
     compat4MixedReplaySixSlotPatterns: testCompat4MixedReplayKeepsSixSlotPatterns(),
     denseBinaryMixedReplayMetadataDataSlots: testDenseBinaryMixedReplayMetadataReducesDataSlots(),

@@ -275,6 +275,7 @@ function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fp
 
 const state = {
   encoder: null,
+  yolo: false,
   fileData: null,
   fileName: null,
   fileSize: 0,
@@ -1216,6 +1217,10 @@ function updateActionButton() {
     btn.disabled = false
   }
   elements.btnStop.disabled = !state.fileData
+  if (elements.yoloToggle) {
+    // The encoder is built at start; toggling mid-transfer would have no effect.
+    elements.yoloToggle.disabled = state.isSending || state.isAwaitingStart
+  }
 }
 
 function updateEstimateSummary() {
@@ -1891,6 +1896,13 @@ function advanceMixedReplayPass(frameNumber) {
   state.systematicPass++
   state.systematicIndex = 0
   state.paritySweepsInPass = 0
+  if (state.yolo) {
+    debugLog(
+      `YOLO source-only loop: pass ${state.systematicPass} at frame ${frameNumber + 1} ` +
+      `(stride=${state.systematicStride}/${state.encoder.K})`
+    )
+    return
+  }
   const paritySpan = getParitySystematicSpan()
   const pattern = getSlotMixPatternForPass(state.systematicPass, {
     slots: Math.max(1, state.packetsPerFrame || 1),
@@ -2060,10 +2072,12 @@ function buildFramePacketBatch(frameNumber) {
   const metadataSlotIndex = sendMetadata ? getMetadataSlotIndex(scheduleFrameNumber, slots) : -1
   const tailSystematicBurst = isTailSystematicBurstFrame(frameNumber)
   const dataSlots = Math.max(0, slots - (sendMetadata ? 1 : 0))
-  const slotMixPattern = getActiveSlotMixPatternForFrame(state.systematicPass, {
-    paritySweepsInPass: state.paritySweepsInPass,
-    slots: dataSlots
-  })
+  const slotMixPattern = state.yolo
+    ? null
+    : getActiveSlotMixPatternForFrame(state.systematicPass, {
+        paritySweepsInPass: state.paritySweepsInPass,
+        slots: dataSlots
+      })
 
   let dataSlotsBuilt = 0
   for (let slot = 0; slot < slots; slot++) {
@@ -2074,7 +2088,9 @@ function buildFramePacketBatch(frameNumber) {
     }
 
     let strategy = tailSystematicBurst ? 'systematic' : 'auto'
-    if (slotMixPattern) {
+    if (state.yolo) {
+      strategy = 'source'
+    } else if (slotMixPattern) {
       strategy = slotMixPattern[Math.min(dataSlotsBuilt, slotMixPattern.length - 1)] || 'source'
     }
     const symbolId = nextDataSymbolId(frameNumber, strategy)
@@ -2335,7 +2351,9 @@ async function startSending() {
       state.fileName,
       'application/octet-stream',
       state.fileHash,
-      blockSize
+      blockSize,
+      undefined,
+      { noRedundancy: state.yolo }
     )
     state.packetSize = blockSize + PACKET_HEADER_SIZE
     state.packetsPerFrame = bestPacketsPerFrame
@@ -2344,6 +2362,7 @@ async function startSending() {
     const utilization = ((batchedBytes / capacity) * 100).toFixed(1)
 
     debugLog(`Encoder: K=${state.encoder.K}, K'=${state.encoder.K_prime}`)
+    if (state.yolo) debugLog('YOLO mode: redundancy disabled (no parity, no fountain)')
     debugLog(`Fountain degree: ${getDenseBinaryDegree()} (receiver must match)`)
     debugLog(getMetadataScheduleDescription())
     if (getSyncPorchFrameCount(state.mode) > 0) {
@@ -2634,7 +2653,8 @@ export function initHdmiUvcSender(errorHandler) {
     fileInfo: document.getElementById('hdmi-uvc-file-info'),
     estimate: document.getElementById('hdmi-uvc-estimate'),
     btnAction: document.getElementById('btn-hdmi-uvc-action'),
-    btnStop: document.getElementById('btn-hdmi-uvc-stop')
+    btnStop: document.getElementById('btn-hdmi-uvc-stop'),
+    yoloToggle: document.getElementById('hdmi-uvc-yolo-toggle')
   }
 
   updateDropZoneState()
@@ -2644,6 +2664,17 @@ export function initHdmiUvcSender(errorHandler) {
   elements.fileInput.onchange = handleFileSelect
   elements.btnAction.onclick = handleActionClick
   elements.btnStop.onclick = stopSending
+
+  if (elements.yoloToggle) {
+    let storedYolo = false
+    try { storedYolo = localStorage.getItem('hdmi-uvc-yolo') === '1' } catch {}
+    state.yolo = storedYolo
+    elements.yoloToggle.checked = storedYolo
+    elements.yoloToggle.onchange = (e) => {
+      state.yolo = e.target.checked
+      try { localStorage.setItem('hdmi-uvc-yolo', state.yolo ? '1' : '0') } catch {}
+    }
+  }
 
   elements.container.onclick = handleDropZoneClick
   elements.container.ondragover = handleDragOver
@@ -2932,6 +2963,7 @@ export function testParitySweepCounter() {
 function snapshotSchedulerState() {
   return {
     mode: state.mode,
+    yolo: state.yolo,
     encoder: state.encoder,
     packetsPerFrame: state.packetsPerFrame,
     systematicIndex: state.systematicIndex,
@@ -2955,9 +2987,11 @@ function setupSchedulerTestState({
   KPrime = 112,
   packetsPerFrame = 24,
   systematicPass = 1,
-  paritySweepsInPass = 0
+  paritySweepsInPass = 0,
+  yolo = false
 } = {}) {
   state.mode = mode
+  state.yolo = yolo
   state.encoder = {
     K,
     K_prime: KPrime,
@@ -3004,6 +3038,34 @@ export function testDenseBinaryMixedReplayPass1SourceOnly() {
       symbolIds: batch.symbolIds,
       counts
     })
+    return pass
+  } finally {
+    Object.assign(state, snapshot)
+  }
+}
+
+// With YOLO on, every data slot in every pass must be a source symbol — never
+// parity or fountain — including late passes where normal mode would mix them in.
+export function testYoloModeSourceOnlyAllPasses() {
+  const snapshot = snapshotSchedulerState()
+  try {
+    let allSource = true
+    let sawSource = false
+    const detail = []
+    for (const passNum of [1, 2, 5]) {
+      setupSchedulerTestState({ mode: HDMI_MODE.LUMA_1, systematicPass: passNum, yolo: true })
+      for (let f = 1; f <= 12; f++) {
+        const batch = buildFramePacketBatch(f)
+        const counts = countSymbolKinds(batch.symbolIds, state.encoder)
+        if (counts.source > 0) sawSource = true
+        if (counts.parity !== 0 || counts.fountain !== 0) {
+          allSource = false
+          detail.push({ passNum, f, counts })
+        }
+      }
+    }
+    const pass = allSource && sawSource
+    console.log('YOLO source-only all-passes test:', pass ? 'PASS' : 'FAIL', { sawSource, detail })
     return pass
   } finally {
     Object.assign(state, snapshot)
