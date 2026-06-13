@@ -2377,7 +2377,10 @@ async function acceptPackets(
       state.lastReceivingUiUpdateMs = nowMs
     }
 
-    if (decoder.isComplete()) {
+    // completionStarted (set synchronously inside handleComplete) also
+    // dedupes this block: with the read pool, results still in flight when
+    // the decoder completes each land here and would re-log otherwise.
+    if (decoder.isComplete() && !state.completionStarted) {
       if (!shouldRefreshUi) {
         updateProgress()
         state.lastReceivingUiUpdateMs = nowMs
@@ -2929,6 +2932,7 @@ async function onReadPoolMessage(slot, msg) {
   slot.busy = false
   recyclePoolBuffer(msg.frameBuffer)
   if (msg.configVersion !== readPool.configVersion) return // stale lock; not a failure
+  if (state.decoder?.isComplete()) return // late result after completion; nothing to ingest
 
   if (!msg.ok || !msg.payloadBuffer || !msg.records || msg.records.length === 0) {
     readPool.stats.failed++
