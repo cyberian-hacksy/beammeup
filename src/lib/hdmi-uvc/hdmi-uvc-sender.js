@@ -7,7 +7,6 @@ import {
   HDMI_UVC_MAX_FILE_SIZE,
   HDMI_MODE,
   HDMI_MODE_NAMES,
-  DEFAULT_HDMI_MODE,
   FPS_PRESETS,
   DEFAULT_FPS_PRESET,
   RENDER_SIZE_PRESETS,
@@ -18,7 +17,6 @@ import {
   buildNativeGeometryGuidance,
   createFrameBuffer,
   getDataRegion,
-  getLuma1CalibrationPayload,
   getLuma1SenderLevels,
   getPayloadCapacity,
   hasEffectiveOneToOnePresentation,
@@ -52,184 +50,13 @@ const TX_PERF_LOG_INTERVAL_FRAMES = 60
 const BINARY1_SYNC_PORCH_FRAMES = 0
 const BINARY1_PASS2_SOURCE_WARMUP_FRAMES = 0
 
-function getCurrentSearch() {
-  try {
-    return typeof location !== 'undefined' ? location.search : ''
-  } catch (_) {
-    return ''
-  }
-}
-
-function parseHdmiModeName(raw) {
-  switch ((raw || '').trim().toLowerCase()) {
-    case 'luma1':
-    case 'luma-1':
-    case 'luma4':
-    case '1x1-luma4':
-      return HDMI_MODE.LUMA_1
-    case 'binary1':
-    case 'binary-1':
-    case '1x1':
-      return HDMI_MODE.BINARY_1
-    case 'binary2':
-    case 'binary-2':
-    case '2x2':
-      return HDMI_MODE.BINARY_2
-    case 'binary3':
-    case 'binary-3':
-    case '3x3':
-      return HDMI_MODE.BINARY_3
-    default:
-      return null
-  }
-}
-
-function hdmiModeToParamValue(mode) {
-  switch (mode) {
-    case HDMI_MODE.LUMA_1: return 'luma4'
-    case HDMI_MODE.BINARY_2: return '2x2'
-    case HDMI_MODE.BINARY_3: return '3x3'
-    default: return '1x1'
-  }
-}
-
-function parseHdmiModeParam(search) {
-  let params
-  try {
-    params = new URLSearchParams(search || '')
-  } catch (_) {
-    return null
-  }
-  return parseHdmiModeName(params.get('tx-mode') || params.get('hdmi-mode'))
-}
-
-export function resolveDefaultHdmiMode(search = getCurrentSearch()) {
-  return parseHdmiModeParam(search) ?? DEFAULT_HDMI_MODE
-}
-
-// Selections persist so test iterations don't require re-picking everything:
-// URL param (shareable, wins) → localStorage (last UI choice) → default.
-const SENDER_MODE_STORAGE_KEY = 'hdmi-uvc-tx-mode'
-const LUMA1_MIDS_STORAGE_KEY = 'hdmi-uvc-luma-mids'
-const FPS_STORAGE_KEY = 'hdmi-uvc-tx-fps'
 // Default mids pre-compensate the measured channel curve. Live strip readout
 // 2026-06-10 (sent [0,53,154,255] captured as [0,34,137,255], a darkening
 // gamma ~1.3): piecewise-linear inversion puts the even-thirds capture
-// targets (85, 170) at sender values 103 and 182.
+// targets (85, 170) at sender values 103 and 182. These are the only luma
+// levels the sender uses — the mode is locked to 1x1 Luma4.
 const DEFAULT_LUMA1_MIDS = [103, 182]
-
-function readStoredPreference(key) {
-  try {
-    return typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null
-  } catch (_) {
-    return null
-  }
-}
-
-function writeStoredPreference(key, value) {
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(key, value)
-  } catch (_) { /* private mode */ }
-}
-
-function writeUrlParam(key, value) {
-  try {
-    if (typeof history === 'undefined' || typeof location === 'undefined') return
-    const url = new URL(location.href)
-    url.searchParams.set(key, value)
-    history.replaceState(null, '', url)
-  } catch (_) { /* sandboxed */ }
-}
-
-export function resolveInitialHdmiMode(
-  search = getCurrentSearch(),
-  stored = readStoredPreference(SENDER_MODE_STORAGE_KEY)
-) {
-  return parseHdmiModeParam(search) ?? parseHdmiModeName(stored) ?? DEFAULT_HDMI_MODE
-}
-
-function parseLuma1MidsValue(raw) {
-  if (!raw || typeof raw !== 'string') return null
-  const parts = raw.split(/[,/:]/).map((part) => Number.parseInt(part.trim(), 10))
-  if (parts.length !== 2) return null
-  if (!Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) return null
-  if (parts[0] <= 0 || parts[1] <= parts[0] || parts[1] >= 255) return null
-  return [parts[0], parts[1]]
-}
-
-function parseLuma1MidsParam(search) {
-  let params
-  try {
-    params = new URLSearchParams(search || '')
-  } catch (_) {
-    return null
-  }
-  return parseLuma1MidsValue(params.get('luma-mids'))
-}
-
-// LUMA_1 gamma pre-compensation: ?luma-mids=53,154 sets the two intermediate
-// sender gray values so the *captured* levels come out evenly spaced. The
-// receiver's invalidation log prints the measured levels
-// (levels=[b/l1/l2/w]); pick mids that pull l1/l2 toward the even spacing
-// b + (w-b)/3 and b + 2(w-b)/3. Returns the applied [mid1, mid2] or null.
-export function resolveLuma1MidLevels(search = getCurrentSearch()) {
-  const mids = parseLuma1MidsParam(search)
-  if (!mids) return null
-  if (!setLuma1SenderMidLevels(mids[0], mids[1])) return null
-  return mids
-}
-
-export function resolveInitialLuma1Mids(
-  search = getCurrentSearch(),
-  stored = readStoredPreference(LUMA1_MIDS_STORAGE_KEY)
-) {
-  return parseLuma1MidsParam(search) ?? parseLuma1MidsValue(stored) ?? DEFAULT_LUMA1_MIDS.slice()
-}
-
-// Calibration mode: the sender transmits the fixed receiver-known LUMA_1
-// test pattern instead of file data, turning receiver-side error analysis
-// into direct measurement. ?luma-cal=1, persisted like the other options.
-const LUMA1_CAL_STORAGE_KEY = 'hdmi-uvc-luma-cal'
-
-export function resolveInitialLumaCal(
-  search = getCurrentSearch(),
-  stored = readStoredPreference(LUMA1_CAL_STORAGE_KEY)
-) {
-  let params = null
-  try {
-    params = new URLSearchParams(search || '')
-  } catch (_) { /* fall through */ }
-  const raw = params ? params.get('luma-cal') : null
-  if (raw === '1' || raw === 'true') return true
-  if (raw === '0' || raw === 'false') return false
-  return stored === '1'
-}
-
-// FPS preset: ?tx-fps=<fps value> (e.g. 30) → stored preset index → mode
-// recommendation. Returns a FPS_PRESETS index as a string (slider contract).
-export function resolveInitialFpsPreset(
-  search = getCurrentSearch(),
-  stored = readStoredPreference(FPS_STORAGE_KEY),
-  mode = state.mode
-) {
-  let params = null
-  try {
-    params = new URLSearchParams(search || '')
-  } catch (_) { /* fall through */ }
-  const urlFps = params ? Number.parseInt(params.get('tx-fps'), 10) : NaN
-  const urlIndex = FPS_PRESETS.findIndex((preset) => preset.fps === urlFps)
-  if (urlIndex >= 0) return String(urlIndex)
-  const storedIndex = Number.parseInt(stored, 10)
-  if (Number.isInteger(storedIndex) && storedIndex >= 0 && storedIndex < FPS_PRESETS.length) {
-    return String(storedIndex)
-  }
-  return getRecommendedFpsPreset(mode)
-}
-
-{
-  const initialMids = resolveInitialLuma1Mids()
-  setLuma1SenderMidLevels(initialMids[0], initialMids[1])
-}
+setLuma1SenderMidLevels(DEFAULT_LUMA1_MIDS[0], DEFAULT_LUMA1_MIDS[1])
 
 function debugLog(text) {
   if (!DEBUG_MODE) return
@@ -470,8 +297,7 @@ const state = {
   fountainSymbolId: 0,
   dataPacketCount: 0,
   frameCount: 0,
-  mode: resolveInitialHdmiMode(),
-  lumaCalibration: resolveInitialLumaCal(),
+  mode: HDMI_MODE.LUMA_1,
   renderSizePresetId: DEFAULT_RENDER_SIZE_PRESET,
   systematicPass: 1,
   tailStartFrame: 0,
@@ -748,10 +574,8 @@ async function restoreSenderReadyState() {
     elements.placeholderIcon.textContent = '+'
     elements.placeholderText.textContent = 'Drop file here or tap to select'
   }
-  if (elements.fpsSlider) elements.fpsSlider.disabled = false
   updateActionButton()
-  updateModeSelector()
-  updateRenderSizeSelector()
+  updateEstimateSummary()
 }
 
 function applyFullscreenCanvasStyles(target = getPresentationTarget()) {
@@ -1356,12 +1180,10 @@ function formatBytes(bytes) {
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
 }
 
+// Frame rate is locked to 60 fps — the only rate Luma4 was validated at and
+// the dongle's native capture rate. DEFAULT_FPS_PRESET indexes the 60 entry.
 function getFps() {
-  const fallbackIndex = Number(getRecommendedFpsPreset(state.mode))
-  const index = elements?.fpsSlider
-    ? parseInt(elements.fpsSlider.value, 10)
-    : fallbackIndex
-  return FPS_PRESETS[index] || FPS_PRESETS[fallbackIndex] || FPS_PRESETS[DEFAULT_FPS_PRESET]
+  return FPS_PRESETS[DEFAULT_FPS_PRESET]
 }
 
 function updateDropZoneState() {
@@ -1400,66 +1222,6 @@ function updateEstimateSummary() {
   if (!elements?.estimate) return
   const preset = getRenderSizePreset()
   elements.estimate.textContent = `Render ${preset.name}`
-}
-
-function updateModeSelector() {
-  const buttons = elements.modeButtons || []
-  const disabled = state.isSending || state.isPaused || state.isAwaitingStart
-
-  for (const button of buttons) {
-    const mode = parseInt(button.dataset.mode, 10)
-    button.classList.toggle('active', mode === state.mode)
-    button.disabled = disabled
-  }
-
-  if (elements.lumaMidsGroup) {
-    elements.lumaMidsGroup.style.display = state.mode === HDMI_MODE.LUMA_1 ? '' : 'none'
-  }
-  const senderLevels = getLuma1SenderLevels()
-  if (elements.lumaMid1) {
-    elements.lumaMid1.value = senderLevels[1]
-    elements.lumaMid1.disabled = disabled
-  }
-  if (elements.lumaMid2) {
-    elements.lumaMid2.value = senderLevels[2]
-    elements.lumaMid2.disabled = disabled
-  }
-  if (elements.lumaLevelsLabel) {
-    elements.lumaLevelsLabel.textContent = `levels [${senderLevels.join(', ')}]`
-  }
-  if (elements.fpsSlider) {
-    elements.fpsSlider.disabled = disabled
-  }
-}
-
-function updateRenderSizeSelector() {
-  if (elements?.renderSizeSelect) {
-    elements.renderSizeSelect.value = getRenderSizePreset().id
-    elements.renderSizeSelect.disabled = state.isSending || state.isPaused || state.isAwaitingStart
-  }
-  if (elements.labCardSelect) {
-    elements.labCardSelect.disabled = state.isSending || state.isPaused || state.isAwaitingStart
-  }
-  if (elements.btnLabRender) {
-    elements.btnLabRender.disabled = state.isSending || state.isPaused || state.isAwaitingStart
-  }
-  updateEstimateSummary()
-  updatePresentationControls()
-}
-
-function updatePresentationControls() {
-  if (!elements?.externalDisplayToggle) return
-  elements.externalDisplayToggle.checked = state.useExternalDisplay
-  elements.externalDisplayToggle.disabled = state.isSending || state.isPaused || state.isAwaitingStart
-  if (elements.presentationStatus) {
-    if (!state.useExternalDisplay) {
-      elements.presentationStatus.textContent = 'Current window'
-    } else if (window.getScreenDetails) {
-      elements.presentationStatus.textContent = 'Start selects screen'
-    } else {
-      elements.presentationStatus.textContent = 'Chrome/Edge only'
-    }
-  }
 }
 
 // Once the HDMI-UVC decode path is stable, repeating every symbol wastes most
@@ -2359,10 +2121,7 @@ function renderFrame() {
     const batchReadyMs = performance.now()
 
     const frameImageData = ensureHdmiFrameResources(cw, ch)
-    const framePayload = state.lumaCalibration && state.mode === HDMI_MODE.LUMA_1
-      ? getLuma1CalibrationPayload(batch.payload.length)
-      : batch.payload
-    buildFrame(framePayload, state.mode, cw, ch, fps.fps, batch.outerSymbolId, state.frameBuffer)
+    buildFrame(batch.payload, state.mode, cw, ch, fps.fps, batch.outerSymbolId, state.frameBuffer)
     const buildDoneMs = performance.now()
 
     const ctx = canvas.getContext('2d')
@@ -2433,10 +2192,8 @@ function armPreparedStart(autoStartDelayMs = 0) {
   showArmedStartPrompt()
   setSignalLive(false)
 
-  if (elements.fpsSlider) elements.fpsSlider.disabled = true
   updateActionButton()
-  updateModeSelector()
-  updateRenderSizeSelector()
+  updateEstimateSummary()
   if (autoStartDelayMs > 0) {
     state.armedStartTimerId = setTimeout(() => {
       state.armedStartTimerId = null
@@ -2463,10 +2220,8 @@ function beginPreparedStart() {
   elements.placeholder.style.display = 'none'
   setSignalLive(true)
 
-  if (elements.fpsSlider) elements.fpsSlider.disabled = true
   updateActionButton()
-  updateModeSelector()
-  updateRenderSizeSelector()
+  updateEstimateSummary()
   renderFrame()
 }
 
@@ -2562,12 +2317,7 @@ async function startSending() {
     } = selectedBatching
 
     debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}`)
-    if (state.mode === HDMI_MODE.LUMA_1) {
-      debugLog(`Luma4 sender levels: [${getLuma1SenderLevels().join(', ')}] (override with ?luma-mids=m1,m2)`)
-      if (state.lumaCalibration) {
-        debugLog('Luma4 CALIBRATION MODE: frames carry the fixed test pattern, not file data')
-      }
-    }
+    debugLog(`Luma4 sender levels: [${getLuma1SenderLevels().join(', ')}]`)
     debugLog(`Pass-2 variant: ${getPass2Variant()}`)
     debugLog(`Dense pass-2 sweep mix: ${getDenseBinaryPass2SweepMix()}`)
     debugLog(`TX pacing: ${getSenderRenderPace(state.mode, selectedFps)}`)
@@ -2646,10 +2396,8 @@ async function pauseSending() {
   elements.placeholderIcon.textContent = '⏸'
   elements.placeholderText.textContent = 'Transfer paused - ' + state.frameCount + ' frames sent'
 
-  if (elements.fpsSlider) elements.fpsSlider.disabled = false
   updateActionButton()
-  updateModeSelector()
-  updateRenderSizeSelector()
+  updateEstimateSummary()
 }
 
 async function resumeSending() {
@@ -2670,10 +2418,8 @@ async function resumeSending() {
     state.nextFrameDueMs = performance.now() + (1000 / getFps().fps)
     resetSenderPerfState()
 
-    if (elements.fpsSlider) elements.fpsSlider.disabled = true
     updateActionButton()
-    updateModeSelector()
-    updateRenderSizeSelector()
+    updateEstimateSummary()
     renderFrame()
   } catch (err) {
     console.error('HDMI-UVC resume error:', err)
@@ -2694,7 +2440,6 @@ async function stopSending() {
   state.fileHash = null
   setSignalLive(false)
 
-  if (elements.fpsSlider) elements.fpsSlider.disabled = false
 
   resetCanvasStyles()
   await exitFullscreenSafely()
@@ -2708,8 +2453,7 @@ async function stopSending() {
 
   updateDropZoneState()
   updateActionButton()
-  updateModeSelector()
-  updateRenderSizeSelector()
+  updateEstimateSummary()
 }
 
 function handleActionClick() {
@@ -2753,7 +2497,7 @@ async function processFile(file) {
 
     updateDropZoneState()
     updateActionButton()
-    updateRenderSizeSelector()
+    updateEstimateSummary()
 
   } catch (err) {
     console.error('File read error:', err)
@@ -2798,12 +2542,6 @@ async function handleDrop(e) {
   }
 }
 
-function handleFpsChange() {
-  const preset = getFps()
-  if (elements.fpsDisplay) elements.fpsDisplay.textContent = preset.name
-  updateEstimateSummary()
-}
-
 function getFpsPresetIndexForRate(fps, fallbackIndex = DEFAULT_FPS_PRESET) {
   const index = FPS_PRESETS.findIndex(preset => preset.fps === fps)
   return String(index >= 0 ? index : fallbackIndex)
@@ -2816,62 +2554,6 @@ function getRecommendedFpsPreset(mode = state.mode) {
     isDenseBinaryMode(mode)
     ? getFpsPresetIndexForRate(60)
     : String(DEFAULT_FPS_PRESET)
-}
-
-function handleModeChange(e) {
-  const button = e.currentTarget
-  const newMode = parseInt(button.dataset.mode, 10)
-  if (!Number.isFinite(newMode) || newMode === state.mode) return
-  if (state.isSending || state.isPaused || state.isAwaitingStart) return
-
-  state.mode = newMode
-  const paramValue = hdmiModeToParamValue(state.mode)
-  writeStoredPreference(SENDER_MODE_STORAGE_KEY, paramValue)
-  writeUrlParam('tx-mode', paramValue)
-  const recommendedFpsPreset = getRecommendedFpsPreset(state.mode)
-  if (elements.fpsSlider && elements.fpsSlider.value !== recommendedFpsPreset) {
-    elements.fpsSlider.value = recommendedFpsPreset
-    writeStoredPreference(FPS_STORAGE_KEY, recommendedFpsPreset)
-    handleFpsChange()
-  }
-  updateModeSelector()
-  updateRenderSizeSelector()
-  debugLog(`HDMI mode selected: ${HDMI_MODE_NAMES[state.mode]}`)
-}
-
-function handleLumaMidsChange() {
-  if (state.isSending || state.isPaused || state.isAwaitingStart) {
-    updateModeSelector()
-    return
-  }
-  const mid1 = Number.parseInt(elements.lumaMid1?.value, 10)
-  const mid2 = Number.parseInt(elements.lumaMid2?.value, 10)
-  if (!setLuma1SenderMidLevels(mid1, mid2)) {
-    debugLog(`Luma4 mids rejected: ${mid1},${mid2} (need 0 < m1 < m2 < 255)`)
-    updateModeSelector()
-    return
-  }
-  writeStoredPreference(LUMA1_MIDS_STORAGE_KEY, `${mid1},${mid2}`)
-  writeUrlParam('luma-mids', `${mid1},${mid2}`)
-  debugLog(`Luma4 mids set: levels=[${getLuma1SenderLevels().join(', ')}]`)
-  updateModeSelector()
-}
-
-function handleRenderSizeChange(e) {
-  if (state.isAwaitingStart) return
-  const preset = getRenderSizePreset(e.target.value)
-  if (preset.id === state.renderSizePresetId) return
-
-  state.renderSizePresetId = preset.id
-  updateRenderSizeSelector()
-  debugLog(`Render size selected: ${preset.name}`)
-}
-
-function handleExternalDisplayChange(e) {
-  if (state.isSending || state.isPaused || state.isAwaitingStart) return
-  state.useExternalDisplay = !!e.target.checked
-  updatePresentationControls()
-  debugLog(`External display ${state.useExternalDisplay ? 'enabled' : 'disabled'}`)
 }
 
 function handleKeydown(e) {
@@ -2949,79 +2631,17 @@ export function initHdmiUvcSender(errorHandler) {
     overlay: document.getElementById('hdmi-uvc-overlay'),
     frameCount: document.getElementById('hdmi-uvc-frame-count'),
     progressDisplay: document.getElementById('hdmi-uvc-progress'),
-    externalDisplayToggle: document.getElementById('hdmi-uvc-external-display-toggle'),
-    presentationStatus: document.getElementById('hdmi-uvc-presentation-status'),
     fileInfo: document.getElementById('hdmi-uvc-file-info'),
     estimate: document.getElementById('hdmi-uvc-estimate'),
     btnAction: document.getElementById('btn-hdmi-uvc-action'),
-    btnStop: document.getElementById('btn-hdmi-uvc-stop'),
-    lumaMidsGroup: document.getElementById('hdmi-uvc-luma-mids-group'),
-    lumaMid1: document.getElementById('hdmi-uvc-luma-mid1'),
-    lumaMid2: document.getElementById('hdmi-uvc-luma-mid2'),
-    lumaLevelsLabel: document.getElementById('hdmi-uvc-luma-levels')
-  }
-  elements.modeButtons = []
-
-  const modeButtonsContainer = document.getElementById('hdmi-uvc-mode-buttons')
-  if (modeButtonsContainer) {
-    for (const mode of [HDMI_MODE.BINARY_3, HDMI_MODE.BINARY_2, HDMI_MODE.BINARY_1, HDMI_MODE.LUMA_1]) {
-      const button = document.createElement('button')
-      button.className = 'mode-btn'
-      button.dataset.mode = String(mode)
-      button.textContent = HDMI_MODE_NAMES[mode]
-      button.onclick = handleModeChange
-      modeButtonsContainer.appendChild(button)
-      elements.modeButtons.push(button)
-    }
-  }
-  if (elements.lumaMid1) elements.lumaMid1.onchange = handleLumaMidsChange
-  if (elements.lumaMid2) elements.lumaMid2.onchange = handleLumaMidsChange
-
-  elements.lumaCalToggle = document.getElementById('hdmi-uvc-luma-cal')
-  if (elements.lumaCalToggle) {
-    elements.lumaCalToggle.checked = state.lumaCalibration
-    elements.lumaCalToggle.onchange = () => {
-      state.lumaCalibration = elements.lumaCalToggle.checked
-      writeStoredPreference(LUMA1_CAL_STORAGE_KEY, state.lumaCalibration ? '1' : '0')
-      writeUrlParam('luma-cal', state.lumaCalibration ? '1' : '0')
-      debugLog(state.lumaCalibration
-        ? 'Luma4 CALIBRATION pattern ON: transmitting fixed test pattern (no file data goes through)'
-        : 'Luma4 calibration pattern off')
-    }
-  }
-
-  const fpsSelect = document.getElementById('hdmi-uvc-fps-select')
-  if (fpsSelect) {
-    FPS_PRESETS.forEach((preset, index) => {
-      const option = document.createElement('option')
-      option.value = String(index)
-      option.textContent = preset.name
-      fpsSelect.appendChild(option)
-    })
-    fpsSelect.value = resolveInitialFpsPreset()
-    fpsSelect.onchange = () => {
-      writeStoredPreference(FPS_STORAGE_KEY, fpsSelect.value)
-      writeUrlParam('tx-fps', String(getFps().fps))
-      handleFpsChange()
-      debugLog(`FPS preset selected: ${getFps().name}`)
-    }
-    elements.fpsSlider = fpsSelect
-  }
-
-  if (elements.externalDisplayToggle) {
-    state.useExternalDisplay = elements.externalDisplayToggle.checked
+    btnStop: document.getElementById('btn-hdmi-uvc-stop')
   }
 
   updateDropZoneState()
   updateActionButton()
-  handleFpsChange()
-  updateModeSelector()
-  updateRenderSizeSelector()
+  updateEstimateSummary()
 
   elements.fileInput.onchange = handleFileSelect
-  if (elements.externalDisplayToggle) {
-    elements.externalDisplayToggle.onchange = handleExternalDisplayChange
-  }
   elements.btnAction.onclick = handleActionClick
   elements.btnStop.onclick = stopSending
 
@@ -3051,7 +2671,7 @@ export function initHdmiUvcSender(errorHandler) {
     }
   }
   debugLog('HDMI-UVC Sender initialized')
-  debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]} (url > saved > default), Luma4 levels [${getLuma1SenderLevels().join(', ')}]`)
+  debugLog(`Mode: ${HDMI_MODE_NAMES[state.mode]}, Luma4 levels [${getLuma1SenderLevels().join(', ')}]`)
   debugLog(`Pass-2 variant: ${getPass2Variant()}`)
   debugLog(`Dense pass-2 sweep mix: ${getDenseBinaryPass2SweepMix()}`)
   debugLog(`TX pace: ${getSenderRenderPace()}`)
@@ -3243,16 +2863,16 @@ export function testExternalPreparedStartUsesManualGate() {
 }
 
 export function testHdmiUvcSenderDefaults() {
+  // The sender is locked to 1x1 Luma4 at native 1080p / 60 fps.
   const renderPreset = getRenderSizePreset()
-  const recommendedFps = FPS_PRESETS[Number(getRecommendedFpsPreset(state.mode))]
-  const pass = state.mode === HDMI_MODE.BINARY_1 &&
+  const fps = getFps()
+  const pass = state.mode === HDMI_MODE.LUMA_1 &&
     renderPreset.id === '1080p' &&
-    recommendedFps?.fps === 60
+    fps?.fps === 60
   console.log('HDMI-UVC sender defaults test:', pass ? 'PASS' : 'FAIL', {
     mode: HDMI_MODE_NAMES[state.mode],
     renderPresetId: renderPreset.id,
-    recommendedFpsPreset: getRecommendedFpsPreset(state.mode),
-    recommendedFps
+    fps
   })
   return pass
 }
@@ -3269,62 +2889,6 @@ export function testBinary1RecommendedFpsIs60() {
     binary2: binary2Preset,
     luma1: luma1Preset
   })
-  return pass
-}
-
-export function testHdmiUvcSenderModeUrlOverride() {
-  const pass = resolveDefaultHdmiMode('') === HDMI_MODE.BINARY_1 &&
-    resolveDefaultHdmiMode('?tx-mode=binary1') === HDMI_MODE.BINARY_1 &&
-    resolveDefaultHdmiMode('?tx-mode=luma1') === HDMI_MODE.LUMA_1 &&
-    resolveDefaultHdmiMode('?tx-mode=luma4') === HDMI_MODE.LUMA_1 &&
-    resolveDefaultHdmiMode('?hdmi-mode=luma1') === HDMI_MODE.LUMA_1 &&
-    resolveDefaultHdmiMode('?tx-mode=unknown') === HDMI_MODE.BINARY_1
-  console.log('HDMI-UVC sender mode URL override test:', pass ? 'PASS' : 'FAIL')
-  return pass
-}
-
-export function testLuma1MidLevelUrlOverride() {
-  const prior = getLuma1SenderLevels()
-  const applied = resolveLuma1MidLevels('?luma-mids=60,150')
-  const levels = getLuma1SenderLevels()
-  const rejectedEmpty = resolveLuma1MidLevels('') === null
-  const rejectedUnordered = resolveLuma1MidLevels('?luma-mids=200,100') === null
-  const rejectedEndpoint = resolveLuma1MidLevels('?luma-mids=0,255') === null
-  const rejectedNoise = resolveLuma1MidLevels('?luma-mids=abc') === null
-  setLuma1SenderMidLevels(prior[1], prior[2])
-  const restored = getLuma1SenderLevels()
-  const pass = applied?.[0] === 60 && applied?.[1] === 150 &&
-    levels[0] === 0 && levels[1] === 60 && levels[2] === 150 && levels[3] === 255 &&
-    rejectedEmpty && rejectedUnordered && rejectedEndpoint && rejectedNoise &&
-    restored[1] === prior[1] && restored[2] === prior[2]
-  console.log('LUMA_1 mid-level URL override test:', pass ? 'PASS' : 'FAIL', { applied, levels })
-  return pass
-}
-
-export function testHdmiUvcSenderPreferencePersistence() {
-  const pass =
-    // URL beats stored beats default
-    resolveInitialHdmiMode('', null) === DEFAULT_HDMI_MODE &&
-    resolveInitialHdmiMode('', 'luma4') === HDMI_MODE.LUMA_1 &&
-    resolveInitialHdmiMode('', '2x2') === HDMI_MODE.BINARY_2 &&
-    resolveInitialHdmiMode('?tx-mode=1x1', 'luma4') === HDMI_MODE.BINARY_1 &&
-    resolveInitialHdmiMode('?tx-mode=junk', 'junk') === DEFAULT_HDMI_MODE &&
-    // mids: URL > stored > pre-compensation default
-    resolveInitialLuma1Mids('', null).join(',') === '103,182' &&
-    resolveInitialLuma1Mids('', '60,150').join(',') === '60,150' &&
-    resolveInitialLuma1Mids('?luma-mids=40,160', '60,150').join(',') === '40,160' &&
-    resolveInitialLuma1Mids('', '200,100').join(',') === '103,182' &&
-    // fps: URL fps value > stored index > mode recommendation
-    resolveInitialFpsPreset('?tx-fps=30', null, HDMI_MODE.LUMA_1) === '2' &&
-    resolveInitialFpsPreset('', '2', HDMI_MODE.LUMA_1) === '2' &&
-    resolveInitialFpsPreset('', null, HDMI_MODE.LUMA_1) === getRecommendedFpsPreset(HDMI_MODE.LUMA_1) &&
-    resolveInitialFpsPreset('?tx-fps=999', '99', HDMI_MODE.LUMA_1) === getRecommendedFpsPreset(HDMI_MODE.LUMA_1) &&
-    // calibration: URL > stored > off
-    resolveInitialLumaCal('', null) === false &&
-    resolveInitialLumaCal('', '1') === true &&
-    resolveInitialLumaCal('?luma-cal=1', null) === true &&
-    resolveInitialLumaCal('?luma-cal=0', '1') === false
-  console.log('HDMI-UVC sender preference persistence test:', pass ? 'PASS' : 'FAIL')
   return pass
 }
 

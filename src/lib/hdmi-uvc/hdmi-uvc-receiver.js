@@ -2734,13 +2734,17 @@ function noteWasmCaptureFailure(err) {
 // results are fine. The pool only handles the happy path: any read failure
 // yields frames back to the synchronous path so the existing miss/recovery/
 // invalidation logic runs unchanged. LUMA_1 only; ?read-pool=0 disables;
-// ?read-workers=N sizes it (default 2, max 4).
+// ?read-workers=N sizes it (default 3, max 4). Three is the measured knee on
+// the reference rig (UGREEN 1080p60): w2=10.5, w3=16.9, w4=17.2 MB/s — the
+// 4th worker plateaus because capture already sustains 60fps and the
+// systematic phase sits at ~84% of the wire rate.
+const READ_POOL_DEFAULT_SIZE = 3
 const READ_POOL_URL_DISABLED = typeof location !== 'undefined' &&
   /[?&]read-pool=0/.test(location.search)
 const READ_POOL_SIZE = (() => {
-  if (typeof location === 'undefined') return 2
+  if (typeof location === 'undefined') return READ_POOL_DEFAULT_SIZE
   const m = location.search.match(/[?&]read-workers=(\d)/)
-  return m ? Math.max(1, Math.min(4, Number.parseInt(m[1], 10) || 2)) : 2
+  return m ? Math.max(1, Math.min(4, Number.parseInt(m[1], 10) || READ_POOL_DEFAULT_SIZE)) : READ_POOL_DEFAULT_SIZE
 })()
 const READ_POOL_DISABLE_AFTER_FAILS = 10
 
