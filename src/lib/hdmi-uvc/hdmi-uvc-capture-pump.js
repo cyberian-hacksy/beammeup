@@ -1,3 +1,5 @@
+import { buildArqPacketObservations } from './hdmi-uvc-arq-observation.js'
+
 // Pure frame-ingest helper shared between the worker's capture pump and unit
 // tests. No DOM, no timers, no module state — all dependencies are injected
 // so tests can drive the logic without booting a worker or camera. The worker
@@ -19,7 +21,8 @@ export function ingestCapturedFrame({
   expectedPacketSize,
   decoder,
   decodeDataRegionFn,
-  extractFn
+  extractFn,
+  arqEnabled = true
 }) {
   const decodeResult = decodeDataRegionFn(pixelBuffer, width, region)
   if (!decodeResult || !decodeResult.crcValid) {
@@ -51,6 +54,7 @@ export function ingestCapturedFrame({
     innovations,
     accepted: extract.packets.length,
     newSession,
+    arqPackets: arqEnabled ? buildArqPacketObservations(extract.packets) : [],
     salvaged: extract.salvaged || 0
   }
 }
@@ -107,5 +111,38 @@ export async function testIngestCapturedFrame() {
     result.accepted === 2 &&
     result.newSession === false
   console.log('ingestCapturedFrame test:', pass ? 'PASS' : 'FAIL', result)
+  return pass
+}
+
+export function testIngestCapturedFrameSkipsArqWhenDisabled() {
+  const parsed = {
+    fileId: 1,
+    symbolId: 1,
+    isMetadata: false,
+    payload: new Uint8Array([1])
+  }
+  const result = ingestCapturedFrame({
+    pixelBuffer: new Uint8ClampedArray(16),
+    width: 4,
+    region: null,
+    expectedPacketSize: 16,
+    decoder: {
+      receiveParsed: () => true,
+      get fileId() { return 1 },
+      get K_prime() { return 1 }
+    },
+    decodeDataRegionFn: () => ({
+      crcValid: true,
+      header: { symbolId: 1 },
+      payload: new Uint8Array([1])
+    }),
+    extractFn: () => ({ packets: [parsed], slotCount: 1 }),
+    arqEnabled: false
+  })
+  const pass = result.accepted === 1 &&
+    result.innovations === 1 &&
+    Array.isArray(result.arqPackets) &&
+    result.arqPackets.length === 0
+  console.log('ingestCapturedFrame skips ARQ observations:', pass ? 'PASS' : 'FAIL', result.arqPackets)
   return pass
 }

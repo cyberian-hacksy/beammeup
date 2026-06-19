@@ -36,6 +36,7 @@
 import { detectAnchors, dataRegionFromAnchors, decodeDataRegion } from './hdmi-uvc-frame.js'
 import { createDecoder } from '../decoder.js'
 import { ingestCapturedFrame } from './hdmi-uvc-capture-pump.js'
+import { buildArqPacketObservations } from './hdmi-uvc-arq-observation.js'
 import { computeLockedCaptureRect, getWorkerCaptureCopyRect } from './hdmi-uvc-receiver-capture.js'
 import { loadHdmiUvcWasm, setHdmiUvcWasmUrl } from './hdmi-uvc-wasm.js'
 import { extractParsedFramePackets as extractValidPacketsFromPayload } from './hdmi-uvc-packet-probe.js'
@@ -265,6 +266,7 @@ function handleDecodeAndIngest(msg) {
     accepted: parsedList.length,
     newSession,
     completionEvent: isComplete,
+    arqPackets: arqObservationsEnabled ? buildArqPacketObservations(parsedList) : [],
     solved: d.solved,
     solvedTotal: d.solvedTotal,
     fileId: d.fileId ?? null,
@@ -307,6 +309,7 @@ function handleIngestBatch(msg) {
     accepted: parsedList.length,
     newSession,
     completionEvent: isComplete,
+    arqPackets: arqObservationsEnabled ? buildArqPacketObservations(parsedList) : [],
     // Snapshot of decoder state so the main thread can update the shadow in
     // the same tick as innovation accounting — no dual-channel staleness.
     solved: d.solved,
@@ -380,6 +383,7 @@ function handleReconstruct(msg) {
 // next iteration.
 let captureState = null
 let labFrameTapEnabled = false
+let arqObservationsEnabled = false
 
 function postCaptureStopped() {
   self.postMessage({ type: 'captureStopped' })
@@ -414,6 +418,7 @@ function buildCaptureFrameMessage(result) {
     innovations: result.innovations,
     accepted: result.accepted,
     newSession: result.newSession,
+    arqPackets: arqObservationsEnabled ? (result.arqPackets || []) : [],
     completionEvent: isComplete,
     solved: d ? d.solved : 0,
     solvedTotal: d ? d.solvedTotal : 0,
@@ -559,7 +564,8 @@ function runCapturePumpOnBuffer(pixelBuffer, width, height, fullFrameWidth, full
     expectedPacketSize: captureState.expectedPacketSize,
     decoder: ensureDecoder(),
     decodeDataRegionFn: decodeDataRegion,
-    extractFn: extractValidPacketsFromPayload
+    extractFn: extractValidPacketsFromPayload,
+    arqEnabled: arqObservationsEnabled
   })
 
   postCaptureFrameMessage(buildCaptureFrameMessage(result), pixelBuffer, width, height)
@@ -724,6 +730,10 @@ function handleSetLabFrameTap(msg) {
   if (captureState) captureState.labFrameTapEnabled = labFrameTapEnabled
 }
 
+function handleSetArqEnabled(msg) {
+  arqObservationsEnabled = !!msg.enabled
+}
+
 function handleStopCapture() {
   if (!captureState) {
     postCaptureStopped()
@@ -807,6 +817,9 @@ self.onmessage = (event) => {
         break
       case 'setLabFrameTap':
         handleSetLabFrameTap(msg)
+        break
+      case 'setArqEnabled':
+        handleSetArqEnabled(msg)
         break
       case 'stopCapture':
         handleStopCapture()

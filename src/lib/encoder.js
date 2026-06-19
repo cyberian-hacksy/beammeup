@@ -39,11 +39,16 @@ export function createEncoder(fileData, filename, mimeType, hash, blockSize = 20
   const K_prime = K + M
   const intermediateBlocks = noRedundancy ? sourceBlocks : [...sourceBlocks, ...parityBlocks]
 
-  // Create metadata payload and pad to blockSize for consistent QR density
-  // Include K so receiver can derive parity parameters, and mode for redundancy
-  const rawMetadata = createMetadataPayload(filename, mimeType, originalSize, hash, K, mode, { noRedundancy })
-  const metadataPayload = new Uint8Array(blockSize)
-  metadataPayload.set(rawMetadata)
+  function createMetadataPacketPayload(options = {}) {
+    // Include K so receiver can derive parity parameters, and mode for redundancy.
+    const rawMetadata = createMetadataPayload(filename, mimeType, originalSize, hash, K, mode, {
+      noRedundancy,
+      repairIdle: !!options.repairIdle
+    })
+    const metadataPayload = new Uint8Array(blockSize)
+    metadataPayload.set(rawMetadata)
+    return metadataPayload
+  }
 
   return {
     fileId,
@@ -56,10 +61,10 @@ export function createEncoder(fileData, filename, mimeType, hash, blockSize = 20
     noRedundancy,   // True when parity/fountain redundancy is disabled (YOLO)
 
     // Generate symbol by ID
-    generateSymbol(symbolId) {
+    generateSymbol(symbolId, options = {}) {
       if (symbolId === 0) {
         // Metadata frame (padded to BLOCK_SIZE)
-        return createPacket(fileId, K_prime, 0, metadataPayload, true, blockSize, mode)
+        return createPacket(fileId, K_prime, 0, createMetadataPacketPayload(options), true, blockSize, mode)
       }
 
       // Symbol id → intermediate-block indices. Shared with the decoder

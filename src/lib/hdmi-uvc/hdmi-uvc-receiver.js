@@ -2,6 +2,10 @@
 
 import { createDecoder } from '../decoder.js'
 import { PACKET_HEADER_SIZE, parsePacket } from '../packet.js'
+import { isRepairIdleMetadataPayload } from '../metadata.js'
+import { ArqReceiverController } from '../arq/arq-receiver.js'
+import { getTransport } from '../arq/backchannel.js'
+import { DEFAULT_ARQ_TRANSPORT } from '../arq/default-transports.js'
 import {
   BLOCK_SIZE,
   DEVICE_STORAGE_KEY,
@@ -157,6 +161,163 @@ function debugCurrent(text) {
   if (!DEBUG_MODE) return
   const el = document.getElementById('hdmi-uvc-receiver-debug-current')
   if (el) el.textContent = text
+}
+
+function updateArqReceiverStatus(text, connected = state.arqConnected) {
+  if (elements?.helperStatus) {
+    elements.helperStatus.textContent = text
+    elements.helperStatus.style.color = connected ? '#00d4ff' : '#88a'
+  }
+  if (elements?.btnHelperConnect) {
+    elements.btnHelperConnect.textContent = connected ? 'Reconnect helper' : 'Connect helper'
+  }
+}
+
+async function connectArqHelper() {
+  try {
+    state.arqTransport?.close()
+    const impl = getTransport(DEFAULT_ARQ_TRANSPORT)
+    if (!impl?.makeReceiver) throw new Error('BLE GATT ARQ receiver transport is not registered')
+    state.arqTransport = impl.makeReceiver()
+    updateArqReceiverStatus('Connecting helper...', false)
+    await state.arqTransport.init({
+      onStatus: status => {
+        state.arqConnected = status === 'connected'
+        postArqStateToWorker()
+        updateArqReceiverStatus(`Helper ${status}`, state.arqConnected)
+      }
+    })
+    state.arqConnected = true
+    postArqStateToWorker()
+    updateArqReceiverStatus('Helper connected', true)
+    debugLog('ARQ helper connected')
+  } catch (err) {
+    state.arqConnected = false
+    postArqStateToWorker()
+    updateArqReceiverStatus('Helper unavailable', false)
+    debugLog(`ARQ helper connect failed: ${err.message}`)
+    showError('ARQ helper connect failed: ' + err.message)
+  }
+}
+
+function resetArqReceiverSession() {
+  state.arqController = null
+  state.arqFileId = null
+  state.arqPendingSourceIds.clear()
+}
+
+function seedArqControllerFromDecoder(controller, decoder) {
+  const solvedIds = decoder?.solvedSourceIds
+  if (!controller || !Array.isArray(solvedIds)) return 0
+  let seeded = 0
+  for (const id of solvedIds) {
+    const before = controller.count
+    controller.markReceived(id)
+    if (controller.count !== before) seeded++
+  }
+  return seeded
+}
+
+function seedArqControllerFromPending(controller) {
+  if (!controller) return 0
+  let seeded = 0
+  for (const id of state.arqPendingSourceIds) {
+    if (id < 1 || id > controller.K) continue
+    const before = controller.count
+    controller.markReceived(id)
+    if (controller.count !== before) seeded++
+  }
+  state.arqPendingSourceIds.clear()
+  return seeded
+}
+
+function ensureArqReceiverController() {
+  const decoder = state.decoder
+  if (!state.arqConnected || !state.arqTransport || !decoder?.metadata || decoder.fileId == null) return null
+  if (state.arqController && state.arqFileId === decoder.fileId) return state.arqController
+  state.arqFileId = decoder.fileId
+  state.arqController = new ArqReceiverController({
+    K: decoder.metadata.K,
+    fileId: decoder.fileId,
+    send: bytes => {
+      state.arqTransport.send(bytes).catch(err => {
+        debugLog(`ARQ send failed: ${err.message}`)
+        updateArqReceiverStatus('Helper send failed', false)
+      })
+    },
+    verifyHash: () => !!state.completedFile
+  })
+  const seeded = seedArqControllerFromDecoder(state.arqController, decoder) +
+    seedArqControllerFromPending(state.arqController)
+  debugLog(`ARQ receiver session ready: fileId=${decoder.fileId} K=${decoder.metadata.K} seeded=${seeded}`)
+  updateArqReceiverStatus(`Helper connected (K=${decoder.metadata.K})`, true)
+  return state.arqController
+}
+
+function noteArqParsedPackets(parsedList) {
+  if (!state.arqConnected || !state.arqTransport) {
+    state.arqPendingSourceIds.clear()
+    return
+  }
+  const controller = ensureArqReceiverController()
+
+  let sawRepairIdle = false
+  for (const parsed of parsedList) {
+    if (!parsed) continue
+    if (!controller && parsed.symbolId >= 1) {
+      state.arqPendingSourceIds.add(parsed.symbolId)
+    } else if (controller && parsed.symbolId >= 1 && parsed.symbolId <= controller.K) {
+      controller.markReceived(parsed.symbolId)
+    } else if (parsed.isMetadata) {
+      if (isRepairIdleMetadataPayload(parsed.payload)) sawRepairIdle = true
+    }
+  }
+
+  if (controller && sawRepairIdle) {
+    seedArqControllerFromDecoder(controller, state.decoder)
+    seedArqControllerFromPending(controller)
+    const msg = controller.onBeacon()
+    const action = msg ? (controller.isFull() && state.completedFile ? 'COMPLETE' : 'NACK') : 'hold'
+    debugLog(`ARQ beacon observed: sent ${action} seq=${msg?.seq ?? '?'}`)
+  }
+}
+
+function sendArqCompleteIfReady() {
+  const controller = ensureArqReceiverController()
+  if (!controller || !state.completedFile) return
+  for (let id = 1; id <= controller.K; id++) controller.markReceived(id)
+  const msg = controller.onBeacon()
+  debugLog(`ARQ COMPLETE sent seq=${msg?.seq ?? '?'}`)
+}
+
+function requestArqFullRepair(reason) {
+  const controller = ensureArqReceiverController()
+  if (!controller || typeof controller.requestFullRepair !== 'function') return false
+  controller.requestFullRepair()
+  const msg = controller.onBeacon()
+  debugLog(`ARQ full repair requested (${reason}) seq=${msg?.seq ?? '?'}`)
+  return !!msg
+}
+
+function recoverFromHashMismatch() {
+  requestArqFullRepair('hash-mismatch')
+  state.completedFile = null
+  state.completionStarted = false
+  state.isScanning = true
+  state.progressSamples = []
+  state.lastReceivingUiUpdateMs = 0
+  if (receiverWorkerDecoderState) {
+    state.workerCompletionSuppressed = true
+    receiverWorkerDecoderState.completionHandled = true
+  }
+  if (state.decoder && typeof state.decoder.reset === 'function') {
+    state.decoder.reset()
+    if (receiverWorkerDecoderState) receiverWorkerDecoderState.completionHandled = true
+  } else {
+    state.decoder = null
+  }
+  showReceivingStatus()
+  scheduleNextFrame()
 }
 
 async function copyReceiverDebugLog(copyBtn) {
@@ -557,6 +718,15 @@ function postLabFrameTapStateToWorker() {
   postToWorker({ type: 'setLabFrameTap', enabled: state.labFrameTapEnabled })
 }
 
+function postArqStateToWorker() {
+  if (!receiverWorker || !receiverWorkerReady) return
+  postToWorker(
+    { type: 'setArqEnabled', enabled: !!state.arqConnected },
+    null,
+    { teardownOnError: false }
+  )
+}
+
 export function setHdmiUvcLabFrameTapEnabled(enabled) {
   state.labFrameTapEnabled = !!enabled
   if (state.labFrameTapEnabled) {
@@ -575,6 +745,7 @@ function handleReceiverWorkerMessage(event) {
       receiverWorkerReady = true
       debugLog(`Worker ready (protocol v${msg.protocolVersion})`)
       postLabFrameTapStateToWorker()
+      postArqStateToWorker()
       if (state.workerCapturePending) {
         let started = false
         if (CAPTURE_METHOD === 'worker') started = startWorkerCapture()
@@ -784,6 +955,10 @@ function handleWorkerDecoderDelta(msg) {
   if (msg.telemetry) s.telemetry = msg.telemetry
   if (typeof msg.isComplete === 'boolean') s.isComplete = msg.isComplete
   if (msg.symbolBreakdown) s.symbolBreakdown = msg.symbolBreakdown
+  if (state.workerCompletionSuppressed && msg.isComplete === false) {
+    state.workerCompletionSuppressed = false
+    s.completionHandled = false
+  }
   if (msg.newSessionEvent || msg.newSession) {
     // Worker detected a new session (sender restart / config change) and
     // already reset its decoder. Mirror the companion state reset that
@@ -798,10 +973,15 @@ function handleWorkerDecoderDelta(msg) {
     state.fixedLayout = null
     state.preferredLayout = null
     state.lastReceiverFrameSignature = null
+    resetArqReceiverSession()
+    state.workerCompletionSuppressed = false
     clearDenseBinaryLock()
     state.lockedLayoutFastPathMisses = 0
     state.decodeFailCount = 0
     s.completionHandled = false
+  }
+  if (msg.completionEvent && state.workerCompletionSuppressed) {
+    return
   }
   if (msg.completionEvent && !s.completionHandled) {
     s.completionHandled = true
@@ -838,6 +1018,10 @@ function handleWorkerCaptureFrame(msg) {
     // Worker hasn't locked anchors yet — nothing more to do; UI stays in
     // "Connected - scanning..." state.
     return
+  }
+
+  if (Array.isArray(msg.arqPackets) && msg.arqPackets.length > 0) {
+    noteArqParsedPackets(msg.arqPackets)
   }
 
   if (msg.accepted > 0) {
@@ -2225,6 +2409,16 @@ async function acceptPackets(
 
     let lastParsed = null
     const parsedList = []
+    const suppliedParsedPackets = Array.isArray(packetStats?.parsedPackets)
+      ? packetStats.parsedPackets
+      : null
+    if (suppliedParsedPackets && suppliedParsedPackets.length > 0) {
+      for (const parsed of suppliedParsedPackets) {
+        if (!parsed) continue
+        lastParsed = parsed
+        parsedList.push(parsed)
+      }
+    }
     // Count of packets the ingest stage actually accepted this frame. For the
     // non-worker path this is parsedList.length (pre-dedup); for the worker
     // path we trust the worker's reported `accepted`. Drives progress/UI
@@ -2251,16 +2445,7 @@ async function acceptPackets(
         acceptedPacketCount
       )
     } else {
-      const suppliedParsedPackets = Array.isArray(packetStats?.parsedPackets)
-        ? packetStats.parsedPackets
-        : null
-      if (suppliedParsedPackets && suppliedParsedPackets.length > 0) {
-        for (const parsed of suppliedParsedPackets) {
-          if (!parsed) continue
-          lastParsed = parsed
-          parsedList.push(parsed)
-        }
-      } else {
+      if (!suppliedParsedPackets || suppliedParsedPackets.length === 0) {
         for (const packet of packets) {
           const parsed = parsePacket(packet)
           if (!parsed) continue
@@ -2317,6 +2502,8 @@ async function acceptPackets(
           state.fixedLayout = null
           state.preferredLayout = null
           state.lastReceiverFrameSignature = null
+          resetArqReceiverSession()
+          state.workerCompletionSuppressed = false
           clearDenseBinaryLock()
           state.lockedLayoutFastPathMisses = 0
           state.decodeFailCount = 0
@@ -2327,6 +2514,7 @@ async function acceptPackets(
         if (result === true) innovationCount++
       }
     }
+    if (parsedList.length > 0) noteArqParsedPackets(parsedList)
     const anyInnovation = innovationCount > 0
     noteReceiverFrameSignature(frameSignature, true, anyInnovation)
 
@@ -2460,7 +2648,13 @@ const state = {
   lastImageData: null,
   lastImageDataSeq: 0,
   lastImageDataCapturedAtMs: 0,
-  labFrameTapEnabled: false
+  labFrameTapEnabled: false,
+  arqTransport: null,
+  arqConnected: false,
+  arqController: null,
+  arqFileId: null,
+  arqPendingSourceIds: new Set(),
+  workerCompletionSuppressed: false
 }
 
 // Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
@@ -3835,7 +4029,10 @@ async function processFrame(now, metadata) {
           innovations: workerDecodedResp.innovations || 0,
           salvaged: workerDecodedResp.salvaged || 0
         },
-        { salvaged: workerDecodedResp.salvaged || 0 }
+        {
+          salvaged: workerDecodedResp.salvaged || 0,
+          parsedPackets: workerDecodedResp.arqPackets || null
+        }
       )
       softSalvagedPacketCount = workerDecodedResp.salvaged || 0
     } else {
@@ -4188,12 +4385,21 @@ async function handleComplete() {
   // In worker mode reconstruct() returns a Promise; awaiting a non-Promise
   // value is a no-op, so this handles both the main-thread and worker paths.
   const fileData = await decoder.reconstruct()
+  if (!fileData) {
+    state.completionStarted = false
+    state.isScanning = true
+    scheduleNextFrame()
+    return
+  }
 
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', fileData))
   const hashMatch = hash.every((b, i) => b === meta.hash[i])
 
   if (!hashMatch) {
     showError('File hash mismatch - transfer may be corrupted')
+    debugLog('Complete rejected: SHA-256 mismatch')
+    recoverFromHashMismatch()
+    return
   }
 
   const elapsed = (Date.now() - state.startTime) / 1000
@@ -4204,6 +4410,7 @@ async function handleComplete() {
     name: meta.filename,
     type: meta.mimeType || 'application/octet-stream'
   }
+  sendArqCompleteIfReady()
 
   elements.completeName.textContent = meta.filename + ' (' + formatBytes(fileData.byteLength) + ')'
   elements.completeRate.textContent = formatBytes(rate) + '/s'
@@ -4268,6 +4475,8 @@ function resetReceiver() {
   state.expectedPacketCount = 0
   state.progressSamples = []
   state.lastReceivingUiUpdateMs = 0
+  resetArqReceiverSession()
+  state.workerCompletionSuppressed = false
   state.lastImageData = null
   state.lastImageDataSeq = 0
   state.lastImageDataCapturedAtMs = 0
@@ -4335,6 +4544,11 @@ export async function autoStartHdmiUvcReceiver() {
 
 export function resetHdmiUvcReceiver() {
   resetReceiver()
+  state.arqTransport?.close()
+  state.arqTransport = null
+  state.arqConnected = false
+  postArqStateToWorker()
+  updateArqReceiverStatus('Helper offline', false)
 
   if (state.stream) {
     state.stream.getTracks().forEach(t => t.stop())
@@ -4368,7 +4582,9 @@ export function initHdmiUvcReceiver(errorHandler) {
     completeRate: document.getElementById('hdmi-uvc-complete-rate'),
     btnReset: document.getElementById('btn-hdmi-uvc-reset'),
     btnDownload: document.getElementById('btn-hdmi-uvc-download'),
-    btnAnother: document.getElementById('btn-hdmi-uvc-another')
+    btnAnother: document.getElementById('btn-hdmi-uvc-another'),
+    btnHelperConnect: document.getElementById('btn-hdmi-uvc-helper-connect'),
+    helperStatus: document.getElementById('hdmi-uvc-helper-status')
   }
 
   elements.deviceDropdown.onchange = handleDeviceChange
@@ -4378,6 +4594,8 @@ export function initHdmiUvcReceiver(errorHandler) {
   }
   elements.btnDownload.onclick = downloadFile
   elements.btnAnother.onclick = handleReceiveAnother
+  if (elements.btnHelperConnect) elements.btnHelperConnect.onclick = connectArqHelper
+  updateArqReceiverStatus(state.arqConnected ? 'Helper connected' : 'Helper offline', state.arqConnected)
 
   // Debug panel buttons
   const copyBtn = document.getElementById('btn-hdmi-uvc-receiver-copy-log')

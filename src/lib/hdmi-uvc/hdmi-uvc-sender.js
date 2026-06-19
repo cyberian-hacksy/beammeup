@@ -3,6 +3,9 @@
 import { createEncoder } from '../encoder.js'
 import { METADATA_INTERVAL } from '../constants.js'
 import { PACKET_HEADER_SIZE } from '../packet.js'
+import { ArqSenderController } from '../arq/arq-sender.js'
+import { getTransport } from '../arq/backchannel.js'
+import { DEFAULT_ARQ_TRANSPORT } from '../arq/default-transports.js'
 import {
   HDMI_UVC_MAX_FILE_SIZE,
   HDMI_MODE,
@@ -39,7 +42,11 @@ import {
 // Kick off WASM instantiation when the sender module loads so buildFrame's
 // payload CRC uses the WASM kernel from the first transmitted frame. Errors
 // fall through to the JS crc32 fallback in frame.js.
-loadHdmiUvcWasm().catch(() => {})
+try {
+  loadHdmiUvcWasm().catch(() => {})
+} catch {
+  // Non-browser test imports have no document/self origin for WASM URL resolution.
+}
 
 // Debug mode - always on while diagnosing HDMI-UVC issues
 const DEBUG_MODE = true
@@ -81,6 +88,69 @@ function debugCurrent(text) {
   if (!DEBUG_MODE) return
   const el = document.getElementById('hdmi-uvc-sender-debug-current')
   if (el) el.textContent = text
+}
+
+function updateArqSenderStatus(text, connected = state.arqConnected) {
+  if (elements?.arqStatus) {
+    elements.arqStatus.textContent = text
+    elements.arqStatus.style.color = connected ? '#00d4ff' : '#88a'
+  }
+  if (elements?.btnArqConnect) {
+    elements.btnArqConnect.textContent = connected ? 'Reconnect back-channel' : 'Connect back-channel'
+    elements.btnArqConnect.disabled = state.isSending || state.isAwaitingStart
+  }
+}
+
+async function completeArqSending() {
+  state.arqTransport?.close()
+  state.arqTransport = null
+  state.arqConnected = false
+  await restoreSenderReadyState()
+  elements.placeholderIcon.textContent = '✓'
+  elements.placeholderText.textContent = 'ARQ complete - receiver verified'
+  debugLog('ARQ COMPLETE received - sender stopped')
+  debugCurrent('ARQ COMPLETE')
+  updateArqSenderStatus('Back-channel offline', false)
+}
+
+function handleArqBackchannelMessage(bytes) {
+  if (!state.arqController) return
+  const msg = state.arqController.onMessage(bytes, performance.now())
+  if (!msg) return
+  if (state.arqController.mode === 'repair') {
+    state.arqCursor = 0
+    debugLog(`ARQ NACK received: ${state.arqController.workList.length} repair block(s)`)
+    updateArqSenderStatus(`Repairing ${state.arqController.workList.length} block(s)`, true)
+  } else if (state.arqController.mode === 'done') {
+    void completeArqSending()
+  }
+}
+
+async function connectArqBackchannel() {
+  if (state.isSending || state.isAwaitingStart) return
+  try {
+    state.arqTransport?.close()
+    const impl = getTransport(DEFAULT_ARQ_TRANSPORT)
+    if (!impl?.makeSender) throw new Error('BLE GATT ARQ sender transport is not registered')
+    state.arqTransport = impl.makeSender()
+    state.arqTransport.onMessage(handleArqBackchannelMessage)
+    updateArqSenderStatus('Select BeamMeUp-ARQ...', false)
+    await state.arqTransport.init({
+      onStatus: status => updateArqSenderStatus(`Back-channel ${status}`, status === 'connected'),
+      onDisconnect: () => {
+        state.arqConnected = false
+        updateArqSenderStatus('Back-channel disconnected', false)
+      }
+    })
+    state.arqConnected = true
+    updateArqSenderStatus('Back-channel connected', true)
+    debugLog('ARQ back-channel connected')
+  } catch (err) {
+    state.arqConnected = false
+    updateArqSenderStatus('Back-channel unavailable', false)
+    debugLog(`ARQ connect failed: ${err.message}`)
+    showError('Back-channel connect failed: ' + err.message)
+  }
 }
 
 function createPerfWindow() {
@@ -310,6 +380,11 @@ const state = {
   frameBufferHeight: 0,
   presentation: null,
   useExternalDisplay: true,
+  arqTransport: null,
+  arqConnected: false,
+  arqController: null,
+  arqCursor: 0,
+  arqFallback: false,
   txPerf: createSenderPerfState()
 }
 
@@ -552,6 +627,9 @@ function resetPreparedSessionState() {
   state.systematicPass = 1
   state.tailStartFrame = 0
   state.metadataIntervalFrames = METADATA_INTERVAL * 2
+  state.arqController = null
+  state.arqCursor = 0
+  state.arqFallback = false
   state.frameCount = 0
   state.nextFrameDueMs = 0
   state.animationId = null
@@ -1221,6 +1299,9 @@ function updateActionButton() {
     // The encoder is built at start; toggling mid-transfer would have no effect.
     elements.yoloToggle.disabled = state.isSending || state.isAwaitingStart
   }
+  if (elements.btnArqConnect) {
+    elements.btnArqConnect.disabled = state.isSending || state.isAwaitingStart
+  }
 }
 
 function updateEstimateSummary() {
@@ -1646,6 +1727,17 @@ function getHybridScheduleDescription() {
   return `Hybrid schedule: source-only pass 1, then fountain every ${HYBRID_FOUNTAIN_PACKET_INTERVAL} data packets`
 }
 
+export function nextFrameSymbolId(workList, cursor) {
+  if (!Array.isArray(workList) || cursor >= workList.length) {
+    return { symbolId: null, cursor: Math.max(0, cursor || 0), exhausted: true }
+  }
+  return {
+    symbolId: workList[cursor],
+    cursor: cursor + 1,
+    exhausted: cursor + 1 >= workList.length
+  }
+}
+
 function describeFountainInterval(interval) {
   return interval > 0
     ? `fountain every ${interval} data packet(s)`
@@ -2053,6 +2145,113 @@ function isTailSystematicBurstFrame(frameNumber) {
   return (tailFrameIndex % TAIL_SYSTEMATIC_BURST_PERIOD_FRAMES) < TAIL_SYSTEMATIC_BURST_FRAMES
 }
 
+function tickArqFallback() {
+  if (!state.arqController || state.arqFallback) return false
+  if (!state.arqController.tickFallback(performance.now())) return false
+  state.arqFallback = true
+  state.arqCursor = 0
+  state.systematicIndex = 0
+  state.paritySystematicIndex = 0
+  state.paritySweepsInPass = 0
+  state.fountainSymbolId = state.encoder.K_prime + 1
+  state.dataPacketCount = 0
+  state.systematicPass = 1
+  state.tailStartFrame = 0
+  state.arqConnected = false
+  state.arqTransport?.close()
+  state.arqTransport = null
+  debugLog(state.yolo
+    ? 'ARQ back-channel silent - falling back to no-redundancy source loop'
+    : 'ARQ back-channel silent - falling back to normal fountain/parity schedule')
+  updateArqSenderStatus(state.yolo ? 'ARQ fallback: source loop' : 'ARQ fallback: normal stream', false)
+  return true
+}
+
+function buildArqBeaconBatch() {
+  const packet = state.encoder.generateSymbol(0, { repairIdle: true })
+  return {
+    payload: packet,
+    symbolIds: [0],
+    outerSymbolId: 0,
+    sendMetadata: true,
+    repairIdleBeacon: true
+  }
+}
+
+function concatPackets(packets) {
+  let totalLength = 0
+  for (const packet of packets) totalLength += packet.length
+  const payload = new Uint8Array(totalLength)
+  let offset = 0
+  for (const packet of packets) {
+    payload.set(packet, offset)
+    offset += packet.length
+  }
+  return payload
+}
+
+function createPacketBatch({ packets, symbolIds, metadataEmitted = false, extra = null }) {
+  return {
+    payload: concatPackets(packets),
+    symbolIds,
+    outerSymbolId: metadataEmitted ? 0 : (symbolIds[0] ?? 0),
+    sendMetadata: metadataEmitted,
+    ...(extra || {})
+  }
+}
+
+function buildArqPacketBatch(frameNumber) {
+  if (!state.arqController || state.arqFallback || state.arqController.mode === 'fallback') return null
+  if (state.arqController.mode === 'done') return buildArqBeaconBatch()
+
+  if (state.arqController.mode === 'beacon') {
+    tickArqFallback()
+    return state.arqFallback ? null : buildArqBeaconBatch()
+  }
+
+  const packets = []
+  const symbolIds = []
+  const slots = Math.max(1, state.packetsPerFrame)
+  const scheduleFrameNumber = Math.max(1, frameNumber - getSyncPorchFrameCount(state.mode))
+  const sendMetadata = !!state.arqController.needsRepairMetadata ||
+    (state.arqController.mode === 'pass1' && shouldSendMetadata(scheduleFrameNumber))
+  const metadataSlotIndex = sendMetadata ? getMetadataSlotIndex(scheduleFrameNumber, slots) : -1
+  let metadataEmitted = false
+  for (let slot = 0; slot < slots; slot++) {
+    if (slot === metadataSlotIndex) {
+      packets.push(state.encoder.generateSymbol(0))
+      symbolIds.push(0)
+      metadataEmitted = true
+      continue
+    }
+    const next = nextFrameSymbolId(state.arqController.workList, state.arqCursor)
+    if (next.symbolId === null) {
+      if (sendMetadata && !metadataEmitted && slot < metadataSlotIndex) continue
+      break
+    }
+    state.arqCursor = next.cursor
+    packets.push(state.encoder.generateSymbol(next.symbolId))
+    symbolIds.push(next.symbolId)
+  }
+
+  if (symbolIds.length === 0 || state.arqCursor >= state.arqController.workList.length) {
+    state.arqController.onPassExhausted(performance.now())
+    state.arqCursor = 0
+    debugLog(`ARQ pass exhausted at frame ${frameNumber}; beaconing for receiver NACK/COMPLETE`)
+  }
+
+  if (symbolIds.length === 0) return buildArqBeaconBatch()
+
+  if (metadataEmitted) state.arqController.needsRepairMetadata = false
+
+  return createPacketBatch({
+    packets,
+    symbolIds,
+    metadataEmitted,
+    extra: { arq: true }
+  })
+}
+
 function buildFramePacketBatch(frameNumber) {
   if (isSyncPorchFrame(frameNumber)) {
     return {
@@ -2063,6 +2262,9 @@ function buildFramePacketBatch(frameNumber) {
       syncPorch: true
     }
   }
+
+  const arqBatch = buildArqPacketBatch(frameNumber)
+  if (arqBatch) return arqBatch
 
   const scheduleFrameNumber = Math.max(1, frameNumber - getSyncPorchFrameCount(state.mode))
   const sendMetadata = shouldSendMetadata(scheduleFrameNumber)
@@ -2099,22 +2301,11 @@ function buildFramePacketBatch(frameNumber) {
     dataSlotsBuilt++
   }
 
-  let totalLength = 0
-  for (const packet of packets) totalLength += packet.length
-
-  const payload = new Uint8Array(totalLength)
-  let offset = 0
-  for (const packet of packets) {
-    payload.set(packet, offset)
-    offset += packet.length
-  }
-
-  return {
-    payload,
+  return createPacketBatch({
+    packets,
     symbolIds,
-    outerSymbolId: sendMetadata ? 0 : (symbolIds[0] ?? 0),
-    sendMetadata
-  }
+    metadataEmitted: sendMetadata
+  })
 }
 
 function renderFrame() {
@@ -2150,8 +2341,12 @@ function renderFrame() {
       presentation.frameCount.textContent = state.frameCount
     }
 
+    const arqActive = state.arqController && !state.arqFallback
     const systematicSpan = Math.max(1, getCurrentSystematicSpan())
-    const progress = Math.min(100, Math.round((state.systematicIndex / systematicSpan) * 100))
+    const arqSpan = Math.max(1, state.arqController?.workList?.length || 1)
+    const progress = arqActive
+      ? Math.min(100, Math.round((state.arqCursor / arqSpan) * 100))
+      : Math.min(100, Math.round((state.systematicIndex / systematicSpan) * 100))
     elements.progressDisplay.textContent = progress + '%'
     if (presentation.progressDisplay && presentation.progressDisplay !== elements.progressDisplay) {
       presentation.progressDisplay.textContent = progress + '%'
@@ -2168,7 +2363,9 @@ function renderFrame() {
       : firstData === lastData
         ? `sym=${formatSymbolRef(firstData)}`
         : `sym=${formatSymbolRef(firstData)}-${formatSymbolRef(lastData)}`
-    if (batch.syncPorch) {
+    if (batch.repairIdleBeacon) {
+      debugCurrent(`#${state.frameCount} ARQ BEACON ${progress}%`)
+    } else if (batch.syncPorch) {
       debugCurrent(`#${state.frameCount} SYNC ${progress}%`)
     } else {
       debugCurrent(
@@ -2380,6 +2577,17 @@ async function startSending() {
     state.systematicPass = 1
     state.tailStartFrame = 0
     state.frameCount = 0
+    state.arqController = state.arqConnected
+      ? new ArqSenderController({ K: state.encoder.K, fileId: state.encoder.fileId, fallbackMs: 8000 })
+      : null
+    state.arqCursor = 0
+    state.arqFallback = false
+    if (state.arqController) {
+      state.arqController.startPass(performance.now())
+      debugLog(`ARQ mode: source pass once, repair by NACK, fallback after ${state.arqController.fallbackMs}ms silence`)
+      if (state.yolo) debugLog('ARQ YOLO: user-selected no-redundancy mode preserved')
+      updateArqSenderStatus(`ARQ ready (${state.encoder.K} source blocks)`, true)
+    }
     resetSenderPerfState()
     if (usesMixedSlotReplay()) {
       debugLog(
@@ -2473,6 +2681,7 @@ async function stopSending() {
   updateDropZoneState()
   updateActionButton()
   updateEstimateSummary()
+  updateArqSenderStatus(state.arqConnected ? 'Back-channel connected' : 'Back-channel offline', state.arqConnected)
 }
 
 function handleActionClick() {
@@ -2634,6 +2843,10 @@ async function exitFullscreenSafely() {
 }
 
 export async function resetHdmiUvcSender() {
+  state.arqTransport?.close()
+  state.arqTransport = null
+  state.arqConnected = false
+  updateArqSenderStatus('Back-channel offline', false)
   await stopSending()
 }
 
@@ -2654,6 +2867,8 @@ export function initHdmiUvcSender(errorHandler) {
     estimate: document.getElementById('hdmi-uvc-estimate'),
     btnAction: document.getElementById('btn-hdmi-uvc-action'),
     btnStop: document.getElementById('btn-hdmi-uvc-stop'),
+    btnArqConnect: document.getElementById('btn-hdmi-uvc-arq-connect'),
+    arqStatus: document.getElementById('hdmi-uvc-arq-status'),
     yoloToggle: document.getElementById('hdmi-uvc-yolo-toggle')
   }
 
@@ -2664,6 +2879,7 @@ export function initHdmiUvcSender(errorHandler) {
   elements.fileInput.onchange = handleFileSelect
   elements.btnAction.onclick = handleActionClick
   elements.btnStop.onclick = stopSending
+  if (elements.btnArqConnect) elements.btnArqConnect.onclick = connectArqBackchannel
 
   if (elements.yoloToggle) {
     let storedYolo = false
@@ -2706,6 +2922,79 @@ export function initHdmiUvcSender(errorHandler) {
   debugLog(`Pass-2 variant: ${getPass2Variant()}`)
   debugLog(`Dense pass-2 sweep mix: ${getDenseBinaryPass2SweepMix()}`)
   debugLog(`TX pace: ${getSenderRenderPace()}`)
+}
+
+export function testSenderWorkListSchedule() {
+  let cursor = 0
+  const ids = []
+  let exhausted = false
+  for (let i = 0; i < 4; i++) {
+    const next = nextFrameSymbolId([3, 6, 9], cursor)
+    ids.push(next.symbolId)
+    cursor = next.cursor
+    exhausted = next.exhausted
+  }
+  const pass = ids.join(',') === '3,6,9,' && cursor === 3 && exhausted === true
+  console.log('Sender ARQ work-list schedule test:', pass ? 'PASS' : 'FAIL', { ids, cursor, exhausted })
+  return pass
+}
+
+export function testArqBatchEmitsClaimedMetadataAtWorkListTail() {
+  const snapshot = snapshotSchedulerState()
+  const oldArqController = state.arqController
+  const oldArqCursor = state.arqCursor
+  const oldArqFallback = state.arqFallback
+  try {
+    setupSchedulerTestState({ mode: HDMI_MODE.BINARY_3, packetsPerFrame: 4 })
+    state.arqController = {
+      mode: 'pass1',
+      workList: [1, 2],
+      onPassExhausted() { this.mode = 'beacon' }
+    }
+    state.arqCursor = 0
+    state.arqFallback = false
+    const batch = buildArqPacketBatch(4)
+    const pass = batch?.sendMetadata === true &&
+      batch.outerSymbolId === 0 &&
+      batch.symbolIds.includes(0)
+    console.log('ARQ metadata tail batch test:', pass ? 'PASS' : 'FAIL', batch?.symbolIds)
+    return pass
+  } finally {
+    Object.assign(state, snapshot)
+    state.arqController = oldArqController
+    state.arqCursor = oldArqCursor
+    state.arqFallback = oldArqFallback
+  }
+}
+
+export function testArqRepairBatchCarriesMetadataWhenRequested() {
+  const snapshot = snapshotSchedulerState()
+  const oldArqController = state.arqController
+  const oldArqCursor = state.arqCursor
+  const oldArqFallback = state.arqFallback
+  try {
+    setupSchedulerTestState({ mode: HDMI_MODE.BINARY_3, packetsPerFrame: 4 })
+    state.arqController = {
+      mode: 'repair',
+      workList: [1, 2, 3],
+      needsRepairMetadata: true,
+      onPassExhausted() { this.mode = 'beacon' }
+    }
+    state.arqCursor = 0
+    state.arqFallback = false
+    const batch = buildArqPacketBatch(5)
+    const pass = batch?.sendMetadata === true &&
+      batch.outerSymbolId === 0 &&
+      batch.symbolIds.includes(0) &&
+      state.arqController.needsRepairMetadata === false
+    console.log('ARQ repair metadata batch test:', pass ? 'PASS' : 'FAIL', batch?.symbolIds)
+    return pass
+  } finally {
+    Object.assign(state, snapshot)
+    state.arqController = oldArqController
+    state.arqCursor = oldArqCursor
+    state.arqFallback = oldArqFallback
+  }
 }
 
 // Pure function tests so the two-stage pass-2 schedule and parity-sweep wrap

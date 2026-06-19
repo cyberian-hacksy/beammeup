@@ -10,7 +10,7 @@
 import { QR_MODE } from './constants.js'
 
 export function createMetadataPayload(filename, mimeType, fileSize, hash, K, mode = QR_MODE.BW, options = {}) {
-  const { noRedundancy = false } = options
+  const { noRedundancy = false, repairIdle = false } = options
   const encoder = new TextEncoder()
   const filenameBytes = encoder.encode(filename.slice(0, 255))
   const mimeBytes = encoder.encode(mimeType.slice(0, 255))
@@ -35,7 +35,7 @@ export function createMetadataPayload(filename, mimeType, fileSize, hash, K, mod
   new DataView(payload.buffer).setUint32(offset, K, false)
   offset += 4
 
-  payload[offset] = (mode & 0x03) | (noRedundancy ? 0x04 : 0)
+  payload[offset] = (mode & 0x03) | (noRedundancy ? 0x04 : 0) | (repairIdle ? 0x08 : 0)
 
   return payload
 }
@@ -62,12 +62,28 @@ export function parseMetadataPayload(payload) {
   offset += 4
 
   // Mode byte is optional for backwards compatibility with old metadata frames.
-  // Bits 0-1 = QR mode; bit 2 = no-redundancy (YOLO) flag.
+  // Bits 0-1 = QR mode; bit 2 = no-redundancy (YOLO) flag; bit 3 = ARQ repair-idle beacon.
   const modeByte = offset < payload.length ? payload[offset] : 0
   const mode = modeByte & 0x03
   const noRedundancy = (modeByte & 0x04) !== 0
+  const repairIdle = (modeByte & 0x08) !== 0
 
-  return { filename, mimeType, fileSize, hash, K, mode, noRedundancy }
+  return { filename, mimeType, fileSize, hash, K, mode, noRedundancy, repairIdle }
+}
+
+export function getMetadataModeByte(payload) {
+  let offset = 0
+  if (!payload || payload.length < 1) return 0
+  const filenameLen = payload[offset++]
+  offset += filenameLen
+  if (offset >= payload.length) return 0
+  const mimeLen = payload[offset++]
+  offset += mimeLen + 4 + 32 + 4
+  return offset < payload.length ? payload[offset] : 0
+}
+
+export function isRepairIdleMetadataPayload(payload) {
+  return (getMetadataModeByte(payload) & 0x08) !== 0
 }
 
 // Test metadata roundtrip
@@ -126,5 +142,21 @@ export function testMetadataNoRedundancyFlag() {
 
   const pass = ok1 && ok2 && ok3
   console.log('Metadata no-redundancy flag test:', pass ? 'PASS' : 'FAIL', { d1, d2, d3 })
+  return pass
+}
+
+export function testMetadataRepairIdleFlag() {
+  const hash = new Uint8Array(32)
+  hash.fill(0xEF)
+
+  const payload = createMetadataPayload('idle.bin', 'application/octet-stream', 321, hash, 9, QR_MODE.BW, { repairIdle: true })
+  const parsed = parseMetadataPayload(payload)
+  const normal = parseMetadataPayload(createMetadataPayload('idle.bin', 'application/octet-stream', 321, hash, 9))
+  const pass = parsed.repairIdle === true &&
+    isRepairIdleMetadataPayload(payload) === true &&
+    isRepairIdleMetadataPayload(createMetadataPayload('idle.bin', 'application/octet-stream', 321, hash, 9)) === false &&
+    parsed.noRedundancy === false &&
+    normal.repairIdle === false
+  console.log('Metadata repair-idle flag test:', pass ? 'PASS' : 'FAIL', { parsed, normal })
   return pass
 }

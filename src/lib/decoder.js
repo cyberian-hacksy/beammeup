@@ -514,6 +514,14 @@ export function createDecoder() {
     get pendingSymbolCount() { return pendingSymbols.length },
     get unresolvedSourceCount() { return K !== null ? Math.max(0, K - solvedSource) : null },
     get unresolvedIntermediateCount() { return K_prime !== null ? Math.max(0, K_prime - solved) : null },
+    get solvedSourceIds() {
+      if (K === null || !decodedBlocks) return []
+      const ids = []
+      for (let i = 0; i < K; i++) {
+        if (decodedBlocks[i]) ids.push(i + 1)
+      }
+      return ids
+    },
     get progress() { return K ? solvedSource / K : 0 },
 
     isComplete() { return K !== null && solvedSource === K },

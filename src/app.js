@@ -5,7 +5,7 @@ import qrcode from 'qrcode-generator'
 import { testPRNG } from './lib/prng.js'
 import { testPacketRoundtrip } from './lib/packet.js'
 import { testXorBytesInto } from './lib/xor.js'
-import { testMetadataRoundtrip, testMetadataNoRedundancyFlag } from './lib/metadata.js'
+import { testMetadataRoundtrip, testMetadataNoRedundancyFlag, testMetadataRepairIdleFlag } from './lib/metadata.js'
 import { testEncoder, testEncoderNoRedundancy } from './lib/encoder.js'
 import { testFountainRippleVariant } from './lib/fountain-symbol.js'
 import {
@@ -17,6 +17,13 @@ import {
   testTailSolverTriggerAllowsWiderDenseBinaryTail
 } from './lib/decoder.js'
 import { testParityMap, testParityRecovery, testGF2SolverSmall, testGF2SolverLarge, testSourceToParityAdjacency } from './lib/precode.js'
+import { testArqMessageRoundtrip, testArqMessageRejectsCorruption, testMissingSetCodecRoundtrip, testMissingSetAdaptiveChoosesSmaller, testMissingSetCodecHighUint32Roundtrip, testMissingSetSparseLargeRangeUsesDeltaEncoding, testMissingSetBitmapDecodeBoundsToPayload } from './lib/arq/arq-protocol.js'
+import { testFragmentReassembleRoundtrip, testFragmentOutOfOrderAndDup, testFragmentMissingDrops, testFragmentSupportsLargeCounts, testFragmentReusedIdResetsStaleEntry } from './lib/arq/arq-fragment.js'
+import { testArqReceiverBuildsNackForGaps, testArqReceiverCompleteOnlyWhenFullAndHashOk, testArqReceiverReNacksEachBeacon, testArqReceiverSuppressesEmptyNackWhileHashPending, testArqReceiverCanRequestFullRepairAfterHashMismatch, testArqReceiverCapsCompleteBursts } from './lib/arq/arq-receiver.js'
+import { testArqSenderConsumesNackIntoWorkList, testArqSenderIgnoresStaleSeq, testArqSenderAcceptsWrappedSeq, testArqSenderFallbackAfterTimeout, testArqSenderFallsBackOnRepeatedUnchangedNacks, testArqSenderDoesNotFallbackWhileNacksProgress, testArqSenderCompleteStops, testArqSenderCompleteIsTerminal } from './lib/arq/arq-sender.js'
+import { testArqGoodputBeatsReloop } from './lib/arq/arq-sim.js'
+import { testBackchannelRegistry, testBackchannelDefaultMtuIsBleSafe } from './lib/arq/backchannel.js'
+import { testBleGattSenderCopiesNotificationBuffer } from './lib/arq/transports/ble-gatt-sender.js'
 
 // Import UI modules
 import { initSender, resetSender } from './lib/sender.js'
@@ -75,7 +82,10 @@ import {
   testDenseBinaryPass3MixPatterns,
   testDenseBinaryStrictGeometryGate,
   testDenseBinaryMetadataUsesSparseSchedule,
-  testDenseBinaryMetadataSlotRotatesOnlyWhenSent
+  testDenseBinaryMetadataSlotRotatesOnlyWhenSent,
+  testSenderWorkListSchedule,
+  testArqBatchEmitsClaimedMetadataAtWorkListTail,
+  testArqRepairBatchCarriesMetadataWhenRequested
 } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
 import {
   initHdmiUvcReceiver,
@@ -167,7 +177,7 @@ import {
   testLabFrameTapUsesFullCaptureRect,
   testLabFrameTapBypassesLockedCaptureRegion
 } from './lib/hdmi-uvc/hdmi-uvc-receiver-capture.js'
-import { testIngestCapturedFrame } from './lib/hdmi-uvc/hdmi-uvc-capture-pump.js'
+import { testIngestCapturedFrame, testIngestCapturedFrameSkipsArqWhenDisabled } from './lib/hdmi-uvc/hdmi-uvc-capture-pump.js'
 import {
   testEqualChunkProbeFinds24PacketFrame,
   testEqualChunkProbeFinds59PacketFrame,
@@ -217,6 +227,7 @@ window.testPacketRoundtrip = testPacketRoundtrip
 window.testXorBytesInto = testXorBytesInto
 window.testMetadataRoundtrip = testMetadataRoundtrip
 window.testMetadataNoRedundancyFlag = testMetadataNoRedundancyFlag
+window.testMetadataRepairIdleFlag = testMetadataRepairIdleFlag
 window.testEncoder = testEncoder
 window.testEncoderNoRedundancy = testEncoderNoRedundancy
 window.testFountainRippleVariant = testFountainRippleVariant
@@ -231,6 +242,36 @@ window.testParityRecovery = testParityRecovery
 window.testGF2SolverSmall = testGF2SolverSmall
 window.testGF2SolverLarge = testGF2SolverLarge
 window.testSourceToParityAdjacency = testSourceToParityAdjacency
+window.testArqMessageRoundtrip = testArqMessageRoundtrip
+window.testArqMessageRejectsCorruption = testArqMessageRejectsCorruption
+window.testMissingSetCodecRoundtrip = testMissingSetCodecRoundtrip
+window.testMissingSetAdaptiveChoosesSmaller = testMissingSetAdaptiveChoosesSmaller
+window.testMissingSetCodecHighUint32Roundtrip = testMissingSetCodecHighUint32Roundtrip
+window.testMissingSetSparseLargeRangeUsesDeltaEncoding = testMissingSetSparseLargeRangeUsesDeltaEncoding
+window.testMissingSetBitmapDecodeBoundsToPayload = testMissingSetBitmapDecodeBoundsToPayload
+window.testFragmentReassembleRoundtrip = testFragmentReassembleRoundtrip
+window.testFragmentOutOfOrderAndDup = testFragmentOutOfOrderAndDup
+window.testFragmentMissingDrops = testFragmentMissingDrops
+window.testFragmentSupportsLargeCounts = testFragmentSupportsLargeCounts
+window.testFragmentReusedIdResetsStaleEntry = testFragmentReusedIdResetsStaleEntry
+window.testArqReceiverBuildsNackForGaps = testArqReceiverBuildsNackForGaps
+window.testArqReceiverCompleteOnlyWhenFullAndHashOk = testArqReceiverCompleteOnlyWhenFullAndHashOk
+window.testArqReceiverSuppressesEmptyNackWhileHashPending = testArqReceiverSuppressesEmptyNackWhileHashPending
+window.testArqReceiverCanRequestFullRepairAfterHashMismatch = testArqReceiverCanRequestFullRepairAfterHashMismatch
+window.testArqReceiverReNacksEachBeacon = testArqReceiverReNacksEachBeacon
+window.testArqReceiverCapsCompleteBursts = testArqReceiverCapsCompleteBursts
+window.testArqSenderConsumesNackIntoWorkList = testArqSenderConsumesNackIntoWorkList
+window.testArqSenderIgnoresStaleSeq = testArqSenderIgnoresStaleSeq
+window.testArqSenderAcceptsWrappedSeq = testArqSenderAcceptsWrappedSeq
+window.testArqSenderFallbackAfterTimeout = testArqSenderFallbackAfterTimeout
+window.testArqSenderFallsBackOnRepeatedUnchangedNacks = testArqSenderFallsBackOnRepeatedUnchangedNacks
+window.testArqSenderDoesNotFallbackWhileNacksProgress = testArqSenderDoesNotFallbackWhileNacksProgress
+window.testArqSenderCompleteStops = testArqSenderCompleteStops
+window.testArqSenderCompleteIsTerminal = testArqSenderCompleteIsTerminal
+window.testArqGoodputBeatsReloop = testArqGoodputBeatsReloop
+window.testBackchannelRegistry = testBackchannelRegistry
+window.testBackchannelDefaultMtuIsBleSafe = testBackchannelDefaultMtuIsBleSafe
+window.testBleGattSenderCopiesNotificationBuffer = testBleGattSenderCopiesNotificationBuffer
 
 // HDMI-UVC tests
 window.testCrc32 = testCrc32
@@ -334,6 +375,9 @@ window.testDenseBinaryPass3MixPatterns = testDenseBinaryPass3MixPatterns
 window.testDenseBinaryStrictGeometryGate = testDenseBinaryStrictGeometryGate
 window.testDenseBinaryMetadataUsesSparseSchedule = testDenseBinaryMetadataUsesSparseSchedule
 window.testDenseBinaryMetadataSlotRotatesOnlyWhenSent = testDenseBinaryMetadataSlotRotatesOnlyWhenSent
+window.testSenderWorkListSchedule = testSenderWorkListSchedule
+window.testArqBatchEmitsClaimedMetadataAtWorkListTail = testArqBatchEmitsClaimedMetadataAtWorkListTail
+window.testArqRepairBatchCarriesMetadataWhenRequested = testArqRepairBatchCarriesMetadataWhenRequested
 window.testCaptureMethodDecision = testCaptureMethodDecision
 window.testWorkerTrackTransferFallbackUsesMain = testWorkerTrackTransferFallbackUsesMain
 window.testWorkerTransferClockStartsOnFirstAcceptedFrame = testWorkerTransferClockStartsOnFirstAcceptedFrame
@@ -350,6 +394,7 @@ window.testComputeLockedCaptureRect = testComputeLockedCaptureRect
 window.testLabFrameTapUsesFullCaptureRect = testLabFrameTapUsesFullCaptureRect
 window.testLabFrameTapBypassesLockedCaptureRegion = testLabFrameTapBypassesLockedCaptureRegion
 window.testIngestCapturedFrame = testIngestCapturedFrame
+window.testIngestCapturedFrameSkipsArqWhenDisabled = testIngestCapturedFrameSkipsArqWhenDisabled
 window.testEqualChunkProbeFinds24PacketFrame = testEqualChunkProbeFinds24PacketFrame
 window.testEqualChunkProbeFinds59PacketFrame = testEqualChunkProbeFinds59PacketFrame
 window.testPacketProbeSalvagesLowConfidenceBit = testPacketProbeSalvagesLowConfidenceBit
@@ -495,6 +540,7 @@ async function runAllTests() {
     xorBytesInto: testXorBytesInto(),
     metadata: testMetadataRoundtrip(),
     metadataNoRedundancy: testMetadataNoRedundancyFlag(),
+    metadataRepairIdle: testMetadataRepairIdleFlag(),
     parityMap: testParityMap(),
     parityRecovery: testParityRecovery(),
     srcParityAdj: testSourceToParityAdjacency(),
@@ -509,6 +555,36 @@ async function runAllTests() {
     codecNoRedundancy: await testCodecRoundtripNoRedundancy(),
     noRedundancyLoop: await testNoRedundancyLoopRecovers(),
     tailSolverWiderDenseBinaryTail: testTailSolverTriggerAllowsWiderDenseBinaryTail(),
+    arqMessageRoundtrip: testArqMessageRoundtrip(),
+    arqMessageRejectsCorruption: testArqMessageRejectsCorruption(),
+    arqMissingSetRoundtrip: testMissingSetCodecRoundtrip(),
+    arqMissingSetAdaptive: testMissingSetAdaptiveChoosesSmaller(),
+    arqMissingSetHighUint32: testMissingSetCodecHighUint32Roundtrip(),
+    arqMissingSetSparseRangeDelta: testMissingSetSparseLargeRangeUsesDeltaEncoding(),
+    arqMissingSetBitmapDecodeBound: testMissingSetBitmapDecodeBoundsToPayload(),
+    arqFragmentRoundtrip: testFragmentReassembleRoundtrip(),
+    arqFragmentOutOfOrder: testFragmentOutOfOrderAndDup(),
+    arqFragmentMissingDrops: testFragmentMissingDrops(),
+    arqFragmentLargeCounts: testFragmentSupportsLargeCounts(),
+    arqFragmentReusedIdReset: testFragmentReusedIdResetsStaleEntry(),
+    arqReceiverNackGaps: testArqReceiverBuildsNackForGaps(),
+    arqReceiverCompleteGating: testArqReceiverCompleteOnlyWhenFullAndHashOk(),
+    arqReceiverNoEmptyNack: testArqReceiverSuppressesEmptyNackWhileHashPending(),
+    arqReceiverFullRepair: testArqReceiverCanRequestFullRepairAfterHashMismatch(),
+    arqReceiverReNack: testArqReceiverReNacksEachBeacon(),
+    arqReceiverCompleteCap: testArqReceiverCapsCompleteBursts(),
+    arqSenderConsumesNack: testArqSenderConsumesNackIntoWorkList(),
+    arqSenderStaleSeq: testArqSenderIgnoresStaleSeq(),
+    arqSenderWrappedSeq: testArqSenderAcceptsWrappedSeq(),
+    arqSenderFallback: testArqSenderFallbackAfterTimeout(),
+    arqSenderFallbackRepeatedNacks: testArqSenderFallsBackOnRepeatedUnchangedNacks(),
+    arqSenderFallbackProgress: testArqSenderDoesNotFallbackWhileNacksProgress(),
+    arqSenderCompleteStops: testArqSenderCompleteStops(),
+    arqSenderCompleteTerminal: testArqSenderCompleteIsTerminal(),
+    arqGoodputBeatsReloop: await testArqGoodputBeatsReloop(),
+    arqBackchannelRegistry: testBackchannelRegistry(),
+    arqBackchannelDefaultMtu: testBackchannelDefaultMtuIsBleSafe(),
+    arqBleSenderCopiesNotification: testBleGattSenderCopiesNotificationBuffer(),
     // HDMI-UVC tests
     crc32: testCrc32(),
     hdmiHeader: testHeaderRoundtrip(),
@@ -616,6 +692,9 @@ async function runAllTests() {
     denseBinaryStrictGeometryGate: testDenseBinaryStrictGeometryGate(),
     denseBinaryMetadataSparseSchedule: testDenseBinaryMetadataUsesSparseSchedule(),
     denseBinaryMetadataSlotRotatesOnlyWhenSent: testDenseBinaryMetadataSlotRotatesOnlyWhenSent(),
+    senderWorkListSchedule: testSenderWorkListSchedule(),
+    arqMetadataTailBatch: testArqBatchEmitsClaimedMetadataAtWorkListTail(),
+    arqRepairMetadataBatch: testArqRepairBatchCarriesMetadataWhenRequested(),
     captureMethodDecision: testCaptureMethodDecision(),
     workerTrackTransferFallback: testWorkerTrackTransferFallbackUsesMain(),
     workerTransferClockStartsOnAccept: testWorkerTransferClockStartsOnFirstAcceptedFrame(),
@@ -632,6 +711,7 @@ async function runAllTests() {
     labFrameTapFullCaptureRect: testLabFrameTapUsesFullCaptureRect(),
     labFrameTapBypassesLockedCapture: testLabFrameTapBypassesLockedCaptureRegion(),
     ingestCapturedFrame: await testIngestCapturedFrame(),
+    ingestCapturedFrameSkipsArq: testIngestCapturedFrameSkipsArqWhenDisabled(),
     equalChunkProbe24PacketFrame: testEqualChunkProbeFinds24PacketFrame(),
     equalChunkProbe59PacketFrame: testEqualChunkProbeFinds59PacketFrame(),
     packetProbeSoftSalvage: testPacketProbeSalvagesLowConfidenceBit(),
