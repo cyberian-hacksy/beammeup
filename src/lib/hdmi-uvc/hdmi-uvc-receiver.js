@@ -3,7 +3,8 @@
 import { createDecoder } from '../decoder.js'
 import { PACKET_HEADER_SIZE, parsePacket } from '../packet.js'
 import { isRepairIdleMetadataPayload } from '../metadata.js'
-import { ArqReceiverController } from '../arq/arq-receiver.js'
+import { ArqReceiverController, getArqBeaconLogAction } from '../arq/arq-receiver.js'
+import { ARQ_HELPER_STATUS, getArqHelperStatusView, shouldAutoConnectArqHelper } from '../arq/helper-status.js'
 import { getTransport } from '../arq/backchannel.js'
 import { DEFAULT_ARQ_TRANSPORT } from '../arq/default-transports.js'
 import {
@@ -163,41 +164,71 @@ function debugCurrent(text) {
   if (el) el.textContent = text
 }
 
-function updateArqReceiverStatus(text, connected = state.arqConnected) {
+function updateArqReceiverStatus(text, connected = state.arqConnected, buttonText = null, disabled = false) {
   if (elements?.helperStatus) {
     elements.helperStatus.textContent = text
     elements.helperStatus.style.color = connected ? '#00d4ff' : '#88a'
   }
   if (elements?.btnHelperConnect) {
-    elements.btnHelperConnect.textContent = connected ? 'Reconnect helper' : 'Connect helper'
+    elements.btnHelperConnect.textContent = buttonText || (connected ? 'Reconnect helper' : 'Connect helper')
+    elements.btnHelperConnect.disabled = !!disabled
   }
 }
 
-async function connectArqHelper() {
+function applyArqReceiverHelperStatus(status) {
+  const view = getArqHelperStatusView(status)
+  updateArqReceiverStatus(view.text, view.connected, view.buttonText, view.disabled)
+}
+
+async function connectArqHelper(options = {}) {
+  const { auto = false } = options
+  if (state.arqHelperConnecting) return
+  state.arqHelperConnecting = true
   try {
     state.arqTransport?.close()
     const impl = getTransport(DEFAULT_ARQ_TRANSPORT)
     if (!impl?.makeReceiver) throw new Error('BLE GATT ARQ receiver transport is not registered')
     state.arqTransport = impl.makeReceiver()
-    updateArqReceiverStatus('Connecting helper...', false)
+    applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.CONNECTING)
     await state.arqTransport.init({
       onStatus: status => {
         state.arqConnected = status === 'connected'
         postArqStateToWorker()
-        updateArqReceiverStatus(`Helper ${status}`, state.arqConnected)
+        applyArqReceiverHelperStatus(status === 'connected'
+          ? ARQ_HELPER_STATUS.CONNECTED
+          : ARQ_HELPER_STATUS.DISCONNECTED)
       }
     })
     state.arqConnected = true
     postArqStateToWorker()
-    updateArqReceiverStatus('Helper connected', true)
+    applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.CONNECTED)
     debugLog('ARQ helper connected')
   } catch (err) {
+    state.arqTransport?.close()
+    state.arqTransport = null
     state.arqConnected = false
     postArqStateToWorker()
-    updateArqReceiverStatus('Helper unavailable', false)
-    debugLog(`ARQ helper connect failed: ${err.message}`)
-    showError('ARQ helper connect failed: ' + err.message)
+    applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.UNAVAILABLE)
+    debugLog(`ARQ helper ${auto ? 'auto-detect' : 'connect'} failed: ${err.message}`)
+    if (!auto) showError('ARQ helper connect failed: ' + err.message)
+  } finally {
+    state.arqHelperConnecting = false
   }
+}
+
+function autoConnectArqHelper() {
+  if (!shouldAutoConnectArqHelper({
+    connected: state.arqConnected,
+    connecting: state.arqHelperConnecting,
+    attempted: state.arqHelperAutoAttempted
+  })) {
+    return
+  }
+  state.arqHelperAutoAttempted = true
+  applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.CHECKING)
+  setTimeout(() => {
+    void connectArqHelper({ auto: true })
+  }, 0)
 }
 
 function resetArqReceiverSession() {
@@ -242,7 +273,7 @@ function ensureArqReceiverController() {
     send: bytes => {
       state.arqTransport.send(bytes).catch(err => {
         debugLog(`ARQ send failed: ${err.message}`)
-        updateArqReceiverStatus('Helper send failed', false)
+        applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.SEND_FAILED)
       })
     },
     verifyHash: () => !!state.completedFile
@@ -250,7 +281,7 @@ function ensureArqReceiverController() {
   const seeded = seedArqControllerFromDecoder(state.arqController, decoder) +
     seedArqControllerFromPending(state.arqController)
   debugLog(`ARQ receiver session ready: fileId=${decoder.fileId} K=${decoder.metadata.K} seeded=${seeded}`)
-  updateArqReceiverStatus(`Helper connected (K=${decoder.metadata.K})`, true)
+  updateArqReceiverStatus(`Helper connected (K=${decoder.metadata.K})`, true, 'Reconnect helper')
   return state.arqController
 }
 
@@ -277,8 +308,8 @@ function noteArqParsedPackets(parsedList) {
     seedArqControllerFromDecoder(controller, state.decoder)
     seedArqControllerFromPending(controller)
     const msg = controller.onBeacon()
-    const action = msg ? (controller.isFull() && state.completedFile ? 'COMPLETE' : 'NACK') : 'hold'
-    debugLog(`ARQ beacon observed: sent ${action} seq=${msg?.seq ?? '?'}`)
+    const action = getArqBeaconLogAction(msg, controller.isFull(), !!state.completedFile)
+    if (action) debugLog(`ARQ beacon observed: sent ${action} seq=${msg?.seq ?? '?'}`)
   }
 }
 
@@ -2651,6 +2682,8 @@ const state = {
   labFrameTapEnabled: false,
   arqTransport: null,
   arqConnected: false,
+  arqHelperConnecting: false,
+  arqHelperAutoAttempted: false,
   arqController: null,
   arqFileId: null,
   arqPendingSourceIds: new Set(),
@@ -4532,6 +4565,7 @@ function handleReceiveAnother() {
 }
 
 export async function autoStartHdmiUvcReceiver() {
+  autoConnectArqHelper()
   await enumerateDevices()
 
   const savedDevice = loadDevicePreference()
@@ -4547,8 +4581,10 @@ export function resetHdmiUvcReceiver() {
   state.arqTransport?.close()
   state.arqTransport = null
   state.arqConnected = false
+  state.arqHelperConnecting = false
+  state.arqHelperAutoAttempted = false
   postArqStateToWorker()
-  updateArqReceiverStatus('Helper offline', false)
+  applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.OFFLINE)
 
   if (state.stream) {
     state.stream.getTracks().forEach(t => t.stop())
@@ -4594,8 +4630,8 @@ export function initHdmiUvcReceiver(errorHandler) {
   }
   elements.btnDownload.onclick = downloadFile
   elements.btnAnother.onclick = handleReceiveAnother
-  if (elements.btnHelperConnect) elements.btnHelperConnect.onclick = connectArqHelper
-  updateArqReceiverStatus(state.arqConnected ? 'Helper connected' : 'Helper offline', state.arqConnected)
+  if (elements.btnHelperConnect) elements.btnHelperConnect.onclick = () => connectArqHelper()
+  applyArqReceiverHelperStatus(state.arqConnected ? ARQ_HELPER_STATUS.CONNECTED : ARQ_HELPER_STATUS.OFFLINE)
 
   // Debug panel buttons
   const copyBtn = document.getElementById('btn-hdmi-uvc-receiver-copy-log')

@@ -65,6 +65,31 @@ export function testArqSenderDoesNotFallbackWhileNacksProgress() {
   return pass
 }
 
+export function testArqSenderIgnoresDuplicateNackDuringActiveRepair() {
+  const c = new ArqSenderController({ K: 10, fileId: 1, fallbackMs: 5000 })
+  const first = c.onMessage(encodeNack(1, 1, [3, 6, 9]), 1000)
+  const duplicate = c.onMessage(encodeNack(1, 2, [3, 6, 9]), 1100)
+  const pass = first !== null &&
+    duplicate === null &&
+    c.mode === 'repair' &&
+    c.workList.join(',') === '3,6,9' &&
+    c.lastSeq === 2
+  console.log('arq sender ignores duplicate nack during repair:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
+export function testArqSenderRetriesDuplicateNackAfterRepairExhausted() {
+  const c = new ArqSenderController({ K: 10, fileId: 1, fallbackMs: 5000 })
+  c.onMessage(encodeNack(1, 1, [3, 6, 9]), 1000)
+  c.onPassExhausted(1200)
+  const retry = c.onMessage(encodeNack(1, 2, [3, 6, 9]), 1300)
+  const pass = retry !== null &&
+    c.mode === 'repair' &&
+    c.workList.join(',') === '3,6,9'
+  console.log('arq sender retries duplicate nack after exhausted repair:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
 export function testArqSenderCompleteStops() {
   const c = new ArqSenderController({ K: 5, fileId: 1, fallbackMs: 5000 })
   c.onMessage(encodeComplete(1, 1), 1000)
@@ -141,6 +166,7 @@ export class ArqSenderController {
       this.lastActivity = now
       const missing = decodeMissingSet(msg.payload)
       const sig = missingSignature(missing)
+      if (this.mode === 'repair' && sig === this.lastMissingSignature) return null
       if (sig !== this.lastMissingSignature) {
         this.beaconSince = null
         this.lastMissingSignature = sig

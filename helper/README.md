@@ -6,12 +6,22 @@ browser.
 
 ## Install
 
+For normal use, run a packaged helper executable built for the receiver
+machine's operating system. The helper still listens only on localhost and
+advertises the same BLE GATT service.
+
+## Build a packaged helper
+
+Build on the same platform you want to run on; PyInstaller does not
+cross-compile.
+
 macOS/Linux:
 
 ```bash
 python3 -m venv .venv
 ./.venv/bin/python -m pip install --upgrade pip
-./.venv/bin/python -m pip install -r helper/requirements.txt
+./.venv/bin/python -m pip install -r helper/requirements-build.txt
+./.venv/bin/python helper/build.py
 ```
 
 Windows PowerShell:
@@ -19,7 +29,8 @@ Windows PowerShell:
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r .\helper\requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r .\helper\requirements-build.txt
+.\.venv\Scripts\python.exe .\helper\build.py
 ```
 
 On Windows, `bless` depends on a GitHub-hosted SetupAPI wrapper. Install
@@ -28,6 +39,15 @@ helper may also require an Administrator PowerShell because the WinRT backend
 can update the local Bluetooth adapter name.
 
 ## Run
+
+Packaged helper:
+
+```text
+helper/dist/BeamMeUp-Helper
+helper/dist/BeamMeUp-Helper.exe
+```
+
+Development mode:
 
 macOS/Linux:
 
@@ -47,6 +67,11 @@ Expected output includes:
 Advertising BeamMeUp-ARQ
 WebSocket bridge listening on ws://127.0.0.1:8787
 ```
+
+When the HDMI-UVC receiver screen opens, the browser checks the localhost
+helper automatically. If the helper is running, it connects and shows
+`Helper connected`. If it is not running, it shows `Start BeamMeUp Helper`;
+start the packaged helper and press `Retry helper`.
 
 The receiver browser sends already-fragmented ARQ messages to the WebSocket.
 The helper forwards each binary WebSocket message unchanged as one BLE
