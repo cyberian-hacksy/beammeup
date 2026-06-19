@@ -19,7 +19,7 @@ import {
 import { testParityMap, testParityRecovery, testGF2SolverSmall, testGF2SolverLarge, testSourceToParityAdjacency } from './lib/precode.js'
 import { testArqMessageRoundtrip, testArqMessageRejectsCorruption, testMissingSetCodecRoundtrip, testMissingSetAdaptiveChoosesSmaller, testMissingSetCodecHighUint32Roundtrip, testMissingSetSparseLargeRangeUsesDeltaEncoding, testMissingSetBitmapDecodeBoundsToPayload } from './lib/arq/arq-protocol.js'
 import { testFragmentReassembleRoundtrip, testFragmentOutOfOrderAndDup, testFragmentMissingDrops, testFragmentSupportsLargeCounts, testFragmentReusedIdResetsStaleEntry } from './lib/arq/arq-fragment.js'
-import { testArqReceiverBuildsNackForGaps, testArqReceiverCompleteOnlyWhenFullAndHashOk, testArqReceiverThrottlesDuplicateNacks, testArqReceiverNacksImmediatelyWhenMissingSetChanges, testArqBeaconLogActionSkipsSuppressedNack, testArqReceiverSuppressesEmptyNackWhileHashPending, testArqReceiverCanRequestFullRepairAfterHashMismatch, testArqReceiverCapsCompleteBursts } from './lib/arq/arq-receiver.js'
+import { testArqReceiverBuildsNackForGaps, testArqReceiverCompleteOnlyWhenFullAndHashOk, testArqReceiverThrottlesDuplicateNacks, testArqReceiverCoalescesChangedNacksDuringProgress, testArqReceiverSendsChangedNackAfterHold, testArqBeaconLogActionSkipsSuppressedNack, testArqReceiverSuppressesEmptyNackWhileHashPending, testArqReceiverCanRequestFullRepairAfterHashMismatch, testArqReceiverCapsCompleteBursts } from './lib/arq/arq-receiver.js'
 import { testArqSenderConsumesNackIntoWorkList, testArqSenderIgnoresStaleSeq, testArqSenderAcceptsWrappedSeq, testArqSenderFallbackAfterTimeout, testArqSenderFallsBackOnRepeatedUnchangedNacks, testArqSenderDoesNotFallbackWhileNacksProgress, testArqSenderIgnoresDuplicateNackDuringActiveRepair, testArqSenderRetriesDuplicateNackAfterRepairExhausted, testArqSenderCompleteStops, testArqSenderCompleteIsTerminal } from './lib/arq/arq-sender.js'
 import { testArqGoodputBeatsReloop } from './lib/arq/arq-sim.js'
 import { testBackchannelRegistry, testBackchannelDefaultMtuIsBleSafe } from './lib/arq/backchannel.js'
@@ -261,7 +261,8 @@ window.testArqReceiverCompleteOnlyWhenFullAndHashOk = testArqReceiverCompleteOnl
 window.testArqReceiverSuppressesEmptyNackWhileHashPending = testArqReceiverSuppressesEmptyNackWhileHashPending
 window.testArqReceiverCanRequestFullRepairAfterHashMismatch = testArqReceiverCanRequestFullRepairAfterHashMismatch
 window.testArqReceiverThrottlesDuplicateNacks = testArqReceiverThrottlesDuplicateNacks
-window.testArqReceiverNacksImmediatelyWhenMissingSetChanges = testArqReceiverNacksImmediatelyWhenMissingSetChanges
+window.testArqReceiverCoalescesChangedNacksDuringProgress = testArqReceiverCoalescesChangedNacksDuringProgress
+window.testArqReceiverSendsChangedNackAfterHold = testArqReceiverSendsChangedNackAfterHold
 window.testArqBeaconLogActionSkipsSuppressedNack = testArqBeaconLogActionSkipsSuppressedNack
 window.testArqReceiverCapsCompleteBursts = testArqReceiverCapsCompleteBursts
 window.testArqSenderConsumesNackIntoWorkList = testArqSenderConsumesNackIntoWorkList
@@ -582,7 +583,8 @@ async function runAllTests() {
     arqReceiverNoEmptyNack: testArqReceiverSuppressesEmptyNackWhileHashPending(),
     arqReceiverFullRepair: testArqReceiverCanRequestFullRepairAfterHashMismatch(),
     arqReceiverDuplicateNackThrottle: testArqReceiverThrottlesDuplicateNacks(),
-    arqReceiverChangedNackImmediate: testArqReceiverNacksImmediatelyWhenMissingSetChanges(),
+    arqReceiverChangedNackCoalesce: testArqReceiverCoalescesChangedNacksDuringProgress(),
+    arqReceiverChangedNackAfterHold: testArqReceiverSendsChangedNackAfterHold(),
     arqBeaconLogActionSkipsSuppressedNack: testArqBeaconLogActionSkipsSuppressedNack(),
     arqReceiverCompleteCap: testArqReceiverCapsCompleteBursts(),
     arqSenderConsumesNack: testArqSenderConsumesNackIntoWorkList(),

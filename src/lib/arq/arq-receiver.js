@@ -78,17 +78,32 @@ export function testArqReceiverThrottlesDuplicateNacks() {
   return pass
 }
 
-export function testArqReceiverNacksImmediatelyWhenMissingSetChanges() {
+export function testArqReceiverCoalescesChangedNacksDuringProgress() {
   const sent = []
-  const c = new ArqReceiverController({ K: 4, fileId: 1, send: b => sent.push(b), verifyHash: () => true, nackRepeatBeacons: 10 })
+  const c = new ArqReceiverController({ K: 4, fileId: 1, send: b => sent.push(b), verifyHash: () => true, nackChangeHoldBeacons: 3 })
   c.markReceived(1)
   c.onBeacon()
   c.markReceived(2)
   c.onBeacon()
   const first = sent[0] ? decodeMissingSet(decodeArqMessage(sent[0]).payload).join(',') : ''
+  const pass = sent.length === 1 && first === '2,3,4'
+  console.log('arq receiver coalesces changed nacks:', pass ? 'PASS' : 'FAIL', sent.length)
+  return pass
+}
+
+export function testArqReceiverSendsChangedNackAfterHold() {
+  const sent = []
+  const c = new ArqReceiverController({ K: 5, fileId: 1, send: b => sent.push(b), verifyHash: () => true, nackChangeHoldBeacons: 2 })
+  c.markReceived(1)
+  c.onBeacon()
+  c.markReceived(2)
+  c.onBeacon()
+  c.markReceived(3)
+  c.onBeacon()
+  const first = sent[0] ? decodeMissingSet(decodeArqMessage(sent[0]).payload).join(',') : ''
   const second = sent[1] ? decodeMissingSet(decodeArqMessage(sent[1]).payload).join(',') : ''
-  const pass = sent.length === 2 && first === '2,3,4' && second === '3,4'
-  console.log('arq receiver nacks changed missing set immediately:', pass ? 'PASS' : 'FAIL', sent.length)
+  const pass = sent.length === 2 && first === '2,3,4,5' && second === '4,5'
+  console.log('arq receiver sends changed nack after hold:', pass ? 'PASS' : 'FAIL', sent.length)
   return pass
 }
 
@@ -112,12 +127,13 @@ export function testArqReceiverCapsCompleteBursts() {
 }
 
 export class ArqReceiverController {
-  constructor({ K, fileId, send, verifyHash, nackRepeatBeacons = 12 }) {
+  constructor({ K, fileId, send, verifyHash, nackRepeatBeacons = 12, nackChangeHoldBeacons = 12 }) {
     this.K = K
     this.fileId = fileId
     this.send = send
     this.verifyHash = verifyHash
     this.nackRepeatBeacons = Math.max(1, nackRepeatBeacons | 0)
+    this.nackChangeHoldBeacons = Math.max(1, nackChangeHoldBeacons | 0)
     this.missingIds = new Set()
     for (let id = 1; id <= K; id++) this.missingIds.add(id)
     this.count = 0
@@ -125,6 +141,7 @@ export class ArqReceiverController {
     this.completeSendsRemaining = 3
     this.lastNackSignature = null
     this.duplicateNackBeacons = 0
+    this.changedNackBeacons = 0
   }
 
   markReceived(id) {
@@ -140,6 +157,7 @@ export class ArqReceiverController {
     this.completeSendsRemaining = 3
     this.lastNackSignature = null
     this.duplicateNackBeacons = 0
+    this.changedNackBeacons = 0
   }
 
   isFull() {
@@ -167,8 +185,13 @@ export class ArqReceiverController {
       if (this.duplicateNackBeacons < this.nackRepeatBeacons) return null
       this.duplicateNackBeacons = 0
     } else {
+      if (this.lastNackSignature !== null) {
+        this.changedNackBeacons++
+        if (this.changedNackBeacons < this.nackChangeHoldBeacons) return null
+      }
       this.lastNackSignature = sig
       this.duplicateNackBeacons = 0
+      this.changedNackBeacons = 0
     }
     const msg = encodeNack(this.fileId, this.seq, missing)
     this.send(msg)
