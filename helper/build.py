@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import platform
 import subprocess
 import sys
@@ -12,6 +13,7 @@ HELPER_DIR = Path(__file__).resolve().parent
 ENTRYPOINT = HELPER_DIR / "server.py"
 DIST_DIR = HELPER_DIR / "dist"
 BUILD_DIR = HELPER_DIR / "build"
+BUILD_REQUIREMENTS = HELPER_DIR / "requirements-build.txt"
 
 
 def executable_name(system: str | None = None) -> str:
@@ -49,6 +51,25 @@ def build_pyinstaller_args(
     return args
 
 
+def missing_build_dependencies(system: str | None = None) -> list[str]:
+    required = ["PyInstaller"]
+    if (system or platform.system()) == "Windows":
+        required.append("pysetupdi")
+    return [name for name in required if importlib.util.find_spec(name) is None]
+
+
+def format_missing_build_dependencies_message(
+    missing: list[str],
+    python_executable: str = sys.executable,
+) -> str:
+    names = ", ".join(missing)
+    return (
+        f"Missing helper build dependencies: {names}\n"
+        "Install the build requirements in this Python environment, then rerun the build:\n"
+        f"{python_executable} -m pip install -r {BUILD_REQUIREMENTS}"
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build the Beam Me Up ARQ helper executable.")
     parser.add_argument(
@@ -65,6 +86,11 @@ def main() -> int:
     if args.print_command:
         print(" ".join(command))
         return 0
+
+    missing = missing_build_dependencies()
+    if missing:
+        print(format_missing_build_dependencies_message(missing), file=sys.stderr)
+        return 2
 
     print(f"Building {APP_NAME} for {platform.system()}...")
     subprocess.run(command, check=True)
@@ -85,6 +111,17 @@ def testBuildCommandIncludesPlatformDependencies() -> bool:
         and executable_name("Darwin") == APP_NAME
     )
     print("helper build command platform deps:", "PASS" if passed else "FAIL")
+    return passed
+
+
+def testMissingBuildDependencyMessageMentionsInstallCommand() -> bool:
+    message = format_missing_build_dependencies_message(["PyInstaller"], "python")
+    passed = (
+        "PyInstaller" in message
+        and "requirements-build.txt" in message
+        and "python -m pip install" in message
+    )
+    print("helper build missing dependency message:", "PASS" if passed else "FAIL")
     return passed
 
 

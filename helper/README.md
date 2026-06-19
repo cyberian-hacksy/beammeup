@@ -38,6 +38,13 @@ Git for Windows first if pip reports that `git` is not available. Running the
 helper may also require an Administrator PowerShell because the WinRT backend
 can update the local Bluetooth adapter name.
 
+If `helper/build.py` reports that `PyInstaller` is missing, install the build
+requirements into the same virtual environment:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r .\helper\requirements-build.txt
+```
+
 ## Run
 
 Packaged helper:
