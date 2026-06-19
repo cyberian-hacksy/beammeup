@@ -6,14 +6,39 @@ browser.
 
 ## Install
 
+macOS/Linux:
+
 ```bash
-python -m pip install -r helper/requirements.txt
+python3 -m venv .venv
+./.venv/bin/python -m pip install --upgrade pip
+./.venv/bin/python -m pip install -r helper/requirements.txt
 ```
+
+Windows PowerShell:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r .\helper\requirements.txt
+```
+
+On Windows, `bless` depends on a GitHub-hosted SetupAPI wrapper. Install
+Git for Windows first if pip reports that `git` is not available. Running the
+helper may also require an Administrator PowerShell because the WinRT backend
+can update the local Bluetooth adapter name.
 
 ## Run
 
+macOS/Linux:
+
 ```bash
-python helper/server.py
+./.venv/bin/python helper/server.py
+```
+
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe .\helper\server.py
 ```
 
 Expected output includes:

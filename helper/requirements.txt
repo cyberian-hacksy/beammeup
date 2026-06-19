@@ -1,2 +1,3 @@
 bless
 websockets
+pysetupdi @ git+https://github.com/gwangyi/pysetupdi ; platform_system == "Windows"
