@@ -20,7 +20,7 @@ import { testParityMap, testParityRecovery, testGF2SolverSmall, testGF2SolverLar
 import { testArqMessageRoundtrip, testArqMessageRejectsCorruption, testMissingSetCodecRoundtrip, testMissingSetAdaptiveChoosesSmaller, testMissingSetCodecHighUint32Roundtrip, testMissingSetSparseLargeRangeUsesDeltaEncoding, testMissingSetBitmapDecodeBoundsToPayload } from './lib/arq/arq-protocol.js'
 import { testFragmentReassembleRoundtrip, testFragmentOutOfOrderAndDup, testFragmentMissingDrops, testFragmentSupportsLargeCounts, testFragmentReusedIdResetsStaleEntry } from './lib/arq/arq-fragment.js'
 import { testArqReceiverBuildsNackForGaps, testArqReceiverCompleteOnlyWhenFullAndHashOk, testArqReceiverThrottlesDuplicateNacks, testArqReceiverCoalescesChangedNacksDuringProgress, testArqReceiverSendsChangedNackAfterHold, testArqBeaconLogActionSkipsSuppressedNack, testArqReceiverSuppressesEmptyNackWhileHashPending, testArqReceiverCanRequestFullRepairAfterHashMismatch, testArqReceiverCapsCompleteBursts } from './lib/arq/arq-receiver.js'
-import { testArqSenderConsumesNackIntoWorkList, testArqSenderIgnoresStaleSeq, testArqSenderAcceptsWrappedSeq, testArqSenderFallbackAfterTimeout, testArqSenderFallsBackOnRepeatedUnchangedNacks, testArqSenderDoesNotFallbackWhileNacksProgress, testArqSenderIgnoresDuplicateNackDuringActiveRepair, testArqSenderRetriesDuplicateNackAfterRepairExhausted, testArqSenderCompleteStops, testArqSenderCompleteIsTerminal } from './lib/arq/arq-sender.js'
+import { testArqSenderConsumesNackIntoWorkList, testArqSenderUsesInitialWorkList, testArqSenderIgnoresStaleSeq, testArqSenderAcceptsWrappedSeq, testArqSenderFallbackAfterTimeout, testArqSenderFallsBackOnRepeatedUnchangedNacks, testArqSenderDoesNotFallbackWhileNacksProgress, testArqSenderIgnoresDuplicateNackDuringActiveRepair, testArqSenderRetriesDuplicateNackAfterRepairExhausted, testArqSenderCompleteStops, testArqSenderCompleteIsTerminal } from './lib/arq/arq-sender.js'
 import { testArqGoodputBeatsReloop } from './lib/arq/arq-sim.js'
 import { testBackchannelRegistry, testBackchannelDefaultMtuIsBleSafe } from './lib/arq/backchannel.js'
 import { testArqHelperStatusView, testShouldAutoConnectArqHelper } from './lib/arq/helper-status.js'
@@ -85,6 +85,7 @@ import {
   testDenseBinaryMetadataUsesSparseSchedule,
   testDenseBinaryMetadataSlotRotatesOnlyWhenSent,
   testSenderWorkListSchedule,
+  testArqSourceWorkListUsesStride,
   testArqBatchEmitsClaimedMetadataAtWorkListTail,
   testArqRepairBatchCarriesMetadataWhenRequested,
   testArqBeaconBatchCarriesReplayData
@@ -266,6 +267,7 @@ window.testArqReceiverSendsChangedNackAfterHold = testArqReceiverSendsChangedNac
 window.testArqBeaconLogActionSkipsSuppressedNack = testArqBeaconLogActionSkipsSuppressedNack
 window.testArqReceiverCapsCompleteBursts = testArqReceiverCapsCompleteBursts
 window.testArqSenderConsumesNackIntoWorkList = testArqSenderConsumesNackIntoWorkList
+window.testArqSenderUsesInitialWorkList = testArqSenderUsesInitialWorkList
 window.testArqSenderIgnoresStaleSeq = testArqSenderIgnoresStaleSeq
 window.testArqSenderAcceptsWrappedSeq = testArqSenderAcceptsWrappedSeq
 window.testArqSenderFallbackAfterTimeout = testArqSenderFallbackAfterTimeout
@@ -386,6 +388,7 @@ window.testDenseBinaryStrictGeometryGate = testDenseBinaryStrictGeometryGate
 window.testDenseBinaryMetadataUsesSparseSchedule = testDenseBinaryMetadataUsesSparseSchedule
 window.testDenseBinaryMetadataSlotRotatesOnlyWhenSent = testDenseBinaryMetadataSlotRotatesOnlyWhenSent
 window.testSenderWorkListSchedule = testSenderWorkListSchedule
+window.testArqSourceWorkListUsesStride = testArqSourceWorkListUsesStride
 window.testArqBatchEmitsClaimedMetadataAtWorkListTail = testArqBatchEmitsClaimedMetadataAtWorkListTail
 window.testArqRepairBatchCarriesMetadataWhenRequested = testArqRepairBatchCarriesMetadataWhenRequested
 window.testArqBeaconBatchCarriesReplayData = testArqBeaconBatchCarriesReplayData
@@ -588,6 +591,7 @@ async function runAllTests() {
     arqBeaconLogActionSkipsSuppressedNack: testArqBeaconLogActionSkipsSuppressedNack(),
     arqReceiverCompleteCap: testArqReceiverCapsCompleteBursts(),
     arqSenderConsumesNack: testArqSenderConsumesNackIntoWorkList(),
+    arqSenderInitialWorkList: testArqSenderUsesInitialWorkList(),
     arqSenderStaleSeq: testArqSenderIgnoresStaleSeq(),
     arqSenderWrappedSeq: testArqSenderAcceptsWrappedSeq(),
     arqSenderFallback: testArqSenderFallbackAfterTimeout(),
@@ -712,6 +716,7 @@ async function runAllTests() {
     denseBinaryMetadataSparseSchedule: testDenseBinaryMetadataUsesSparseSchedule(),
     denseBinaryMetadataSlotRotatesOnlyWhenSent: testDenseBinaryMetadataSlotRotatesOnlyWhenSent(),
     senderWorkListSchedule: testSenderWorkListSchedule(),
+    arqSourceWorkListStride: testArqSourceWorkListUsesStride(),
     arqMetadataTailBatch: testArqBatchEmitsClaimedMetadataAtWorkListTail(),
     arqRepairMetadataBatch: testArqRepairBatchCarriesMetadataWhenRequested(),
     arqBeaconReplayDataBatch: testArqBeaconBatchCarriesReplayData(),

@@ -1738,6 +1738,16 @@ export function nextFrameSymbolId(workList, cursor) {
   }
 }
 
+export function buildArqSourceWorkList(K, stride) {
+  const span = Math.max(0, K | 0)
+  const sourceStride = Math.max(1, stride | 0)
+  const list = []
+  for (let i = 0; i < span; i++) {
+    list.push(getSystematicSymbolIdForPass(i, span, sourceStride, 1))
+  }
+  return list
+}
+
 function describeFountainInterval(interval) {
   return interval > 0
     ? `fountain every ${interval} data packet(s)`
@@ -2589,7 +2599,12 @@ async function startSending() {
     state.tailStartFrame = 0
     state.frameCount = 0
     state.arqController = state.arqConnected
-      ? new ArqSenderController({ K: state.encoder.K, fileId: state.encoder.fileId, fallbackMs: 8000 })
+      ? new ArqSenderController({
+          K: state.encoder.K,
+          fileId: state.encoder.fileId,
+          fallbackMs: 8000,
+          initialWorkList: buildArqSourceWorkList(state.encoder.K, state.systematicStride)
+        })
       : null
     state.arqCursor = 0
     state.arqFallback = false
@@ -2947,6 +2962,13 @@ export function testSenderWorkListSchedule() {
   }
   const pass = ids.join(',') === '3,6,9,' && cursor === 3 && exhausted === true
   console.log('Sender ARQ work-list schedule test:', pass ? 'PASS' : 'FAIL', { ids, cursor, exhausted })
+  return pass
+}
+
+export function testArqSourceWorkListUsesStride() {
+  const list = buildArqSourceWorkList(5, 2)
+  const pass = list.join(',') === '1,3,5,2,4'
+  console.log('ARQ source work-list stride test:', pass ? 'PASS' : 'FAIL', list)
   return pass
 }
 
