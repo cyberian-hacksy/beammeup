@@ -8,13 +8,6 @@ export function testArqSenderConsumesNackIntoWorkList() {
   return pass
 }
 
-export function testArqSenderUsesInitialWorkList() {
-  const c = new ArqSenderController({ K: 5, fileId: 1, fallbackMs: 5000, initialWorkList: [1, 3, 5, 2, 4] })
-  const pass = c.workList.join(',') === '1,3,5,2,4'
-  console.log('arq sender initial work-list:', pass ? 'PASS' : 'FAIL', c.workList)
-  return pass
-}
-
 export function testArqSenderIgnoresStaleSeq() {
   const c = new ArqSenderController({ K: 10, fileId: 1, fallbackMs: 5000 })
   c.onMessage(encodeNack(1, 5, [3, 6]), 1000)
@@ -124,31 +117,13 @@ function missingSignature(ids) {
   return ids.join(',')
 }
 
-function buildWorkList(K, initialWorkList = null) {
-  const seen = new Set()
-  const list = []
-  if (Array.isArray(initialWorkList)) {
-    for (const raw of initialWorkList) {
-      const id = raw | 0
-      if (id < 1 || id > K || seen.has(id)) continue
-      seen.add(id)
-      list.push(id)
-    }
-  }
-  for (let id = 1; id <= K; id++) {
-    if (seen.has(id)) continue
-    seen.add(id)
-    list.push(id)
-  }
-  return list
-}
-
 export class ArqSenderController {
-  constructor({ K, fileId, fallbackMs = 8000, initialWorkList = null }) {
+  constructor({ K, fileId, fallbackMs = 8000 }) {
     this.K = K
     this.fileId = fileId
     this.fallbackMs = fallbackMs
-    this.workList = buildWorkList(K, initialWorkList)
+    this.workList = []
+    for (let id = 1; id <= K; id++) this.workList.push(id)
     this.lastSeq = -1
     this.mode = 'pass1'
     this.lastActivity = 0
