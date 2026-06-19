@@ -2168,10 +2168,21 @@ function tickArqFallback() {
 }
 
 function buildArqBeaconBatch() {
-  const packet = state.encoder.generateSymbol(0, { repairIdle: true })
+  const packets = [state.encoder.generateSymbol(0, { repairIdle: true })]
+  const symbolIds = [0]
+  const slots = Math.max(1, state.packetsPerFrame)
+  const workList = state.arqController?.workList || []
+  for (let slot = 1; slot < slots && workList.length > 0; slot++) {
+    if (state.arqCursor >= workList.length) state.arqCursor = 0
+    const next = nextFrameSymbolId(workList, state.arqCursor)
+    if (next.symbolId === null) break
+    state.arqCursor = next.cursor
+    packets.push(state.encoder.generateSymbol(next.symbolId))
+    symbolIds.push(next.symbolId)
+  }
   return {
-    payload: packet,
-    symbolIds: [0],
+    payload: concatPackets(packets),
+    symbolIds,
     outerSymbolId: 0,
     sendMetadata: true,
     repairIdleBeacon: true
@@ -2988,6 +2999,35 @@ export function testArqRepairBatchCarriesMetadataWhenRequested() {
       batch.symbolIds.includes(0) &&
       state.arqController.needsRepairMetadata === false
     console.log('ARQ repair metadata batch test:', pass ? 'PASS' : 'FAIL', batch?.symbolIds)
+    return pass
+  } finally {
+    Object.assign(state, snapshot)
+    state.arqController = oldArqController
+    state.arqCursor = oldArqCursor
+    state.arqFallback = oldArqFallback
+  }
+}
+
+export function testArqBeaconBatchCarriesReplayData() {
+  const snapshot = snapshotSchedulerState()
+  const oldArqController = state.arqController
+  const oldArqCursor = state.arqCursor
+  const oldArqFallback = state.arqFallback
+  try {
+    setupSchedulerTestState({ mode: HDMI_MODE.BINARY_3, packetsPerFrame: 4 })
+    state.arqController = {
+      mode: 'beacon',
+      workList: [1, 2, 3, 4, 5],
+      tickFallback() { return false }
+    }
+    state.arqCursor = 0
+    state.arqFallback = false
+    const batch = buildArqPacketBatch(10)
+    const pass = batch?.repairIdleBeacon === true &&
+      batch.sendMetadata === true &&
+      batch.symbolIds.join(',') === '0,1,2,3' &&
+      state.arqCursor === 3
+    console.log('ARQ beacon replay data batch test:', pass ? 'PASS' : 'FAIL', batch?.symbolIds)
     return pass
   } finally {
     Object.assign(state, snapshot)

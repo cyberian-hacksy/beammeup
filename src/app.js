@@ -86,7 +86,8 @@ import {
   testDenseBinaryMetadataSlotRotatesOnlyWhenSent,
   testSenderWorkListSchedule,
   testArqBatchEmitsClaimedMetadataAtWorkListTail,
-  testArqRepairBatchCarriesMetadataWhenRequested
+  testArqRepairBatchCarriesMetadataWhenRequested,
+  testArqBeaconBatchCarriesReplayData
 } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
 import {
   initHdmiUvcReceiver,
@@ -386,6 +387,7 @@ window.testDenseBinaryMetadataSlotRotatesOnlyWhenSent = testDenseBinaryMetadataS
 window.testSenderWorkListSchedule = testSenderWorkListSchedule
 window.testArqBatchEmitsClaimedMetadataAtWorkListTail = testArqBatchEmitsClaimedMetadataAtWorkListTail
 window.testArqRepairBatchCarriesMetadataWhenRequested = testArqRepairBatchCarriesMetadataWhenRequested
+window.testArqBeaconBatchCarriesReplayData = testArqBeaconBatchCarriesReplayData
 window.testCaptureMethodDecision = testCaptureMethodDecision
 window.testWorkerTrackTransferFallbackUsesMain = testWorkerTrackTransferFallbackUsesMain
 window.testWorkerTransferClockStartsOnFirstAcceptedFrame = testWorkerTransferClockStartsOnFirstAcceptedFrame
@@ -710,6 +712,7 @@ async function runAllTests() {
     senderWorkListSchedule: testSenderWorkListSchedule(),
     arqMetadataTailBatch: testArqBatchEmitsClaimedMetadataAtWorkListTail(),
     arqRepairMetadataBatch: testArqRepairBatchCarriesMetadataWhenRequested(),
+    arqBeaconReplayDataBatch: testArqBeaconBatchCarriesReplayData(),
     captureMethodDecision: testCaptureMethodDecision(),
     workerTrackTransferFallback: testWorkerTrackTransferFallbackUsesMain(),
     workerTransferClockStartsOnAccept: testWorkerTransferClockStartsOnFirstAcceptedFrame(),
