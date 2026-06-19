@@ -59,7 +59,8 @@
       try {
         if (!navigator.bluetooth) throw new Error('Web Bluetooth is not available in this browser')
         const device = await navigator.bluetooth.requestDevice({
-          filters: [{ services: [SERVICE_UUID] }]
+          acceptAllDevices: true,
+          optionalServices: [SERVICE_UUID]
         })
         log(`device=${device.name || device.id}`)
         device.addEventListener('gattserverdisconnected', () => {

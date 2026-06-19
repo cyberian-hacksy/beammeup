@@ -23,7 +23,7 @@ import { testArqReceiverBuildsNackForGaps, testArqReceiverCompleteOnlyWhenFullAn
 import { testArqSenderConsumesNackIntoWorkList, testArqSenderIgnoresStaleSeq, testArqSenderAcceptsWrappedSeq, testArqSenderFallbackAfterTimeout, testArqSenderFallsBackOnRepeatedUnchangedNacks, testArqSenderDoesNotFallbackWhileNacksProgress, testArqSenderCompleteStops, testArqSenderCompleteIsTerminal } from './lib/arq/arq-sender.js'
 import { testArqGoodputBeatsReloop } from './lib/arq/arq-sim.js'
 import { testBackchannelRegistry, testBackchannelDefaultMtuIsBleSafe } from './lib/arq/backchannel.js'
-import { testBleGattSenderCopiesNotificationBuffer } from './lib/arq/transports/ble-gatt-sender.js'
+import { testBleGattSenderCopiesNotificationBuffer, testBleGattSenderUsesBroadDiscoveryWithOptionalService } from './lib/arq/transports/ble-gatt-sender.js'
 
 // Import UI modules
 import { initSender, resetSender } from './lib/sender.js'
@@ -272,6 +272,7 @@ window.testArqGoodputBeatsReloop = testArqGoodputBeatsReloop
 window.testBackchannelRegistry = testBackchannelRegistry
 window.testBackchannelDefaultMtuIsBleSafe = testBackchannelDefaultMtuIsBleSafe
 window.testBleGattSenderCopiesNotificationBuffer = testBleGattSenderCopiesNotificationBuffer
+window.testBleGattSenderUsesBroadDiscoveryWithOptionalService = testBleGattSenderUsesBroadDiscoveryWithOptionalService
 
 // HDMI-UVC tests
 window.testCrc32 = testCrc32
@@ -585,6 +586,7 @@ async function runAllTests() {
     arqBackchannelRegistry: testBackchannelRegistry(),
     arqBackchannelDefaultMtu: testBackchannelDefaultMtuIsBleSafe(),
     arqBleSenderCopiesNotification: testBleGattSenderCopiesNotificationBuffer(),
+    arqBleSenderDiscoveryOptions: testBleGattSenderUsesBroadDiscoveryWithOptionalService(),
     // HDMI-UVC tests
     crc32: testCrc32(),
     hdmiHeader: testHeaderRoundtrip(),

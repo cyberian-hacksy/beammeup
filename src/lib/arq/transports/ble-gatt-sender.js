@@ -4,6 +4,24 @@ import {
 } from '../backchannel.js'
 import { fragment, Reassembler } from '../arq-fragment.js'
 
+export const ARQ_DEVICE_NAME = 'BeamMeUp-ARQ'
+
+export function getBleGattRequestOptions() {
+  return {
+    acceptAllDevices: true,
+    optionalServices: [SERVICE_UUID]
+  }
+}
+
+export function testBleGattSenderUsesBroadDiscoveryWithOptionalService() {
+  const opts = getBleGattRequestOptions()
+  const pass = opts.acceptAllDevices === true &&
+    opts.optionalServices?.[0] === SERVICE_UUID &&
+    !opts.filters
+  console.log('ble gatt sender discovery options:', pass ? 'PASS' : 'FAIL')
+  return pass
+}
+
 export function testBleGattSenderCopiesNotificationBuffer() {
   const msg = new Uint8Array(80).map((_, i) => (i * 11) & 0xFF)
   const frags = fragment(msg, 7, 20)
@@ -46,9 +64,7 @@ export class BleGattSenderTransport {
     }
 
     this.onStatus?.('select-device')
-    this.device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [SERVICE_UUID] }]
-    })
+    this.device = await navigator.bluetooth.requestDevice(getBleGattRequestOptions())
     this.device.addEventListener('gattserverdisconnected', this.handleDisconnected)
 
     this.onStatus?.('connecting')
