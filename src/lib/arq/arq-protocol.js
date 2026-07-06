@@ -147,8 +147,9 @@ export function encodeMissingSet(ids) {
     }
   }
 
-  const pick = bitmap && bitmap.length < list.length ? bitmap : list
-  return new Uint8Array(pick)
+  // bitmap is only built when header + payload beat the list, so it wins
+  // whenever it exists.
+  return new Uint8Array(bitmap || list)
 }
 
 export function decodeMissingSet(bytes) {

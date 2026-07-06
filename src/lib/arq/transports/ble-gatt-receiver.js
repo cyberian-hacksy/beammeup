@@ -9,7 +9,9 @@ export class BleGattReceiverTransport {
     this.url = url
     this.mtu = mtu
     this.socket = null
-    this.msgId = 0
+    // Random start so a reconnected transport's msgIds don't collide with
+    // stale partial entries in the sender-side Reassembler.
+    this.msgId = (Math.random() * 0x10000) & 0xFFFF
     this.onStatus = null
   }
 
@@ -25,8 +27,11 @@ export class BleGattReceiverTransport {
       }
       socket.onerror = () => reject(new Error(`Unable to connect to ARQ helper at ${this.url}`))
       socket.onclose = () => {
+        // A replaced socket's late close must not clobber the current
+        // connection's status.
+        if (this.socket !== socket) return
+        this.socket = null
         this.onStatus?.('disconnected')
-        if (this.socket === socket) this.socket = null
       }
     })
   }
@@ -46,7 +51,13 @@ export class BleGattReceiverTransport {
   }
 
   close() {
-    if (this.socket) this.socket.close()
+    const socket = this.socket
     this.socket = null
+    if (socket) {
+      socket.onopen = null
+      socket.onerror = null
+      socket.onclose = null
+      socket.close()
+    }
   }
 }

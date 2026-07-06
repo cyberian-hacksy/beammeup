@@ -62,6 +62,27 @@ export function testFragmentReusedIdResetsStaleEntry() {
   return !!pass
 }
 
+export function testFragmentReusedIdConflictResetsStaleEntry() {
+  // A stale partial that lost fragment 0 must not merge with a new message
+  // reusing the same msgId and fragment count.
+  const staleMsg = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
+  const freshMsg = new Uint8Array([9, 10, 11, 12, 13, 14, 15, 16])
+  const stale = fragment(staleMsg, 7, 8)
+  const fresh = fragment(freshMsg, 7, 8)
+  const r = new Reassembler()
+  r.ingest(stale[1])
+  let out = null
+  out = r.ingest(fresh[1]) || out
+  out = r.ingest(fresh[0]) || out
+  out = r.ingest(fresh[2]) || out
+  out = r.ingest(fresh[3]) || out
+  const pass = out &&
+    out.length === freshMsg.length &&
+    out.every((v, i) => v === freshMsg[i])
+  console.log('fragment reused-id conflict reset:', pass ? 'PASS' : 'FAIL')
+  return !!pass
+}
+
 const FRAGMENT_HEADER_SIZE = 6
 
 // Fragment header: [ msgId(2 BE) | fragIdx(2 BE) | fragCount(2 BE) | data... ]
@@ -136,7 +157,11 @@ export class Reassembler {
     this.evictStale()
     const body = frag.slice(FRAGMENT_HEADER_SIZE)
     let entry = this.buf.get(msgId)
-    if (idx === 0 && entry?.parts.has(0) && !this.sameBytes(entry.parts.get(0), body)) {
+    // A differing byte at any already-held index means the msgId was reused
+    // for a different message (e.g. transport restart) — the stale partial
+    // must not merge with the new fragments.
+    const held = entry?.parts.get(idx)
+    if (held && !this.sameBytes(held, body)) {
       this.forget(msgId)
       entry = null
     }

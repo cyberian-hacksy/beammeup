@@ -50,6 +50,18 @@ export function createEncoder(fileData, filename, mimeType, hash, blockSize = 20
     return metadataPayload
   }
 
+  // Fail at create time (catchable by file-selection error handling) instead
+  // of throwing RangeError on the first metadata frame of the render loop.
+  {
+    const metadataLength = createMetadataPayload(filename, mimeType, originalSize, hash, K, mode, { noRedundancy }).length
+    if (metadataLength > blockSize) {
+      throw new Error(
+        `File metadata (${metadataLength} bytes) exceeds block size (${blockSize} bytes) - ` +
+        'shorten the filename or choose a larger data preset'
+      )
+    }
+  }
+
   return {
     fileId,
     k: K,           // Source block count (for compatibility)

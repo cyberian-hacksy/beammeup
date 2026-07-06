@@ -142,6 +142,9 @@ function decoderDelta(extra = {}) {
     type: 'decoderDelta',
     solved: d.solved,
     solvedTotal: d.solvedTotal,
+    // O(K) array; only shipped while the ARQ back-channel needs it for
+    // seeding the receiver controller's received-set.
+    solvedSourceIds: arqObservationsEnabled ? (d.solvedSourceIds ?? null) : null,
     fileId: d.fileId ?? null,
     K: d.K ?? null,
     K_prime: d.K_prime ?? null,
@@ -269,6 +272,9 @@ function handleDecodeAndIngest(msg) {
     arqPackets: arqObservationsEnabled ? buildArqPacketObservations(parsedList) : [],
     solved: d.solved,
     solvedTotal: d.solvedTotal,
+    // O(K) array; only shipped while the ARQ back-channel needs it for
+    // seeding the receiver controller's received-set.
+    solvedSourceIds: arqObservationsEnabled ? (d.solvedSourceIds ?? null) : null,
     fileId: d.fileId ?? null,
     K: d.K ?? null,
     K_prime: d.K_prime ?? null,
@@ -309,11 +315,15 @@ function handleIngestBatch(msg) {
     accepted: parsedList.length,
     newSession,
     completionEvent: isComplete,
-    arqPackets: arqObservationsEnabled ? buildArqPacketObservations(parsedList) : [],
+    // No arqPackets here: the ingestBatch caller (main-thread capture) feeds
+    // noteArqParsedPackets from its own parsedList and ignores the field.
     // Snapshot of decoder state so the main thread can update the shadow in
     // the same tick as innovation accounting — no dual-channel staleness.
     solved: d.solved,
     solvedTotal: d.solvedTotal,
+    // O(K) array; only shipped while the ARQ back-channel needs it for
+    // seeding the receiver controller's received-set.
+    solvedSourceIds: arqObservationsEnabled ? (d.solvedSourceIds ?? null) : null,
     fileId: d.fileId ?? null,
     K: d.K ?? null,
     K_prime: d.K_prime ?? null,

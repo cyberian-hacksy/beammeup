@@ -63,7 +63,7 @@ export function parseMetadataPayload(payload) {
 
   // Mode byte is optional for backwards compatibility with old metadata frames.
   // Bits 0-1 = QR mode; bit 2 = no-redundancy (YOLO) flag; bit 3 = ARQ repair-idle beacon.
-  const modeByte = offset < payload.length ? payload[offset] : 0
+  const modeByte = getMetadataModeByte(payload)
   const mode = modeByte & 0x03
   const noRedundancy = (modeByte & 0x04) !== 0
   const repairIdle = (modeByte & 0x08) !== 0
@@ -71,15 +71,20 @@ export function parseMetadataPayload(payload) {
   return { filename, mimeType, fileSize, hash, K, mode, noRedundancy, repairIdle }
 }
 
+// Offset of the mode byte per the layout above: [1+filenameLen][1+mimeLen]
+// [4 size][32 hash][4 K] → mode. Single home for the byte-layout walk so the
+// cheap flag peek can't drift from parseMetadataPayload.
+function metadataModeByteOffset(payload) {
+  if (!payload || payload.length < 1) return -1
+  const mimeLenOffset = 1 + payload[0]
+  if (mimeLenOffset >= payload.length) return -1
+  const offset = mimeLenOffset + 1 + payload[mimeLenOffset] + 4 + 32 + 4
+  return offset < payload.length ? offset : -1
+}
+
 export function getMetadataModeByte(payload) {
-  let offset = 0
-  if (!payload || payload.length < 1) return 0
-  const filenameLen = payload[offset++]
-  offset += filenameLen
-  if (offset >= payload.length) return 0
-  const mimeLen = payload[offset++]
-  offset += mimeLen + 4 + 32 + 4
-  return offset < payload.length ? payload[offset] : 0
+  const offset = metadataModeByteOffset(payload)
+  return offset >= 0 ? payload[offset] : 0
 }
 
 export function isRepairIdleMetadataPayload(payload) {

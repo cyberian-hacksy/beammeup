@@ -1,9 +1,5 @@
 import { decodeArqMessage, decodeMissingSet, encodeComplete, encodeNack, ARQ_MSG } from './arq-protocol.js'
 
-function missingSignature(ids) {
-  return ids.join(',')
-}
-
 export function getArqBeaconLogAction(msg, isFull, verified) {
   if (!msg) return null
   return isFull && verified ? 'COMPLETE' : 'NACK'
@@ -126,6 +122,17 @@ export function testArqReceiverCapsCompleteBursts() {
   return pass
 }
 
+export function testArqReceiverReplenishesCompleteWhileBeaconsContinue() {
+  const sent = []
+  const c = new ArqReceiverController({ K: 1, fileId: 1, send: b => sent.push(b), verifyHash: () => true, nackRepeatBeacons: 4 })
+  c.markReceived(1)
+  for (let i = 0; i < 11; i++) c.onBeacon()
+  const pass = sent.length === 5 &&
+    sent.every(bytes => decodeArqMessage(bytes)?.type === ARQ_MSG.COMPLETE)
+  console.log('arq receiver replenishes complete:', pass ? 'PASS' : 'FAIL', sent.length)
+  return pass
+}
+
 export class ArqReceiverController {
   constructor({ K, fileId, send, verifyHash, nackRepeatBeacons = 12, nackChangeHoldBeacons = 12 }) {
     this.K = K
@@ -139,7 +146,12 @@ export class ArqReceiverController {
     this.count = 0
     this.seq = 0
     this.completeSendsRemaining = 3
-    this.lastNackSignature = null
+    this.completeRefreshBeacons = 0
+    // Monotone mutation counter: markReceived only ever deletes ids, so
+    // "mutations unchanged since the last NACK" is exactly "missing set
+    // unchanged" — no need to materialize the O(K) id list per beacon.
+    this.mutations = 0
+    this.lastNackMutations = -1
     this.duplicateNackBeacons = 0
     this.changedNackBeacons = 0
   }
@@ -148,6 +160,7 @@ export class ArqReceiverController {
     if (!this.missingIds.has(id)) return
     this.missingIds.delete(id)
     this.count++
+    this.mutations++
   }
 
   requestFullRepair() {
@@ -155,7 +168,9 @@ export class ArqReceiverController {
     for (let id = 1; id <= this.K; id++) this.missingIds.add(id)
     this.count = 0
     this.completeSendsRemaining = 3
-    this.lastNackSignature = null
+    this.completeRefreshBeacons = 0
+    this.mutations++
+    this.lastNackMutations = -1
     this.duplicateNackBeacons = 0
     this.changedNackBeacons = 0
   }
@@ -171,29 +186,34 @@ export class ArqReceiverController {
   onBeacon() {
     this.seq = (this.seq + 1) & 0xFFFF
     if (this.isFull() && this.verifyHash()) {
-      if (this.completeSendsRemaining <= 0) return null
-      this.completeSendsRemaining--
+      // Beacons still arriving after the burst mean the sender missed the
+      // COMPLETE; keep re-sending at the duplicate-NACK cadence.
+      if (this.completeSendsRemaining <= 0) {
+        this.completeRefreshBeacons++
+        if (this.completeRefreshBeacons < this.nackRepeatBeacons) return null
+        this.completeRefreshBeacons = 0
+      } else {
+        this.completeSendsRemaining--
+      }
       const msg = encodeComplete(this.fileId, this.seq)
       this.send(msg)
       return msg
     }
-    const missing = this.missing()
-    if (missing.length === 0) return null
-    const sig = missingSignature(missing)
-    if (sig === this.lastNackSignature) {
+    if (this.missingIds.size === 0) return null
+    if (this.mutations === this.lastNackMutations) {
       this.duplicateNackBeacons++
       if (this.duplicateNackBeacons < this.nackRepeatBeacons) return null
       this.duplicateNackBeacons = 0
     } else {
-      if (this.lastNackSignature !== null) {
+      if (this.lastNackMutations !== -1) {
         this.changedNackBeacons++
         if (this.changedNackBeacons < this.nackChangeHoldBeacons) return null
       }
-      this.lastNackSignature = sig
+      this.lastNackMutations = this.mutations
       this.duplicateNackBeacons = 0
       this.changedNackBeacons = 0
     }
-    const msg = encodeNack(this.fileId, this.seq, missing)
+    const msg = encodeNack(this.fileId, this.seq, this.missing())
     this.send(msg)
     return msg
   }

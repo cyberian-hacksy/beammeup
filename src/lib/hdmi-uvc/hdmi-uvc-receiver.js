@@ -232,9 +232,35 @@ function autoConnectArqHelper() {
 }
 
 function resetArqReceiverSession() {
+  clearArqCompleteRetries()
   state.arqController = null
   state.arqFileId = null
+  state.arqLastSeededSolved = null
   state.arqPendingSourceIds.clear()
+}
+
+function clearArqCompleteRetries() {
+  if (state.arqCompleteRetryTimer) {
+    clearInterval(state.arqCompleteRetryTimer)
+    state.arqCompleteRetryTimer = null
+  }
+}
+
+// Scanning stops at completion, so the beacon-driven COMPLETE re-sends can
+// never run on this path; drive the controller from a bounded timer instead
+// so a sender that missed the initial burst still learns to stop.
+function scheduleArqCompleteRetries(controller) {
+  clearArqCompleteRetries()
+  let ticks = 0
+  state.arqCompleteRetryTimer = setInterval(() => {
+    ticks++
+    if (ticks > 24 || controller !== state.arqController ||
+        !state.completedFile || !state.arqConnected) {
+      clearArqCompleteRetries()
+      return
+    }
+    controller.onBeacon()
+  }, 700)
 }
 
 function seedArqControllerFromDecoder(controller, decoder) {
@@ -249,16 +275,29 @@ function seedArqControllerFromDecoder(controller, decoder) {
   return seeded
 }
 
+function addArqPendingSourceId(fileId, symbolId) {
+  let ids = state.arqPendingSourceIds.get(fileId)
+  if (!ids) {
+    ids = new Set()
+    state.arqPendingSourceIds.set(fileId, ids)
+  }
+  ids.add(symbolId)
+}
+
 function seedArqControllerFromPending(controller) {
   if (!controller) return 0
+  // Only ids observed under the controller's fileId count; stale packets from
+  // a previous session must not mask blocks as received.
+  const pending = state.arqPendingSourceIds.get(controller.fileId)
+  state.arqPendingSourceIds.clear()
+  if (!pending) return 0
   let seeded = 0
-  for (const id of state.arqPendingSourceIds) {
+  for (const id of pending) {
     if (id < 1 || id > controller.K) continue
     const before = controller.count
     controller.markReceived(id)
     if (controller.count !== before) seeded++
   }
-  state.arqPendingSourceIds.clear()
   return seeded
 }
 
@@ -280,6 +319,7 @@ function ensureArqReceiverController() {
   })
   const seeded = seedArqControllerFromDecoder(state.arqController, decoder) +
     seedArqControllerFromPending(state.arqController)
+  state.arqLastSeededSolved = decoder.solved ?? 0
   debugLog(`ARQ receiver session ready: fileId=${decoder.fileId} K=${decoder.metadata.K} seeded=${seeded}`)
   updateArqReceiverStatus(`Helper connected (K=${decoder.metadata.K})`, true, 'Reconnect helper')
   return state.arqController
@@ -295,18 +335,25 @@ function noteArqParsedPackets(parsedList) {
   let sawRepairIdle = false
   for (const parsed of parsedList) {
     if (!parsed) continue
-    if (!controller && parsed.symbolId >= 1) {
-      state.arqPendingSourceIds.add(parsed.symbolId)
-    } else if (controller && parsed.symbolId >= 1 && parsed.symbolId <= controller.K) {
+    if (!controller && parsed.symbolId >= 1 && parsed.fileId != null) {
+      addArqPendingSourceId(parsed.fileId, parsed.symbolId)
+    } else if (controller && parsed.fileId === controller.fileId &&
+               parsed.symbolId >= 1 && parsed.symbolId <= controller.K) {
       controller.markReceived(parsed.symbolId)
-    } else if (parsed.isMetadata) {
+    } else if (parsed.isMetadata && (!controller || parsed.fileId === controller.fileId)) {
       if (isRepairIdleMetadataPayload(parsed.payload)) sawRepairIdle = true
     }
   }
 
   if (controller && sawRepairIdle) {
-    seedArqControllerFromDecoder(controller, state.decoder)
-    seedArqControllerFromPending(controller)
+    // Seeding walks O(K) solved-id arrays; decoder.solved is monotone, so
+    // only re-seed when it moved or pending ids arrived.
+    const solved = state.decoder?.solved ?? 0
+    if (solved !== state.arqLastSeededSolved || state.arqPendingSourceIds.size > 0) {
+      seedArqControllerFromDecoder(controller, state.decoder)
+      seedArqControllerFromPending(controller)
+      state.arqLastSeededSolved = solved
+    }
     const msg = controller.onBeacon()
     const action = getArqBeaconLogAction(msg, controller.isFull(), !!state.completedFile)
     if (action) debugLog(`ARQ beacon observed: sent ${action} seq=${msg?.seq ?? '?'}`)
@@ -319,6 +366,7 @@ function sendArqCompleteIfReady() {
   for (let id = 1; id <= controller.K; id++) controller.markReceived(id)
   const msg = controller.onBeacon()
   debugLog(`ARQ COMPLETE sent seq=${msg?.seq ?? '?'}`)
+  scheduleArqCompleteRetries(controller)
 }
 
 function requestArqFullRepair(reason) {
@@ -331,7 +379,9 @@ function requestArqFullRepair(reason) {
 }
 
 function recoverFromHashMismatch() {
-  requestArqFullRepair('hash-mismatch')
+  // Without a dispatched ARQ full-repair NACK there is no repair path;
+  // discarding the decoder would strand the receiver at 0% forever.
+  if (!requestArqFullRepair('hash-mismatch')) return false
   state.completedFile = null
   state.completionStarted = false
   state.isScanning = true
@@ -349,6 +399,7 @@ function recoverFromHashMismatch() {
   }
   showReceivingStatus()
   scheduleNextFrame()
+  return true
 }
 
 async function copyReceiverDebugLog(copyBtn) {
@@ -974,6 +1025,7 @@ function handleWorkerDecoderDelta(msg) {
   if (!s) return
   if (typeof msg.solved === 'number') s.solved = msg.solved
   if (typeof msg.solvedTotal === 'number') s.solvedTotal = msg.solvedTotal
+  if (Array.isArray(msg.solvedSourceIds)) s.solvedSourceIds = msg.solvedSourceIds
   if ('fileId' in msg) s.fileId = typeof msg.fileId === 'number' ? msg.fileId : null
   if (typeof msg.K === 'number') s.K = msg.K
   if (typeof msg.K_prime === 'number') s.K_prime = msg.K_prime
@@ -1233,6 +1285,7 @@ function createWorkerDecoderShadow() {
   const s = {
     solved: 0,
     solvedTotal: 0,
+    solvedSourceIds: [],
     fileId: null,
     K: null,
     K_prime: null,
@@ -1254,6 +1307,7 @@ function createWorkerDecoderShadow() {
     get fileId() { return s.fileId },
     get solved() { return s.solved },
     get solvedTotal() { return s.solvedTotal },
+    get solvedSourceIds() { return s.solvedSourceIds },
     get K() { return s.K },
     get K_prime() { return s.K_prime },
     get blockSize() { return s.blockSize || 0 },
@@ -1322,6 +1376,7 @@ function createWorkerDecoderShadow() {
     reset() {
       s.solved = 0
       s.solvedTotal = 0
+      s.solvedSourceIds = []
       s.fileId = null
       s.K = null
       s.K_prime = null
@@ -2686,7 +2741,9 @@ const state = {
   arqHelperAutoAttempted: false,
   arqController: null,
   arqFileId: null,
-  arqPendingSourceIds: new Set(),
+  arqLastSeededSolved: null,
+  arqCompleteRetryTimer: null,
+  arqPendingSourceIds: new Map(),
   workerCompletionSuppressed: false
 }
 
@@ -4431,8 +4488,10 @@ async function handleComplete() {
   if (!hashMatch) {
     showError('File hash mismatch - transfer may be corrupted')
     debugLog('Complete rejected: SHA-256 mismatch')
-    recoverFromHashMismatch()
-    return
+    // With an ARQ back-channel a full repair is dispatched and we keep
+    // receiving; without one, fall through and deliver the file with the
+    // warning rather than destroying the decoded blocks.
+    if (recoverFromHashMismatch()) return
   }
 
   const elapsed = (Date.now() - state.startTime) / 1000

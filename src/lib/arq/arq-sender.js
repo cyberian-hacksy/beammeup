@@ -107,6 +107,39 @@ export function testArqSenderCompleteIsTerminal() {
   return pass
 }
 
+export function testArqSenderDisplayProgressStableAcrossRepair() {
+  const c = new ArqSenderController({ K: 100, fileId: 1, fallbackMs: 5000 })
+  const p1 = getArqSenderDisplayProgress(c, 50)
+  c.onPassExhausted(100)
+  const p2 = getArqSenderDisplayProgress(c, 0)
+  c.onMessage(encodeNack(1, 1, [3, 6, 9, 12]), 1000)
+  const p3 = getArqSenderDisplayProgress(c, 2)
+  c.onPassExhausted(1100)
+  const p4 = getArqSenderDisplayProgress(c, 0)
+  c.onMessage(encodeComplete(1, 2), 2000)
+  const p5 = getArqSenderDisplayProgress(c, 0)
+  const pass = p1 === 50 && p2 === 100 && p3 === 96 && p4 === 96 && p5 === 100
+  console.log('arq sender display progress:', pass ? 'PASS' : 'FAIL', [p1, p2, p3, p4, p5])
+  return pass
+}
+
+// Progress for the sender UI. The raw replay cursor wraps every beacon cycle
+// and resets on every NACK, so it reads as 0->100->0 churn on screen. Instead:
+// pass1 shows cursor position through the one full pass; after that the work
+// list is the receiver-reported missing set, so show the delivered fraction
+// of source blocks (100 until the first NACK arrives).
+export function getArqSenderDisplayProgress(controller, cursor) {
+  if (!controller) return 0
+  if (controller.mode === 'done') return 100
+  if (controller.mode === 'pass1') {
+    const span = Math.max(1, controller.workList.length)
+    return Math.min(100, Math.round((cursor / span) * 100))
+  }
+  if (controller.lastMissingSignature === null) return 100
+  const K = Math.max(1, controller.K)
+  return Math.min(100, Math.round(((K - controller.workList.length) / K) * 100))
+}
+
 function isNewerSeq(seq, lastSeq) {
   if (lastSeq < 0) return true
   const diff = (seq - lastSeq) & 0xFFFF
@@ -126,14 +159,12 @@ export class ArqSenderController {
     for (let id = 1; id <= K; id++) this.workList.push(id)
     this.lastSeq = -1
     this.mode = 'pass1'
-    this.lastActivity = 0
     this.beaconSince = null
     this.lastMissingSignature = null
     this.needsRepairMetadata = false
   }
 
   startPass(now) {
-    this.lastActivity = now
     this.beaconSince = null
     this.lastMissingSignature = null
     this.needsRepairMetadata = false
@@ -143,7 +174,6 @@ export class ArqSenderController {
     if (this.mode !== 'done') {
       this.mode = 'beacon'
       if (this.beaconSince === null) this.beaconSince = now
-      this.lastActivity = now
     }
   }
 
@@ -155,7 +185,6 @@ export class ArqSenderController {
     if (msg.type === ARQ_MSG.COMPLETE) {
       if (!isNewerSeq(msg.seq, this.lastSeq)) return null
       this.lastSeq = msg.seq
-      this.lastActivity = now
       this.mode = 'done'
       return msg
     }
@@ -163,7 +192,6 @@ export class ArqSenderController {
     if (msg.type === ARQ_MSG.NACK) {
       if (!isNewerSeq(msg.seq, this.lastSeq)) return null
       this.lastSeq = msg.seq
-      this.lastActivity = now
       const missing = decodeMissingSet(msg.payload)
       const sig = missingSignature(missing)
       if (this.mode === 'repair' && sig === this.lastMissingSignature) return null

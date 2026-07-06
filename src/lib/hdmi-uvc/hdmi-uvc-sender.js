@@ -3,7 +3,7 @@
 import { createEncoder } from '../encoder.js'
 import { METADATA_INTERVAL } from '../constants.js'
 import { PACKET_HEADER_SIZE } from '../packet.js'
-import { ArqSenderController } from '../arq/arq-sender.js'
+import { ArqSenderController, getArqSenderDisplayProgress } from '../arq/arq-sender.js'
 import { getTransport } from '../arq/backchannel.js'
 import { DEFAULT_ARQ_TRANSPORT } from '../arq/default-transports.js'
 import {
@@ -118,6 +118,10 @@ function handleArqBackchannelMessage(bytes) {
   const msg = state.arqController.onMessage(bytes, performance.now())
   if (!msg) return
   if (state.arqController.mode === 'repair') {
+    if (state.arqFallback) {
+      state.arqFallback = false
+      debugLog('ARQ back-channel resumed after fallback')
+    }
     state.arqCursor = 0
     debugLog(`ARQ NACK received: ${state.arqController.workList.length} repair block(s)`)
     updateArqSenderStatus(`Repairing ${state.arqController.workList.length} block(s)`, true)
@@ -127,7 +131,8 @@ function handleArqBackchannelMessage(bytes) {
 }
 
 async function connectArqBackchannel() {
-  if (state.isSending || state.isAwaitingStart) return
+  if (state.isSending || state.isAwaitingStart || state.arqConnecting) return
+  state.arqConnecting = true
   try {
     state.arqTransport?.close()
     const impl = getTransport(DEFAULT_ARQ_TRANSPORT)
@@ -150,6 +155,8 @@ async function connectArqBackchannel() {
     updateArqSenderStatus('Back-channel unavailable', false)
     debugLog(`ARQ connect failed: ${err.message}`)
     showError('Back-channel connect failed: ' + err.message)
+  } finally {
+    state.arqConnecting = false
   }
 }
 
@@ -382,6 +389,7 @@ const state = {
   useExternalDisplay: true,
   arqTransport: null,
   arqConnected: false,
+  arqConnecting: false,
   arqController: null,
   arqCursor: 0,
   arqFallback: false,
@@ -2157,13 +2165,16 @@ function tickArqFallback() {
   state.dataPacketCount = 0
   state.systematicPass = 1
   state.tailStartFrame = 0
-  state.arqConnected = false
-  state.arqTransport?.close()
-  state.arqTransport = null
+  // Keep the back-channel open: the silence may be a transient receiver-side
+  // stall (occluded window, helper reconnect). A fresh NACK re-engages repair
+  // and a COMPLETE still stops the sender.
   debugLog(state.yolo
     ? 'ARQ back-channel silent - falling back to no-redundancy source loop'
     : 'ARQ back-channel silent - falling back to normal fountain/parity schedule')
-  updateArqSenderStatus(state.yolo ? 'ARQ fallback: source loop' : 'ARQ fallback: normal stream', false)
+  updateArqSenderStatus(
+    state.yolo ? 'ARQ fallback: source loop (listening)' : 'ARQ fallback: normal stream (listening)',
+    state.arqConnected
+  )
   return true
 }
 
@@ -2258,8 +2269,7 @@ function buildArqPacketBatch(frameNumber) {
   return createPacketBatch({
     packets,
     symbolIds,
-    metadataEmitted,
-    extra: { arq: true }
+    metadataEmitted
   })
 }
 
@@ -2292,10 +2302,14 @@ function buildFramePacketBatch(frameNumber) {
         slots: dataSlots
       })
 
+  // After an ARQ fallback the back-channel stays open; flag the regular
+  // metadata as repair-idle so the receiver still treats it as a beacon and
+  // can re-engage repair with a NACK (or stop the sender with COMPLETE).
+  const fallbackBeacon = !!(state.arqFallback && state.arqTransport)
   let dataSlotsBuilt = 0
   for (let slot = 0; slot < slots; slot++) {
     if (slot === metadataSlotIndex) {
-      packets.push(state.encoder.generateSymbol(0))
+      packets.push(state.encoder.generateSymbol(0, { repairIdle: fallbackBeacon }))
       symbolIds.push(0)
       continue
     }
@@ -2354,9 +2368,8 @@ function renderFrame() {
 
     const arqActive = state.arqController && !state.arqFallback
     const systematicSpan = Math.max(1, getCurrentSystematicSpan())
-    const arqSpan = Math.max(1, state.arqController?.workList?.length || 1)
     const progress = arqActive
-      ? Math.min(100, Math.round((state.arqCursor / arqSpan) * 100))
+      ? getArqSenderDisplayProgress(state.arqController, state.arqCursor)
       : Math.min(100, Math.round((state.systematicIndex / systematicSpan) * 100))
     elements.progressDisplay.textContent = progress + '%'
     if (presentation.progressDisplay && presentation.progressDisplay !== elements.progressDisplay) {

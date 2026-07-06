@@ -18,9 +18,9 @@ import {
 } from './lib/decoder.js'
 import { testParityMap, testParityRecovery, testGF2SolverSmall, testGF2SolverLarge, testSourceToParityAdjacency } from './lib/precode.js'
 import { testArqMessageRoundtrip, testArqMessageRejectsCorruption, testMissingSetCodecRoundtrip, testMissingSetAdaptiveChoosesSmaller, testMissingSetCodecHighUint32Roundtrip, testMissingSetSparseLargeRangeUsesDeltaEncoding, testMissingSetBitmapDecodeBoundsToPayload } from './lib/arq/arq-protocol.js'
-import { testFragmentReassembleRoundtrip, testFragmentOutOfOrderAndDup, testFragmentMissingDrops, testFragmentSupportsLargeCounts, testFragmentReusedIdResetsStaleEntry } from './lib/arq/arq-fragment.js'
-import { testArqReceiverBuildsNackForGaps, testArqReceiverCompleteOnlyWhenFullAndHashOk, testArqReceiverThrottlesDuplicateNacks, testArqReceiverCoalescesChangedNacksDuringProgress, testArqReceiverSendsChangedNackAfterHold, testArqBeaconLogActionSkipsSuppressedNack, testArqReceiverSuppressesEmptyNackWhileHashPending, testArqReceiverCanRequestFullRepairAfterHashMismatch, testArqReceiverCapsCompleteBursts } from './lib/arq/arq-receiver.js'
-import { testArqSenderConsumesNackIntoWorkList, testArqSenderIgnoresStaleSeq, testArqSenderAcceptsWrappedSeq, testArqSenderFallbackAfterTimeout, testArqSenderFallsBackOnRepeatedUnchangedNacks, testArqSenderDoesNotFallbackWhileNacksProgress, testArqSenderIgnoresDuplicateNackDuringActiveRepair, testArqSenderRetriesDuplicateNackAfterRepairExhausted, testArqSenderCompleteStops, testArqSenderCompleteIsTerminal } from './lib/arq/arq-sender.js'
+import { testFragmentReassembleRoundtrip, testFragmentOutOfOrderAndDup, testFragmentMissingDrops, testFragmentSupportsLargeCounts, testFragmentReusedIdResetsStaleEntry, testFragmentReusedIdConflictResetsStaleEntry } from './lib/arq/arq-fragment.js'
+import { testArqReceiverBuildsNackForGaps, testArqReceiverCompleteOnlyWhenFullAndHashOk, testArqReceiverThrottlesDuplicateNacks, testArqReceiverCoalescesChangedNacksDuringProgress, testArqReceiverSendsChangedNackAfterHold, testArqBeaconLogActionSkipsSuppressedNack, testArqReceiverSuppressesEmptyNackWhileHashPending, testArqReceiverCanRequestFullRepairAfterHashMismatch, testArqReceiverCapsCompleteBursts, testArqReceiverReplenishesCompleteWhileBeaconsContinue } from './lib/arq/arq-receiver.js'
+import { testArqSenderConsumesNackIntoWorkList, testArqSenderIgnoresStaleSeq, testArqSenderAcceptsWrappedSeq, testArqSenderFallbackAfterTimeout, testArqSenderFallsBackOnRepeatedUnchangedNacks, testArqSenderDoesNotFallbackWhileNacksProgress, testArqSenderIgnoresDuplicateNackDuringActiveRepair, testArqSenderRetriesDuplicateNackAfterRepairExhausted, testArqSenderCompleteStops, testArqSenderCompleteIsTerminal, testArqSenderDisplayProgressStableAcrossRepair } from './lib/arq/arq-sender.js'
 import { testArqGoodputBeatsReloop } from './lib/arq/arq-sim.js'
 import { testBackchannelRegistry, testBackchannelDefaultMtuIsBleSafe } from './lib/arq/backchannel.js'
 import { testArqHelperStatusView, testShouldAutoConnectArqHelper } from './lib/arq/helper-status.js'
@@ -256,6 +256,7 @@ window.testFragmentOutOfOrderAndDup = testFragmentOutOfOrderAndDup
 window.testFragmentMissingDrops = testFragmentMissingDrops
 window.testFragmentSupportsLargeCounts = testFragmentSupportsLargeCounts
 window.testFragmentReusedIdResetsStaleEntry = testFragmentReusedIdResetsStaleEntry
+window.testFragmentReusedIdConflictResetsStaleEntry = testFragmentReusedIdConflictResetsStaleEntry
 window.testArqReceiverBuildsNackForGaps = testArqReceiverBuildsNackForGaps
 window.testArqReceiverCompleteOnlyWhenFullAndHashOk = testArqReceiverCompleteOnlyWhenFullAndHashOk
 window.testArqReceiverSuppressesEmptyNackWhileHashPending = testArqReceiverSuppressesEmptyNackWhileHashPending
@@ -265,6 +266,7 @@ window.testArqReceiverCoalescesChangedNacksDuringProgress = testArqReceiverCoale
 window.testArqReceiverSendsChangedNackAfterHold = testArqReceiverSendsChangedNackAfterHold
 window.testArqBeaconLogActionSkipsSuppressedNack = testArqBeaconLogActionSkipsSuppressedNack
 window.testArqReceiverCapsCompleteBursts = testArqReceiverCapsCompleteBursts
+window.testArqReceiverReplenishesCompleteWhileBeaconsContinue = testArqReceiverReplenishesCompleteWhileBeaconsContinue
 window.testArqSenderConsumesNackIntoWorkList = testArqSenderConsumesNackIntoWorkList
 window.testArqSenderIgnoresStaleSeq = testArqSenderIgnoresStaleSeq
 window.testArqSenderAcceptsWrappedSeq = testArqSenderAcceptsWrappedSeq
@@ -275,6 +277,7 @@ window.testArqSenderIgnoresDuplicateNackDuringActiveRepair = testArqSenderIgnore
 window.testArqSenderRetriesDuplicateNackAfterRepairExhausted = testArqSenderRetriesDuplicateNackAfterRepairExhausted
 window.testArqSenderCompleteStops = testArqSenderCompleteStops
 window.testArqSenderCompleteIsTerminal = testArqSenderCompleteIsTerminal
+window.testArqSenderDisplayProgressStableAcrossRepair = testArqSenderDisplayProgressStableAcrossRepair
 window.testArqGoodputBeatsReloop = testArqGoodputBeatsReloop
 window.testBackchannelRegistry = testBackchannelRegistry
 window.testBackchannelDefaultMtuIsBleSafe = testBackchannelDefaultMtuIsBleSafe
@@ -578,6 +581,7 @@ async function runAllTests() {
     arqFragmentMissingDrops: testFragmentMissingDrops(),
     arqFragmentLargeCounts: testFragmentSupportsLargeCounts(),
     arqFragmentReusedIdReset: testFragmentReusedIdResetsStaleEntry(),
+    arqFragmentReusedIdConflictReset: testFragmentReusedIdConflictResetsStaleEntry(),
     arqReceiverNackGaps: testArqReceiverBuildsNackForGaps(),
     arqReceiverCompleteGating: testArqReceiverCompleteOnlyWhenFullAndHashOk(),
     arqReceiverNoEmptyNack: testArqReceiverSuppressesEmptyNackWhileHashPending(),
@@ -587,6 +591,7 @@ async function runAllTests() {
     arqReceiverChangedNackAfterHold: testArqReceiverSendsChangedNackAfterHold(),
     arqBeaconLogActionSkipsSuppressedNack: testArqBeaconLogActionSkipsSuppressedNack(),
     arqReceiverCompleteCap: testArqReceiverCapsCompleteBursts(),
+    arqReceiverCompleteReplenish: testArqReceiverReplenishesCompleteWhileBeaconsContinue(),
     arqSenderConsumesNack: testArqSenderConsumesNackIntoWorkList(),
     arqSenderStaleSeq: testArqSenderIgnoresStaleSeq(),
     arqSenderWrappedSeq: testArqSenderAcceptsWrappedSeq(),
@@ -597,6 +602,7 @@ async function runAllTests() {
     arqSenderRetriesDuplicateAfterExhausted: testArqSenderRetriesDuplicateNackAfterRepairExhausted(),
     arqSenderCompleteStops: testArqSenderCompleteStops(),
     arqSenderCompleteTerminal: testArqSenderCompleteIsTerminal(),
+    arqSenderDisplayProgress: testArqSenderDisplayProgressStableAcrossRepair(),
     arqGoodputBeatsReloop: await testArqGoodputBeatsReloop(),
     arqBackchannelRegistry: testBackchannelRegistry(),
     arqBackchannelDefaultMtu: testBackchannelDefaultMtuIsBleSafe(),

@@ -10,6 +10,15 @@ DEVICE_NAME = "BeamMeUp-ARQ"
 WS_HOST = "127.0.0.1"
 WS_PORT = 8787
 
+# One dropped notification kills the whole ARQ message (the reassembler needs
+# every fragment), so pace to the BLE connection interval instead of flooding
+# the peripheral's notification queue, and retry when the stack reports the
+# queue full (update_value returning False).
+NOTIFY_PACING_S = 0.01
+NOTIFY_RETRY_DELAY_S = 0.05
+NOTIFY_RETRY_LIMIT = 40
+NOTIFY_LOG_INTERVAL = 100
+
 
 class ArqGattBridge:
     def __init__(self):
@@ -43,9 +52,39 @@ class ArqGattBridge:
                 return
             characteristic = self.server.get_characteristic(CHARACTERISTIC_UUID)
             characteristic.value = bytes(payload)
-            self.server.update_value(SERVICE_UUID, CHARACTERISTIC_UUID)
+            sent = self.server.update_value(SERVICE_UUID, CHARACTERISTIC_UUID)
+            retries = 0
+            while not sent and retries < NOTIFY_RETRY_LIMIT:
+                retries += 1
+                await asyncio.sleep(NOTIFY_RETRY_DELAY_S)
+                if not self.started:
+                    return
+                sent = self.server.update_value(SERVICE_UUID, CHARACTERISTIC_UUID)
             self.notifications += 1
-            print(f"notify bytes={len(payload)} count={self.notifications}")
+            if not sent:
+                print(f"notify DROPPED bytes={len(payload)} after {retries} retries")
+            elif self.notifications % NOTIFY_LOG_INTERVAL == 0:
+                print(f"notify count={self.notifications}")
+            await asyncio.sleep(NOTIFY_PACING_S)
+
+
+def _request_origin(websocket):
+    request = getattr(websocket, "request", None)
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        headers = getattr(websocket, "request_headers", None)
+    try:
+        return headers.get("Origin") if headers is not None else None
+    except AttributeError:
+        return None
+
+
+def origin_allowed(origin):
+    # Non-browser clients send no Origin; file:// pages (the single-file
+    # build) send the literal "null". Hostile web origins send https://...
+    if origin is None or origin == "null":
+        return True
+    return origin.startswith("http://localhost") or origin.startswith("http://127.0.0.1")
 
 
 async def main():
@@ -53,6 +92,11 @@ async def main():
     await bridge.start()
 
     async def handle_ws(websocket):
+        origin = _request_origin(websocket)
+        if not origin_allowed(origin):
+            print(f"rejecting WebSocket client from origin {origin}")
+            await websocket.close(code=1008, reason="origin not allowed")
+            return
         print("WebSocket client connected")
         try:
             async for message in websocket:
