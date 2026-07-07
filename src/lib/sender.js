@@ -3,6 +3,8 @@ import qrcode from 'qrcode-generator'
 import { MAX_FILE_SIZE, METADATA_INTERVAL, DATA_PRESETS, SIZE_PRESETS, SPEED_PRESETS, QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
 import { createPacket } from './packet.js'
 import { createEncoder } from './encoder.js'
+import { formatBytes } from './format.js'
+import { announce } from './feedback.js'
 
 // Sender state
 const state = {
@@ -21,13 +23,6 @@ const state = {
 
 // DOM elements (initialized on setup)
 let elements = null
-
-// Utility: format bytes to human readable
-function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-}
 
 // ============ Color Mode Helpers ============
 
@@ -152,9 +147,14 @@ function updateDropZoneState() {
   if (!state.encoder) {
     container.classList.add('empty')
     container.classList.remove('has-file')
+    container.setAttribute('tabindex', '0')
+    container.setAttribute('aria-disabled', 'false')
   } else {
     container.classList.remove('empty')
     container.classList.add('has-file')
+    // The zone stops being interactive once a file is loaded.
+    container.setAttribute('tabindex', '-1')
+    container.setAttribute('aria-disabled', 'true')
   }
 }
 
@@ -318,7 +318,7 @@ function senderTick() {
   // Every METADATA_INTERVAL frames, send metadata
   if (state.frameCount % METADATA_INTERVAL === 0) {
     renderSymbol(0)
-    elements.statSymbol.textContent = '#META'
+    elements.statSymbol.textContent = 'metadata'
   } else {
     renderSymbol(state.symbolId)
     if (state.mode === QR_MODE.BW) {
@@ -422,7 +422,7 @@ async function processFile(file) {
   if (!file) return
 
   if (file.size > MAX_FILE_SIZE) {
-    showError('File too large. Limit: 20MB.')
+    showError('File too large for QR transfer (limit 20 MB). Use CIMBAR (up to 33 MB) or HDMI-UVC (up to 1 GB) from the home screen.')
     return
   }
 
@@ -471,6 +471,14 @@ function handleDropZoneClick() {
   }
 }
 
+// The drop zone is a div with role="button"; Enter/Space must work like click
+function handleDropZoneKeydown(e) {
+  if ((e.key === 'Enter' || e.key === ' ') && !state.encoder) {
+    e.preventDefault()
+    elements.fileInput.click()
+  }
+}
+
 // Handle drag over
 function handleDragOver(e) {
   e.preventDefault()
@@ -506,7 +514,9 @@ async function handleDrop(e) {
 function handleDataPresetChange() {
   const index = parseInt(elements.dataSlider.value)
   const preset = DATA_PRESETS[index]
-  elements.dataDisplay.textContent = preset.name + ' (' + preset.blockSize + 'B)'
+  const label = preset.name + ' (' + preset.blockSize + 'B)'
+  elements.dataDisplay.textContent = label
+  elements.dataSlider.setAttribute('aria-valuetext', label)
 
   // Re-encode if file is loaded but not sending
   if (state.fileBuffer && !state.isSending) {
@@ -536,7 +546,7 @@ function getModeLabel(mode) {
 }
 
 // Apply mode-specific default settings
-function applyModeDefaults(mode) {
+function applyModeDefaults(mode, { notify = true } = {}) {
   if (mode === QR_MODE.BW) {
     // BW: use B/W QRs, can handle more data
     elements.dataSlider.value = 3
@@ -552,6 +562,18 @@ function applyModeDefaults(mode) {
   handleDataPresetChange()
   handleSizePresetChange()
   handleSpeedPresetChange()
+
+  // Changing mode overwrites whatever the user had dialed in; make that
+  // visible instead of silent.
+  if (notify) {
+    const modeNames = ['BW', 'CMY', 'RGB']
+    announce('Data, size and speed presets adjusted for ' + modeNames[mode] + ' mode')
+    for (const el of [elements.dataDisplay, elements.sizeDisplay, elements.speedDisplay]) {
+      el.classList.remove('preset-flash')
+      void el.offsetWidth // restart the animation on back-to-back mode changes
+      el.classList.add('preset-flash')
+    }
+  }
 }
 
 // Handle mode change
@@ -562,7 +584,9 @@ function handleModeChange(newMode) {
 
   // Update button states
   elements.modeButtons.forEach(btn => {
-    btn.classList.toggle('active', parseInt(btn.dataset.mode) === newMode)
+    const isActive = parseInt(btn.dataset.mode) === newMode
+    btn.classList.toggle('active', isActive)
+    btn.setAttribute('aria-pressed', String(isActive))
   })
 
   // Apply mode-specific defaults
@@ -591,7 +615,9 @@ function handleModeChange(newMode) {
 function handleSizePresetChange() {
   const index = parseInt(elements.sizeSlider.value)
   const preset = SIZE_PRESETS[index]
-  elements.sizeDisplay.textContent = preset.name + ' (' + preset.size + 'px)'
+  const label = preset.name + ' (' + preset.size + 'px)'
+  elements.sizeDisplay.textContent = label
+  elements.sizeSlider.setAttribute('aria-valuetext', label)
 
   // Re-render if QR is visible
   if (state.encoder) {
@@ -603,7 +629,9 @@ function handleSizePresetChange() {
 function handleSpeedPresetChange() {
   const index = parseInt(elements.speedSlider.value)
   const preset = SPEED_PRESETS[index]
-  elements.speedDisplay.textContent = preset.name + ' (' + preset.interval + 'ms)'
+  const label = preset.name + ' (' + preset.interval + 'ms)'
+  elements.speedDisplay.textContent = label
+  elements.speedSlider.setAttribute('aria-valuetext', label)
 
   // Update interval if currently sending
   if (state.intervalId && !state.isPaused) {
@@ -618,6 +646,12 @@ let showError = (msg) => console.error(msg)
 // Reset sender state
 export function resetSender() {
   stopSending()
+}
+
+// True while a transfer is running (or paused mid-transfer); used by the
+// beforeunload guard.
+export function isSenderBusy() {
+  return state.isSending
 }
 
 // Initialize sender module
@@ -647,8 +681,9 @@ export function initSender(errorHandler) {
   updateDropZoneState()
   updateActionButton()
 
-  // Apply mode-specific defaults for initial mode (BW)
-  applyModeDefaults(state.mode)
+  // Apply mode-specific defaults for initial mode (BW); nothing user-chosen
+  // is being overwritten yet, so skip the adjustment notice.
+  applyModeDefaults(state.mode, { notify: false })
 
   // Bind event handlers
   elements.fileInput.onchange = handleFileSelect
@@ -665,6 +700,7 @@ export function initSender(errorHandler) {
 
   // Drop zone handlers
   elements.qrContainer.onclick = handleDropZoneClick
+  elements.qrContainer.onkeydown = handleDropZoneKeydown
   elements.qrContainer.ondragover = handleDragOver
   elements.qrContainer.ondragleave = handleDragLeave
   elements.qrContainer.ondrop = handleDrop

@@ -2,6 +2,8 @@
 
 import { createDecoder } from '../decoder.js'
 import { PACKET_HEADER_SIZE, parsePacket } from '../packet.js'
+import { formatBytes } from '../format.js'
+import { playBeep, announce } from '../feedback.js'
 import { isRepairIdleMetadataPayload } from '../metadata.js'
 import { ArqReceiverController, getArqBeaconLogAction } from '../arq/arq-receiver.js'
 import { ARQ_HELPER_STATUS, getArqHelperStatusView, shouldAutoConnectArqHelper } from '../arq/helper-status.js'
@@ -179,7 +181,7 @@ function debugCurrent(text) {
 function updateArqReceiverStatus(text, connected = state.arqConnected, buttonText = null, disabled = false, hint = null) {
   if (elements?.helperStatus) {
     elements.helperStatus.textContent = text
-    elements.helperStatus.style.color = connected ? '#00d4ff' : '#88a'
+    elements.helperStatus.classList.toggle('connected', !!connected)
   }
   if (elements?.btnHelperConnect) {
     elements.btnHelperConnect.textContent = buttonText || (connected ? 'Reconnect helper' : 'Connect helper')
@@ -431,7 +433,7 @@ async function copyReceiverDebugLog(copyBtn) {
   if (!text) return
 
   try {
-    copyBtn.textContent = 'Copying...'
+    copyBtn.textContent = 'Copying…'
     await navigator.clipboard.writeText(text)
     copyBtn.textContent = 'Copied!'
     setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
@@ -2786,13 +2788,6 @@ let elements = null
 let imageCapture = null
 let showError = (msg) => console.error(msg)
 
-function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
-}
-
 function saveDevicePreference(deviceId) {
   try {
     localStorage.setItem(DEVICE_STORAGE_KEY, deviceId)
@@ -2904,7 +2899,7 @@ async function startCapture(deviceId) {
 
     saveDevicePreference(deviceId)
 
-    elements.signalStatus.textContent = 'Connected - scanning...'
+    elements.signalStatus.textContent = 'Connected — scanning…'
     elements.signalStatus.classList.add('connected')
 
     return true
@@ -4469,6 +4464,7 @@ function updateProgress() {
   const pct = getDisplayProgressPercent(state.decoder)
   elements.statProgress.textContent = pct + '%'
   elements.progressFill.style.width = pct + '%'
+  elements.progressFill.parentElement.setAttribute('aria-valuenow', String(pct))
 
   const elapsed = (Date.now() - state.startTime) / 1000
   if (elapsed > 0) {
@@ -4506,7 +4502,7 @@ async function handleComplete() {
   const hashMatch = hash.every((b, i) => b === meta.hash[i])
 
   if (!hashMatch) {
-    showError('File hash mismatch - transfer may be corrupted')
+    showError('File hash mismatch — transfer may be corrupted')
     debugLog('Complete rejected: SHA-256 mismatch')
     // With an ARQ back-channel a full repair is dispatched and we keep
     // receiving; without one, fall through and deliver the file with the
@@ -4530,6 +4526,8 @@ async function handleComplete() {
   debugLog(`Complete: ${formatBytes(fileData.byteLength)} in ${elapsed.toFixed(1)}s (${formatBytes(rate)}/s)`)
 
   showCompleteStatus()
+  playBeep()
+  announce('Transfer complete: ' + meta.filename)
 }
 
 function downloadFile() {
@@ -4617,9 +4615,10 @@ function resetReceiver() {
   elements.statusReceiving.classList.add('hidden')
   elements.statusComplete.classList.add('hidden')
   elements.progressFill.style.width = '0'
+  elements.progressFill.parentElement.setAttribute('aria-valuenow', '0')
 
   if (state.stream) {
-    elements.signalStatus.textContent = 'Connected - scanning...'
+    elements.signalStatus.textContent = 'Connected — scanning…'
   }
 }
 
@@ -4646,7 +4645,15 @@ async function handleDeviceChange() {
   }
 }
 
+// Reset and "Receive Another" destroy the in-memory file just like leaving
+// the screen does; ask first.
+function confirmDiscardPending() {
+  return !hasPendingDownload() ||
+    confirm('The received file has not been downloaded yet. Discard it and scan again?')
+}
+
 function handleReceiveAnother() {
+  if (!confirmDiscardPending()) return
   resetReceiver()
   startScanning()
 }
@@ -4681,8 +4688,14 @@ export function resetHdmiUvcReceiver() {
   imageCapture = null
   teardownReceiverWorker()
 
-  elements.signalStatus.textContent = 'Waiting for signal...'
+  elements.signalStatus.textContent = 'Waiting for signal…'
   elements.signalStatus.classList.remove('connected')
+}
+
+// True while a transfer is underway (metadata seen, file not yet complete);
+// used by the beforeunload guard.
+export function isReceiving() {
+  return state.isScanning && !!(state.decoder && state.decoder.metadata) && !state.completedFile
 }
 
 export function initHdmiUvcReceiver(errorHandler) {
@@ -4712,6 +4725,7 @@ export function initHdmiUvcReceiver(errorHandler) {
 
   elements.deviceDropdown.onchange = handleDeviceChange
   elements.btnReset.onclick = () => {
+    if (!confirmDiscardPending()) return
     resetReceiver()
     startScanning()
   }

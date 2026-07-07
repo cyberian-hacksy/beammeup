@@ -3,6 +3,7 @@
 import { createEncoder } from '../encoder.js'
 import { METADATA_INTERVAL } from '../constants.js'
 import { PACKET_HEADER_SIZE } from '../packet.js'
+import { formatBytes } from '../format.js'
 import { ArqSenderController, getArqSenderDisplayProgress } from '../arq/arq-sender.js'
 import { getTransport } from '../arq/backchannel.js'
 import { DEFAULT_ARQ_TRANSPORT } from '../arq/default-transports.js'
@@ -119,7 +120,7 @@ function debugCurrent(text) {
 function updateArqSenderStatus(text, connected = state.arqConnected) {
   if (elements?.arqStatus) {
     elements.arqStatus.textContent = text
-    elements.arqStatus.style.color = connected ? '#00d4ff' : '#88a'
+    elements.arqStatus.classList.toggle('connected', !!connected)
   }
   if (elements?.btnArqConnect) {
     elements.btnArqConnect.textContent = connected ? 'Reconnect back-channel' : 'Connect back-channel'
@@ -133,7 +134,7 @@ async function completeArqSending() {
   state.arqConnected = false
   await restoreSenderReadyState()
   elements.placeholderIcon.textContent = '✓'
-  elements.placeholderText.textContent = 'ARQ complete - receiver verified'
+  elements.placeholderText.textContent = 'ARQ complete — receiver verified'
   debugLog('ARQ COMPLETE received - sender stopped')
   debugCurrent('ARQ COMPLETE')
   updateArqSenderStatus('Back-channel offline', false)
@@ -677,6 +678,16 @@ function closeExternalPresentationWindow() {
   }
 }
 
+// Inline styles applied by applyFullscreenCanvasStyles / positionCanvas /
+// showArmedStartPrompt. Kept as inline styles (not a CSS class) because the
+// canvas may live in an external presentation window whose document does not
+// share this page's stylesheet.
+const CANVAS_RESET_PROPS = [
+  'position', 'top', 'left', 'width', 'height', 'z-index', 'image-rendering',
+  'background', 'transform', 'padding', 'box-sizing', 'max-width', 'max-height'
+]
+const PLACEHOLDER_RESET_PROPS = ['position', 'z-index', 'text-align', 'padding']
+
 function resetCanvasStyles() {
   if (!elements?.canvas) return
   elements.container?.classList.remove('fullscreen')
@@ -687,24 +698,13 @@ function resetCanvasStyles() {
   }
   document.body?.classList.remove('hdmi-uvc-signal-live')
   elements.canvas.style.display = 'none'
-  elements.canvas.style.position = ''
-  elements.canvas.style.top = ''
-  elements.canvas.style.left = ''
-  elements.canvas.style.removeProperty('width')
-  elements.canvas.style.removeProperty('height')
-  elements.canvas.style.zIndex = ''
-  elements.canvas.style.imageRendering = ''
-  elements.canvas.style.background = ''
-  elements.canvas.style.transform = ''
-  elements.canvas.style.padding = ''
-  elements.canvas.style.boxSizing = ''
-  elements.canvas.style.removeProperty('max-width')
-  elements.canvas.style.removeProperty('max-height')
+  for (const prop of CANVAS_RESET_PROPS) {
+    elements.canvas.style.removeProperty(prop)
+  }
   if (elements?.placeholder) {
-    elements.placeholder.style.position = ''
-    elements.placeholder.style.zIndex = ''
-    elements.placeholder.style.textAlign = ''
-    elements.placeholder.style.padding = ''
+    for (const prop of PLACEHOLDER_RESET_PROPS) {
+      elements.placeholder.style.removeProperty(prop)
+    }
   }
 }
 
@@ -759,10 +759,10 @@ async function restoreSenderReadyState() {
   elements.placeholder.style.display = 'flex'
   if (state.fileData) {
     elements.placeholderIcon.textContent = '✓'
-    elements.placeholderText.textContent = 'File ready, click Start'
+    elements.placeholderText.textContent = 'File ready — press Start'
   } else {
     elements.placeholderIcon.textContent = '+'
-    elements.placeholderText.textContent = 'Drop file here or tap to select'
+    elements.placeholderText.textContent = 'Drop file here or select one'
   }
   // A back-channel connect/disconnect during the transfer was deferred (the
   // scheduler reads state.yolo live); apply it now that the sender is idle.
@@ -805,7 +805,7 @@ function showArmedStartPrompt() {
   elements.placeholder.style.textAlign = 'center'
   elements.placeholder.style.padding = '1.5rem'
   elements.placeholderIcon.textContent = '>'
-  elements.placeholderText.textContent = 'Display ready. Wait for the browser fullscreen tip to disappear, then press Space/Enter or click anywhere on this area to start. (Esc cancels.)'
+  elements.placeholderText.textContent = 'Display ready. Once the browser’s fullscreen tip disappears, press Space/Enter or click here to start (Esc cancels).'
   debugCurrent('ARMED - press Space/Enter or click to start')
 }
 
@@ -1364,13 +1364,6 @@ function scheduleNextRender() {
   }
 
   armRender()
-}
-
-function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
 }
 
 // Frame rate is locked to 60 fps — the only rate Luma4 was validated at and
@@ -2804,7 +2797,7 @@ async function stopSending() {
   elements.placeholder.style.display = 'flex'
   elements.overlay.classList.add('hidden')
   elements.placeholderIcon.textContent = '+'
-  elements.placeholderText.textContent = 'Drop file here or tap to select'
+  elements.placeholderText.textContent = 'Drop file here or select one'
   elements.fileInfo.textContent = 'No file'
   elements.fileInput.value = ''
 
@@ -2853,7 +2846,7 @@ async function processFile(file) {
     elements.fileInfo.textContent = file.name + ' (' + formatBytes(file.size) + ')'
 
     elements.placeholderIcon.textContent = '✓'
-    elements.placeholderText.textContent = 'File ready, click Start'
+    elements.placeholderText.textContent = 'File ready — press Start'
 
     updateDropZoneState()
     updateActionButton()
@@ -2867,6 +2860,16 @@ async function processFile(file) {
 
 function handleFileSelect(e) {
   processFile(e.target.files[0])
+}
+
+// The drop zone is a div with role="button"; Enter/Space must work like
+// click. While armed, the document-level handleKeydown already starts the
+// transfer, so this only opens the file picker.
+function handleDropZoneKeydown(e) {
+  if ((e.key === 'Enter' || e.key === ' ') && !state.fileData && !state.isAwaitingStart) {
+    e.preventDefault()
+    elements.fileInput.click()
+  }
 }
 
 function handleDropZoneClick() {
@@ -2988,6 +2991,12 @@ export async function resetHdmiUvcSender() {
   await stopSending()
 }
 
+// True while a transfer is running, armed, or paused mid-transfer; used by
+// the beforeunload guard.
+export function isSenderBusy() {
+  return state.isSending || state.isAwaitingStart
+}
+
 export function initHdmiUvcSender(errorHandler) {
   showError = errorHandler
 
@@ -3033,6 +3042,7 @@ export function initHdmiUvcSender(errorHandler) {
   }
 
   elements.container.onclick = handleDropZoneClick
+  elements.container.onkeydown = handleDropZoneKeydown
   elements.container.ondragover = handleDragOver
   elements.container.ondragleave = handleDragLeave
   elements.container.ondrop = handleDrop
@@ -3064,6 +3074,8 @@ export function initHdmiUvcSender(errorHandler) {
         copyBtn.textContent = 'Copied!'
         setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
       } catch (e) {
+        copyBtn.textContent = 'Copy failed'
+        setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
         console.error('Copy failed:', e)
       }
     }

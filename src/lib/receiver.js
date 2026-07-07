@@ -4,6 +4,8 @@ import { createDecoder } from './decoder.js'
 import { QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
 import { calibrateFromFinders, normalizeRgb } from './calibration.js'
 import { ColorQRDecoder } from './color-decoder.js'
+import { formatBytes, formatTime } from './format.js'
+import { playBeep, announce } from './feedback.js'
 
 // Debug mode - enabled via ?test URL parameter (exact param, not substring)
 const DEBUG_MODE = typeof location !== 'undefined' && new URLSearchParams(location.search).has('test')
@@ -37,24 +39,9 @@ const state = {
   smoothWhite: null,       // Smoothed white reference [r,g,b]
   smoothBlack: null,       // Smoothed black reference [r,g,b]
   // New libcimbar-based color decoder
-  colorDecoder: null
-}
-
-// Audio feedback helper
-function playBeep(frequency = 800, duration = 150) {
-  try {
-    const ctx = new AudioContext()
-    const oscillator = ctx.createOscillator()
-    const gain = ctx.createGain()
-    oscillator.connect(gain)
-    gain.connect(ctx.destination)
-    oscillator.frequency.value = frequency
-    gain.gain.value = 0.3
-    oscillator.start()
-    oscillator.stop(ctx.currentTime + duration / 1000)
-  } catch (err) {
-    // AudioContext may fail silently
-  }
+  colorDecoder: null,
+  // Set once metadata arrives so "Receiving <file>" is announced only once
+  announcedReceiving: false
 }
 
 // DOM elements (initialized on setup)
@@ -121,27 +108,6 @@ function debugLog(text, forceLog = false) {
     }
     el.scrollTop = el.scrollHeight
   }
-}
-
-// Utility: format bytes to human readable
-function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-}
-
-// Utility: format milliseconds to human readable time
-function formatTime(ms) {
-  const totalSeconds = Math.floor(ms / 1000)
-  if (totalSeconds < 60) return totalSeconds + 's'
-
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  if (minutes < 60) return minutes + 'm ' + seconds + 's'
-
-  const hours = Math.floor(minutes / 60)
-  const mins = minutes % 60
-  return hours + 'h ' + mins + 'm ' + seconds + 's'
 }
 
 // ============ Color Mode Helpers ============
@@ -704,16 +670,24 @@ function updateModeStatus() {
     elements.modeStatus.textContent = 'Detected: ' + modeNames[effective]
     elements.modeStatus.className = 'mode-status detected'
   } else {
-    elements.modeStatus.textContent = 'Auto-detecting...'
+    elements.modeStatus.textContent = 'Auto-detecting…'
     elements.modeStatus.className = 'mode-status'
   }
 
   // Update button states
   if (elements.receiverModeButtons) {
     elements.receiverModeButtons.forEach(btn => {
-      btn.classList.toggle('active', parseInt(btn.dataset.mode) === effective)
+      const isActive = parseInt(btn.dataset.mode) === effective
+      btn.classList.toggle('active', isActive)
+      btn.setAttribute('aria-pressed', String(isActive))
     })
   }
+}
+
+// Status text in the scanning row; doubles as the camera-failure notice so
+// the screen never claims to be scanning while the camera is off.
+function setScanningLabel(text) {
+  if (elements && elements.scanningLabel) elements.scanningLabel.textContent = text
 }
 
 // Show the appropriate status section
@@ -784,6 +758,7 @@ async function enumerateCameras() {
 
     if (cameras.length === 0) {
       showError('No camera found on this device.')
+      setScanningLabel('No camera found')
       return null
     }
 
@@ -798,7 +773,10 @@ async function enumerateCameras() {
   } catch (err) {
     console.error('Camera enumeration error:', err)
     if (err.name === 'NotAllowedError') {
-      showError('Camera access denied. Please allow permissions.')
+      showError('Camera access denied. Allow camera for this site, then tap Reset.')
+      setScanningLabel('Camera blocked — allow access, then tap Reset')
+    } else {
+      setScanningLabel('Camera unavailable — tap Reset to retry')
     }
     return null
   }
@@ -808,6 +786,7 @@ async function enumerateCameras() {
 async function startScanning(deviceId) {
   if (!deviceId) {
     showError('No camera available.')
+    setScanningLabel('Camera unavailable — tap Reset to retry')
     return
   }
 
@@ -839,15 +818,22 @@ async function startScanning(deviceId) {
     adaptiveThresholds.reset()
     rgbAdaptiveThresholds.reset()
     paletteStats.reset()
+    state.announcedReceiving = false
 
     showStatus('scanning')
+    setScanningLabel('Scanning…')
     elements.statSymbols.textContent = '0 codes'
+
+    // Cache overlay geometry now that the video has dimensions; scanFrame
+    // must not read layout on every detection.
+    updateOverlayGeometry()
 
     // Start scan loop
     scanFrame()
   } catch (err) {
     console.error('Camera start error:', err)
     showError('Failed to start camera. ' + err.message)
+    setScanningLabel('Camera failed — tap Reset to retry')
   }
 }
 
@@ -922,9 +908,11 @@ function processPacket(bytes) {
     adaptiveThresholds.reset()
     rgbAdaptiveThresholds.reset()
     paletteStats.reset()
+    state.announcedReceiving = false
     updateModeStatus()
     showStatus('scanning')
     elements.progressFill.style.width = '0%'
+    elements.progressFill.parentElement.setAttribute('aria-valuenow', '0')
     elements.statSymbols.textContent = '0 codes'
     accepted = state.decoder.receive(bytes)
   }
@@ -1177,33 +1165,53 @@ function scanFrame() {
   state.animationId = requestAnimationFrame(scanFrame)
 }
 
+// Overlay geometry cache. getBoundingClientRect/offsetWidth are layout reads;
+// doing them per detected frame inside the rAF loop causes layout thrash, so
+// they run only here — on scan start and whenever the video element resizes.
+let overlayGeom = null
+
+function updateOverlayGeometry() {
+  const video = elements && elements.video
+  if (!video || !video.videoWidth) {
+    overlayGeom = null
+    return
+  }
+  const videoRect = video.getBoundingClientRect()
+  const containerRect = video.parentElement.getBoundingClientRect()
+  overlayGeom = {
+    containerOffsetX: videoRect.left - containerRect.left,
+    containerOffsetY: videoRect.top - containerRect.top,
+    displayWidth: video.offsetWidth,
+    displayHeight: video.offsetHeight,
+    videoWidth: video.videoWidth,
+    videoHeight: video.videoHeight
+  }
+}
+
 // Show overlay around detected QR code
 function showQROverlay(location, video, cropOffsetX, cropOffsetY, cropSize) {
   const svg = elements.qrOverlay
   const polygon = elements.qrPolygon
 
-  // Account for video position within container
-  const videoRect = video.getBoundingClientRect()
-  const containerRect = video.parentElement.getBoundingClientRect()
-  const containerOffsetX = videoRect.left - containerRect.left
-  const containerOffsetY = videoRect.top - containerRect.top
-
-  // Calculate scale from cropped canvas to video display
-  // Video display scale
-  const videoDisplayWidth = video.offsetWidth
-  const videoDisplayHeight = video.offsetHeight
+  // Refresh the cache if the stream dimensions changed (camera switch)
+  if (!overlayGeom || overlayGeom.videoWidth !== video.videoWidth ||
+      overlayGeom.videoHeight !== video.videoHeight) {
+    updateOverlayGeometry()
+    if (!overlayGeom) return
+  }
+  const { containerOffsetX, containerOffsetY, displayWidth, displayHeight, videoWidth, videoHeight } = overlayGeom
 
   // The cropped area in the video
-  const cropDisplayWidth = videoDisplayWidth * (cropSize / video.videoWidth)
-  const cropDisplayHeight = videoDisplayHeight * (cropSize / video.videoHeight)
+  const cropDisplayWidth = displayWidth * (cropSize / videoWidth)
+  const cropDisplayHeight = displayHeight * (cropSize / videoHeight)
 
   // Scale from cropped canvas coordinates to display coordinates
   const scaleX = cropDisplayWidth / cropSize
   const scaleY = cropDisplayHeight / cropSize
 
   // Offset for crop area in display coordinates
-  const cropDisplayOffsetX = videoDisplayWidth * (cropOffsetX / video.videoWidth)
-  const cropDisplayOffsetY = videoDisplayHeight * (cropOffsetY / video.videoHeight)
+  const cropDisplayOffsetX = displayWidth * (cropOffsetX / videoWidth)
+  const cropDisplayOffsetY = displayHeight * (cropOffsetY / videoHeight)
 
   // Build polygon points from all 4 corners
   const points = [
@@ -1232,8 +1240,14 @@ function updateReceiverStats() {
   if (decoder.metadata && k > 0) {
     showStatus('receiving')
 
+    if (!state.announcedReceiving) {
+      state.announcedReceiving = true
+      announce('Receiving ' + decoder.metadata.filename)
+    }
+
     const progress = (solved / k * 100)
     elements.progressFill.style.width = progress + '%'
+    elements.progressFill.parentElement.setAttribute('aria-valuenow', String(Math.round(progress)))
     elements.statBlocks.textContent = solved + '/' + k
     elements.fileNameDisplay.textContent =
       decoder.metadata.filename + ' (' + formatBytes(decoder.metadata.fileSize) + ')'
@@ -1288,14 +1302,19 @@ async function onReceiveComplete() {
     elements.completeFileName.textContent =
       metadata.filename + ' (' + formatBytes(metadata.fileSize) + ') in ' + formatTime(totalTime)
     elements.completeRate.textContent = avgRateKBps.toFixed(1) + ' KB/s avg'
+    announce('Transfer complete: ' + metadata.filename)
   } else {
-    showError('Hash verification failed. Tap Reset to try again.')
-    // Reset decoder so user can retry
+    showError('Verification failed — the file was corrupted in transit. Scanning restarted; keep the sender running.')
+    // Reset decoder and restart scanning; stopping on the dead "Scanning…"
+    // screen with the camera off would strand the user.
     state.decoder = null
     state.reconstructedBlob = null
     state.startTime = null
-    showStatus('scanning')
-    elements.statSymbols.textContent = '0 codes'
+    if (state.currentCameraId) {
+      await startScanning(state.currentCameraId)
+    } else {
+      await autoStartReceiver()
+    }
   }
 }
 
@@ -1344,9 +1363,13 @@ export function resetReceiver() {
     state.colorDecoder.reset()
   }
 
+  state.announcedReceiving = false
+
   if (elements) {
     showStatus('scanning')
+    setScanningLabel('Scanning…')
     elements.progressFill.style.width = '0%'
+    elements.progressFill.parentElement.setAttribute('aria-valuenow', '0')
     elements.fileNameDisplay.textContent = '-'
     elements.statBlocks.textContent = '0/0'
     elements.statSymbols.textContent = '0 codes'
@@ -1376,6 +1399,7 @@ export function initReceiver(errorHandler) {
     qrOverlay: document.getElementById('qr-overlay'),
     qrPolygon: document.getElementById('qr-polygon'),
     statusScanning: document.getElementById('status-scanning'),
+    scanningLabel: document.getElementById('scanning-label'),
     statusReceiving: document.getElementById('status-receiving'),
     statusComplete: document.getElementById('status-complete'),
     progressFill: document.getElementById('progress-fill'),
@@ -1401,6 +1425,12 @@ export function initReceiver(errorHandler) {
   // Show debug panel only in test mode
   if (DEBUG_MODE && elements.debugPanel) {
     elements.debugPanel.style.display = 'block'
+  }
+
+  // Recompute cached overlay geometry when the video's layout size changes
+  // (window resize, orientation change) instead of reading layout per frame.
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(updateOverlayGeometry).observe(elements.video)
   }
 
   // Bind event handlers
@@ -1446,8 +1476,20 @@ export function initReceiver(errorHandler) {
   })
 }
 
+// True while a transfer is underway (metadata seen, file not yet complete);
+// used by the beforeunload guard.
+export function isReceiving() {
+  return state.isScanning && !!(state.decoder && state.decoder.metadata) && !state.reconstructedBlob
+}
+
 // Restart receiver for another file
 async function restartReceiver() {
+  // Reset and "Receive Another" destroy the in-memory file just like leaving
+  // the screen does; ask first.
+  if (hasPendingDownload() &&
+      !confirm('The received file has not been downloaded yet. Discard it and scan again?')) {
+    return
+  }
   resetReceiver()
   await autoStartReceiver()
 }

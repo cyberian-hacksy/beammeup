@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1a1a2e">
   <title>Beam Me Up - Air-Gap Transfer</title>
   <link rel="icon" type="image/x-icon" href="./favicon.ico">
   <link rel="stylesheet" href="./style.css">
@@ -10,15 +11,15 @@
 <body>
   <!-- Mode Selector -->
   <div id="mode-select" class="screen active">
-    <img src="./logo.png" alt="Beam Me Up" class="app-logo">
+    <img src="./logo.png" alt="Beam Me Up" class="app-logo" width="96" height="96">
     <h1>BEAM ME UP</h1>
     <p>Air-Gap File Transfer</p>
     <div class="transfer-sections">
       <div class="transfer-section">
         <h2>QR Transfer</h2>
         <div class="mode-buttons vertical">
-          <button id="btn-send">SEND</button>
-          <button id="btn-receive">RECEIVE</button>
+          <button id="btn-send" aria-label="Send via QR">SEND</button>
+          <button id="btn-receive" aria-label="Receive via QR">RECEIVE</button>
         </div>
         <p class="section-desc">Standard QR format<br>~4 KB/s</p>
       </div>
@@ -26,8 +27,8 @@
       <div class="transfer-section">
         <h2>CIMBAR Transfer</h2>
         <div class="mode-buttons vertical">
-          <button id="btn-cimbar-send">SEND</button>
-          <button id="btn-cimbar-receive">RECEIVE</button>
+          <button id="btn-cimbar-send" aria-label="Send via CIMBAR">SEND</button>
+          <button id="btn-cimbar-receive" aria-label="Receive via CIMBAR">RECEIVE</button>
         </div>
         <p class="section-desc" id="cimbar-desc">High-density color<br>~100 KB/s</p>
       </div>
@@ -35,8 +36,8 @@
       <div class="transfer-section">
         <h2>HDMI-UVC Transfer</h2>
         <div class="mode-buttons vertical">
-          <button id="btn-hdmi-uvc-send">SEND</button>
-          <button id="btn-hdmi-uvc-receive">RECEIVE</button>
+          <button id="btn-hdmi-uvc-send" aria-label="Send via HDMI-UVC">SEND</button>
+          <button id="btn-hdmi-uvc-receive" aria-label="Receive via HDMI-UVC">RECEIVE</button>
         </div>
         <p class="section-desc">Direct HDMI capture<br>~20 MB/s</p>
       </div>
@@ -47,21 +48,21 @@
   <div id="sender" class="screen">
     <header><button class="back-btn">&larr; Back</button><span>SEND MODE</span></header>
     <main>
-      <input type="file" id="file-input" class="visually-hidden">
+      <input type="file" id="file-input" class="visually-hidden" tabindex="-1" aria-hidden="true">
 
-      <div class="qr-container drop-zone" id="qr-container">
+      <div class="qr-container drop-zone" id="qr-container" role="button" tabindex="0" aria-label="Choose a file to send">
         <div id="qr-placeholder" class="drop-zone-content">
-          <div class="drop-zone-icon">+</div>
-          <div>Drop file here or tap to select</div>
+          <div class="drop-zone-icon" aria-hidden="true">+</div>
+          <div>Drop file here or select one</div>
         </div>
         <canvas id="qr-canvas" style="display:none;"></canvas>
       </div>
 
       <div class="sender-controls" id="sender-controls">
         <div class="mode-selector" id="qr-mode-selector">
-          <button class="mode-btn active" data-mode="0">BW</button>
-          <button class="mode-btn" data-mode="1">CMY</button>
-          <button class="mode-btn" data-mode="2">RGB</button>
+          <button class="mode-btn active" data-mode="0" aria-pressed="true">BW</button>
+          <button class="mode-btn" data-mode="1" aria-pressed="false">CMY</button>
+          <button class="mode-btn" data-mode="2" aria-pressed="false">RGB</button>
         </div>
         <div class="slider-group">
           <label for="data-slider">Data</label>
@@ -96,11 +97,11 @@
     <main>
       <div class="video-container">
         <video id="camera-video" autoplay playsinline muted></video>
-        <svg class="qr-overlay" id="qr-overlay">
+        <svg class="qr-overlay" id="qr-overlay" aria-hidden="true">
           <polygon id="qr-polygon" points="" />
         </svg>
-        <button id="btn-camera-switch" class="floating-camera-btn" title="Switch camera">
-          <span class="camera-icon"></span>
+        <button id="btn-camera-switch" class="floating-camera-btn" title="Switch camera" aria-label="Switch camera">
+          <span class="camera-icon" aria-hidden="true"></span>
         </button>
         <div id="camera-picker" class="camera-picker hidden">
           <label for="camera-dropdown" class="visually-hidden">Select camera</label>
@@ -109,24 +110,24 @@
       </div>
 
       <div class="mode-override" id="mode-override">
-        <span class="mode-status" id="mode-status">Auto-detecting...</span>
+        <span class="mode-status" id="mode-status">Auto-detecting&hellip;</span>
         <div class="mode-selector secondary" id="receiver-mode-selector">
-          <button class="mode-btn" data-mode="0">BW</button>
-          <button class="mode-btn" data-mode="1">CMY</button>
-          <button class="mode-btn" data-mode="2">RGB</button>
+          <button class="mode-btn" data-mode="0" aria-pressed="false">BW</button>
+          <button class="mode-btn" data-mode="1" aria-pressed="false">CMY</button>
+          <button class="mode-btn" data-mode="2" aria-pressed="false">RGB</button>
         </div>
       </div>
-      <div id="debug-panel" style="display:none;margin-top:8px;border:2px solid #00d4ff;border-radius:4px;">
-        <div style="display:flex;align-items:center;background:#16213e;border-bottom:1px solid #333;">
-          <div id="debug-current" style="flex:1;font-size:14px;color:#00d4ff;padding:6px 8px;font-family:monospace;text-align:center;">waiting...</div>
-          <button id="btn-copy-log" style="padding:4px 10px;margin:4px;font-size:11px;background:#333;color:#0f0;border:1px solid #0f0;border-radius:3px;cursor:pointer;">Copy</button>
+      <div id="debug-panel" class="debug-panel" style="display:none;">
+        <div class="debug-panel-header">
+          <div id="debug-current" class="debug-current">waiting&hellip;</div>
+          <button id="btn-copy-log" class="debug-btn debug-btn-copy" type="button">Copy</button>
         </div>
-        <div id="debug-log" style="font-size:11px;color:#0f0;padding:8px;background:#000;font-family:monospace;height:100px;overflow-y:auto;white-space:pre-wrap;"></div>
+        <div id="debug-log" class="debug-log"></div>
       </div>
 
       <div class="receiver-status" id="receiver-status-bar">
         <div class="status-scanning" id="status-scanning">
-          <span>Scanning...</span>
+          <span id="scanning-label">Scanning&hellip;</span>
           <span id="stat-symbols">0 codes</span>
           <button id="btn-reset-receiver" class="reset-btn">Reset</button>
         </div>
@@ -139,7 +140,7 @@
               <span id="stat-eta">-</span>
             </span>
           </div>
-          <div class="progress-bar">
+          <div class="progress-bar" role="progressbar" aria-label="Transfer progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="progress-fill" id="progress-fill" style="width:0"></div>
           </div>
         </div>
@@ -161,13 +162,13 @@
   <div id="cimbar-sender" class="screen">
     <header><button class="back-btn">&larr; Back</button><span>CIMBAR SEND</span></header>
     <main>
-      <input type="file" id="cimbar-file-input" class="visually-hidden">
+      <input type="file" id="cimbar-file-input" class="visually-hidden" tabindex="-1" aria-hidden="true">
 
-      <div class="cimbar-container drop-zone empty" id="cimbar-container">
+      <div class="cimbar-container drop-zone empty" id="cimbar-container" role="button" tabindex="0" aria-label="Choose a file to send">
         <div id="cimbar-placeholder" class="drop-zone-content">
-          <div class="drop-zone-icon" id="cimbar-placeholder-icon">+</div>
-          <div id="cimbar-placeholder-text">Drop file here or tap to select</div>
-          <div id="cimbar-loading" class="loading-text hidden">Loading CIMBAR...</div>
+          <div class="drop-zone-icon" id="cimbar-placeholder-icon" aria-hidden="true">+</div>
+          <div id="cimbar-placeholder-text">Drop file here or select one</div>
+          <div id="cimbar-loading" class="loading-text hidden">Loading CIMBAR&hellip;</div>
         </div>
         <canvas id="cimbar-canvas" style="display:none;"></canvas>
       </div>
@@ -201,20 +202,20 @@
     <main>
       <div class="video-container">
         <video id="cimbar-video" autoplay playsinline muted></video>
-        <div class="cimbar-crosshairs" id="cimbar-crosshairs">
+        <div class="cimbar-crosshairs" id="cimbar-crosshairs" aria-hidden="true">
           <div class="crosshair-corner tl"></div>
           <div class="crosshair-corner tr"></div>
           <div class="crosshair-corner bl"></div>
           <div class="crosshair-corner br"></div>
         </div>
-        <button id="btn-cimbar-camera-switch" class="floating-camera-btn" title="Switch camera">
-          <span class="camera-icon"></span>
+        <button id="btn-cimbar-camera-switch" class="floating-camera-btn" title="Switch camera" aria-label="Switch camera">
+          <span class="camera-icon" aria-hidden="true"></span>
         </button>
       </div>
 
       <div class="receiver-status" id="cimbar-status-bar">
         <div class="status-scanning" id="cimbar-status-scanning">
-          <span>Scanning...</span>
+          <span id="cimbar-scanning-label">Scanning&hellip;</span>
           <span id="cimbar-stat-frames">0 frames</span>
           <button id="btn-cimbar-reset" class="reset-btn">Reset</button>
         </div>
@@ -226,7 +227,7 @@
               <span id="cimbar-stat-rate">-</span>
             </span>
           </div>
-          <div class="progress-bar">
+          <div class="progress-bar" role="progressbar" aria-label="Transfer progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="progress-fill" id="cimbar-progress-fill" style="width:0"></div>
           </div>
         </div>
@@ -248,12 +249,12 @@
   <div id="hdmi-uvc-sender" class="screen">
     <header><button class="back-btn">&larr; Back</button><span>HDMI-UVC SEND</span></header>
     <main>
-      <input type="file" id="hdmi-uvc-file-input" class="visually-hidden">
+      <input type="file" id="hdmi-uvc-file-input" class="visually-hidden" tabindex="-1" aria-hidden="true">
 
-      <div class="hdmi-container drop-zone empty" id="hdmi-uvc-container">
+      <div class="hdmi-container drop-zone empty" id="hdmi-uvc-container" role="button" tabindex="0" aria-label="Choose a file to send">
         <div id="hdmi-uvc-placeholder" class="drop-zone-content">
-          <div class="drop-zone-icon" id="hdmi-uvc-placeholder-icon">+</div>
-          <div id="hdmi-uvc-placeholder-text">Drop file here or tap to select</div>
+          <div class="drop-zone-icon" id="hdmi-uvc-placeholder-icon" aria-hidden="true">+</div>
+          <div id="hdmi-uvc-placeholder-text">Drop file here or select one</div>
         </div>
         <canvas id="hdmi-uvc-canvas" style="display:none;"></canvas>
         <div id="hdmi-uvc-overlay" class="hdmi-overlay hidden">
@@ -267,29 +268,32 @@
           <span id="hdmi-uvc-file-info">No file</span>
           <span id="hdmi-uvc-estimate" class="estimate"></span>
         </div>
-        <div class="yolo-toggle" style="display:flex;align-items:center;gap:8px;margin:8px 0;">
-          <input type="checkbox" id="hdmi-uvc-yolo-toggle">
-          <label for="hdmi-uvc-yolo-toggle" style="font-size:13px;color:#00d4ff;cursor:pointer;" title="No parity/fountain redundancy; missed blocks are re-requested over the Bluetooth back-channel. Auto-enables when the back-channel connects; usually slower without it.">⚡ Send-once mode — fastest with back-channel</label>
+        <div class="yolo-control">
+          <div class="yolo-toggle">
+            <input type="checkbox" id="hdmi-uvc-yolo-toggle">
+            <label for="hdmi-uvc-yolo-toggle">&#9889; Send-once mode &mdash; fastest with back-channel</label>
+          </div>
+          <p class="control-hint">Skips parity/fountain redundancy; missed blocks are re-requested over the Bluetooth back-channel. Auto-enables when the back-channel connects; usually slower without it.</p>
         </div>
-        <div class="arq-backchannel" style="display:flex;align-items:center;gap:8px;margin:8px 0;flex-wrap:wrap;">
+        <div class="arq-backchannel">
           <button id="btn-hdmi-uvc-arq-connect" class="secondary" type="button">Connect back-channel</button>
-          <span id="hdmi-uvc-arq-status" style="font-size:13px;color:#88a;">Back-channel offline</span>
+          <span id="hdmi-uvc-arq-status" class="arq-status">Back-channel offline</span>
         </div>
         <div class="action-buttons">
           <button id="btn-hdmi-uvc-action" disabled>Start</button>
           <button id="btn-hdmi-uvc-stop" class="secondary" disabled>Stop</button>
         </div>
       </div>
-      <div style="margin-top:8px;text-align:right;">
-        <button id="btn-hdmi-uvc-sender-diag-toggle" class="secondary" type="button" style="font-size:12px;padding:4px 10px;">Show diagnostics</button>
+      <div class="diag-toggle-row">
+        <button id="btn-hdmi-uvc-sender-diag-toggle" class="secondary diag-toggle" type="button">Show diagnostics</button>
       </div>
-      <div id="hdmi-uvc-sender-debug" style="display:none;margin-top:8px;border:2px solid #00d4ff;border-radius:4px;">
-        <div style="display:flex;align-items:center;background:#16213e;border-bottom:1px solid #333;">
-          <div id="hdmi-uvc-sender-debug-current" style="flex:1;font-size:14px;color:#00d4ff;padding:6px 8px;font-family:monospace;text-align:center;">waiting...</div>
-          <button id="btn-hdmi-uvc-sender-clear-log" style="padding:4px 10px;margin:4px;font-size:11px;background:#333;color:#f80;border:1px solid #f80;border-radius:3px;cursor:pointer;">Clear</button>
-          <button id="btn-hdmi-uvc-sender-copy-log" style="padding:4px 10px;margin:4px;font-size:11px;background:#333;color:#0f0;border:1px solid #0f0;border-radius:3px;cursor:pointer;">Copy Log</button>
+      <div id="hdmi-uvc-sender-debug" class="debug-panel" style="display:none;">
+        <div class="debug-panel-header">
+          <div id="hdmi-uvc-sender-debug-current" class="debug-current">waiting&hellip;</div>
+          <button id="btn-hdmi-uvc-sender-clear-log" class="debug-btn debug-btn-clear" type="button">Clear</button>
+          <button id="btn-hdmi-uvc-sender-copy-log" class="debug-btn debug-btn-copy" type="button">Copy Log</button>
         </div>
-        <div id="hdmi-uvc-sender-debug-log" style="font-size:11px;color:#0f0;padding:8px;background:#000;font-family:monospace;height:250px;overflow-y:auto;white-space:pre-wrap;"></div>
+        <div id="hdmi-uvc-sender-debug-log" class="debug-log tall"></div>
       </div>
     </main>
   </div>
@@ -300,52 +304,52 @@
     <main>
       <div class="video-container">
         <video id="hdmi-uvc-video" autoplay playsinline muted></video>
-        <div id="hdmi-uvc-signal-status" class="signal-status">Waiting for signal...</div>
+        <div id="hdmi-uvc-signal-status" class="signal-status">Waiting for signal&hellip;</div>
       </div>
 
       <div class="device-selector">
         <label for="hdmi-uvc-device-dropdown">Capture Device</label>
         <select id="hdmi-uvc-device-dropdown"></select>
       </div>
-      <div class="arq-backchannel" style="display:flex;align-items:center;gap:8px;margin:8px 0;flex-wrap:wrap;">
+      <div class="arq-backchannel">
         <button id="btn-hdmi-uvc-helper-connect" class="secondary" type="button">Connect helper</button>
-        <span id="hdmi-uvc-helper-status" style="font-size:13px;color:#88a;">Helper offline</span>
+        <span id="hdmi-uvc-helper-status" class="arq-status">Helper offline</span>
       </div>
-      <div id="hdmi-uvc-helper-hint" class="hidden" style="font-size:12px;color:#667;margin:-4px 0 8px 0;"></div>
-      <div style="margin-top:8px;display:flex;align-items:center;justify-content:flex-end;gap:8px;">
-        <span id="hdmi-uvc-receiver-diag-modified" class="hidden" style="font-size:12px;color:#ffd400;">● modified settings active</span>
-        <button id="btn-hdmi-uvc-receiver-diag-toggle" class="secondary" type="button" style="font-size:12px;padding:4px 10px;">Show diagnostics</button>
+      <div id="hdmi-uvc-helper-hint" class="control-hint hidden"></div>
+      <div class="diag-toggle-row">
+        <span id="hdmi-uvc-receiver-diag-modified" class="modified-badge hidden">&#9679; modified settings active</span>
+        <button id="btn-hdmi-uvc-receiver-diag-toggle" class="secondary diag-toggle" type="button">Show diagnostics</button>
       </div>
-      <div id="hdmi-uvc-receiver-debug" style="display:none;margin-top:8px;border:2px solid #00d4ff;border-radius:4px;">
-        <div style="display:flex;align-items:center;background:#16213e;border-bottom:1px solid #333;">
-          <div id="hdmi-uvc-receiver-debug-current" style="flex:1;font-size:14px;color:#00d4ff;padding:6px 8px;font-family:monospace;text-align:center;">waiting...</div>
-          <button id="btn-hdmi-uvc-receiver-clear-log" style="padding:4px 10px;margin:4px;font-size:11px;background:#333;color:#f80;border:1px solid #f80;border-radius:3px;cursor:pointer;">Clear</button>
-          <button id="btn-hdmi-uvc-receiver-copy-log" style="padding:4px 10px;margin:4px;font-size:11px;background:#333;color:#0f0;border:1px solid #0f0;border-radius:3px;cursor:pointer;">Copy Log</button>
+      <div id="hdmi-uvc-receiver-debug" class="debug-panel" style="display:none;">
+        <div class="debug-panel-header">
+          <div id="hdmi-uvc-receiver-debug-current" class="debug-current">waiting&hellip;</div>
+          <button id="btn-hdmi-uvc-receiver-clear-log" class="debug-btn debug-btn-clear" type="button">Clear</button>
+          <button id="btn-hdmi-uvc-receiver-copy-log" class="debug-btn debug-btn-copy" type="button">Copy Log</button>
         </div>
-        <div id="hdmi-uvc-diag-settings" style="padding:8px;background:#0d1330;border-bottom:1px solid #333;"></div>
-        <div id="hdmi-uvc-receiver-debug-log" style="font-size:11px;color:#0f0;padding:8px;background:#000;font-family:monospace;height:250px;overflow-y:auto;white-space:pre-wrap;"></div>
-        <div style="margin-top:4px;padding:4px;background:#111;text-align:center;">
-          <div style="font-size:10px;color:#888;margin-bottom:4px;">Canvas capture (what we actually read):</div>
-          <canvas id="hdmi-uvc-receiver-debug-canvas" style="max-width:100%;height:auto;border:1px solid #333;"></canvas>
+        <div id="hdmi-uvc-diag-settings" class="diag-settings"></div>
+        <div id="hdmi-uvc-receiver-debug-log" class="debug-log tall"></div>
+        <div class="debug-canvas-wrap">
+          <div class="debug-canvas-caption">Canvas capture (what we actually read):</div>
+          <canvas id="hdmi-uvc-receiver-debug-canvas"></canvas>
         </div>
       </div>
 
       <div class="receiver-status" id="hdmi-uvc-status-bar">
         <div class="status-scanning" id="hdmi-uvc-status-scanning">
-          <span>Scanning...</span>
+          <span id="hdmi-uvc-scanning-label">Scanning&hellip;</span>
           <span id="hdmi-uvc-stat-frames">0 frames</span>
           <button id="btn-hdmi-uvc-reset" class="reset-btn">Reset</button>
         </div>
         <div class="status-receiving hidden" id="hdmi-uvc-status-receiving">
           <div class="status-file-row">
             <span id="hdmi-uvc-file-name">-</span>
-            <span id="hdmi-uvc-yolo-badge" class="hidden" style="font-size:11px;color:#ffd400;margin-left:8px;">⚡ Direct (no redundancy)</span>
+            <span id="hdmi-uvc-yolo-badge" class="yolo-badge hidden">&#9889; Direct (no redundancy)</span>
             <span class="stats-inline">
               <span id="hdmi-uvc-stat-progress">0%</span>
               <span id="hdmi-uvc-stat-rate">-</span>
             </span>
           </div>
-          <div class="progress-bar">
+          <div class="progress-bar" role="progressbar" aria-label="Transfer progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="progress-fill" id="hdmi-uvc-progress-fill" style="width:0"></div>
           </div>
         </div>
@@ -363,10 +367,13 @@
     </main>
   </div>
 
+  <!-- Screen-reader announcements for state transitions -->
+  <div id="sr-announce" class="visually-hidden" aria-live="polite"></div>
+
   <!-- Error Banner -->
-  <div id="error-banner" class="hidden">
+  <div id="error-banner" class="hidden" role="alert">
     <span id="error-message"></span>
-    <button id="error-dismiss">&times;</button>
+    <button id="error-dismiss" aria-label="Dismiss error">&times;</button>
   </div>
 
   <script type="module" src="./app.js"></script>

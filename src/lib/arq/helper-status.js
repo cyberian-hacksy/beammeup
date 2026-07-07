@@ -11,9 +11,9 @@ export const ARQ_HELPER_STATUS = {
 export function getArqHelperStatusView(status) {
   switch (status) {
     case ARQ_HELPER_STATUS.CHECKING:
-      return { text: 'Checking helper...', buttonText: 'Checking...', connected: false, disabled: true }
+      return { text: 'Checking helper…', buttonText: 'Checking…', connected: false, disabled: true }
     case ARQ_HELPER_STATUS.CONNECTING:
-      return { text: 'Connecting helper...', buttonText: 'Connecting...', connected: false, disabled: true }
+      return { text: 'Connecting helper…', buttonText: 'Connecting…', connected: false, disabled: true }
     case ARQ_HELPER_STATUS.CONNECTED:
       return { text: 'Helper connected', buttonText: 'Reconnect helper', connected: true, disabled: false }
     case ARQ_HELPER_STATUS.DISCONNECTED:

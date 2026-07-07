@@ -1,5 +1,7 @@
 // CIMBAR Receiver module - handles camera capture and decoding
 import { loadCimbarWasm, getModule } from './cimbar-loader.js'
+import { formatBytes } from '../format.js'
+import { playBeep, announce } from '../feedback.js'
 
 // Receiver state
 const state = {
@@ -29,10 +31,10 @@ const state = {
 let elements = null
 let showError = (msg) => console.error(msg)
 
-function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+// Status text in the scanning row; doubles as the camera-failure notice so
+// the screen never claims to be scanning while the camera is off.
+function setScanningLabel(text) {
+  if (elements && elements.scanningLabel) elements.scanningLabel.textContent = text
 }
 
 function updateCrosshairs() {
@@ -65,6 +67,7 @@ function updateProgress(progress) {
 
   const pct = Math.round(progress[0] * 100)
   elements.progressFill.style.width = pct + '%'
+  elements.progressFill.parentElement.setAttribute('aria-valuenow', String(pct))
   elements.statProgress.textContent = pct + '%'
 
   const elapsed = (performance.now() - state.startTime) / 1000
@@ -128,7 +131,13 @@ async function initCamera() {
     return true
   } catch (err) {
     console.error('Camera init error:', err)
-    showError('Failed to access camera: ' + err.message)
+    if (err.name === 'NotAllowedError') {
+      showError('Camera access denied. Allow camera for this site, then tap Reset.')
+      setScanningLabel('Camera blocked — allow access, then tap Reset')
+    } else {
+      showError('Failed to access camera: ' + err.message)
+      setScanningLabel('Camera unavailable — tap Reset to retry')
+    }
     return false
   }
 }
@@ -182,7 +191,10 @@ function processFrameFallback() {
   }
 
   state.frameCount++
-  elements.statFrames.textContent = state.frameCount + ' frames'
+  // Throttle the counter: rewriting it 15x/s churns the DOM for no benefit
+  if (state.frameCount % 10 === 0) {
+    elements.statFrames.textContent = state.frameCount + ' frames'
+  }
   updateCrosshairs()
 
   try {
@@ -280,7 +292,10 @@ async function processFrame(now, metadata) {
   }
 
   state.frameCount++
-  elements.statFrames.textContent = state.frameCount + ' frames'
+  // Throttle the counter: rewriting it 15-30x/s churns the DOM for no benefit
+  if (state.frameCount % 10 === 0) {
+    elements.statFrames.textContent = state.frameCount + ' frames'
+  }
   updateCrosshairs()
 
   let vf = null
@@ -399,6 +414,8 @@ function handleFileComplete(fileId) {
   }
 
   showStatus('complete')
+  playBeep()
+  announce('Transfer complete: ' + state.fileName)
 }
 
 function downloadFile() {
@@ -451,6 +468,8 @@ function startScanning() {
 
   elements.statFrames.textContent = '0 frames'
   elements.progressFill.style.width = '0'
+  elements.progressFill.parentElement.setAttribute('aria-valuenow', '0')
+  setScanningLabel('Scanning…')
   showStatus('scanning')
 
   // Use VideoFrame API if available, otherwise use canvas fallback (iOS)
@@ -464,6 +483,13 @@ function startScanning() {
 }
 
 function resetReceiver() {
+  // Reset and "Receive Another" destroy the in-memory file just like leaving
+  // the screen does; ask first.
+  if (hasPendingDownload() &&
+      !confirm('The received file has not been downloaded yet. Discard it and scan again?')) {
+    return
+  }
+
   state.fileId = null
   state.fileName = null
   state.fileSize = 0
@@ -504,6 +530,12 @@ export function resetCimbarReceiver() {
   stopCamera()
 }
 
+// True while a transfer is underway (progress seen, file not yet complete);
+// used by the beforeunload guard.
+export function isReceiving() {
+  return state.isScanning && state.startTime > 0 && !state.fileComplete
+}
+
 export function initCimbarReceiver(errorHandler) {
   showError = errorHandler
 
@@ -512,6 +544,7 @@ export function initCimbarReceiver(errorHandler) {
     crosshairs: document.getElementById('cimbar-crosshairs'),
     cameraSwitchBtn: document.getElementById('btn-cimbar-camera-switch'),
     statusScanning: document.getElementById('cimbar-status-scanning'),
+    scanningLabel: document.getElementById('cimbar-scanning-label'),
     statusReceiving: document.getElementById('cimbar-status-receiving'),
     statusComplete: document.getElementById('cimbar-status-complete'),
     statFrames: document.getElementById('cimbar-stat-frames'),

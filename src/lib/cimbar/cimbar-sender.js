@@ -1,5 +1,6 @@
 // CIMBAR Sender module - handles file encoding and CIMBAR display
 import { loadCimbarWasm, getModule } from './cimbar-loader.js'
+import { formatBytes } from '../format.js'
 
 const MAX_FILE_SIZE = 33 * 1024 * 1024 // 33MB (CIMBAR limit)
 
@@ -32,12 +33,6 @@ const state = {
 let elements = null
 let showError = (msg) => console.error(msg)
 
-function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-}
-
 function getTargetInterval() {
   const index = parseInt(elements.speedSlider.value)
   return SPEED_PRESETS[index].interval
@@ -63,9 +58,14 @@ function updateDropZoneState() {
   if (!state.fileData) {
     container.classList.add('empty')
     container.classList.remove('has-file')
+    container.setAttribute('tabindex', '0')
+    container.setAttribute('aria-disabled', 'false')
   } else {
     container.classList.remove('empty')
     container.classList.add('has-file')
+    // The zone stops being interactive once a file is loaded.
+    container.setAttribute('tabindex', '-1')
+    container.setAttribute('aria-disabled', 'true')
   }
 }
 
@@ -110,8 +110,6 @@ function scaleCanvas() {
     // Target is taller than ideal - shrink height
     ydim = Math.floor(ydim * ourRatio / state.idealRatio)
   }
-
-  console.log('CIMBAR canvas:', xdim + 'x' + ydim, 'ratio:', state.idealRatio)
 
   // Apply as CSS dimensions only (WASM manages internal canvas size)
   canvas.style.width = xdim + 'px'
@@ -159,7 +157,6 @@ async function startSending() {
     // Configure mode (68 = mode B, -1 = use defaults)
     Module._cimbare_configure(68, -1)
     state.idealRatio = Module._cimbare_get_aspect_ratio()
-    console.log('CIMBAR mode B configured, aspect ratio:', state.idealRatio)
 
     // Show canvas
     canvas.style.display = 'block'
@@ -241,7 +238,7 @@ function stopSending() {
   elements.canvas.style.display = 'none'
   elements.placeholder.style.display = 'flex'
   elements.placeholderIcon.textContent = '+'
-  elements.placeholderText.textContent = 'Drop file here or tap to select'
+  elements.placeholderText.textContent = 'Drop file here or select one'
   elements.fileInfo.textContent = 'No file'
   elements.estimate.textContent = ''
   elements.fileInput.value = ''
@@ -292,7 +289,7 @@ async function processFile(file) {
 
     // Update placeholder to show file is ready
     elements.placeholderIcon.textContent = '✓'
-    elements.placeholderText.textContent = 'File ready, click Start'
+    elements.placeholderText.textContent = 'File ready — press Start'
 
     updateDropZoneState()
     updateActionButton()
@@ -310,6 +307,14 @@ function handleFileSelect(e) {
 
 function handleDropZoneClick() {
   if (!state.fileData) {
+    elements.fileInput.click()
+  }
+}
+
+// The drop zone is a div with role="button"; Enter/Space must work like click
+function handleDropZoneKeydown(e) {
+  if ((e.key === 'Enter' || e.key === ' ') && !state.fileData) {
+    e.preventDefault()
     elements.fileInput.click()
   }
 }
@@ -344,7 +349,9 @@ async function handleDrop(e) {
 function handleSizeChange() {
   const index = parseInt(elements.sizeSlider.value)
   const preset = SIZE_PRESETS[index]
-  elements.sizeDisplay.textContent = preset.name + ' (' + preset.size + 'px)'
+  const label = preset.name + ' (' + preset.size + 'px)'
+  elements.sizeDisplay.textContent = label
+  elements.sizeSlider.setAttribute('aria-valuetext', label)
 
   // If sending, update canvas size
   if (state.isSending) {
@@ -355,12 +362,20 @@ function handleSizeChange() {
 function handleSpeedChange() {
   const index = parseInt(elements.speedSlider.value)
   const preset = SPEED_PRESETS[index]
-  elements.speedDisplay.textContent = preset.name + ' (' + preset.fps + ' FPS)'
+  const label = preset.name + ' (' + preset.fps + ' FPS)'
+  elements.speedDisplay.textContent = label
+  elements.speedSlider.setAttribute('aria-valuetext', label)
   elements.estimate.textContent = estimateTime()
 }
 
 export function resetCimbarSender() {
   stopSending()
+}
+
+// True while a transfer is running (or paused mid-transfer); used by the
+// beforeunload guard.
+export function isSenderBusy() {
+  return state.isSending
 }
 
 export function initCimbarSender(errorHandler) {
@@ -396,6 +411,7 @@ export function initCimbarSender(errorHandler) {
   elements.btnStop.onclick = stopSending
 
   elements.container.onclick = handleDropZoneClick
+  elements.container.onkeydown = handleDropZoneKeydown
   elements.container.ondragover = handleDragOver
   elements.container.ondragleave = handleDragLeave
   elements.container.ondrop = handleDrop

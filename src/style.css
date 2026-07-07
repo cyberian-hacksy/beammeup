@@ -1,4 +1,5 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
+:root { color-scheme: dark; }
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -15,9 +16,23 @@ body {
   background: #1a1a2e;
   color: #eee;
   min-height: 100vh;
+  min-height: 100dvh;
+  -webkit-tap-highlight-color: rgba(0, 212, 255, 0.25);
 }
-.screen { display: none; flex-direction: column; min-height: 100vh; }
+.screen { display: none; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
 .screen.active { display: flex; }
+
+h1, h2 { text-wrap: balance; }
+
+/* Keyboard focus: visible ring on every interactive element */
+:focus-visible {
+  outline: 2px solid #00d4ff;
+  outline-offset: 2px;
+}
+
+button, select, input[type="range"], input[type="checkbox"], .drop-zone {
+  touch-action: manipulation;
+}
 
 /* Mode Selector */
 #mode-select {
@@ -38,14 +53,14 @@ body {
   background: transparent;
   color: #00d4ff;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background-color 0.2s, color 0.2s;
   width: 180px;
 }
 .mode-buttons button:hover { background: #00d4ff; color: #1a1a2e; }
 .tagline { font-size: 0.9rem; margin-top: 1rem; }
 .experiments-link {
   margin-top: 2rem;
-  color: #666;
+  color: #999;
   font-size: 0.8rem;
   text-decoration: none;
   transition: color 0.2s;
@@ -91,7 +106,7 @@ body {
 }
 .section-desc {
   font-size: 0.75rem;
-  color: #666;
+  color: #999;
   text-align: center;
   line-height: 1.5;
 }
@@ -111,6 +126,14 @@ header span { flex: 1; text-align: center; font-weight: bold; }
   color: #00d4ff;
   cursor: pointer;
   font-size: 1rem;
+  padding: 0.5rem 0.75rem;
+  margin: -0.5rem 0;
+  border-radius: 4px;
+  transition: background-color 0.2s, color 0.2s;
+}
+.back-btn:hover {
+  color: #7ae6ff;
+  background: rgba(0, 212, 255, 0.1);
 }
 
 /* Main Content */
@@ -135,7 +158,7 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
 /* Drop Zone States */
 .drop-zone {
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background-color 0.2s, border-color 0.2s;
 }
 .drop-zone.empty {
   background: #16213e;
@@ -260,7 +283,7 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   cursor: pointer;
   font-size: 0.85rem;
   font-weight: 500;
-  transition: all 0.2s;
+  transition: background-color 0.2s, color 0.2s;
   white-space: nowrap;
 }
 .mode-selector .mode-btn:not(:last-child) {
@@ -349,7 +372,7 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   height: 1rem;
 }
 .slider-group input[type="range"] {
-  width: 60px;
+  width: 90px;
 }
 .slider-group select {
   min-width: 96px;
@@ -358,6 +381,16 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   color: #00d4ff;
   font-size: 0.85rem;
   min-width: 95px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Highlight preset displays when they are adjusted automatically */
+.preset-flash {
+  animation: preset-flash 0.9s ease;
+}
+@keyframes preset-flash {
+  0% { background: rgba(0, 212, 255, 0.4); color: #fff; }
+  100% { background: transparent; }
 }
 
 .file-status {
@@ -375,16 +408,18 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
 .symbol-count {
   color: #00d4ff;
   font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
 }
 .estimate {
   color: #888;
   font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
 }
 .action-buttons {
   display: flex;
   gap: 0.5rem;
 }
-.action-buttons button {
+.action-buttons button, .complete-actions button {
   padding: 0.5rem 1.25rem;
   background: #00d4ff;
   color: #1a1a2e;
@@ -392,9 +427,26 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   border-radius: 4px;
   cursor: pointer;
   font-weight: bold;
+  transition: background-color 0.2s;
+}
+.action-buttons button:not(:disabled):hover,
+.complete-actions button:not(:disabled):hover {
+  background: #5ce1ff;
 }
 .action-buttons button:disabled { opacity: 0.5; cursor: not-allowed; }
-.action-buttons button.secondary { background: #444; color: #eee; }
+
+/* Secondary buttons (Stop, Receive Another, Connect helper, ...) */
+button.secondary {
+  padding: 0.5rem 1.25rem;
+  background: #444;
+  color: #eee;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+button.secondary:not(:disabled):hover { background: #555; }
+button.secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .mode-buttons button:disabled {
   opacity: 0.4;
@@ -424,8 +476,8 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   position: absolute;
   top: 0.75rem;
   right: 0.75rem;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   background: rgba(0, 0, 0, 0.6);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 8px;
@@ -481,6 +533,7 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   align-items: center;
   color: #888;
   gap: 0.75rem;
+  font-variant-numeric: tabular-nums;
 }
 .reset-btn {
   padding: 0.25rem 0.75rem;
@@ -490,6 +543,7 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.85rem;
+  transition: background-color 0.2s;
 }
 .reset-btn:hover {
   background: #555;
@@ -522,30 +576,176 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   gap: 1rem;
   font-size: 0.85rem;
   color: #00d4ff;
+  font-variant-numeric: tabular-nums;
 }
 .complete-rate {
   color: #00d4ff;
   font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
 }
 .complete-actions {
   display: flex;
   gap: 0.75rem;
   margin-top: 0.5rem;
 }
-.complete-actions button {
-  padding: 0.5rem 1.25rem;
-  background: #00d4ff;
-  color: #1a1a2e;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-weight: bold;
-}
-.complete-actions button.secondary {
-  background: #444;
-  color: #eee;
-}
 .hidden { display: none !important; }
+
+/* Debug / diagnostics panels (QR receiver + HDMI-UVC sender/receiver) */
+.debug-panel {
+  margin-top: 8px;
+  border: 2px solid #00d4ff;
+  border-radius: 4px;
+}
+.debug-panel-header {
+  display: flex;
+  align-items: center;
+  background: #16213e;
+  border-bottom: 1px solid #333;
+}
+.debug-current {
+  flex: 1;
+  font-size: 14px;
+  color: #00d4ff;
+  padding: 6px 8px;
+  font-family: monospace;
+  text-align: center;
+}
+.debug-btn {
+  padding: 6px 12px;
+  margin: 4px;
+  font-size: 11px;
+  background: #333;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+.debug-btn:hover { background: #444; }
+.debug-btn-copy { color: #0f0; border: 1px solid #0f0; }
+.debug-btn-clear { color: #f80; border: 1px solid #f80; }
+.debug-log {
+  font-size: 11px;
+  color: #0f0;
+  padding: 8px;
+  background: #000;
+  font-family: monospace;
+  height: 100px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+.debug-log.tall { height: 250px; }
+.diag-settings {
+  padding: 8px;
+  background: #0d1330;
+  border-bottom: 1px solid #333;
+}
+.debug-canvas-wrap {
+  margin-top: 4px;
+  padding: 4px;
+  background: #111;
+  text-align: center;
+}
+.debug-canvas-caption {
+  font-size: 10px;
+  color: #888;
+  margin-bottom: 4px;
+}
+.debug-canvas-wrap canvas {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid #333;
+}
+
+/* Diagnostics settings rows (rendered by hdmi-uvc-diagnostics-ui.js) */
+.diag-heading {
+  font-size: 11px;
+  color: #99a;
+  margin-bottom: 4px;
+}
+.diag-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0;
+  font-size: 12px;
+  color: #9ab;
+}
+.diag-row label {
+  width: 110px;
+  text-align: right;
+  color: #9ab;
+}
+.diag-row select {
+  font-size: 12px;
+  background-color: #16213e;
+  color: #00d4ff;
+  border: 1px solid #333;
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+.diag-tag {
+  font-size: 10px;
+  color: #99a;
+}
+.diag-reload-note {
+  font-size: 11px;
+  color: #ffd400;
+  margin-top: 4px;
+}
+.diag-toggle-row {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+button.diag-toggle {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+.modified-badge {
+  font-size: 12px;
+  color: #ffd400;
+}
+
+/* ARQ back-channel / helper rows */
+.arq-backchannel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+.arq-status {
+  font-size: 13px;
+  color: #99a;
+}
+.arq-status.connected {
+  color: #00d4ff;
+}
+.control-hint {
+  font-size: 12px;
+  color: #99a;
+  margin: 0 0 8px;
+}
+.yolo-control {
+  flex-basis: 100%;
+}
+.yolo-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 2px;
+}
+.yolo-toggle label {
+  font-size: 13px;
+  color: #00d4ff;
+  cursor: pointer;
+}
+.yolo-badge {
+  font-size: 11px;
+  color: #ffd400;
+  margin-left: 8px;
+}
 
 /* Error Banner */
 #error-banner {
@@ -554,6 +754,7 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   left: 0;
   right: 0;
   padding: 1rem;
+  padding-top: calc(1rem + env(safe-area-inset-top));
   background: #ff4444;
   color: white;
   text-align: center;
@@ -564,19 +765,27 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   gap: 1rem;
 }
 #error-banner.hidden { display: none; }
-#error-banner button { background: white; color: #ff4444; border: none; padding: 0.25rem 0.5rem; cursor: pointer; }
+#error-banner button {
+  background: white;
+  color: #ff4444;
+  border: none;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+#error-banner button:hover { background: #ffdddd; }
 
 /* Camera Dropdown */
 select {
   padding: 0.5rem;
-  background: #333;
+  background-color: #16213e;
   color: #eee;
-  border: 1px solid #555;
+  border: 1px solid #444;
   border-radius: 4px;
 }
 
-/* Mobile styles */
-@media (max-width: 480px) {
+/* Tablet: the three transfer sections no longer fit side by side */
+@media (max-width: 900px) {
   .transfer-sections {
     flex-direction: column;
     gap: 1.5rem;
@@ -586,6 +795,10 @@ select {
     height: 1px;
     align-self: center;
   }
+}
+
+/* Mobile styles */
+@media (max-width: 480px) {
   .sender-controls {
     flex-direction: column;
     align-items: stretch;
@@ -656,6 +869,7 @@ select {
   left: 0;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   padding: 0;
   justify-content: stretch;
   align-items: stretch;
@@ -686,6 +900,7 @@ body.hdmi-uvc-signal-live * {
   font-size: 12px;
   color: #00d4ff;
   font-family: monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .hdmi-overlay span {
@@ -723,9 +938,14 @@ body.hdmi-uvc-signal-live * {
 .device-selector select {
   flex: 1;
   padding: 8px 12px;
-  background: #16213e;
-  border: 1px solid #333;
-  border-radius: 4px;
-  color: #fff;
   font-size: 14px;
+}
+
+/* Reduced motion: collapse all transitions and animations */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

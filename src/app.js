@@ -2,17 +2,17 @@ import jsQR from 'jsqr'
 import qrcode from 'qrcode-generator'
 
 // Import UI modules
-import { initSender, resetSender } from './lib/sender.js'
-import { initReceiver, resetReceiver, autoStartReceiver, hasPendingDownload as hasQrPendingDownload } from './lib/receiver.js'
+import { initSender, resetSender, isSenderBusy as isQrSenderBusy } from './lib/sender.js'
+import { initReceiver, resetReceiver, autoStartReceiver, hasPendingDownload as hasQrPendingDownload, isReceiving as isQrReceiving } from './lib/receiver.js'
 
 // Import CIMBAR modules
-import { initCimbarSender, resetCimbarSender } from './lib/cimbar/cimbar-sender.js'
-import { initCimbarReceiver, resetCimbarReceiver, autoStartCimbarReceiver, hasPendingDownload as hasCimbarPendingDownload } from './lib/cimbar/cimbar-receiver.js'
+import { initCimbarSender, resetCimbarSender, isSenderBusy as isCimbarSenderBusy } from './lib/cimbar/cimbar-sender.js'
+import { initCimbarReceiver, resetCimbarReceiver, autoStartCimbarReceiver, hasPendingDownload as hasCimbarPendingDownload, isReceiving as isCimbarReceiving } from './lib/cimbar/cimbar-receiver.js'
 import { checkCompatibility } from './lib/cimbar/cimbar-loader.js'
 
 // Import HDMI-UVC modules
-import { initHdmiUvcSender, resetHdmiUvcSender } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
-import { initHdmiUvcReceiver, resetHdmiUvcReceiver, autoStartHdmiUvcReceiver, hasPendingDownload as hasHdmiUvcPendingDownload } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
+import { initHdmiUvcSender, resetHdmiUvcSender, isSenderBusy as isHdmiUvcSenderBusy } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
+import { initHdmiUvcReceiver, resetHdmiUvcReceiver, autoStartHdmiUvcReceiver, hasPendingDownload as hasHdmiUvcPendingDownload, isReceiving as isHdmiUvcReceiving } from './lib/hdmi-uvc/hdmi-uvc-receiver.js'
 
 // Console test suite. Registration and execution are gated behind ?test so
 // normal startup does not assign 200+ window.test* globals.
@@ -46,6 +46,8 @@ function hideError() {
 document.getElementById('error-dismiss').onclick = hideError
 
 // ============ SCREEN NAVIGATION ============
+// Screens are driven by location.hash so each screen is deep-linkable and the
+// browser Back button returns to mode selection instead of leaving the app.
 const screens = {
   modeSelect: document.getElementById('mode-select'),
   sender: document.getElementById('sender'),
@@ -56,62 +58,97 @@ const screens = {
   hdmiUvcReceiver: document.getElementById('hdmi-uvc-receiver')
 }
 
+const HASH_TO_SCREEN = {
+  'sender': 'sender',
+  'receiver': 'receiver',
+  'cimbar-sender': 'cimbarSender',
+  'cimbar-receiver': 'cimbarReceiver',
+  'hdmi-uvc-sender': 'hdmiUvcSender',
+  'hdmi-uvc-receiver': 'hdmiUvcReceiver'
+}
+const SCREEN_TO_HASH = Object.fromEntries(
+  Object.entries(HASH_TO_SCREEN).map(([hash, screen]) => [screen, hash])
+)
+
+let activeScreen = 'modeSelect'
+let suppressHashHandler = false
+
 function showScreen(screenId) {
   Object.values(screens).forEach(s => s.classList.remove('active'))
   screens[screenId].classList.add('active')
+  activeScreen = screenId
 }
 
-// Mode selection buttons
-document.getElementById('btn-send').onclick = () => showScreen('sender')
-document.getElementById('btn-receive').onclick = () => {
-  showScreen('receiver')
-  autoStartReceiver()
+function hasPendingDownload() {
+  return hasQrPendingDownload() || hasCimbarPendingDownload() || hasHdmiUvcPendingDownload()
 }
 
-// CIMBAR mode selection buttons
-document.getElementById('btn-cimbar-send').onclick = () => {
-  showScreen('cimbarSender')
+async function cleanupModules() {
+  // Clean up QR state
+  resetSender()
+  resetReceiver()
+
+  // Clean up CIMBAR state
+  resetCimbarSender()
+  resetCimbarReceiver()
+
+  // Clean up HDMI-UVC state
+  await resetHdmiUvcSender()
+  resetHdmiUvcReceiver()
 }
 
-document.getElementById('btn-cimbar-receive').onclick = () => {
-  showScreen('cimbarReceiver')
-  autoStartCimbarReceiver()
-}
+async function handleHashChange() {
+  if (suppressHashHandler) {
+    suppressHashHandler = false
+    return
+  }
 
-// HDMI-UVC mode selection buttons
-document.getElementById('btn-hdmi-uvc-send').onclick = () => {
-  showScreen('hdmiUvcSender')
-}
+  const target = HASH_TO_SCREEN[location.hash.replace(/^#/, '')] || 'modeSelect'
+  if (target === activeScreen) return
 
-document.getElementById('btn-hdmi-uvc-receive').onclick = () => {
-  showScreen('hdmiUvcReceiver')
-  autoStartHdmiUvcReceiver()
-}
-
-// Back buttons with cleanup
-document.querySelectorAll('.back-btn').forEach(btn => {
-  btn.onclick = async () => {
+  if (activeScreen !== 'modeSelect') {
     // A completed transfer that was never downloaded lives only in memory;
     // resetting the modules below would silently discard it.
-    if ((hasQrPendingDownload() || hasCimbarPendingDownload() || hasHdmiUvcPendingDownload()) &&
+    if (hasPendingDownload() &&
         !confirm('The received file has not been downloaded yet. Leave and discard it?')) {
+      suppressHashHandler = true
+      location.hash = SCREEN_TO_HASH[activeScreen]
       return
     }
+    await cleanupModules()
+  }
 
-    // Clean up QR state
-    resetSender()
-    resetReceiver()
+  showScreen(target)
 
-    // Clean up CIMBAR state
-    resetCimbarSender()
-    resetCimbarReceiver()
+  if (target === 'receiver') autoStartReceiver()
+  else if (target === 'cimbarReceiver') autoStartCimbarReceiver()
+  else if (target === 'hdmiUvcReceiver') autoStartHdmiUvcReceiver()
+}
 
-    // Clean up HDMI-UVC state
-    await resetHdmiUvcSender()
-    resetHdmiUvcReceiver()
+window.addEventListener('hashchange', handleHashChange)
 
-    // Return to mode selection
-    showScreen('modeSelect')
+// Mode selection buttons navigate via the hash so browser history stays usable.
+document.getElementById('btn-send').onclick = () => { location.hash = 'sender' }
+document.getElementById('btn-receive').onclick = () => { location.hash = 'receiver' }
+document.getElementById('btn-cimbar-send').onclick = () => { location.hash = 'cimbar-sender' }
+document.getElementById('btn-cimbar-receive').onclick = () => { location.hash = 'cimbar-receiver' }
+document.getElementById('btn-hdmi-uvc-send').onclick = () => { location.hash = 'hdmi-uvc-sender' }
+document.getElementById('btn-hdmi-uvc-receive').onclick = () => { location.hash = 'hdmi-uvc-receiver' }
+
+// Back buttons route through the hash handler, which owns cleanup and the
+// pending-download confirmation.
+document.querySelectorAll('.back-btn').forEach(btn => {
+  btn.onclick = () => { location.hash = '' }
+})
+
+// Warn before the tab closes mid-transfer or with an undownloaded file; both
+// live only in memory.
+window.addEventListener('beforeunload', (e) => {
+  if (hasPendingDownload() ||
+      isQrSenderBusy() || isCimbarSenderBusy() || isHdmiUvcSenderBusy() ||
+      isQrReceiving() || isCimbarReceiving() || isHdmiUvcReceiving()) {
+    e.preventDefault()
+    e.returnValue = ''
   }
 })
 
@@ -142,6 +179,12 @@ if (!compat.compatible) {
   // Tooltips are invisible on touch devices; say why in the section itself.
   const desc = document.getElementById('cimbar-desc')
   if (desc) desc.textContent = reason
+}
+
+// Deep link: entering with a screen hash (e.g. #receiver) lands directly on
+// that screen.
+if (HASH_TO_SCREEN[location.hash.replace(/^#/, '')]) {
+  handleHashChange()
 }
 
 // ============ TEST SUITE ============
