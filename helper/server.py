@@ -3,6 +3,11 @@ import asyncio
 import websockets
 from bless import BlessServer, GATTAttributePermissions, GATTCharacteristicProperties
 
+try:
+    from .origin_policy import OriginPolicy
+except ImportError:
+    from origin_policy import OriginPolicy
+
 
 SERVICE_UUID = "0000fff0-0000-1000-8000-00805f9b34fb"
 CHARACTERISTIC_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"
@@ -79,21 +84,14 @@ def _request_origin(websocket):
         return None
 
 
-def origin_allowed(origin):
-    # Non-browser clients send no Origin; file:// pages (the single-file
-    # build) send the literal "null". Hostile web origins send https://...
-    if origin is None or origin == "null":
-        return True
-    return origin.startswith("http://localhost") or origin.startswith("http://127.0.0.1")
-
-
 async def main():
     bridge = ArqGattBridge()
+    policy = OriginPolicy()
     await bridge.start()
 
     async def handle_ws(websocket):
         origin = _request_origin(websocket)
-        if not origin_allowed(origin):
+        if not await policy.allow(origin):
             print(f"rejecting WebSocket client from origin {origin}")
             await websocket.close(code=1008, reason="origin not allowed")
             return

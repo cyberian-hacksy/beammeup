@@ -75,6 +75,25 @@ Advertising BeamMeUp-ARQ
 WebSocket bridge listening on ws://127.0.0.1:8787
 ```
 
+## Web origin approval
+
+The WebSocket bridge trusts local pages automatically: clients with no
+`Origin` header, `file://` pages (`Origin: null`), and pages served from
+`http://localhost` or `http://127.0.0.1`. The first time a page from any
+other origin connects (for example a GitHub Pages deployment of the
+receiver), the helper asks in its terminal:
+
+```text
+Allow WebSocket connections from https://example.github.io? [y/N]
+```
+
+Answering `y` stores the origin in `~/.beammeup/arq-origins.json` so it is
+never asked again. Answering `n`, or 60 seconds of silence, rejects that
+connection without remembering anything. If the helper has no usable stdin
+(double-clicked from a file manager, or backgrounded), unknown origins are
+rejected; run the helper from a terminal once to approve a new origin, or
+add it to the JSON file by hand.
+
 When the HDMI-UVC receiver screen opens, the browser checks the localhost
 helper automatically. If the helper is running, it connects and shows
 `Helper connected`. If it is not running, it shows `Start BeamMeUp Helper`;
