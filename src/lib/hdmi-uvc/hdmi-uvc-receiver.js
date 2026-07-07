@@ -183,6 +183,9 @@ function applyArqReceiverHelperStatus(status) {
 async function connectArqHelper(options = {}) {
   const { auto = false } = options
   if (state.arqHelperConnecting) return
+  // Manual "Reconnect helper" intentionally tears down a live connection;
+  // the auto path must never churn one.
+  if (auto && state.arqConnected) return
   state.arqHelperConnecting = true
   try {
     state.arqTransport?.close()
@@ -202,7 +205,7 @@ async function connectArqHelper(options = {}) {
     state.arqConnected = true
     postArqStateToWorker()
     applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.CONNECTED)
-    debugLog('ARQ helper connected')
+    debugLog(`ARQ helper connected (${auto ? 'auto' : 'manual'})`)
   } catch (err) {
     state.arqTransport?.close()
     state.arqTransport = null
@@ -356,7 +359,7 @@ function noteArqParsedPackets(parsedList) {
     }
     const msg = controller.onBeacon()
     const action = getArqBeaconLogAction(msg, controller.isFull(), !!state.completedFile)
-    if (action) debugLog(`ARQ beacon observed: sent ${action} seq=${msg?.seq ?? '?'}`)
+    if (action) debugLog(`ARQ beacon observed: sent ${action} seq=${controller.seq}`)
   }
 }
 
@@ -365,7 +368,7 @@ function sendArqCompleteIfReady() {
   if (!controller || !state.completedFile) return
   for (let id = 1; id <= controller.K; id++) controller.markReceived(id)
   const msg = controller.onBeacon()
-  debugLog(`ARQ COMPLETE sent seq=${msg?.seq ?? '?'}`)
+  debugLog(`ARQ COMPLETE ${msg ? 'sent' : 'deferred'} seq=${controller.seq}`)
   scheduleArqCompleteRetries(controller)
 }
 
@@ -374,7 +377,7 @@ function requestArqFullRepair(reason) {
   if (!controller || typeof controller.requestFullRepair !== 'function') return false
   controller.requestFullRepair()
   const msg = controller.onBeacon()
-  debugLog(`ARQ full repair requested (${reason}) seq=${msg?.seq ?? '?'}`)
+  debugLog(`ARQ full repair requested (${reason}) seq=${controller.seq}`)
   return !!msg
 }
 
