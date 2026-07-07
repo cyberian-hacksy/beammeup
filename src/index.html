@@ -117,14 +117,6 @@
           <button class="mode-btn" data-mode="2" aria-pressed="false">RGB</button>
         </div>
       </div>
-      <div id="debug-panel" class="debug-panel" style="display:none;">
-        <div class="debug-panel-header">
-          <div id="debug-current" class="debug-current">waiting&hellip;</div>
-          <button id="btn-copy-log" class="debug-btn debug-btn-copy" type="button">Copy</button>
-        </div>
-        <div id="debug-log" class="debug-log"></div>
-      </div>
-
       <div class="receiver-status" id="receiver-status-bar">
         <div class="status-scanning" id="status-scanning">
           <span id="scanning-label">Scanning&hellip;</span>
@@ -154,6 +146,16 @@
             <button id="btn-receive-another" class="secondary">Receive Another</button>
           </div>
         </div>
+      </div>
+
+      <!-- Diagnostics render below the status bar so opening them never
+           pushes the progress bar out of view -->
+      <div id="debug-panel" class="debug-panel" style="display:none;">
+        <div class="debug-panel-header">
+          <div id="debug-current" class="debug-current">waiting&hellip;</div>
+          <button id="btn-copy-log" class="debug-btn debug-btn-copy" type="button">Copy</button>
+        </div>
+        <div id="debug-log" class="debug-log"></div>
       </div>
     </main>
   </div>
@@ -316,23 +318,6 @@
         <span id="hdmi-uvc-helper-status" class="arq-status">Helper offline</span>
       </div>
       <div id="hdmi-uvc-helper-hint" class="control-hint hidden"></div>
-      <div class="diag-toggle-row">
-        <span id="hdmi-uvc-receiver-diag-modified" class="modified-badge hidden">&#9679; modified settings active</span>
-        <button id="btn-hdmi-uvc-receiver-diag-toggle" class="secondary diag-toggle" type="button">Show diagnostics</button>
-      </div>
-      <div id="hdmi-uvc-receiver-debug" class="debug-panel" style="display:none;">
-        <div class="debug-panel-header">
-          <div id="hdmi-uvc-receiver-debug-current" class="debug-current">waiting&hellip;</div>
-          <button id="btn-hdmi-uvc-receiver-clear-log" class="debug-btn debug-btn-clear" type="button">Clear</button>
-          <button id="btn-hdmi-uvc-receiver-copy-log" class="debug-btn debug-btn-copy" type="button">Copy Log</button>
-        </div>
-        <div id="hdmi-uvc-diag-settings" class="diag-settings"></div>
-        <div id="hdmi-uvc-receiver-debug-log" class="debug-log tall"></div>
-        <div class="debug-canvas-wrap">
-          <div class="debug-canvas-caption">Canvas capture (what we actually read):</div>
-          <canvas id="hdmi-uvc-receiver-debug-canvas"></canvas>
-        </div>
-      </div>
 
       <div class="receiver-status" id="hdmi-uvc-status-bar">
         <div class="status-scanning" id="hdmi-uvc-status-scanning">
@@ -362,6 +347,26 @@
             <button id="btn-hdmi-uvc-download">Download</button>
             <button id="btn-hdmi-uvc-another" class="secondary">Receive Another</button>
           </div>
+        </div>
+      </div>
+
+      <!-- Diagnostics render below the status bar so opening them never
+           pushes the progress bar out of view -->
+      <div class="diag-toggle-row">
+        <span id="hdmi-uvc-receiver-diag-modified" class="modified-badge hidden">&#9679; modified settings active</span>
+        <button id="btn-hdmi-uvc-receiver-diag-toggle" class="secondary diag-toggle" type="button">Show diagnostics</button>
+      </div>
+      <div id="hdmi-uvc-receiver-debug" class="debug-panel" style="display:none;">
+        <div class="debug-panel-header">
+          <div id="hdmi-uvc-receiver-debug-current" class="debug-current">waiting&hellip;</div>
+          <button id="btn-hdmi-uvc-receiver-clear-log" class="debug-btn debug-btn-clear" type="button">Clear</button>
+          <button id="btn-hdmi-uvc-receiver-copy-log" class="debug-btn debug-btn-copy" type="button">Copy Log</button>
+        </div>
+        <div id="hdmi-uvc-diag-settings" class="diag-settings"></div>
+        <div id="hdmi-uvc-receiver-debug-log" class="debug-log tall"></div>
+        <div class="debug-canvas-wrap">
+          <div class="debug-canvas-caption">Canvas capture (what we actually read):</div>
+          <canvas id="hdmi-uvc-receiver-debug-canvas"></canvas>
         </div>
       </div>
     </main>
