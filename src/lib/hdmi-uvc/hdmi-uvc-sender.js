@@ -171,19 +171,91 @@ async function connectArqBackchannel() {
       onDisconnect: () => {
         state.arqConnected = false
         updateArqSenderStatus('Back-channel disconnected', false)
+        syncYoloWithBackchannel('disconnected')
       }
     })
     state.arqConnected = true
     updateArqSenderStatus('Back-channel connected', true)
     debugLog('ARQ back-channel connected')
+    syncYoloWithBackchannel('connected')
   } catch (err) {
     state.arqConnected = false
     updateArqSenderStatus('Back-channel unavailable', false)
     debugLog(`ARQ connect failed: ${err.message}`)
     showError('Back-channel connect failed: ' + err.message)
+    syncYoloWithBackchannel('disconnected')
   } finally {
     state.arqConnecting = false
   }
+}
+
+// Send-once is the fastest configuration when repair feedback exists and a
+// slower one without it, so the checkbox follows the back-channel: auto-on
+// when it connects, back to the stored preference when it goes away. An
+// explicit user choice made this session always wins, and the automatic
+// value is never persisted.
+export function resolveYoloAutoState(current, event) {
+  if (event === 'connected') {
+    if (!current.yolo && !current.manualThisSession) {
+      return { yolo: true, autoEnabled: true }
+    }
+    return { yolo: current.yolo, autoEnabled: current.autoEnabled }
+  }
+  if (current.autoEnabled) {
+    return { yolo: !!current.stored, autoEnabled: false }
+  }
+  return { yolo: current.yolo, autoEnabled: current.autoEnabled }
+}
+
+function readStoredYoloPreference() {
+  try { return localStorage.getItem('hdmi-uvc-yolo') === '1' } catch { return false }
+}
+
+function syncYoloWithBackchannel(event) {
+  // The frame scheduler reads state.yolo live and the encoder is built from
+  // it at start; flipping it mid-transfer would desynchronize the stream.
+  // Transfer-end paths re-sync via restoreSenderReadyState/stopSending.
+  if (state.isSending || state.isAwaitingStart) return
+  const next = resolveYoloAutoState({
+    yolo: state.yolo,
+    autoEnabled: state.yoloAutoEnabled,
+    manualThisSession: state.yoloManualThisSession,
+    stored: readStoredYoloPreference()
+  }, event)
+  if (next.yolo !== state.yolo) {
+    state.yolo = next.yolo
+    if (elements?.yoloToggle) elements.yoloToggle.checked = next.yolo
+    debugLog(next.yolo
+      ? 'Send-once mode auto-enabled (back-channel connected)'
+      : 'Send-once mode reverted to stored preference (back-channel offline)')
+  }
+  state.yoloAutoEnabled = next.autoEnabled
+}
+
+export function testYoloFollowsBackchannel() {
+  const cases = [
+    // Connect with the box off and no manual choice: auto-enable.
+    [{ yolo: false, autoEnabled: false, manualThisSession: false, stored: false }, 'connected', { yolo: true, autoEnabled: true }],
+    // The user unchecked it this session: connecting must not re-check it.
+    [{ yolo: false, autoEnabled: false, manualThisSession: true, stored: false }, 'connected', { yolo: false, autoEnabled: false }],
+    // Already on by the user's own choice: connected leaves it manual.
+    [{ yolo: true, autoEnabled: false, manualThisSession: false, stored: true }, 'connected', { yolo: true, autoEnabled: false }],
+    // Disconnect reverts an auto-enable to the stored preference (off).
+    [{ yolo: true, autoEnabled: true, manualThisSession: false, stored: false }, 'disconnected', { yolo: false, autoEnabled: false }],
+    // ...and to the stored preference (on).
+    [{ yolo: true, autoEnabled: true, manualThisSession: false, stored: true }, 'disconnected', { yolo: true, autoEnabled: false }],
+    // Disconnect leaves a manual choice alone.
+    [{ yolo: true, autoEnabled: false, manualThisSession: true, stored: false }, 'disconnected', { yolo: true, autoEnabled: false }]
+  ]
+  for (const [current, event, expected] of cases) {
+    const got = resolveYoloAutoState(current, event)
+    if (got.yolo !== expected.yolo || got.autoEnabled !== expected.autoEnabled) {
+      console.log('yolo follows back-channel test: FAIL', { current, event, expected, got })
+      return false
+    }
+  }
+  console.log('yolo follows back-channel test: PASS')
+  return true
 }
 
 function createPerfWindow() {
@@ -379,6 +451,11 @@ function noteSenderFramePerf(frameStartMs, batchMs, buildMs, blitMs, totalMs, fp
 const state = {
   encoder: null,
   yolo: false,
+  // True while `yolo` was switched on automatically because the back-channel
+  // connected (as opposed to the user's own checkbox choice).
+  yoloAutoEnabled: false,
+  // The user touched the checkbox this session; automation must not fight it.
+  yoloManualThisSession: false,
   fileData: null,
   fileName: null,
   fileSize: 0,
@@ -687,6 +764,9 @@ async function restoreSenderReadyState() {
     elements.placeholderIcon.textContent = '+'
     elements.placeholderText.textContent = 'Drop file here or tap to select'
   }
+  // A back-channel connect/disconnect during the transfer was deferred (the
+  // scheduler reads state.yolo live); apply it now that the sender is idle.
+  syncYoloWithBackchannel(state.arqConnected ? 'connected' : 'disconnected')
   updateActionButton()
   updateEstimateSummary()
 }
@@ -2729,6 +2809,8 @@ async function stopSending() {
   elements.fileInput.value = ''
 
   updateDropZoneState()
+  // Apply any back-channel transition that was deferred during the transfer.
+  syncYoloWithBackchannel(state.arqConnected ? 'connected' : 'disconnected')
   updateActionButton()
   updateEstimateSummary()
   updateArqSenderStatus(state.arqConnected ? 'Back-channel connected' : 'Back-channel offline', state.arqConnected)
@@ -2944,6 +3026,8 @@ export function initHdmiUvcSender(errorHandler) {
     elements.yoloToggle.checked = storedYolo
     elements.yoloToggle.onchange = (e) => {
       state.yolo = e.target.checked
+      state.yoloAutoEnabled = false
+      state.yoloManualThisSession = true
       try { localStorage.setItem('hdmi-uvc-yolo', state.yolo ? '1' : '0') } catch {}
     }
   }

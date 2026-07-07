@@ -76,7 +76,8 @@ import {
   testSenderWorkListSchedule,
   testArqBatchEmitsClaimedMetadataAtWorkListTail,
   testArqRepairBatchCarriesMetadataWhenRequested,
-  testArqBeaconBatchCarriesReplayData
+  testArqBeaconBatchCarriesReplayData,
+  testYoloFollowsBackchannel
 } from './lib/hdmi-uvc/hdmi-uvc-sender.js'
 import {
   testReceiverFrameAcceptSignals,
@@ -371,6 +372,7 @@ export function registerAllTests() {
   window.testDenseBinaryMetadataUsesSparseSchedule = testDenseBinaryMetadataUsesSparseSchedule
   window.testDenseBinaryMetadataSlotRotatesOnlyWhenSent = testDenseBinaryMetadataSlotRotatesOnlyWhenSent
   window.testSenderWorkListSchedule = testSenderWorkListSchedule
+  window.testYoloFollowsBackchannel = testYoloFollowsBackchannel
   window.testArqBatchEmitsClaimedMetadataAtWorkListTail = testArqBatchEmitsClaimedMetadataAtWorkListTail
   window.testArqRepairBatchCarriesMetadataWhenRequested = testArqRepairBatchCarriesMetadataWhenRequested
   window.testArqBeaconBatchCarriesReplayData = testArqBeaconBatchCarriesReplayData
@@ -596,6 +598,7 @@ export async function runAllTests() {
     denseBinaryMetadataSparseSchedule: testDenseBinaryMetadataUsesSparseSchedule(),
     denseBinaryMetadataSlotRotatesOnlyWhenSent: testDenseBinaryMetadataSlotRotatesOnlyWhenSent(),
     senderWorkListSchedule: testSenderWorkListSchedule(),
+    yoloFollowsBackchannel: testYoloFollowsBackchannel(),
     arqMetadataTailBatch: testArqBatchEmitsClaimedMetadataAtWorkListTail(),
     arqRepairMetadataBatch: testArqRepairBatchCarriesMetadataWhenRequested(),
     arqBeaconReplayDataBatch: testArqBeaconBatchCarriesReplayData(),

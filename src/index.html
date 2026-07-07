@@ -269,7 +269,7 @@
         </div>
         <div class="yolo-toggle" style="display:flex;align-items:center;gap:8px;margin:8px 0;">
           <input type="checkbox" id="hdmi-uvc-yolo-toggle">
-          <label for="hdmi-uvc-yolo-toggle" style="font-size:13px;color:#00d4ff;cursor:pointer;">⚡ No-redundancy mode (experimental) — usually slower; only wins on a perfectly clean capture chain</label>
+          <label for="hdmi-uvc-yolo-toggle" style="font-size:13px;color:#00d4ff;cursor:pointer;" title="No parity/fountain redundancy; missed blocks are re-requested over the Bluetooth back-channel. Auto-enables when the back-channel connects; usually slower without it.">⚡ Send-once mode — fastest with back-channel</label>
         </div>
         <div class="arq-backchannel" style="display:flex;align-items:center;gap:8px;margin:8px 0;flex-wrap:wrap;">
           <button id="btn-hdmi-uvc-arq-connect" class="secondary" type="button">Connect back-channel</button>
