@@ -6,7 +6,8 @@ import { PACKET_HEADER_SIZE } from '../packet.js'
 import { formatBytes } from '../format.js'
 import { ArqSenderController, getArqSenderDisplayProgress } from '../arq/arq-sender.js'
 import { getTransport } from '../arq/backchannel.js'
-import { DEFAULT_ARQ_TRANSPORT } from '../arq/default-transports.js'
+import { getSelectedArqTransportName } from '../arq/default-transports.js'
+import { getArqSenderConnectPrompt } from '../arq/helper-status.js'
 import {
   HDMI_UVC_MAX_FILE_SIZE,
   HDMI_MODE,
@@ -162,11 +163,12 @@ async function connectArqBackchannel() {
   state.arqConnecting = true
   try {
     state.arqTransport?.close()
-    const impl = getTransport(DEFAULT_ARQ_TRANSPORT)
-    if (!impl?.makeSender) throw new Error('BLE GATT ARQ sender transport is not registered')
+    const transportName = getSelectedArqTransportName()
+    const impl = getTransport(transportName)
+    if (!impl?.makeSender) throw new Error(`ARQ sender transport '${transportName}' is not registered`)
     state.arqTransport = impl.makeSender()
     state.arqTransport.onMessage(handleArqBackchannelMessage)
-    updateArqSenderStatus('Select BeamMeUp-ARQ...', false)
+    updateArqSenderStatus(getArqSenderConnectPrompt(transportName), false)
     await state.arqTransport.init({
       onStatus: status => updateArqSenderStatus(`Back-channel ${status}`, status === 'connected'),
       onDisconnect: () => {

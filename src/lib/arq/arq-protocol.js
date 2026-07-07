@@ -24,7 +24,13 @@ export function testArqMessageRejectsCorruption() {
 }
 
 export function testMissingSetCodecRoundtrip() {
-  const cases = [[], [1], [1, 2, 3], [5, 9, 100, 101, 5000], [1, 3, 5, 7, 9, 11, 13]]
+  const cases = [
+    [], [1], [1, 2, 3], [5, 9, 100, 101, 5000], [1, 3, 5, 7, 9, 11, 13],
+    // Bursty sets exercise the range encoding (tag 2), including at the top
+    // of the uint32 id space.
+    [7, 8, 9, 10, 50, 51, 52, 900],
+    Array.from({ length: 256 }, (_, i) => (0xFFFFFF00 + i) >>> 0)
+  ]
   for (const ids of cases) {
     const back = decodeMissingSet(encodeMissingSet(ids))
     if (back.length !== ids.length || back.some((v, i) => v !== ids[i])) {
@@ -38,11 +44,57 @@ export function testMissingSetCodecRoundtrip() {
 
 export function testMissingSetAdaptiveChoosesSmaller() {
   const sparse = [1, 9000, 18000]
-  const dense = Array.from({ length: 400 }, (_, i) => 1000 + i)
+  const alternating = Array.from({ length: 200 }, (_, i) => 1000 + i * 2)
+  const run = Array.from({ length: 400 }, (_, i) => 1000 + i)
   const sparseTag = encodeMissingSet(sparse)[0]
-  const denseTag = encodeMissingSet(dense)[0]
-  const pass = sparseTag === 0 && denseTag === 1
-  console.log('missing-set adaptive:', pass ? 'PASS' : 'FAIL', { sparseTag, denseTag })
+  const alternatingTag = encodeMissingSet(alternating)[0]
+  const runTag = encodeMissingSet(run)[0]
+  const pass = sparseTag === 0 && alternatingTag === 1 && runTag === 2
+  console.log('missing-set adaptive:', pass ? 'PASS' : 'FAIL', { sparseTag, alternatingTag, runTag })
+  return pass
+}
+
+export function testMissingSetRangeEncodingCompressesBursts() {
+  // Frame drops lose contiguous block-id runs; ranges must collapse each
+  // burst to a few bytes where the delta list pays ~1 byte per id.
+  const ids = []
+  for (const start of [1000, 5000, 9000]) {
+    for (let i = 0; i < 40; i++) ids.push(start + i)
+  }
+  const encoded = encodeMissingSet(ids)
+  const back = decodeMissingSet(encoded)
+  const pass = encoded[0] === 2 && encoded.length <= 12 &&
+    back.length === ids.length && back.every((v, i) => v === ids[i])
+  console.log('missing-set range encoding bursts:', pass ? 'PASS' : 'FAIL', encoded.length)
+  return pass
+}
+
+export function testMissingSetCappedFitsBudgetAndKeepsPrefix() {
+  // Alternating ids defeat run collapsing, so the encoding grows with count
+  // and the cap has to cut the set down to a prefix.
+  const ids = Array.from({ length: 100 }, (_, i) => 1 + i * 2)
+  const capped = encodeMissingSetCapped(ids, 12)
+  const back = decodeMissingSet(capped)
+  const uncapped = decodeMissingSet(encodeMissingSetCapped(ids, 1000))
+  const floor = decodeMissingSet(encodeMissingSetCapped([0xFFFFFFFF], 1))
+  const pass = capped.length <= 12 &&
+    back.length >= 1 && back.length < ids.length &&
+    back.every((v, i) => v === ids[i]) &&
+    uncapped.length === ids.length &&
+    floor.length === 1 && floor[0] === 0xFFFFFFFF
+  console.log('missing-set capped prefix:', pass ? 'PASS' : 'FAIL', { bytes: capped.length, ids: back.length })
+  return pass
+}
+
+export function testEncodeNackHonorsPayloadCap() {
+  const ids = Array.from({ length: 100 }, (_, i) => 1 + i * 2)
+  const capped = decodeArqMessage(encodeNack(1, 1, ids, 12))
+  const full = decodeArqMessage(encodeNack(1, 1, ids))
+  const missing = decodeMissingSet(capped.payload)
+  const pass = capped.payload.length <= 12 &&
+    missing.length >= 1 && missing.every((v, i) => v === ids[i]) &&
+    decodeMissingSet(full.payload).length === ids.length
+  console.log('encode nack payload cap:', pass ? 'PASS' : 'FAIL', capped.payload.length)
   return pass
 }
 
@@ -122,7 +174,8 @@ function readVarint(bytes, pos) {
   return [result >>> 0, pos]
 }
 
-// tag 0 = delta-varint list, tag 1 = bitmap. ids must be sorted ascending and unique.
+// tag 0 = delta-varint list, tag 1 = bitmap, tag 2 = (gap, length) run list.
+// ids must be sorted ascending and unique.
 export function encodeMissingSet(ids) {
   const list = [0]
   let prev = 0
@@ -131,26 +184,53 @@ export function encodeMissingSet(ids) {
     prev = id
   }
 
-  let bitmap = null
+  let winner = list
+
   if (ids.length > 0) {
+    // Frame drops lose contiguous runs of block ids, so run-length pairs
+    // usually collapse a burst to a few bytes.
+    const ranges = [2]
+    let prevEnd = 0
+    let runStart = ids[0]
+    let runLen = 1
+    const flushRun = () => {
+      writeVarint(ranges, runStart - prevEnd)
+      writeVarint(ranges, runLen)
+      prevEnd = runStart + runLen - 1
+    }
+    for (let i = 1; i < ids.length; i++) {
+      if (ids[i] === ids[i - 1] + 1) {
+        runLen++
+        continue
+      }
+      flushRun()
+      runStart = ids[i]
+      runLen = 1
+    }
+    flushRun()
+    if (ranges.length < winner.length) winner = ranges
+
     const base = ids[0]
     const range = ids[ids.length - 1] - base + 1
     const bitmapHeader = [1]
     writeVarint(bitmapHeader, base)
     writeVarint(bitmapHeader, range)
     const bitmapBytes = (range + 7) >> 3
-    if (bitmapHeader.length + bitmapBytes < list.length) {
-      bitmap = bitmapHeader
+    // Only built when header + payload beat the current winner.
+    if (bitmapHeader.length + bitmapBytes < winner.length) {
       const bytes = new Uint8Array(bitmapBytes)
       for (const id of ids) bytes[(id - base) >> 3] |= 1 << ((id - base) & 7)
-      for (const byte of bytes) bitmap.push(byte)
+      winner = bitmapHeader
+      for (const byte of bytes) winner.push(byte)
     }
   }
 
-  // bitmap is only built when header + payload beat the list, so it wins
-  // whenever it exists.
-  return new Uint8Array(bitmap || list)
+  return new Uint8Array(winner)
 }
+
+// Defensive bound for run lengths: CRC gates real messages, but a decoder
+// must never let a corrupt varint allocate unbounded ids.
+const MAX_RANGE_DECODE_IDS = 1 << 22
 
 export function decodeMissingSet(bytes) {
   if (bytes.length === 0) return []
@@ -168,6 +248,21 @@ export function decodeMissingSet(bytes) {
     return ids
   }
 
+  if (bytes[0] === 2) {
+    let pos = 1
+    let prevEnd = 0
+    while (pos < bytes.length && ids.length < MAX_RANGE_DECODE_IDS) {
+      let gap, len
+      ;[gap, pos] = readVarint(bytes, pos)
+      ;[len, pos] = readVarint(bytes, pos)
+      const start = prevEnd + gap
+      const bounded = Math.min(len, MAX_RANGE_DECODE_IDS - ids.length)
+      for (let i = 0; i < bounded; i++) ids.push((start + i) >>> 0)
+      prevEnd = start + len - 1
+    }
+    return ids
+  }
+
   let [base, pos] = readVarint(bytes, 1)
   let range
   ;[range, pos] = readVarint(bytes, pos)
@@ -179,8 +274,33 @@ export function decodeMissingSet(bytes) {
   return ids
 }
 
-export function encodeNack(fileId, seq, missingIds) {
-  return encodeArqMessage(ARQ_MSG.NACK, fileId, seq, encodeMissingSet(missingIds))
+// Longest prefix of ids whose encoding fits capBytes — always at least one
+// id, so a capped NACK still makes progress. Valid because every encoding's
+// size is non-decreasing as the prefix grows (min of non-decreasing sizes).
+export function encodeMissingSetCapped(ids, capBytes) {
+  const full = encodeMissingSet(ids)
+  if (!(capBytes > 0) || full.length <= capBytes || ids.length <= 1) return full
+  let lo = 2
+  let hi = ids.length - 1
+  let best = encodeMissingSet(ids.slice(0, 1))
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    const enc = encodeMissingSet(ids.slice(0, mid))
+    if (enc.length <= capBytes) {
+      best = enc
+      lo = mid + 1
+    } else {
+      hi = mid - 1
+    }
+  }
+  return best
+}
+
+export function encodeNack(fileId, seq, missingIds, payloadCapBytes = 0) {
+  const payload = payloadCapBytes > 0
+    ? encodeMissingSetCapped(missingIds, payloadCapBytes)
+    : encodeMissingSet(missingIds)
+  return encodeArqMessage(ARQ_MSG.NACK, fileId, seq, payload)
 }
 
 export function encodeComplete(fileId, seq) {

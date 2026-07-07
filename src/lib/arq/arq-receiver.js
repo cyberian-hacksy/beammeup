@@ -103,6 +103,56 @@ export function testArqReceiverSendsChangedNackAfterHold() {
   return pass
 }
 
+export function testArqReceiverCapsNackPayload() {
+  const sent = []
+  const c = new ArqReceiverController({
+    K: 200, fileId: 1, send: b => sent.push(b), verifyHash: () => true,
+    nackPayloadCapBytes: 12
+  })
+  // Leave every odd id missing: alternating ids defeat run collapsing, so
+  // only the cap keeps the payload small.
+  for (let id = 2; id <= 200; id += 2) c.markReceived(id)
+  c.onBeacon()
+  const msg = decodeArqMessage(sent[0])
+  const missing = decodeMissingSet(msg.payload)
+  const odds = Array.from({ length: 100 }, (_, i) => 1 + i * 2)
+  const pass = msg.type === ARQ_MSG.NACK &&
+    msg.payload.length <= 12 &&
+    missing.length >= 1 && missing.length < odds.length &&
+    missing.every((v, i) => v === odds[i])
+  console.log('arq receiver caps nack payload:', pass ? 'PASS' : 'FAIL', { bytes: msg.payload.length, ids: missing.length })
+  return pass
+}
+
+export function testArqReceiverCappedNacksConverge() {
+  const sent = []
+  const c = new ArqReceiverController({
+    K: 120, fileId: 1, send: b => sent.push(b), verifyHash: () => true,
+    nackPayloadCapBytes: 10, nackRepeatBeacons: 1, nackChangeHoldBeacons: 1
+  })
+  for (let id = 2; id <= 120; id += 2) c.markReceived(id)
+  let rounds = 0
+  let nacks = 0
+  while (!c.isFull() && rounds < 300) {
+    rounds++
+    const before = sent.length
+    c.onBeacon()
+    if (sent.length === before) continue
+    const msg = decodeArqMessage(sent[sent.length - 1])
+    if (msg.type !== ARQ_MSG.NACK) continue
+    nacks++
+    // Sender repairs exactly what the capped NACK asked for.
+    for (const id of decodeMissingSet(msg.payload)) c.markReceived(id)
+  }
+  c.onBeacon()
+  const last = decodeArqMessage(sent[sent.length - 1])
+  // The cap must force several short NACK rounds (an uncapped NACK would
+  // finish in one), and the loop must still drain to COMPLETE.
+  const pass = c.isFull() && rounds < 300 && nacks >= 3 && last.type === ARQ_MSG.COMPLETE
+  console.log('arq receiver capped nacks converge:', pass ? 'PASS' : 'FAIL', { rounds, nacks })
+  return pass
+}
+
 export function testArqBeaconLogActionSkipsSuppressedNack() {
   const pass = getArqBeaconLogAction(null, false, false) === null &&
     getArqBeaconLogAction(new Uint8Array([1]), false, false) === 'NACK' &&
@@ -134,13 +184,17 @@ export function testArqReceiverReplenishesCompleteWhileBeaconsContinue() {
 }
 
 export class ArqReceiverController {
-  constructor({ K, fileId, send, verifyHash, nackRepeatBeacons = 12, nackChangeHoldBeacons = 12 }) {
+  constructor({ K, fileId, send, verifyHash, nackRepeatBeacons = 12, nackChangeHoldBeacons = 12, nackPayloadCapBytes = 0 }) {
     this.K = K
     this.fileId = fileId
     this.send = send
     this.verifyHash = verifyHash
     this.nackRepeatBeacons = Math.max(1, nackRepeatBeacons | 0)
     this.nackChangeHoldBeacons = Math.max(1, nackChangeHoldBeacons | 0)
+    // Slow transports (keyboard dongle) bound each NACK to a short line;
+    // 0 means uncapped. Capped NACKs carry the lowest missing ids and rely
+    // on idempotent re-NACK to drain the rest.
+    this.nackPayloadCapBytes = Math.max(0, nackPayloadCapBytes | 0)
     this.missingIds = new Set()
     for (let id = 1; id <= K; id++) this.missingIds.add(id)
     this.count = 0
@@ -213,7 +267,7 @@ export class ArqReceiverController {
       this.duplicateNackBeacons = 0
       this.changedNackBeacons = 0
     }
-    const msg = encodeNack(this.fileId, this.seq, this.missing())
+    const msg = encodeNack(this.fileId, this.seq, this.missing(), this.nackPayloadCapBytes)
     this.send(msg)
     return msg
   }

@@ -19,14 +19,18 @@ import {
   testTailSolverTriggerAllowsWiderDenseBinaryTail
 } from './lib/decoder.js'
 import { testParityMap, testParityRecovery, testGF2SolverSmall, testGF2SolverLarge, testSourceToParityAdjacency } from './lib/precode.js'
-import { testArqMessageRoundtrip, testArqMessageRejectsCorruption, testMissingSetCodecRoundtrip, testMissingSetAdaptiveChoosesSmaller, testMissingSetCodecHighUint32Roundtrip, testMissingSetSparseLargeRangeUsesDeltaEncoding, testMissingSetBitmapDecodeBoundsToPayload } from './lib/arq/arq-protocol.js'
+import { testArqMessageRoundtrip, testArqMessageRejectsCorruption, testMissingSetCodecRoundtrip, testMissingSetAdaptiveChoosesSmaller, testMissingSetCodecHighUint32Roundtrip, testMissingSetSparseLargeRangeUsesDeltaEncoding, testMissingSetBitmapDecodeBoundsToPayload, testMissingSetRangeEncodingCompressesBursts, testMissingSetCappedFitsBudgetAndKeepsPrefix, testEncodeNackHonorsPayloadCap } from './lib/arq/arq-protocol.js'
 import { testFragmentReassembleRoundtrip, testFragmentOutOfOrderAndDup, testFragmentMissingDrops, testFragmentSupportsLargeCounts, testFragmentReusedIdResetsStaleEntry, testFragmentReusedIdConflictResetsStaleEntry } from './lib/arq/arq-fragment.js'
-import { testArqReceiverBuildsNackForGaps, testArqReceiverCompleteOnlyWhenFullAndHashOk, testArqReceiverThrottlesDuplicateNacks, testArqReceiverCoalescesChangedNacksDuringProgress, testArqReceiverSendsChangedNackAfterHold, testArqBeaconLogActionSkipsSuppressedNack, testArqReceiverSuppressesEmptyNackWhileHashPending, testArqReceiverCanRequestFullRepairAfterHashMismatch, testArqReceiverCapsCompleteBursts, testArqReceiverReplenishesCompleteWhileBeaconsContinue } from './lib/arq/arq-receiver.js'
+import { testArqReceiverBuildsNackForGaps, testArqReceiverCompleteOnlyWhenFullAndHashOk, testArqReceiverThrottlesDuplicateNacks, testArqReceiverCoalescesChangedNacksDuringProgress, testArqReceiverSendsChangedNackAfterHold, testArqBeaconLogActionSkipsSuppressedNack, testArqReceiverSuppressesEmptyNackWhileHashPending, testArqReceiverCanRequestFullRepairAfterHashMismatch, testArqReceiverCapsCompleteBursts, testArqReceiverReplenishesCompleteWhileBeaconsContinue, testArqReceiverCapsNackPayload, testArqReceiverCappedNacksConverge } from './lib/arq/arq-receiver.js'
 import { testArqSenderConsumesNackIntoWorkList, testArqSenderIgnoresStaleSeq, testArqSenderAcceptsWrappedSeq, testArqSenderFallbackAfterTimeout, testArqSenderFallsBackOnRepeatedUnchangedNacks, testArqSenderDoesNotFallbackWhileNacksProgress, testArqSenderIgnoresDuplicateNackDuringActiveRepair, testArqSenderRetriesDuplicateNackAfterRepairExhausted, testArqSenderCompleteStops, testArqSenderCompleteIsTerminal, testArqSenderDisplayProgressStableAcrossRepair } from './lib/arq/arq-sender.js'
 import { testArqGoodputBeatsReloop } from './lib/arq/arq-sim.js'
-import { testBackchannelRegistry, testBackchannelDefaultMtuIsBleSafe } from './lib/arq/backchannel.js'
-import { testArqHelperStatusView, testShouldAutoConnectArqHelper } from './lib/arq/helper-status.js'
+import { testBackchannelRegistry, testBackchannelDefaultMtuIsBleSafe, testKeyboardNackCapFitsOneShortLine } from './lib/arq/backchannel.js'
+import { testKeyboardTransportRegisteredWithNackCap, testResolveArqTransportNamePrefersQueryThenStorage, testGetSelectedArqTransportNameAlwaysRegistered } from './lib/arq/default-transports.js'
+import { testArqHelperStatusView, testShouldAutoConnectArqHelper, testArqHelperStatusViewIsTransportAware } from './lib/arq/helper-status.js'
 import { testBleGattSenderCopiesNotificationBuffer, testBleGattSenderUsesBroadDiscoveryWithOptionalService } from './lib/arq/transports/ble-gatt-sender.js'
+import { testKeyboardBase32Roundtrip, testKeyboardAlphabetIsPhysicalAndDistinct, testKeyboardCodecRoundtripsThroughEventCodes } from './lib/arq/transports/keyboard-codec.js'
+import { testKeyboardReceiverSendsOneBase32LinePerMessage, testKeyboardReceiverReusePortIsGestureFree } from './lib/arq/transports/keyboard-receiver.js'
+import { testKeyboardSenderDecodesKeystrokeLine, testKeyboardSenderIgnoresForeignAndModifiedKeys, testKeyboardSenderResetsRunawayLine, testKeyboardSenderCloseStopsConsuming } from './lib/arq/transports/keyboard-sender.js'
 import {
   testPass2TwoStageSchedule,
   testParitySweepCounter,
@@ -266,8 +270,27 @@ export function registerAllTests() {
   window.testBackchannelDefaultMtuIsBleSafe = testBackchannelDefaultMtuIsBleSafe
   window.testArqHelperStatusView = testArqHelperStatusView
   window.testShouldAutoConnectArqHelper = testShouldAutoConnectArqHelper
+  window.testArqHelperStatusViewIsTransportAware = testArqHelperStatusViewIsTransportAware
   window.testBleGattSenderCopiesNotificationBuffer = testBleGattSenderCopiesNotificationBuffer
   window.testBleGattSenderUsesBroadDiscoveryWithOptionalService = testBleGattSenderUsesBroadDiscoveryWithOptionalService
+  window.testMissingSetRangeEncodingCompressesBursts = testMissingSetRangeEncodingCompressesBursts
+  window.testMissingSetCappedFitsBudgetAndKeepsPrefix = testMissingSetCappedFitsBudgetAndKeepsPrefix
+  window.testEncodeNackHonorsPayloadCap = testEncodeNackHonorsPayloadCap
+  window.testArqReceiverCapsNackPayload = testArqReceiverCapsNackPayload
+  window.testArqReceiverCappedNacksConverge = testArqReceiverCappedNacksConverge
+  window.testKeyboardNackCapFitsOneShortLine = testKeyboardNackCapFitsOneShortLine
+  window.testKeyboardTransportRegisteredWithNackCap = testKeyboardTransportRegisteredWithNackCap
+  window.testResolveArqTransportNamePrefersQueryThenStorage = testResolveArqTransportNamePrefersQueryThenStorage
+  window.testGetSelectedArqTransportNameAlwaysRegistered = testGetSelectedArqTransportNameAlwaysRegistered
+  window.testKeyboardBase32Roundtrip = testKeyboardBase32Roundtrip
+  window.testKeyboardAlphabetIsPhysicalAndDistinct = testKeyboardAlphabetIsPhysicalAndDistinct
+  window.testKeyboardCodecRoundtripsThroughEventCodes = testKeyboardCodecRoundtripsThroughEventCodes
+  window.testKeyboardReceiverSendsOneBase32LinePerMessage = testKeyboardReceiverSendsOneBase32LinePerMessage
+  window.testKeyboardReceiverReusePortIsGestureFree = testKeyboardReceiverReusePortIsGestureFree
+  window.testKeyboardSenderDecodesKeystrokeLine = testKeyboardSenderDecodesKeystrokeLine
+  window.testKeyboardSenderIgnoresForeignAndModifiedKeys = testKeyboardSenderIgnoresForeignAndModifiedKeys
+  window.testKeyboardSenderResetsRunawayLine = testKeyboardSenderResetsRunawayLine
+  window.testKeyboardSenderCloseStopsConsuming = testKeyboardSenderCloseStopsConsuming
 
   // HDMI-UVC tests
   window.testCrc32 = testCrc32
@@ -456,6 +479,9 @@ export async function runAllTests() {
     arqMissingSetHighUint32: testMissingSetCodecHighUint32Roundtrip(),
     arqMissingSetSparseRangeDelta: testMissingSetSparseLargeRangeUsesDeltaEncoding(),
     arqMissingSetBitmapDecodeBound: testMissingSetBitmapDecodeBoundsToPayload(),
+    arqMissingSetRangeBursts: testMissingSetRangeEncodingCompressesBursts(),
+    arqMissingSetCappedPrefix: testMissingSetCappedFitsBudgetAndKeepsPrefix(),
+    arqNackPayloadCap: testEncodeNackHonorsPayloadCap(),
     arqFragmentRoundtrip: testFragmentReassembleRoundtrip(),
     arqFragmentOutOfOrder: testFragmentOutOfOrderAndDup(),
     arqFragmentMissingDrops: testFragmentMissingDrops(),
@@ -472,6 +498,8 @@ export async function runAllTests() {
     arqBeaconLogActionSkipsSuppressedNack: testArqBeaconLogActionSkipsSuppressedNack(),
     arqReceiverCompleteCap: testArqReceiverCapsCompleteBursts(),
     arqReceiverCompleteReplenish: testArqReceiverReplenishesCompleteWhileBeaconsContinue(),
+    arqReceiverCapsNackPayload: testArqReceiverCapsNackPayload(),
+    arqReceiverCappedNacksConverge: testArqReceiverCappedNacksConverge(),
     arqSenderConsumesNack: testArqSenderConsumesNackIntoWorkList(),
     arqSenderStaleSeq: testArqSenderIgnoresStaleSeq(),
     arqSenderWrappedSeq: testArqSenderAcceptsWrappedSeq(),
@@ -487,9 +515,23 @@ export async function runAllTests() {
     arqBackchannelRegistry: testBackchannelRegistry(),
     arqBackchannelDefaultMtu: testBackchannelDefaultMtuIsBleSafe(),
     arqHelperStatusView: testArqHelperStatusView(),
+    arqHelperStatusTransportAware: testArqHelperStatusViewIsTransportAware(),
     arqHelperAutoConnectPolicy: testShouldAutoConnectArqHelper(),
     arqBleSenderCopiesNotification: testBleGattSenderCopiesNotificationBuffer(),
     arqBleSenderDiscoveryOptions: testBleGattSenderUsesBroadDiscoveryWithOptionalService(),
+    arqKeyboardNackCapLine: testKeyboardNackCapFitsOneShortLine(),
+    arqKeyboardTransportRegistered: testKeyboardTransportRegisteredWithNackCap(),
+    arqTransportNameResolution: testResolveArqTransportNamePrefersQueryThenStorage(),
+    arqTransportNameSelected: testGetSelectedArqTransportNameAlwaysRegistered(),
+    arqKeyboardBase32: testKeyboardBase32Roundtrip(),
+    arqKeyboardAlphabet: testKeyboardAlphabetIsPhysicalAndDistinct(),
+    arqKeyboardEventCodes: testKeyboardCodecRoundtripsThroughEventCodes(),
+    arqKeyboardReceiverLine: await testKeyboardReceiverSendsOneBase32LinePerMessage(),
+    arqKeyboardReceiverReusePort: await testKeyboardReceiverReusePortIsGestureFree(),
+    arqKeyboardSenderDecodesLine: await testKeyboardSenderDecodesKeystrokeLine(),
+    arqKeyboardSenderIgnoresForeign: await testKeyboardSenderIgnoresForeignAndModifiedKeys(),
+    arqKeyboardSenderRunawayReset: await testKeyboardSenderResetsRunawayLine(),
+    arqKeyboardSenderCloseStops: await testKeyboardSenderCloseStopsConsuming(),
     // HDMI-UVC tests
     crc32: testCrc32(),
     hdmiHeader: testHeaderRoundtrip(),

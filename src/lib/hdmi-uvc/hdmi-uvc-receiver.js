@@ -8,7 +8,7 @@ import { isRepairIdleMetadataPayload } from '../metadata.js'
 import { ArqReceiverController, getArqBeaconLogAction } from '../arq/arq-receiver.js'
 import { ARQ_HELPER_STATUS, getArqHelperStatusView, shouldAutoConnectArqHelper } from '../arq/helper-status.js'
 import { getTransport } from '../arq/backchannel.js'
-import { DEFAULT_ARQ_TRANSPORT } from '../arq/default-transports.js'
+import { getSelectedArqTransportName } from '../arq/default-transports.js'
 import {
   BLOCK_SIZE,
   DEVICE_STORAGE_KEY,
@@ -199,7 +199,7 @@ function updateArqReceiverStatus(text, connected = state.arqConnected, buttonTex
 }
 
 function applyArqReceiverHelperStatus(status) {
-  const view = getArqHelperStatusView(status)
+  const view = getArqHelperStatusView(status, getSelectedArqTransportName())
   updateArqReceiverStatus(view.text, view.connected, view.buttonText, view.disabled, view.hint)
 }
 
@@ -212,8 +212,9 @@ async function connectArqHelper(options = {}) {
   state.arqHelperConnecting = true
   try {
     state.arqTransport?.close()
-    const impl = getTransport(DEFAULT_ARQ_TRANSPORT)
-    if (!impl?.makeReceiver) throw new Error('BLE GATT ARQ receiver transport is not registered')
+    const transportName = getSelectedArqTransportName()
+    const impl = getTransport(transportName)
+    if (!impl?.makeReceiver) throw new Error(`ARQ receiver transport '${transportName}' is not registered`)
     state.arqTransport = impl.makeReceiver()
     applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.CONNECTING)
     await state.arqTransport.init({
@@ -223,7 +224,11 @@ async function connectArqHelper(options = {}) {
         applyArqReceiverHelperStatus(status === 'connected'
           ? ARQ_HELPER_STATUS.CONNECTED
           : ARQ_HELPER_STATUS.DISCONNECTED)
-      }
+      },
+      // Auto-connect runs without a user gesture: the keyboard transport
+      // then reopens an already-authorized serial port instead of showing
+      // the picker. BLE-GATT ignores the flag.
+      reusePort: auto
     })
     state.arqConnected = true
     postArqStateToWorker()
@@ -341,13 +346,16 @@ function ensureArqReceiverController() {
         applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.SEND_FAILED)
       })
     },
-    verifyHash: () => !!state.completedFile
+    verifyHash: () => !!state.completedFile,
+    // Slow transports (keyboard dongle) declare a per-NACK payload budget.
+    nackPayloadCapBytes: getTransport(getSelectedArqTransportName())?.nackPayloadCapBytes ?? 0
   })
   const seeded = seedArqControllerFromDecoder(state.arqController, decoder) +
     seedArqControllerFromPending(state.arqController)
   state.arqLastSeededSolved = decoder.solved ?? 0
   debugLog(`ARQ receiver session ready: fileId=${decoder.fileId} K=${decoder.metadata.K} seeded=${seeded}`)
-  updateArqReceiverStatus(`Helper connected (K=${decoder.metadata.K})`, true, 'Reconnect helper')
+  const connectedView = getArqHelperStatusView(ARQ_HELPER_STATUS.CONNECTED, getSelectedArqTransportName())
+  updateArqReceiverStatus(`${connectedView.text} (K=${decoder.metadata.K})`, true, connectedView.buttonText)
   return state.arqController
 }
 
