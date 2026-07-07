@@ -25,7 +25,11 @@ export class BleGattReceiverTransport {
         this.onStatus?.('connected')
         resolve()
       }
-      socket.onerror = () => reject(new Error(`Unable to connect to ARQ helper at ${this.url}`))
+      socket.onerror = () => reject(new Error(
+        `Unable to connect to the ARQ helper at ${this.url}. ` +
+        'Start it with "python helper/server.py" — and if it is already running, ' +
+        'check its terminal for a pending origin-approval prompt (y/N).'
+      ))
       socket.onclose = () => {
         // A replaced socket's late close must not clobber the current
         // connection's status.

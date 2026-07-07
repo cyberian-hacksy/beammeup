@@ -50,6 +50,27 @@ export function createReceiverDebugLogBuffer({ maxLines = 500, visibleLines = 12
   }
 }
 
+// Show/hide toggle for a diagnostics panel. Panels ship hidden; the choice is
+// persisted per storageKey so people debugging a rig keep the panel open
+// across reloads. onChange(visible) fires on init and every toggle so callers
+// can pause per-frame DOM writes while the panel is hidden.
+export function initDiagnosticsPanelToggle({ button, panel, storageKey, onChange }) {
+  if (!button || !panel) return
+  let visible = false
+  try { visible = localStorage.getItem(storageKey) === '1' } catch (_) { /* storage disabled */ }
+  const apply = () => {
+    panel.style.display = visible ? '' : 'none'
+    button.textContent = visible ? 'Hide diagnostics' : 'Show diagnostics'
+    if (onChange) onChange(visible)
+  }
+  button.onclick = () => {
+    visible = !visible
+    try { localStorage.setItem(storageKey, visible ? '1' : '0') } catch (_) { /* ignore */ }
+    apply()
+  }
+  apply()
+}
+
 export function testReceiverDebugLogBufferKeepsCopyFullAndRenderBounded() {
   try {
     const buffer = createReceiverDebugLogBuffer({ maxLines: 6, visibleLines: 3 })

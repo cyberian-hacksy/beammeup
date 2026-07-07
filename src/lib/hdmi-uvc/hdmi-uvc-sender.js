@@ -38,6 +38,10 @@ import {
   getPass2Variant,
   setDiagnostic
 } from './hdmi-uvc-diagnostics.js'
+import {
+  createReceiverDebugLogBuffer,
+  initDiagnosticsPanelToggle
+} from './hdmi-uvc-debug-log.js'
 
 // Kick off WASM instantiation when the sender module loads so buildFrame's
 // payload CRC uses the WASM kernel from the first transmitted frame. Errors
@@ -48,7 +52,9 @@ try {
   // Non-browser test imports have no document/self origin for WASM URL resolution.
 }
 
-// Debug mode - always on while diagnosing HDMI-UVC issues
+// Master switch for debug-log collection. Lines always accumulate in the
+// ring buffer (cheap); all DOM output is gated separately by the
+// user-facing Diagnostics toggle.
 const DEBUG_MODE = true
 // Sender experiments are now locked to the best live baseline. Keep the
 // helper plumbing for tests and stale URL/localStorage cleanup, but do not
@@ -65,27 +71,47 @@ const BINARY1_PASS2_SOURCE_WARMUP_FRAMES = 0
 const DEFAULT_LUMA1_MIDS = [103, 182]
 setLuma1SenderMidLevels(DEFAULT_LUMA1_MIDS[0], DEFAULT_LUMA1_MIDS[1])
 
-function debugLog(text) {
-  if (!DEBUG_MODE) return
+// Mirror debug lines to the browser console only when explicitly flipped on;
+// the panel (and Copy Log) is the supported way to read them.
+const DEBUG_CONSOLE = false
+const SENDER_DEBUG_RENDER_INTERVAL_MS = 120
+const senderDebugLogBuffer = createReceiverDebugLogBuffer({ maxLines: 500, visibleLines: 120 })
+let senderDebugRenderTimer = null
+// The diagnostics panel ships hidden; while hidden we keep appending to the
+// buffer (so history is there when it opens) but skip all DOM writes.
+let senderDiagPanelVisible = false
 
+function renderSenderDebugLog() {
   const el = typeof document !== 'undefined'
     ? document.getElementById('hdmi-uvc-sender-debug-log')
     : null
-  if (el) {
-    const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })
-    el.textContent += timestamp + ' ' + text + '\n'
-    // Keep only last 500 lines
-    const lines = el.textContent.split('\n')
-    if (lines.length > 500) {
-      el.textContent = lines.slice(-500).join('\n')
-    }
-    el.scrollTop = el.scrollHeight
+  if (!el) return
+  el.textContent = senderDebugLogBuffer.getRenderText()
+  el.scrollTop = el.scrollHeight
+}
+
+function scheduleSenderDebugLogRender() {
+  if (!senderDiagPanelVisible) return
+  if (senderDebugRenderTimer !== null) return
+  senderDebugRenderTimer = setTimeout(() => {
+    senderDebugRenderTimer = null
+    renderSenderDebugLog()
+  }, SENDER_DEBUG_RENDER_INTERVAL_MS)
+}
+
+function debugLog(text) {
+  if (!DEBUG_MODE) return
+
+  const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })
+  senderDebugLogBuffer.append(timestamp + ' ' + text)
+  scheduleSenderDebugLogRender()
+  if (DEBUG_CONSOLE) {
+    console.log('[HDMI-TX]', text)
   }
-  console.log('[HDMI-TX]', text)
 }
 
 function debugCurrent(text) {
-  if (!DEBUG_MODE) return
+  if (!DEBUG_MODE || !senderDiagPanelVisible) return
   const el = document.getElementById('hdmi-uvc-sender-debug-current')
   if (el) el.textContent = text
 }
@@ -699,8 +725,8 @@ function showArmedStartPrompt() {
   elements.placeholder.style.textAlign = 'center'
   elements.placeholder.style.padding = '1.5rem'
   elements.placeholderIcon.textContent = '>'
-  elements.placeholderText.textContent = 'Display ready. Wait for the browser fullscreen tip to disappear, then press Space or Enter to start.'
-  debugCurrent('ARMED - press Space or Enter to start')
+  elements.placeholderText.textContent = 'Display ready. Wait for the browser fullscreen tip to disappear, then press Space/Enter or click anywhere on this area to start. (Esc cancels.)'
+  debugCurrent('ARMED - press Space/Enter or click to start')
 }
 
 function waitForLayoutFrames(count = 2, targetWindow = window) {
@@ -1290,7 +1316,7 @@ function updateActionButton() {
     btn.textContent = 'Start'
     btn.disabled = true
   } else if (state.isAwaitingStart) {
-    btn.textContent = 'Press Space'
+    btn.textContent = 'Press Space or click'
     btn.disabled = true
   } else if (state.isSending && !state.isPaused) {
     btn.textContent = 'Pause'
@@ -2438,7 +2464,7 @@ function armPreparedStart(autoStartDelayMs = 0) {
     }, autoStartDelayMs)
     debugLog(`Sender armed: auto-start in ${autoStartDelayMs}ms`)
   } else {
-    debugLog('Sender armed: wait for the fullscreen tip to clear, then press Space or Enter to begin transmission')
+    debugLog('Sender armed: wait for the fullscreen tip to clear, then press Space/Enter or click the pattern area to begin transmission')
   }
 }
 
@@ -2762,6 +2788,12 @@ function handleFileSelect(e) {
 }
 
 function handleDropZoneClick() {
+  // While armed, a click/tap on the (fullscreen) pattern area starts the
+  // transfer — an alternative to Space/Enter for touch and mouse users.
+  if (state.isAwaitingStart) {
+    beginPreparedStart()
+    return
+  }
   if (!state.fileData) {
     elements.fileInput.click()
   }
@@ -2925,20 +2957,39 @@ export function initHdmiUvcSender(errorHandler) {
   document.addEventListener('fullscreenchange', handleFullscreenChange)
 
 
-  // Debug panel copy button
+  // Diagnostics panel: hidden by default, toggle persisted across sessions.
+  initDiagnosticsPanelToggle({
+    button: document.getElementById('btn-hdmi-uvc-sender-diag-toggle'),
+    panel: document.getElementById('hdmi-uvc-sender-debug'),
+    storageKey: 'hdmi-uvc-diag-visible-sender',
+    onChange: (visible) => {
+      senderDiagPanelVisible = visible
+      if (visible) renderSenderDebugLog()
+    }
+  })
+
+  // Debug panel copy button. Copy the full buffered history, not just the
+  // rendered tail.
   const copyBtn = document.getElementById('btn-hdmi-uvc-sender-copy-log')
   if (copyBtn) {
     copyBtn.onclick = async () => {
-      const log = document.getElementById('hdmi-uvc-sender-debug-log')
-      if (log) {
-        try {
-          await navigator.clipboard.writeText(log.textContent)
-          copyBtn.textContent = 'Copied!'
-          setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
-        } catch (e) {
-          console.error('Copy failed:', e)
-        }
+      const text = senderDebugLogBuffer.getCopyText()
+      if (!text) return
+      try {
+        await navigator.clipboard.writeText(text)
+        copyBtn.textContent = 'Copied!'
+        setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
+      } catch (e) {
+        console.error('Copy failed:', e)
       }
+    }
+  }
+  const clearBtn = document.getElementById('btn-hdmi-uvc-sender-clear-log')
+  if (clearBtn) {
+    clearBtn.onclick = () => {
+      senderDebugLogBuffer.clear()
+      renderSenderDebugLog()
+      debugLog('=== LOG CLEARED ===')
     }
   }
   debugLog('HDMI-UVC Sender initialized')

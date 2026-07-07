@@ -7,12 +7,12 @@
 // the current URL reproduces the config. Sender experiment settings allow only
 // the live baseline, so stale URL/localStorage values are ignored.
 //
-//   captureMethod   'auto'|'main'|'worker'|'offscreen'   reload  (?capture=)
-//   wasmClassifier  'on'|'off'                           live    (?wasm-classifier=)
-//   perf            'on'|'off'                           reload  (?perf=)
-//   worker          'off'|'hash'|'anchors'|'full'        reload  (?worker=)
-// Sender experiment settings are intentionally locked to the current live
-// baseline. Older tests can still exercise explicit helper arguments.
+// Both sender and receiver settings are intentionally locked to the current
+// live baseline (single allowed value): the defaults ARE the fastest measured
+// configuration, and runtime fallbacks handle rigs where a path fails. Tests
+// exercise variants through explicit helper arguments. To reopen a setting
+// for experiments, widen its `allowed` list — the diagnostics panel renders
+// a dropdown for any key with more than one allowed value.
 //
 // "Live" settings are re-read by the consumer per call; "reload" settings
 // are captured at module init time.
@@ -20,52 +20,43 @@
 const STORAGE_PREFIX = 'hdmi-uvc-diag-'
 
 const DEFINITIONS = {
+  // Receiver runtime settings are locked to the live baseline (the fastest
+  // measured configuration), mirroring the sender lock below. Adaptation to
+  // a misbehaving rig is automatic — wasm capture fail-latches to canvas,
+  // the read pool self-disables, worker capture falls back to main-thread —
+  // so there is nothing for a user to tune. Locked entries also ignore (and
+  // clean up) stale URL/localStorage values from old experiments.
   captureMethod: {
     urlKey: 'capture',
     default: 'auto',
-    allowed: ['auto', 'main', 'worker', 'offscreen'],
+    allowed: ['auto'],
     reloadRequired: true,
-    labels: { auto: 'Auto', main: 'Main', worker: 'Worker', offscreen: 'Offscreen' },
+    labels: { auto: 'Auto' },
     title: 'Capture'
   },
   wasmClassifier: {
     urlKey: 'wasm-classifier',
     default: 'on',
-    allowed: ['on', 'off'],
+    allowed: ['on'],
     reloadRequired: false,
-    labels: { on: 'On', off: 'Off' },
+    labels: { on: 'On' },
     title: 'WASM Cls'
   },
   perf: {
     urlKey: 'perf',
     default: 'off',
-    allowed: ['on', 'off'],
+    allowed: ['off'],
     reloadRequired: true,
-    labels: { on: 'On', off: 'Off' },
-    title: 'Perf',
-    parseUrl: (raw, hasKey) => {
-      if (!hasKey) return null
-      if (raw === '' || raw === null || raw === '1' || raw === 'on' || raw === 'true') return 'on'
-      if (raw === '0' || raw === 'off' || raw === 'false') return 'off'
-      return 'on'
-    }
+    labels: { off: 'Off' },
+    title: 'Perf'
   },
   worker: {
     urlKey: 'worker',
     default: 'off',
-    allowed: ['off', 'hash', 'anchors', 'full'],
+    allowed: ['off'],
     reloadRequired: true,
-    labels: { off: 'Off', hash: 'Hash', anchors: 'Anchors', full: 'Full' },
-    title: 'Worker',
-    parseUrl: (raw, hasKey) => {
-      if (!hasKey) return null
-      const r = (raw || '').toLowerCase()
-      if (r === '' || r === '1' || r === 'hash' || r === 'true') return 'hash'
-      if (r === 'anchors') return 'anchors'
-      if (r === 'full') return 'full'
-      if (r === 'off' || r === '0' || r === 'false') return 'off'
-      return 'hash'
-    }
+    labels: { off: 'Off' },
+    title: 'Worker'
   },
   pass2: {
     urlKey: 'pass2',
@@ -130,6 +121,35 @@ const DEFINITIONS = {
     reloadRequired: false,
     labels: { timer: 'timer' },
     title: 'TX Pace'
+  },
+  // Receiver read-worker pool, locked to the record configuration: pool on,
+  // 3 workers (the measured knee: w2=10.5, w3=16.9, w4=17.2 MB/s), wasm
+  // capture on. Failures self-heal (pool disables after repeated worker
+  // errors, wasm capture latches back to canvas), so the old URL kill
+  // switches (?read-pool=0, ?read-workers=N, ?wasm-capture=0) are ignored.
+  readPool: {
+    urlKey: 'read-pool',
+    default: 'on',
+    allowed: ['on'],
+    reloadRequired: true,
+    labels: { on: 'On' },
+    title: 'Read Pool'
+  },
+  readWorkers: {
+    urlKey: 'read-workers',
+    default: '3',
+    allowed: ['3'],
+    reloadRequired: true,
+    labels: { 3: '3 (measured knee)' },
+    title: 'Read Workers'
+  },
+  wasmCapture: {
+    urlKey: 'wasm-capture',
+    default: 'on',
+    allowed: ['on'],
+    reloadRequired: true,
+    labels: { on: 'On' },
+    title: 'WASM Capture'
   }
 }
 
@@ -221,6 +241,13 @@ export function listDiagnosticKeys() {
   return Object.keys(DEFINITIONS)
 }
 
+// Keys currently set away from their module default — the UI shows a badge
+// when any are active so a config inherited from a shared URL (or a
+// forgotten localStorage experiment) is never silently in effect.
+export function listModifiedDiagnostics() {
+  return Object.keys(DEFINITIONS).filter(key => state[key] !== DEFINITIONS[key].default)
+}
+
 // Convenience accessors used by hot-path modules. Keep them one-liners so
 // the call sites stay terse.
 export function getCaptureMethod() { return getDiagnostic('captureMethod') }
@@ -236,3 +263,11 @@ export function getDenseBinaryPass2SweepMix() { return getDiagnostic('denseBinar
 // (receiver), locked to the shared classic baseline.
 export function getDenseBinaryDegree() { return getDiagnostic('denseBinaryDegree') }
 export function getTxPace() { return getDiagnostic('txPace') }
+// Read-pool settings are reload-required: the receiver sizes its worker pool
+// once at module init.
+export function getReadPoolEnabledAtInit() { return getDiagnosticAtInit('readPool') !== 'off' }
+export function getReadPoolWorkersAtInit() {
+  const n = Number.parseInt(getDiagnosticAtInit('readWorkers'), 10)
+  return Number.isFinite(n) ? Math.max(1, Math.min(4, n)) : 3
+}
+export function getWasmCaptureEnabledAtInit() { return getDiagnosticAtInit('wasmCapture') !== 'off' }

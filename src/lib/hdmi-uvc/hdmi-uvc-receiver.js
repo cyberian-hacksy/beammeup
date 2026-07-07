@@ -51,8 +51,12 @@ import { loadHdmiUvcWasm, acquireWasmFrameView, isHdmiUvcWasmLoaded } from './hd
 import {
   isPerfMode,
   getWorkerMode,
-  getCaptureMethod as getCaptureMethodSetting
+  getCaptureMethod as getCaptureMethodSetting,
+  getReadPoolEnabledAtInit,
+  getReadPoolWorkersAtInit,
+  getWasmCaptureEnabledAtInit
 } from './hdmi-uvc-diagnostics.js'
+import { renderDiagnosticSettings } from './hdmi-uvc-diagnostics-ui.js'
 import {
   clearDenseBinaryLockState,
   lockDenseBinaryLayoutFromDecodeResult,
@@ -63,7 +67,8 @@ import {
   probeFramePackets
 } from './hdmi-uvc-packet-probe.js'
 import {
-  createReceiverDebugLogBuffer
+  createReceiverDebugLogBuffer,
+  initDiagnosticsPanelToggle
 } from './hdmi-uvc-debug-log.js'
 
 // Kick off WASM instantiation on the main thread so the ?capture=main fallback
@@ -71,7 +76,9 @@ import {
 // from the first decoded frame. Swallowed errors fall back to JS crc32.
 loadHdmiUvcWasm().catch(() => {})
 
-// Debug mode - always on while diagnosing HDMI-UVC issues
+// Master switch for debug-log collection. Lines always accumulate in the
+// ring buffer (cheap); all DOM output is gated separately by the
+// user-facing Diagnostics toggle.
 const DEBUG_MODE = true
 const MAX_DEBUG_LINES = 500
 // These come from the diagnostics module (which reads URL -> localStorage ->
@@ -117,8 +124,12 @@ const debugLogBuffer = createReceiverDebugLogBuffer({
   visibleLines: VISIBLE_DEBUG_LINES
 })
 let debugRenderTimer = null
+// The diagnostics panel ships hidden; while hidden we keep appending to the
+// buffer (so history is there when it opens) but skip all DOM writes.
+let receiverDiagPanelVisible = false
 
 function renderDebugLog() {
+  if (!receiverDiagPanelVisible) return
   const el = document.getElementById('hdmi-uvc-receiver-debug-log')
   if (!el) return
   el.textContent = debugLogBuffer.getRenderText()
@@ -126,6 +137,7 @@ function renderDebugLog() {
 }
 
 function scheduleDebugLogRender() {
+  if (!receiverDiagPanelVisible) return
   if (debugRenderTimer !== null) return
   debugRenderTimer = setTimeout(() => {
     debugRenderTimer = null
@@ -159,12 +171,12 @@ function debugLog(text) {
 }
 
 function debugCurrent(text) {
-  if (!DEBUG_MODE) return
+  if (!DEBUG_MODE || !receiverDiagPanelVisible) return
   const el = document.getElementById('hdmi-uvc-receiver-debug-current')
   if (el) el.textContent = text
 }
 
-function updateArqReceiverStatus(text, connected = state.arqConnected, buttonText = null, disabled = false) {
+function updateArqReceiverStatus(text, connected = state.arqConnected, buttonText = null, disabled = false, hint = null) {
   if (elements?.helperStatus) {
     elements.helperStatus.textContent = text
     elements.helperStatus.style.color = connected ? '#00d4ff' : '#88a'
@@ -173,11 +185,20 @@ function updateArqReceiverStatus(text, connected = state.arqConnected, buttonTex
     elements.btnHelperConnect.textContent = buttonText || (connected ? 'Reconnect helper' : 'Connect helper')
     elements.btnHelperConnect.disabled = !!disabled
   }
+  const hintEl = document.getElementById('hdmi-uvc-helper-hint')
+  if (hintEl) {
+    if (hint) {
+      hintEl.textContent = hint
+      hintEl.classList.remove('hidden')
+    } else {
+      hintEl.classList.add('hidden')
+    }
+  }
 }
 
 function applyArqReceiverHelperStatus(status) {
   const view = getArqHelperStatusView(status)
-  updateArqReceiverStatus(view.text, view.connected, view.buttonText, view.disabled)
+  updateArqReceiverStatus(view.text, view.connected, view.buttonText, view.disabled, view.hint)
 }
 
 async function connectArqHelper(options = {}) {
@@ -2700,6 +2721,7 @@ const state = {
   detectedMode: null,
   detectedResolution: null,
   completedFile: null,
+  fileDownloaded: false,
   completionStarted: false,  // Synchronous guard — set before await in handleComplete()
   anchorBounds: null,  // Cached data region from detected anchors
   lockedCaptureRegion: null,
@@ -2960,9 +2982,9 @@ function rememberCapturedFrame(imageData) {
 // locked-ROI path, where the rect is pixel-exact (computeLockedCaptureRect
 // never scales) — exactly the geometry copyTo can reproduce. Any failure
 // falls back to the canvas paths for that frame and latches the wasm path
-// off after repeated failures. Kill switch: ?wasm-capture=0.
-const WASM_CAPTURE_URL_DISABLED = typeof location !== 'undefined' &&
-  /[?&]wasm-capture=0/.test(location.search)
+// off after repeated failures — that latch is the only kill switch; the
+// diagnostics registry locks the setting to the live baseline.
+const WASM_CAPTURE_URL_DISABLED = !getWasmCaptureEnabledAtInit()
 const WASM_CAPTURE_FAIL_LATCH = 2
 let wasmCaptureFailCount = 0
 
@@ -3020,19 +3042,14 @@ function noteWasmCaptureFailure(err) {
 // until ingest and fountain symbols are order-independent, so out-of-order
 // results are fine. The pool only handles the happy path: any read failure
 // yields frames back to the synchronous path so the existing miss/recovery/
-// invalidation logic runs unchanged. LUMA_1 only; ?read-pool=0 disables;
-// ?read-workers=N sizes it (default 3, max 4). Three is the measured knee on
-// the reference rig (UGREEN 1080p60): w2=10.5, w3=16.9, w4=17.2 MB/s — the
-// 4th worker plateaus because capture already sustains 60fps and the
-// systematic phase sits at ~84% of the wire rate.
-const READ_POOL_DEFAULT_SIZE = 3
-const READ_POOL_URL_DISABLED = typeof location !== 'undefined' &&
-  /[?&]read-pool=0/.test(location.search)
-const READ_POOL_SIZE = (() => {
-  if (typeof location === 'undefined') return READ_POOL_DEFAULT_SIZE
-  const m = location.search.match(/[?&]read-workers=(\d)/)
-  return m ? Math.max(1, Math.min(4, Number.parseInt(m[1], 10) || READ_POOL_DEFAULT_SIZE)) : READ_POOL_DEFAULT_SIZE
-})()
+// invalidation logic runs unchanged. LUMA_1 only; pool size comes from the
+// diagnostics registry, locked to 3 workers — the measured knee on the
+// reference rig (UGREEN 1080p60): w2=10.5, w3=16.9, w4=17.2 MB/s — the 4th
+// worker plateaus because capture already sustains 60fps and the systematic
+// phase sits at ~84% of the wire rate. The pool self-disables after repeated
+// worker failures, so there is no manual kill switch.
+const READ_POOL_URL_DISABLED = !getReadPoolEnabledAtInit()
+const READ_POOL_SIZE = getReadPoolWorkersAtInit()
 const READ_POOL_DISABLE_AFTER_FAILS = 10
 
 let readPool = null
@@ -4413,8 +4430,8 @@ async function processFrame(now, metadata) {
     state.decodeFailCount = 0
   }
 
-  // Update debug canvas
-  if (isDiagFrame) {
+  // Update debug canvas (skip the copy entirely while the panel is hidden)
+  if (isDiagFrame && receiverDiagPanelVisible) {
     const debugCanvas = document.getElementById('hdmi-uvc-receiver-debug-canvas')
     if (debugCanvas) {
       debugCanvas.width = Math.min(width, 640)
@@ -4505,6 +4522,7 @@ async function handleComplete() {
     name: meta.filename,
     type: meta.mimeType || 'application/octet-stream'
   }
+  state.fileDownloaded = false
   sendArqCompleteIfReady()
 
   elements.completeName.textContent = meta.filename + ' (' + formatBytes(fileData.byteLength) + ')'
@@ -4526,6 +4544,13 @@ function downloadFile() {
   a.click()
 
   URL.revokeObjectURL(url)
+  state.fileDownloaded = true
+}
+
+// True while a fully received file is still only in memory. Navigation away
+// resets the module and would silently discard it.
+export function hasPendingDownload() {
+  return !!state.completedFile && !state.fileDownloaded
 }
 
 function cancelNextFrame() {
@@ -4694,6 +4719,22 @@ export function initHdmiUvcReceiver(errorHandler) {
   elements.btnAnother.onclick = handleReceiveAnother
   if (elements.btnHelperConnect) elements.btnHelperConnect.onclick = () => connectArqHelper()
   applyArqReceiverHelperStatus(state.arqConnected ? ARQ_HELPER_STATUS.CONNECTED : ARQ_HELPER_STATUS.OFFLINE)
+
+  // Diagnostics panel: hidden by default, toggle persisted across sessions.
+  initDiagnosticsPanelToggle({
+    button: document.getElementById('btn-hdmi-uvc-receiver-diag-toggle'),
+    panel: document.getElementById('hdmi-uvc-receiver-debug'),
+    storageKey: 'hdmi-uvc-diag-visible-receiver',
+    onChange: (visible) => {
+      receiverDiagPanelVisible = visible
+      if (visible) flushDebugLogRender()
+    }
+  })
+  // Settings that used to be URL-only flags, plus a badge that stays visible
+  // even with the panel closed so non-default config is never silent.
+  renderDiagnosticSettings(document.getElementById('hdmi-uvc-diag-settings'), {
+    modifiedBadge: document.getElementById('hdmi-uvc-receiver-diag-modified')
+  })
 
   // Debug panel buttons
   const copyBtn = document.getElementById('btn-hdmi-uvc-receiver-copy-log')

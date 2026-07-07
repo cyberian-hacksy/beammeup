@@ -107,8 +107,37 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await policy.allow(ORIGIN))
         self.assertFalse(self.config_path.exists())
 
-        # A denied origin asks again on the next attempt.
+        # An explicitly denied origin stays denied for this run without
+        # re-prompting (browsers auto-reconnect; one keypress must be enough).
         self.assertFalse(await policy.allow(ORIGIN))
+        self.assertEqual(calls, [ORIGIN])
+
+        # The denial is session-only: a fresh policy (helper restart) asks again.
+        fresh_calls = []
+
+        async def fresh_prompt(origin):
+            fresh_calls.append(origin)
+            return False
+
+        fresh = self.make_policy(fresh_prompt)
+        self.assertFalse(await fresh.allow(ORIGIN))
+        self.assertEqual(fresh_calls, [ORIGIN])
+
+    async def test_prompt_timeout_does_not_latch_denial(self):
+        calls = []
+
+        async def prompt(origin):
+            calls.append(origin)
+            if len(calls) == 1:
+                await asyncio.sleep(5)  # simulate an unanswered prompt
+                return True
+            return True
+
+        policy = self.make_policy(prompt, timeout_s=0.05)
+        self.assertFalse(await policy.allow(ORIGIN))
+
+        # The user merely missed the prompt; the next attempt asks again.
+        self.assertTrue(await policy.allow(ORIGIN))
         self.assertEqual(calls, [ORIGIN, ORIGIN])
 
     async def test_concurrent_same_origin_prompts_once(self):

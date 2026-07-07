@@ -11,6 +11,8 @@ const state = {
   fileId: null,
   fileName: null,
   fileSize: 0,
+  fileComplete: false,
+  fileDownloaded: false,
   startTime: 0,
   cameras: [],
   currentCameraIndex: 0,
@@ -376,6 +378,8 @@ function handleFileComplete(fileId) {
 
   state.isScanning = false
   state.fileId = fileId
+  state.fileComplete = true
+  state.fileDownloaded = false
   state.fileSize = Module._cimbard_get_filesize(fileId)
 
   // Get filename
@@ -425,6 +429,13 @@ function downloadFile() {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+  state.fileDownloaded = true
+}
+
+// True while a fully received file is still only in decoder memory.
+// Navigation away resets the module and would silently discard it.
+export function hasPendingDownload() {
+  return state.fileComplete && !state.fileDownloaded && state.fileId !== null
 }
 
 function startScanning() {
@@ -434,6 +445,8 @@ function startScanning() {
   state.recentExtract = -1
   state.startTime = 0
   state.fileId = null
+  state.fileComplete = false
+  state.fileDownloaded = false
   state.currentMode = 0 // Reset to auto-detect
 
   elements.statFrames.textContent = '0 frames'
@@ -454,6 +467,8 @@ function resetReceiver() {
   state.fileId = null
   state.fileName = null
   state.fileSize = 0
+  state.fileComplete = false
+  state.fileDownloaded = false
   state.startTime = 0
   state.currentMode = 0
 

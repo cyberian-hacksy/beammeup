@@ -1,8 +1,8 @@
 // ColorQRDecoder - Main orchestrator for color QR decoding
 // Applies libcimbar techniques: relative colors, color correction, drift tracking, priority decoding
 
-// Debug mode - enabled via ?test URL parameter
-const DEBUG_MODE = typeof location !== 'undefined' && location.search.includes('test')
+// Debug mode - enabled via ?test URL parameter (exact param, not substring)
+const DEBUG_MODE = typeof location !== 'undefined' && new URLSearchParams(location.search).has('test')
 
 import { ModuleGrid } from './color/module-grid.js'
 import { ColorCorrector } from './color/color-corrector.js'

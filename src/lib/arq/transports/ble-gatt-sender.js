@@ -60,7 +60,7 @@ export class BleGattSenderTransport {
     this.onStatus = session.onStatus || null
     this.onDisconnect = session.onDisconnect || null
     if (!navigator.bluetooth) {
-      throw new Error('Web Bluetooth is not available in this browser')
+      throw new Error('Web Bluetooth is not available in this browser — use Chrome or Edge')
     }
 
     this.onStatus?.('select-device')

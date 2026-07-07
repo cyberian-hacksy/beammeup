@@ -21,7 +21,13 @@ export function getArqHelperStatusView(status) {
     case ARQ_HELPER_STATUS.SEND_FAILED:
       return { text: 'Helper send failed', buttonText: 'Reconnect helper', connected: false, disabled: false }
     case ARQ_HELPER_STATUS.UNAVAILABLE:
-      return { text: 'Start BeamMeUp Helper', buttonText: 'Retry helper', connected: false, disabled: false }
+      return {
+        text: 'Start BeamMeUp Helper',
+        buttonText: 'Retry helper',
+        connected: false,
+        disabled: false,
+        hint: 'Run "python helper/server.py" on this machine. First connection asks for approval in the helper\'s terminal (y/N).'
+      }
     case ARQ_HELPER_STATUS.OFFLINE:
     default:
       return { text: 'Helper offline', buttonText: 'Connect helper', connected: false, disabled: false }
@@ -38,9 +44,12 @@ export function testArqHelperStatusView() {
   const pass = unavailable.text === 'Start BeamMeUp Helper' &&
     unavailable.buttonText === 'Retry helper' &&
     unavailable.connected === false &&
+    typeof unavailable.hint === 'string' &&
+    unavailable.hint.includes('helper/server.py') &&
     connected.text === 'Helper connected' &&
     connected.buttonText === 'Reconnect helper' &&
-    connected.connected === true
+    connected.connected === true &&
+    connected.hint === undefined
   console.log('arq helper status view:', pass ? 'PASS' : 'FAIL')
   return pass
 }

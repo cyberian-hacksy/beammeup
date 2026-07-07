@@ -45,6 +45,11 @@ class OriginPolicy:
         self.prompt = prompt
         self.timeout_s = timeout_s
         self.approved = self._load()
+        # Explicit "no" answers, remembered for this helper run only (never
+        # persisted): a browser that keeps reconnecting must not re-prompt on
+        # every attempt. Timeouts do not latch — the user may simply have
+        # missed the prompt.
+        self.denied = set()
         self._pending = {}
         self._prompt_lock = asyncio.Lock()
 
@@ -64,6 +69,8 @@ class OriginPolicy:
     async def allow(self, origin):
         if statically_allowed(origin) or origin in self.approved:
             return True
+        if origin in self.denied:
+            return False
         task = self._pending.get(origin)
         if task is None:
             task = asyncio.get_running_loop().create_task(self._decide(origin))
@@ -84,4 +91,7 @@ class OriginPolicy:
                 self.approved.add(origin)
                 self._save()
                 print(f"approved origin {origin} (saved to {self.config_path})")
+            else:
+                self.denied.add(origin)
+                print(f"denied origin {origin} for this session (restart the helper to be asked again)")
             return bool(approved)

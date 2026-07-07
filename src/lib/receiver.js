@@ -5,8 +5,8 @@ import { QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from '
 import { calibrateFromFinders, normalizeRgb } from './calibration.js'
 import { ColorQRDecoder } from './color-decoder.js'
 
-// Debug mode - enabled via ?test URL parameter
-const DEBUG_MODE = typeof location !== 'undefined' && location.search.includes('test')
+// Debug mode - enabled via ?test URL parameter (exact param, not substring)
+const DEBUG_MODE = typeof location !== 'undefined' && new URLSearchParams(location.search).has('test')
 
 // Receiver state
 const state = {
@@ -18,6 +18,7 @@ const state = {
   isScanning: false,
   symbolTimes: [],
   reconstructedBlob: null,
+  fileDownloaded: false,
   startTime: null,
   cameras: [],
   currentCameraId: null,
@@ -1277,6 +1278,7 @@ async function onReceiveComplete() {
     const metadata = state.decoder.metadata
 
     state.reconstructedBlob = new Blob([data], { type: metadata.mimeType })
+    state.fileDownloaded = false
 
     // Calculate average transfer rate
     const totalSeconds = totalTime / 1000
@@ -1308,8 +1310,15 @@ function downloadFile() {
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
+  state.fileDownloaded = true
 
   setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+// True while a fully received file is still only in memory. Navigation away
+// resets the module and would silently discard it.
+export function hasPendingDownload() {
+  return !!state.reconstructedBlob && !state.fileDownloaded
 }
 
 // Reset receiver state
