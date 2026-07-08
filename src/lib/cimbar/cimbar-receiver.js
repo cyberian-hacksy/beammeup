@@ -1,7 +1,8 @@
 // CIMBAR Receiver module - handles camera capture and decoding
 import { loadCimbarWasm, getModule } from './cimbar-loader.js'
-import { formatBytes } from '../format.js'
+import { formatBytes, formatTime } from '../format.js'
 import { playBeep, announce } from '../feedback.js'
+import { confirmDialog } from '../confirm-dialog.js'
 
 // Receiver state
 const state = {
@@ -17,7 +18,7 @@ const state = {
   fileDownloaded: false,
   startTime: 0,
   cameras: [],
-  currentCameraIndex: 0,
+  currentDeviceId: null,
   wasmLoaded: false,
   // WASM buffers
   imgBuff: null,
@@ -107,9 +108,6 @@ function allocateBuffers(Module, imgSize) {
 
 async function initCamera() {
   try {
-    const devices = await navigator.mediaDevices.enumerateDevices()
-    state.cameras = devices.filter(d => d.kind === 'videoinput')
-
     const constraints = {
       audio: false,
       video: {
@@ -120,13 +118,18 @@ async function initCamera() {
       }
     }
 
-    if (state.cameras.length > 1 && state.currentCameraIndex > 0) {
-      constraints.video.deviceId = { exact: state.cameras[state.currentCameraIndex].deviceId }
+    if (state.currentDeviceId) {
+      constraints.video.deviceId = { exact: state.currentDeviceId }
+      delete constraints.video.facingMode
     }
 
     state.stream = await navigator.mediaDevices.getUserMedia(constraints)
     elements.video.srcObject = state.stream
     await elements.video.play()
+
+    // Device labels only become available once permission is granted, so the
+    // camera controls are (re)built after the stream starts.
+    await refreshCameraControls()
 
     return true
   } catch (err) {
@@ -142,6 +145,35 @@ async function initCamera() {
   }
 }
 
+// Platform-adaptive camera controls (matches the QR receiver): mobile keeps
+// the cycle button, desktop gets a labeled dropdown; both hide with 1 camera.
+async function refreshCameraControls() {
+  const devices = await navigator.mediaDevices.enumerateDevices()
+  state.cameras = devices.filter(d => d.kind === 'videoinput')
+
+  const activeId = state.stream?.getVideoTracks()[0]?.getSettings().deviceId
+  if (activeId) state.currentDeviceId = activeId
+
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+  const hasChoice = state.cameras.length > 1
+
+  elements.cameraSwitchBtn.classList.toggle('hidden', !(hasChoice && isMobile))
+  elements.cameraPicker.classList.toggle('hidden', !(hasChoice && !isMobile))
+
+  if (hasChoice && !isMobile) {
+    while (elements.cameraDropdown.firstChild) {
+      elements.cameraDropdown.removeChild(elements.cameraDropdown.firstChild)
+    }
+    state.cameras.forEach((cam, i) => {
+      const option = document.createElement('option')
+      option.value = cam.deviceId
+      option.textContent = cam.label || ('Camera ' + (i + 1))
+      elements.cameraDropdown.appendChild(option)
+    })
+    if (state.currentDeviceId) elements.cameraDropdown.value = state.currentDeviceId
+  }
+}
+
 function stopCamera() {
   if (state.stream) {
     state.stream.getTracks().forEach(track => track.stop())
@@ -149,11 +181,18 @@ function stopCamera() {
   }
 }
 
-function switchCamera() {
-  if (state.cameras.length < 2) return
-  state.currentCameraIndex = (state.currentCameraIndex + 1) % state.cameras.length
+function switchToDevice(deviceId) {
+  if (!deviceId || deviceId === state.currentDeviceId) return
+  state.currentDeviceId = deviceId
   stopCamera()
   initCamera()
+}
+
+function switchCamera() {
+  if (state.cameras.length < 2) return
+  const idx = state.cameras.findIndex(c => c.deviceId === state.currentDeviceId)
+  const next = state.cameras[(idx + 1) % state.cameras.length]
+  switchToDevice(next.deviceId)
 }
 
 // Check if we can use VideoFrame API (not available on iOS Safari)
@@ -266,6 +305,8 @@ function processFrameFallback() {
       if (Array.isArray(report)) {
         if (!state.startTime) {
           state.startTime = performance.now()
+          // CIMBAR only exposes the filename once the file completes
+          elements.fileName.textContent = 'Receiving…'
           showStatus('receiving')
         }
         updateProgress(report)
@@ -370,6 +411,8 @@ async function processFrame(now, metadata) {
       if (Array.isArray(report)) {
         if (!state.startTime) {
           state.startTime = performance.now()
+          // CIMBAR only exposes the filename once the file completes
+          elements.fileName.textContent = 'Receiving…'
           showStatus('receiving')
         }
         updateProgress(report)
@@ -406,11 +449,11 @@ function handleFileComplete(fileId) {
     state.fileName = 'download'
   }
 
-  elements.completeName.textContent = state.fileName + ' (' + formatBytes(state.fileSize) + ')'
-
-  const elapsed = (performance.now() - state.startTime) / 1000
-  if (elapsed > 0) {
-    elements.completeRate.textContent = formatBytes(state.fileSize / elapsed) + '/s'
+  const elapsedMs = state.startTime ? performance.now() - state.startTime : 0
+  elements.completeName.textContent = state.fileName + ' (' + formatBytes(state.fileSize) + ')' +
+    (elapsedMs > 0 ? ' in ' + formatTime(elapsedMs) : '')
+  if (elapsedMs > 0) {
+    elements.completeRate.textContent = formatBytes(state.fileSize / (elapsedMs / 1000)) + '/s'
   }
 
   showStatus('complete')
@@ -467,6 +510,7 @@ function startScanning() {
   state.currentMode = 0 // Reset to auto-detect
 
   elements.statFrames.textContent = '0 frames'
+  elements.fileName.textContent = '-'
   elements.progressFill.style.width = '0'
   elements.progressFill.parentElement.setAttribute('aria-valuenow', '0')
   setScanningLabel('Scanning…')
@@ -482,11 +526,11 @@ function startScanning() {
   }
 }
 
-function resetReceiver() {
+async function resetReceiver() {
   // Reset and "Receive Another" destroy the in-memory file just like leaving
   // the screen does; ask first.
   if (hasPendingDownload() &&
-      !confirm('The received file has not been downloaded yet. Discard it and scan again?')) {
+      !(await confirmDialog('The received file has not been downloaded yet. Discard it and scan again?'))) {
     return
   }
 
@@ -543,6 +587,8 @@ export function initCimbarReceiver(errorHandler) {
     video: document.getElementById('cimbar-video'),
     crosshairs: document.getElementById('cimbar-crosshairs'),
     cameraSwitchBtn: document.getElementById('btn-cimbar-camera-switch'),
+    cameraPicker: document.getElementById('cimbar-camera-picker'),
+    cameraDropdown: document.getElementById('cimbar-camera-dropdown'),
     statusScanning: document.getElementById('cimbar-status-scanning'),
     scanningLabel: document.getElementById('cimbar-scanning-label'),
     statusReceiving: document.getElementById('cimbar-status-receiving'),
@@ -560,6 +606,7 @@ export function initCimbarReceiver(errorHandler) {
   }
 
   elements.cameraSwitchBtn.onclick = switchCamera
+  elements.cameraDropdown.onchange = (e) => switchToDevice(e.target.value)
   elements.btnReset.onclick = resetReceiver
   elements.btnDownload.onclick = downloadFile
   elements.btnAnother.onclick = resetReceiver

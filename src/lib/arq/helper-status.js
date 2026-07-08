@@ -54,7 +54,7 @@ export function getArqHelperStatusView(status, transportName = 'ble-gatt') {
 // the browser device chooser; the keyboard transport just arms a keydown
 // listener (no chooser, connects instantly).
 export function getArqSenderConnectPrompt(transportName) {
-  return transportName === 'keyboard' ? 'Arming keyboard listener…' : 'Select BeamMeUp-ARQ...'
+  return transportName === 'keyboard' ? 'Arming keyboard listener…' : 'Select BeamMeUp-ARQ…'
 }
 
 export function shouldAutoConnectArqHelper({ connected = false, connecting = false, attempted = false } = {}) {
@@ -79,7 +79,7 @@ export function testArqHelperStatusViewIsTransportAware() {
     defaultConnected.text === 'Helper connected' &&
     getArqHelperStatusView(ARQ_HELPER_STATUS.CONNECTED, 'ble-gatt').text === 'Helper connected' &&
     getArqSenderConnectPrompt('keyboard') === 'Arming keyboard listener…' &&
-    getArqSenderConnectPrompt('ble-gatt') === 'Select BeamMeUp-ARQ...'
+    getArqSenderConnectPrompt('ble-gatt') === 'Select BeamMeUp-ARQ…'
   console.log('arq helper status transport-aware:', pass ? 'PASS' : 'FAIL')
   return pass
 }

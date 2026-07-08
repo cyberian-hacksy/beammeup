@@ -18,28 +18,23 @@ import { initHdmiUvcReceiver, resetHdmiUvcReceiver, autoStartHdmiUvcReceiver, ha
 // normal startup does not assign 200+ window.test* globals.
 import { registerAllTests, runAllTests } from './test-suite.js'
 
+import { confirmDialog } from './lib/confirm-dialog.js'
+
 // Make libraries available globally
 window.jsQR = jsQR
 window['qrcode'] = qrcode
 
 // ============ ERROR HANDLING ============
-let errorHideTimer = null
-
+// Errors stay up until dismissed: auto-hiding a role="alert" the user
+// glanced away from means they never see it. A newer error replaces the text.
 function showError(message) {
   const banner = document.getElementById('error-banner')
   const messageEl = document.getElementById('error-message')
   messageEl.textContent = message
   banner.classList.remove('hidden')
-  // A leftover timer from an earlier error would hide this one early.
-  if (errorHideTimer !== null) clearTimeout(errorHideTimer)
-  errorHideTimer = setTimeout(hideError, 10000)
 }
 
 function hideError() {
-  if (errorHideTimer !== null) {
-    clearTimeout(errorHideTimer)
-    errorHideTimer = null
-  }
   document.getElementById('error-banner').classList.add('hidden')
 }
 
@@ -74,9 +69,22 @@ let activeScreen = 'modeSelect'
 let suppressHashHandler = false
 
 function showScreen(screenId) {
+  // Errors are screen-scoped (camera blocked, file too large); leaving the
+  // screen dismisses a stale banner instead of carrying it along.
+  hideError()
+
   Object.values(screens).forEach(s => s.classList.remove('active'))
-  screens[screenId].classList.add('active')
+  const screen = screens[screenId]
+  screen.classList.add('active')
   activeScreen = screenId
+
+  // Move focus onto the new screen's heading; without this, keyboard and
+  // screen-reader focus stays on the now display:none button that navigated.
+  const heading = screen.querySelector('h1')
+  if (heading) {
+    heading.setAttribute('tabindex', '-1')
+    heading.focus()
+  }
 }
 
 function hasPendingDownload() {
@@ -110,7 +118,7 @@ async function handleHashChange() {
     // A completed transfer that was never downloaded lives only in memory;
     // resetting the modules below would silently discard it.
     if (hasPendingDownload() &&
-        !confirm('The received file has not been downloaded yet. Leave and discard it?')) {
+        !(await confirmDialog('The received file has not been downloaded yet. Leave and discard it?'))) {
       suppressHashHandler = true
       location.hash = SCREEN_TO_HASH[activeScreen]
       return

@@ -41,7 +41,14 @@ button, select, input[type="range"], input[type="checkbox"], .drop-zone {
   text-align: center;
   gap: 2rem;
 }
-#mode-select h1 { font-size: 3rem; letter-spacing: 0.3em; color: #00d4ff; }
+#mode-select h1 {
+  font-size: clamp(1.75rem, 8vw, 3rem);
+  letter-spacing: 0.3em;
+  /* letter-spacing adds a trailing space after the last glyph; indent the
+     first glyph by the same amount so the centered title looks centered */
+  text-indent: 0.3em;
+  color: #00d4ff;
+}
 #mode-select p { color: #888; }
 .app-logo { width: 96px; height: 96px; margin-bottom: -0.5rem; }
 .mode-buttons { display: flex; gap: 1.5rem; }
@@ -57,15 +64,6 @@ button, select, input[type="range"], input[type="checkbox"], .drop-zone {
   width: 180px;
 }
 .mode-buttons button:hover { background: #00d4ff; color: #1a1a2e; }
-.tagline { font-size: 0.9rem; margin-top: 1rem; }
-.experiments-link {
-  margin-top: 2rem;
-  color: #999;
-  font-size: 0.8rem;
-  text-decoration: none;
-  transition: color 0.2s;
-}
-.experiments-link:hover { color: #00d4ff; }
 
 /* Transfer Sections (side-by-side) */
 .transfer-sections {
@@ -119,7 +117,7 @@ header {
   background: #16213e;
   border-bottom: 1px solid #333;
 }
-header span { flex: 1; text-align: center; font-weight: bold; }
+header h1 { flex: 1; text-align: center; font-weight: bold; font-size: 1rem; }
 .back-btn {
   background: none;
   border: none;
@@ -150,7 +148,9 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   padding: 1rem;
   background: #fff;
   border-radius: 8px;
+  /* Cap by viewport so the controls bar stays above the fold on short screens */
   min-height: 540px;
+  min-height: min(540px, 60dvh);
   flex: 1;
 }
 .qr-container canvas, .qr-container img { max-width: 520px; max-height: 520px; }
@@ -194,6 +194,7 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   background: #000;
   border-radius: 8px;
   min-height: 540px;
+  min-height: min(540px, 60dvh);
   flex: 1;
 }
 .cimbar-container canvas {
@@ -324,11 +325,7 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
 }
 .mode-override .mode-selector.secondary {
   flex: 1;
-  opacity: 0.6;
   border-color: #333;
-}
-.mode-override .mode-selector.secondary:hover {
-  opacity: 1;
 }
 .mode-override .mode-selector.secondary .mode-btn {
   background: #1a1a2e;
@@ -359,17 +356,6 @@ main { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
   color: #888;
   font-size: 0.85rem;
   min-width: 35px;
-}
-.slider-group .inline-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-width: 0;
-  color: #e6f7ff;
-}
-.slider-group .inline-toggle input {
-  width: 1rem;
-  height: 1rem;
 }
 .slider-group input[type="range"] {
   width: 90px;
@@ -548,7 +534,7 @@ button.secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 .reset-btn:hover {
   background: #555;
 }
-.status-scanning #stat-symbols {
+.status-scanning .stat-count {
   color: #00d4ff;
   flex: 1;
   text-align: right;
@@ -590,9 +576,11 @@ button.secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .hidden { display: none !important; }
 
-/* Debug / diagnostics panels (QR receiver + HDMI-UVC sender/receiver) */
+/* Debug / diagnostics panels (QR receiver + HDMI-UVC sender/receiver).
+   Type and spacing in rem so user font-size preferences scale them;
+   0.75rem (12px) is the floor for legibility. */
 .debug-panel {
-  margin-top: 8px;
+  margin-top: 0.5rem;
   border: 2px solid #00d4ff;
   border-radius: 4px;
 }
@@ -604,16 +592,16 @@ button.secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .debug-current {
   flex: 1;
-  font-size: 14px;
+  font-size: 0.875rem;
   color: #00d4ff;
-  padding: 6px 8px;
+  padding: 0.375rem 0.5rem;
   font-family: monospace;
   text-align: center;
 }
 .debug-btn {
-  padding: 6px 12px;
-  margin: 4px;
-  font-size: 11px;
+  padding: 0.375rem 0.75rem;
+  margin: 0.25rem;
+  font-size: 0.75rem;
   background: #333;
   border-radius: 3px;
   cursor: pointer;
@@ -623,9 +611,9 @@ button.secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 .debug-btn-copy { color: #0f0; border: 1px solid #0f0; }
 .debug-btn-clear { color: #f80; border: 1px solid #f80; }
 .debug-log {
-  font-size: 11px;
+  font-size: 0.75rem;
   color: #0f0;
-  padding: 8px;
+  padding: 0.5rem;
   background: #000;
   font-family: monospace;
   height: 100px;
@@ -634,20 +622,20 @@ button.secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .debug-log.tall { height: 250px; }
 .diag-settings {
-  padding: 8px;
+  padding: 0.5rem;
   background: #0d1330;
   border-bottom: 1px solid #333;
 }
 .debug-canvas-wrap {
-  margin-top: 4px;
-  padding: 4px;
+  margin-top: 0.25rem;
+  padding: 0.25rem;
   background: #111;
   text-align: center;
 }
 .debug-canvas-caption {
-  font-size: 10px;
+  font-size: 0.75rem;
   color: #888;
-  margin-bottom: 4px;
+  margin-bottom: 0.25rem;
 }
 .debug-canvas-wrap canvas {
   max-width: 100%;
@@ -657,53 +645,53 @@ button.secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Diagnostics settings rows (rendered by hdmi-uvc-diagnostics-ui.js) */
 .diag-heading {
-  font-size: 11px;
+  font-size: 0.75rem;
   color: #99a;
-  margin-bottom: 4px;
+  margin-bottom: 0.25rem;
 }
 .diag-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 2px 0;
-  font-size: 12px;
+  gap: 0.5rem;
+  margin: 0.125rem 0;
+  font-size: 0.75rem;
   color: #9ab;
 }
 .diag-row label {
-  width: 110px;
+  width: 7rem;
   text-align: right;
   color: #9ab;
 }
 .diag-row select {
-  font-size: 12px;
+  font-size: 0.75rem;
   background-color: #16213e;
   color: #00d4ff;
   border: 1px solid #333;
   border-radius: 3px;
-  padding: 2px 4px;
+  padding: 0.125rem 0.25rem;
 }
 .diag-tag {
-  font-size: 10px;
+  font-size: 0.75rem;
   color: #99a;
 }
 .diag-reload-note {
-  font-size: 11px;
+  font-size: 0.75rem;
   color: #ffd400;
-  margin-top: 4px;
+  margin-top: 0.25rem;
 }
 .diag-toggle-row {
-  margin-top: 8px;
+  margin-top: 0.5rem;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 0.5rem;
 }
 button.diag-toggle {
-  font-size: 12px;
-  padding: 4px 10px;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.625rem;
 }
 .modified-badge {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: #ffd400;
 }
 
@@ -711,21 +699,21 @@ button.diag-toggle {
 .arq-backchannel {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 8px 0;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
   flex-wrap: wrap;
 }
 .arq-status {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: #99a;
 }
 .arq-status.connected {
   color: #00d4ff;
 }
 .control-hint {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: #99a;
-  margin: 0 0 8px;
+  margin: 0 0 0.5rem;
 }
 .yolo-control {
   flex-basis: 100%;
@@ -733,29 +721,31 @@ button.diag-toggle {
 .yolo-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 8px 0 2px;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0.125rem;
 }
 .yolo-toggle label {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: #00d4ff;
   cursor: pointer;
 }
 .yolo-badge {
-  font-size: 11px;
+  font-size: 0.75rem;
   color: #ffd400;
-  margin-left: 8px;
+  margin-left: 0.5rem;
 }
 
 /* Error Banner */
 #error-banner {
-  position: fixed;
+  /* In flow (first child of body): pushes the screens down rather than
+     overlaying the header, so Back/dismiss are always reachable. Sticky keeps
+     it visible if the page is scrolled (e.g. open diagnostics panels). */
+  position: sticky;
   top: 0;
-  left: 0;
-  right: 0;
   padding: 1rem;
   padding-top: calc(1rem + env(safe-area-inset-top));
-  background: #ff4444;
+  /* Dark enough for 4.5:1 contrast with white text */
+  background: #c62828;
   color: white;
   text-align: center;
   z-index: 1000;
@@ -767,7 +757,7 @@ button.diag-toggle {
 #error-banner.hidden { display: none; }
 #error-banner button {
   background: white;
-  color: #ff4444;
+  color: #c62828;
   border: none;
   padding: 0.25rem 0.5rem;
   cursor: pointer;
@@ -847,6 +837,7 @@ select {
   background: #000;
   border-radius: 8px;
   min-height: 540px;
+  min-height: min(540px, 60dvh);
   flex: 1;
   position: relative;
   overflow: hidden;
@@ -892,19 +883,19 @@ body.hdmi-uvc-signal-live * {
 
 .hdmi-overlay {
   position: absolute;
-  top: 8px;
-  left: 8px;
+  top: 0.5rem;
+  left: 0.5rem;
   background: rgba(0, 0, 0, 0.7);
-  padding: 4px 8px;
+  padding: 0.25rem 0.5rem;
   border-radius: 4px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: #00d4ff;
   font-family: monospace;
   font-variant-numeric: tabular-nums;
 }
 
 .hdmi-overlay span {
-  margin-right: 12px;
+  margin-right: 0.75rem;
 }
 
 .signal-status {
@@ -913,10 +904,10 @@ body.hdmi-uvc-signal-live * {
   left: 50%;
   transform: translate(-50%, -50%);
   background: rgba(0, 0, 0, 0.8);
-  padding: 12px 24px;
+  padding: 0.75rem 1.5rem;
   border-radius: 8px;
   color: #ff6b6b;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .signal-status.connected {
@@ -926,20 +917,56 @@ body.hdmi-uvc-signal-live * {
 .device-selector {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin: 12px 0;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
 }
 
 .device-selector label {
   color: #888;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .device-selector select {
   flex: 1;
-  padding: 8px 12px;
-  font-size: 14px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
 }
+
+/* Confirm dialog (styled replacement for window.confirm) */
+.confirm-dialog {
+  background: #16213e;
+  color: #eee;
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 1.5rem;
+  max-width: 26rem;
+  overscroll-behavior: contain;
+}
+.confirm-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+.confirm-dialog p {
+  margin-bottom: 1.25rem;
+  line-height: 1.5;
+}
+.confirm-dialog-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+/* Destructive-action buttons (Discard) */
+button.danger {
+  padding: 0.5rem 1.25rem;
+  background: #c62828;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: background-color 0.2s;
+}
+button.danger:hover { background: #e53935; }
 
 /* Reduced motion: collapse all transitions and animations */
 @media (prefers-reduced-motion: reduce) {
@@ -947,5 +974,11 @@ body.hdmi-uvc-signal-live * {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+  /* The preset-flash animation is collapsed above; show a steady highlight
+     instead (flashHighlight() removes the class on a timer). */
+  .preset-flash {
+    background: rgba(0, 212, 255, 0.4);
+    color: #fff;
   }
 }

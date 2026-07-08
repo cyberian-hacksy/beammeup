@@ -1,6 +1,6 @@
 // CIMBAR Sender module - handles file encoding and CIMBAR display
 import { loadCimbarWasm, getModule } from './cimbar-loader.js'
-import { formatBytes } from '../format.js'
+import { formatBytes, formatTime } from '../format.js'
 
 const MAX_FILE_SIZE = 33 * 1024 * 1024 // 33MB (CIMBAR limit)
 
@@ -49,8 +49,7 @@ function estimateTime() {
   const fps = SPEED_PRESETS[parseInt(elements.speedSlider.value)].fps
   const totalFrames = Math.ceil(state.fileSize / bytesPerFrame)
   const seconds = totalFrames / fps
-  if (seconds < 60) return '~' + Math.ceil(seconds) + 's'
-  return '~' + (seconds / 60).toFixed(1) + 'm'
+  return '~' + formatTime(Math.ceil(seconds) * 1000)
 }
 
 function updateDropZoneState() {
@@ -263,7 +262,7 @@ async function processFile(file) {
   if (!file) return
 
   if (file.size > MAX_FILE_SIZE) {
-    showError('File too large. CIMBAR limit: 33MB.')
+    showError('File too large for CIMBAR transfer (limit 33 MB). Use HDMI-UVC (up to 1 GB) from the home screen.')
     return
   }
 

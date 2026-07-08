@@ -2,8 +2,9 @@
 
 import { createDecoder } from '../decoder.js'
 import { PACKET_HEADER_SIZE, parsePacket } from '../packet.js'
-import { formatBytes } from '../format.js'
-import { playBeep, announce } from '../feedback.js'
+import { formatBytes, formatTime } from '../format.js'
+import { playBeep, announce, copyWithButtonFeedback } from '../feedback.js'
+import { confirmDialog } from '../confirm-dialog.js'
 import { isRepairIdleMetadataPayload } from '../metadata.js'
 import { ArqReceiverController, getArqBeaconLogAction } from '../arq/arq-receiver.js'
 import { ARQ_HELPER_STATUS, getArqHelperStatusView, shouldAutoConnectArqHelper } from '../arq/helper-status.js'
@@ -40,7 +41,6 @@ import {
   getReceiverExpectedPacketSize,
   shouldStartReceiverTransferClock,
   shouldScheduleMainCaptureAfterWorkerStart,
-  createReceiverCaptureTuningState,
   computeLockedCaptureRect,
   getWorkerCaptureCopyRect,
   shouldUseLockedCaptureRegion,
@@ -51,7 +51,6 @@ import {
 } from './hdmi-uvc-receiver-capture.js'
 import { loadHdmiUvcWasm, acquireWasmFrameView, isHdmiUvcWasmLoaded } from './hdmi-uvc-wasm.js'
 import {
-  isPerfMode,
   getWorkerMode,
   getCaptureMethod as getCaptureMethodSetting,
   getReadPoolEnabledAtInit,
@@ -68,35 +67,58 @@ import {
 import {
   probeFramePackets
 } from './hdmi-uvc-packet-probe.js'
+import { initDiagnosticsPanelToggle } from './hdmi-uvc-debug-log.js'
 import {
-  createReceiverDebugLogBuffer,
-  initDiagnosticsPanelToggle
-} from './hdmi-uvc-debug-log.js'
+  PERF_MODE,
+  debugLog,
+  debugCurrent,
+  debugLogBuffer,
+  flushDebugLogRender,
+  setReceiverDiagPanelVisible,
+  isReceiverDiagPanelVisible
+} from './hdmi-uvc-receiver-debug.js'
+import {
+  buildReceiverPacketFrameSignature,
+  buildReceiverPreIngestedFrameSignature,
+  classifyReceiverFrameSignature,
+  clearReceiverPerfSamples,
+  createReceiverPerfState,
+  getLockedFastStageSummary,
+  getReceiverFrameSignatureSummary,
+  getReceiverFrameUseSummary,
+  getReceiverPacketYieldSummary,
+  updateFrameAcceptSignals
+} from './hdmi-uvc-receiver-perf.js'
+import { averagePerfWindow, recordPerfSample } from './hdmi-uvc-perf-window.js'
+import {
+  state,
+  createCaptureTuningState,
+  CAPTURE_BENCHMARK_SAMPLES_PER_METHOD
+} from './hdmi-uvc-receiver-state.js'
+import {
+  applyArqReceiverHelperStatus,
+  autoConnectArqHelper,
+  connectArqHelper,
+  noteArqParsedPackets,
+  requestArqFullRepair,
+  resetArqReceiverSession,
+  sendArqCompleteIfReady,
+  setArqReceiverHooks
+} from './hdmi-uvc-receiver-arq.js'
 
 // Kick off WASM instantiation on the main thread so the ?capture=main fallback
 // path (which runs decodeDataRegion on the main thread) uses the WASM CRC32
 // from the first decoded frame. Swallowed errors fall back to JS crc32.
 loadHdmiUvcWasm().catch(() => {})
 
-// Master switch for debug-log collection. Lines always accumulate in the
-// ring buffer (cheap); all DOM output is gated separately by the
-// user-facing Diagnostics toggle.
-const DEBUG_MODE = true
-const MAX_DEBUG_LINES = 500
-// These come from the diagnostics module (which reads URL -> localStorage ->
-// default). Captured at init time because each controls an interval or
-// pipeline baked in for the session.
-const PERF_MODE = isPerfMode()
-const VISIBLE_DEBUG_LINES = PERF_MODE ? 80 : 120
+// Interval/pipeline knobs derived from PERF_MODE (see receiver-debug module);
+// captured at init time because each is baked in for the session.
 const RX_PERF_LOG_INTERVAL_FRAMES = PERF_MODE ? 240 : 60
 const RX_PROGRESS_LOG_INTERVAL_FRAMES = PERF_MODE ? 40 : 10
-const DEBUG_RENDER_INTERVAL_MS = PERF_MODE ? 480 : 120
 const RECEIVER_UI_UPDATE_INTERVAL_MS = PERF_MODE ? 500 : 120
 const LOCKED_LAYOUT_RECOVERY_PROBE_INTERVAL_FRAMES = 8
 const LOCKED_BINARY3_INVALIDATE_AFTER_FAILS = 5
 const BINARY3_CONFIDENCE_LOG_INTERVAL_FRAMES = PERF_MODE ? 120 : 30
-const DEBUG_CONSOLE = false
-const CAPTURE_BENCHMARK_SAMPLES_PER_METHOD = 6
 const CAPTURE_BENCH_ONLY = typeof location !== 'undefined' &&
   new URLSearchParams(location.search).has('captureBench')
 const ANCHOR_SCAN_DIAGNOSTICS = typeof location !== 'undefined' &&
@@ -121,297 +143,6 @@ const CAPTURE_METHOD = (() => {
 // Frames between diagnostic hash probes. Probing every frame is wasteful for
 // a pure diagnostic; every ~30 frames is enough to confirm transport.
 const WORKER_PROBE_INTERVAL_FRAMES = 30
-const debugLogBuffer = createReceiverDebugLogBuffer({
-  maxLines: MAX_DEBUG_LINES,
-  visibleLines: VISIBLE_DEBUG_LINES
-})
-let debugRenderTimer = null
-// The diagnostics panel ships hidden; while hidden we keep appending to the
-// buffer (so history is there when it opens) but skip all DOM writes.
-let receiverDiagPanelVisible = false
-
-function renderDebugLog() {
-  if (!receiverDiagPanelVisible) return
-  const el = document.getElementById('hdmi-uvc-receiver-debug-log')
-  if (!el) return
-  el.textContent = debugLogBuffer.getRenderText()
-  el.scrollTop = 1e9
-}
-
-function scheduleDebugLogRender() {
-  if (!receiverDiagPanelVisible) return
-  if (debugRenderTimer !== null) return
-  debugRenderTimer = setTimeout(() => {
-    debugRenderTimer = null
-    renderDebugLog()
-  }, DEBUG_RENDER_INTERVAL_MS)
-}
-
-function flushDebugLogRender() {
-  if (debugRenderTimer !== null) {
-    clearTimeout(debugRenderTimer)
-    debugRenderTimer = null
-  }
-  renderDebugLog()
-}
-
-function debugLog(text) {
-  if (!DEBUG_MODE) return
-
-  const timestamp = new Date().toLocaleTimeString('en-US', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    fractionalSecondDigits: 3
-  })
-  debugLogBuffer.append(timestamp + ' ' + text)
-  scheduleDebugLogRender()
-  if (DEBUG_CONSOLE) {
-    console.log('[HDMI-RX]', text)
-  }
-}
-
-function debugCurrent(text) {
-  if (!DEBUG_MODE || !receiverDiagPanelVisible) return
-  const el = document.getElementById('hdmi-uvc-receiver-debug-current')
-  if (el) el.textContent = text
-}
-
-function updateArqReceiverStatus(text, connected = state.arqConnected, buttonText = null, disabled = false, hint = null) {
-  if (elements?.helperStatus) {
-    elements.helperStatus.textContent = text
-    elements.helperStatus.classList.toggle('connected', !!connected)
-  }
-  if (elements?.btnHelperConnect) {
-    elements.btnHelperConnect.textContent = buttonText || (connected ? 'Reconnect helper' : 'Connect helper')
-    elements.btnHelperConnect.disabled = !!disabled
-  }
-  const hintEl = document.getElementById('hdmi-uvc-helper-hint')
-  if (hintEl) {
-    if (hint) {
-      hintEl.textContent = hint
-      hintEl.classList.remove('hidden')
-    } else {
-      hintEl.classList.add('hidden')
-    }
-  }
-}
-
-function applyArqReceiverHelperStatus(status) {
-  const view = getArqHelperStatusView(status, getSelectedArqTransportName())
-  updateArqReceiverStatus(view.text, view.connected, view.buttonText, view.disabled, view.hint)
-}
-
-async function connectArqHelper(options = {}) {
-  const { auto = false } = options
-  if (state.arqHelperConnecting) return
-  // Manual "Reconnect helper" intentionally tears down a live connection;
-  // the auto path must never churn one.
-  if (auto && state.arqConnected) return
-  state.arqHelperConnecting = true
-  try {
-    state.arqTransport?.close()
-    const transportName = getSelectedArqTransportName()
-    const impl = getTransport(transportName)
-    if (!impl?.makeReceiver) throw new Error(`ARQ receiver transport '${transportName}' is not registered`)
-    state.arqTransport = impl.makeReceiver()
-    applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.CONNECTING)
-    await state.arqTransport.init({
-      onStatus: status => {
-        state.arqConnected = status === 'connected'
-        postArqStateToWorker()
-        applyArqReceiverHelperStatus(status === 'connected'
-          ? ARQ_HELPER_STATUS.CONNECTED
-          : ARQ_HELPER_STATUS.DISCONNECTED)
-      },
-      // Auto-connect runs without a user gesture: the keyboard transport
-      // then reopens an already-authorized serial port instead of showing
-      // the picker. BLE-GATT ignores the flag.
-      reusePort: auto
-    })
-    state.arqConnected = true
-    postArqStateToWorker()
-    applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.CONNECTED)
-    debugLog(`ARQ helper connected (${auto ? 'auto' : 'manual'})`)
-  } catch (err) {
-    state.arqTransport?.close()
-    state.arqTransport = null
-    state.arqConnected = false
-    postArqStateToWorker()
-    applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.UNAVAILABLE)
-    debugLog(`ARQ helper ${auto ? 'auto-detect' : 'connect'} failed: ${err.message}`)
-    if (!auto) showError('ARQ helper connect failed: ' + err.message)
-  } finally {
-    state.arqHelperConnecting = false
-  }
-}
-
-function autoConnectArqHelper() {
-  if (!shouldAutoConnectArqHelper({
-    connected: state.arqConnected,
-    connecting: state.arqHelperConnecting,
-    attempted: state.arqHelperAutoAttempted
-  })) {
-    return
-  }
-  state.arqHelperAutoAttempted = true
-  applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.CHECKING)
-  setTimeout(() => {
-    void connectArqHelper({ auto: true })
-  }, 0)
-}
-
-function resetArqReceiverSession() {
-  clearArqCompleteRetries()
-  state.arqController = null
-  state.arqFileId = null
-  state.arqLastSeededSolved = null
-  state.arqPendingSourceIds.clear()
-}
-
-function clearArqCompleteRetries() {
-  if (state.arqCompleteRetryTimer) {
-    clearInterval(state.arqCompleteRetryTimer)
-    state.arqCompleteRetryTimer = null
-  }
-}
-
-// Scanning stops at completion, so the beacon-driven COMPLETE re-sends can
-// never run on this path; drive the controller from a bounded timer instead
-// so a sender that missed the initial burst still learns to stop.
-function scheduleArqCompleteRetries(controller) {
-  clearArqCompleteRetries()
-  let ticks = 0
-  state.arqCompleteRetryTimer = setInterval(() => {
-    ticks++
-    if (ticks > 24 || controller !== state.arqController ||
-        !state.completedFile || !state.arqConnected) {
-      clearArqCompleteRetries()
-      return
-    }
-    controller.onBeacon()
-  }, 700)
-}
-
-function seedArqControllerFromDecoder(controller, decoder) {
-  const solvedIds = decoder?.solvedSourceIds
-  if (!controller || !Array.isArray(solvedIds)) return 0
-  let seeded = 0
-  for (const id of solvedIds) {
-    const before = controller.count
-    controller.markReceived(id)
-    if (controller.count !== before) seeded++
-  }
-  return seeded
-}
-
-function addArqPendingSourceId(fileId, symbolId) {
-  let ids = state.arqPendingSourceIds.get(fileId)
-  if (!ids) {
-    ids = new Set()
-    state.arqPendingSourceIds.set(fileId, ids)
-  }
-  ids.add(symbolId)
-}
-
-function seedArqControllerFromPending(controller) {
-  if (!controller) return 0
-  // Only ids observed under the controller's fileId count; stale packets from
-  // a previous session must not mask blocks as received.
-  const pending = state.arqPendingSourceIds.get(controller.fileId)
-  state.arqPendingSourceIds.clear()
-  if (!pending) return 0
-  let seeded = 0
-  for (const id of pending) {
-    if (id < 1 || id > controller.K) continue
-    const before = controller.count
-    controller.markReceived(id)
-    if (controller.count !== before) seeded++
-  }
-  return seeded
-}
-
-function ensureArqReceiverController() {
-  const decoder = state.decoder
-  if (!state.arqConnected || !state.arqTransport || !decoder?.metadata || decoder.fileId == null) return null
-  if (state.arqController && state.arqFileId === decoder.fileId) return state.arqController
-  state.arqFileId = decoder.fileId
-  state.arqController = new ArqReceiverController({
-    K: decoder.metadata.K,
-    fileId: decoder.fileId,
-    send: bytes => {
-      state.arqTransport.send(bytes).catch(err => {
-        debugLog(`ARQ send failed: ${err.message}`)
-        applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.SEND_FAILED)
-      })
-    },
-    verifyHash: () => !!state.completedFile,
-    // Slow transports (keyboard dongle) declare a per-NACK payload budget.
-    nackPayloadCapBytes: getTransport(getSelectedArqTransportName())?.nackPayloadCapBytes ?? 0
-  })
-  const seeded = seedArqControllerFromDecoder(state.arqController, decoder) +
-    seedArqControllerFromPending(state.arqController)
-  state.arqLastSeededSolved = decoder.solved ?? 0
-  debugLog(`ARQ receiver session ready: fileId=${decoder.fileId} K=${decoder.metadata.K} seeded=${seeded}`)
-  const connectedView = getArqHelperStatusView(ARQ_HELPER_STATUS.CONNECTED, getSelectedArqTransportName())
-  updateArqReceiverStatus(`${connectedView.text} (K=${decoder.metadata.K})`, true, connectedView.buttonText)
-  return state.arqController
-}
-
-function noteArqParsedPackets(parsedList) {
-  if (!state.arqConnected || !state.arqTransport) {
-    state.arqPendingSourceIds.clear()
-    return
-  }
-  const controller = ensureArqReceiverController()
-
-  let sawRepairIdle = false
-  for (const parsed of parsedList) {
-    if (!parsed) continue
-    if (!controller && parsed.symbolId >= 1 && parsed.fileId != null) {
-      addArqPendingSourceId(parsed.fileId, parsed.symbolId)
-    } else if (controller && parsed.fileId === controller.fileId &&
-               parsed.symbolId >= 1 && parsed.symbolId <= controller.K) {
-      controller.markReceived(parsed.symbolId)
-    } else if (parsed.isMetadata && (!controller || parsed.fileId === controller.fileId)) {
-      if (isRepairIdleMetadataPayload(parsed.payload)) sawRepairIdle = true
-    }
-  }
-
-  if (controller && sawRepairIdle) {
-    // Seeding walks O(K) solved-id arrays; decoder.solved is monotone, so
-    // only re-seed when it moved or pending ids arrived.
-    const solved = state.decoder?.solved ?? 0
-    if (solved !== state.arqLastSeededSolved || state.arqPendingSourceIds.size > 0) {
-      seedArqControllerFromDecoder(controller, state.decoder)
-      seedArqControllerFromPending(controller)
-      state.arqLastSeededSolved = solved
-    }
-    const msg = controller.onBeacon()
-    const action = getArqBeaconLogAction(msg, controller.isFull(), !!state.completedFile)
-    if (action) debugLog(`ARQ beacon observed: sent ${action} seq=${controller.seq}`)
-  }
-}
-
-function sendArqCompleteIfReady() {
-  const controller = ensureArqReceiverController()
-  if (!controller || !state.completedFile) return
-  for (let id = 1; id <= controller.K; id++) controller.markReceived(id)
-  const msg = controller.onBeacon()
-  debugLog(`ARQ COMPLETE ${msg ? 'sent' : 'deferred'} seq=${controller.seq}`)
-  scheduleArqCompleteRetries(controller)
-}
-
-function requestArqFullRepair(reason) {
-  const controller = ensureArqReceiverController()
-  if (!controller || typeof controller.requestFullRepair !== 'function') return false
-  controller.requestFullRepair()
-  const msg = controller.onBeacon()
-  debugLog(`ARQ full repair requested (${reason}) seq=${controller.seq}`)
-  return !!msg
-}
-
 function recoverFromHashMismatch() {
   // Without a dispatched ARQ full-repair NACK there is no repair path;
   // discarding the decoder would strand the receiver at 0% forever.
@@ -436,22 +167,6 @@ function recoverFromHashMismatch() {
   return true
 }
 
-async function copyReceiverDebugLog(copyBtn) {
-  const text = debugLogBuffer.getCopyText()
-  if (!text) return
-
-  try {
-    copyBtn.textContent = 'Copying…'
-    await navigator.clipboard.writeText(text)
-    copyBtn.textContent = 'Copied!'
-    setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
-  } catch (e) {
-    copyBtn.textContent = 'Copy failed'
-    setTimeout(() => copyBtn.textContent = 'Copy Log', 1500)
-    console.error('Copy failed:', e)
-  }
-}
-
 function shouldUpdateReceiverUi(lastUpdateMs, nowMs, force = false) {
   if (force) return true
   if (!Number.isFinite(lastUpdateMs) || lastUpdateMs <= 0) return true
@@ -466,6 +181,13 @@ function shouldUpdateReceiverUi(lastUpdateMs, nowMs, force = false) {
 //   'hash'    → sub-phase 1: diagnostic round-trip hash every N frames
 //   'anchors' → sub-phase 2: offload anchor detection (pre-lock phase)
 //   'full'    → sub-phase 3: offload anchor + decoder ingest + tail work
+// Give the ARQ session module its two receiver-side effects (error banner,
+// worker state mirror) without a circular import.
+setArqReceiverHooks({
+  showError: (msg) => showError(msg),
+  postArqStateToWorker: () => postArqStateToWorker()
+})
+
 let receiverWorker = null
 let receiverWorkerReady = false
 let receiverWorkerNextId = 1
@@ -1468,150 +1190,12 @@ function serializeParsedPacket(parsed) {
   }
 }
 
-function createPerfWindow() {
-  return {
-    count: 0,
-    sum: 0,
-    min: Infinity,
-    max: 0
-  }
-}
-
-function resetPerfWindow(window) {
-  window.count = 0
-  window.sum = 0
-  window.min = Infinity
-  window.max = 0
-}
-
-function recordPerfSample(window, value) {
-  if (!Number.isFinite(value)) return
-  window.count++
-  window.sum += value
-  if (value < window.min) window.min = value
-  if (value > window.max) window.max = value
-}
-
-function averagePerfWindow(window) {
-  return window.count > 0 ? window.sum / window.count : 0
-}
-
-function createReceiverPerfState() {
-  return {
-    captureMs: createPerfWindow(),
-    anchorMs: createPerfWindow(),
-    fastPathMs: createPerfWindow(),
-    decodeMs: createPerfWindow(),
-    classifierMs: createPerfWindow(),
-    totalMs: createPerfWindow(),
-    intervalMs: createPerfWindow(),
-    hotCaptureMs: createPerfWindow(),
-    hotAnchorMs: createPerfWindow(),
-    hotFastPathMs: createPerfWindow(),
-    hotDecodeMs: createPerfWindow(),
-    hotClassifierMs: createPerfWindow(),
-    hotTotalMs: createPerfWindow(),
-    hotIntervalMs: createPerfWindow(),
-    lockedFastExactReadMs: createPerfWindow(),
-    lockedFastExactProbeMs: createPerfWindow(),
-    acceptMs: createPerfWindow(),
-    framesSinceLog: 0,
-    hotFramesSinceLog: 0,
-    lastFrameStartMs: 0,
-    lastHotFrameStartMs: 0,
-    lastCaptureMethod: null,
-    lastHotCaptureMethod: null,
-    acceptCalls: 0,
-    acceptedPackets: 0,
-    crcFailFrames: 0,
-    salvagedFrames: 0,
-    salvagedPackets: 0,
-    phaseRecoveredFrames: 0,
-    phaseRecoveredPackets: 0,
-    fixedRecoveredFrames: 0,
-    fixedRecoveredPackets: 0,
-    headerlessRecoveredFrames: 0,
-    headerlessRecoveredPackets: 0,
-    lockedFastExactHits: 0,
-    lockedFastExactMisses: 0,
-    lockedFastExactPackets: 0,
-    lockedFastRecoveryProbes: 0,
-    lockedFastRecoveryHits: 0,
-    lockedFastRecoveryPackets: 0,
-    lockedFastReaderCounts: {},
-    acceptedFrames: 0,
-    innovatingFrames: 0,
-    duplicateAcceptedFrames: 0,
-    emptyFrames: 0,
-    repeatedAcceptedFrames: 0,
-    changedDuplicateFrames: 0,
-    changedInnovatingFrames: 0,
-    unknownAcceptedFrames: 0
-  }
-}
-
-function clearReceiverPerfSamples(perf) {
-  resetPerfWindow(perf.captureMs)
-  resetPerfWindow(perf.anchorMs)
-  resetPerfWindow(perf.fastPathMs)
-  resetPerfWindow(perf.decodeMs)
-  resetPerfWindow(perf.classifierMs)
-  resetPerfWindow(perf.totalMs)
-  resetPerfWindow(perf.intervalMs)
-  resetPerfWindow(perf.hotCaptureMs)
-  resetPerfWindow(perf.hotAnchorMs)
-  resetPerfWindow(perf.hotFastPathMs)
-  resetPerfWindow(perf.hotDecodeMs)
-  resetPerfWindow(perf.hotClassifierMs)
-  resetPerfWindow(perf.hotTotalMs)
-  resetPerfWindow(perf.hotIntervalMs)
-  resetPerfWindow(perf.lockedFastExactReadMs)
-  resetPerfWindow(perf.lockedFastExactProbeMs)
-  resetPerfWindow(perf.acceptMs)
-  perf.framesSinceLog = 0
-  perf.hotFramesSinceLog = 0
-  perf.lastHotFrameStartMs = 0
-  perf.lastHotCaptureMethod = null
-  perf.acceptCalls = 0
-  perf.acceptedPackets = 0
-  perf.crcFailFrames = 0
-  perf.salvagedFrames = 0
-  perf.salvagedPackets = 0
-  perf.phaseRecoveredFrames = 0
-  perf.phaseRecoveredPackets = 0
-  perf.fixedRecoveredFrames = 0
-  perf.fixedRecoveredPackets = 0
-  perf.headerlessRecoveredFrames = 0
-  perf.headerlessRecoveredPackets = 0
-  perf.lockedFastExactHits = 0
-  perf.lockedFastExactMisses = 0
-  perf.lockedFastExactPackets = 0
-  perf.lockedFastRecoveryProbes = 0
-  perf.lockedFastRecoveryHits = 0
-  perf.lockedFastRecoveryPackets = 0
-  perf.lockedFastReaderCounts = {}
-  perf.acceptedFrames = 0
-  perf.innovatingFrames = 0
-  perf.duplicateAcceptedFrames = 0
-  perf.emptyFrames = 0
-  perf.repeatedAcceptedFrames = 0
-  perf.changedDuplicateFrames = 0
-  perf.changedInnovatingFrames = 0
-  perf.unknownAcceptedFrames = 0
-}
-
 function resetReceiverPerfState() {
   state.rxPerf = createReceiverPerfState()
 }
 
 const CAPTURE_REBENCH_INTERVAL_FRAMES = 2000
 
-function createCaptureTuningState() {
-  return createReceiverCaptureTuningState({
-    canUseVideoFrame: typeof VideoFrame !== 'undefined',
-    samplesPerMethod: CAPTURE_BENCHMARK_SAMPLES_PER_METHOD
-  })
-}
 
 // Periodically invalidate the previous capture-method decision so the receiver
 // adapts when GPU load shifts mid-session. The initial benchmark runs under
@@ -1835,20 +1419,6 @@ function noteLockedFastReaderKind(reader) {
   perf.lockedFastReaderCounts[reader] = (perf.lockedFastReaderCounts[reader] || 0) + 1
 }
 
-function getLockedFastReaderSummary(perf) {
-  const counts = perf?.lockedFastReaderCounts || {}
-  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1])
-  if (entries.length === 0) return 'reader=n/a'
-  return 'reader=' + entries.map(([reader, count]) => `${reader}:${count}`).join(',')
-}
-
-function getLockedFastStageSummary(perf) {
-  if (!perf) return 'lockedStage=read=0.00ms probe=0.00ms'
-  return `lockedStage=read=${averagePerfWindow(perf.lockedFastExactReadMs).toFixed(2)}ms ` +
-    `probe=${averagePerfWindow(perf.lockedFastExactProbeMs).toFixed(2)}ms ` +
-    getLockedFastReaderSummary(perf)
-}
-
 function noteReceiverFrameUse(accepted, innovated) {
   const perf = state.rxPerf
   if (!perf) return
@@ -1856,25 +1426,6 @@ function noteReceiverFrameUse(accepted, innovated) {
   else perf.emptyFrames++
   if (innovated) perf.innovatingFrames++
   else if (accepted) perf.duplicateAcceptedFrames++
-}
-
-function getReceiverFrameUseSummary(perf) {
-  if (!perf) return 'frameUse=acc0/0 innov0/0 dup0/0 empty0/0'
-  const countedFrames = (perf.acceptedFrames || 0) + (perf.emptyFrames || 0)
-  const frames = Math.max(1, perf.framesSinceLog || countedFrames)
-  return `frameUse=acc${perf.acceptedFrames || 0}/${frames} ` +
-    `innov${perf.innovatingFrames || 0}/${frames} ` +
-    `dup${perf.duplicateAcceptedFrames || 0}/${frames} ` +
-    `empty${perf.emptyFrames || 0}/${frames}`
-}
-
-export function classifyReceiverFrameSignature(prevSignature, { signature, accepted, innovated } = {}) {
-  if (!accepted) return { nextSignature: prevSignature || null, kind: 'empty' }
-  if (!signature) return { nextSignature: prevSignature || null, kind: 'unknown' }
-  if (prevSignature && prevSignature === signature) {
-    return { nextSignature: signature, kind: 'repeat' }
-  }
-  return { nextSignature: signature, kind: innovated ? 'changedInnovating' : 'changedDuplicate' }
 }
 
 function noteReceiverFrameSignature(signature, accepted, innovated) {
@@ -1901,46 +1452,6 @@ function noteReceiverFrameSignature(signature, accepted, innovated) {
       perf.unknownAcceptedFrames++
       break
   }
-}
-
-function getReceiverFrameSignatureSummary(perf) {
-  if (!perf) return 'frameSig=same0/0 newDup0/0 newInnov0/0 unk0/0'
-  const acceptedFrames = Math.max(1, perf.acceptedFrames || 0)
-  return `frameSig=same${perf.repeatedAcceptedFrames || 0}/${acceptedFrames} ` +
-    `newDup${perf.changedDuplicateFrames || 0}/${acceptedFrames} ` +
-    `newInnov${perf.changedInnovatingFrames || 0}/${acceptedFrames} ` +
-    `unk${perf.unknownAcceptedFrames || 0}/${acceptedFrames}`
-}
-
-function getReceiverPacketYieldSummary(perf, expectedPacketCount) {
-  const expected = Number.isFinite(expectedPacketCount) ? expectedPacketCount : 0
-  if (!perf || expected <= 0 || perf.framesSinceLog <= 0) return 'yield=n/a'
-  const possiblePackets = perf.framesSinceLog * expected
-  const usefulPackets = perf.acceptedPackets || 0
-  const pct = possiblePackets > 0 ? (usefulPackets / possiblePackets) * 100 : 0
-  return `yield=${pct.toFixed(0)}%(${usefulPackets}/${possiblePackets})`
-}
-
-function buildReceiverPacketFrameSignature(parsedList, fallbackSymbolId = null, acceptedPacketCount = 0) {
-  if (!Array.isArray(parsedList) || parsedList.length === 0) {
-    return fallbackSymbolId == null ? null : `fallback:${fallbackSymbolId}:${acceptedPacketCount}`
-  }
-  const first = parsedList[0]
-  const last = parsedList[parsedList.length - 1]
-  if (!first || !last) return null
-  return [
-    first.fileId ?? 'f?',
-    first.k ?? 'k?',
-    first.symbolId ?? 's?',
-    last.symbolId ?? 's?',
-    parsedList.length
-  ].join(':')
-}
-
-function buildReceiverPreIngestedFrameSignature(preIngestedResult, fallbackSymbolId = null, acceptedPacketCount = 0) {
-  const h = preIngestedResult?.header
-  if (!h) return fallbackSymbolId == null ? null : `pre:${fallbackSymbolId}:${acceptedPacketCount}`
-  return `outer:${h.mode ?? 'm?'}:${h.symbolId ?? 's?'}:${acceptedPacketCount}`
 }
 
 function shouldUseHeaderOnlyFrameForLock(result) {
@@ -2362,7 +1873,7 @@ function noteSignalDetected(mode, resolution = null) {
 
   if (resolution?.width && resolution?.height) {
     state.detectedResolution = { width: resolution.width, height: resolution.height }
-    elements.signalStatus.textContent = `Detected: ${resolution.width}x${resolution.height}`
+    elements.signalStatus.textContent = `Detected: ${resolution.width}×${resolution.height}`
   } else if (firstDetection) {
     elements.signalStatus.textContent = `Detected: ${HDMI_MODE_NAMES[mode]}`
   }
@@ -2717,70 +2228,6 @@ async function acceptPackets(
 
 const TENTATIVE_ANCHOR_MAX_FAILS = 10
 
-const state = {
-  decoder: null,
-  stream: null,
-  canvas: null,
-  ctx: null,
-  animationId: null,
-  callbackId: null,
-  isScanning: false,
-  frameCount: 0,
-  validFrames: 0,
-  startTime: null,
-  detectedMode: null,
-  detectedResolution: null,
-  completedFile: null,
-  fileDownloaded: false,
-  completionStarted: false,  // Synchronous guard — set before await in handleComplete()
-  anchorBounds: null,  // Cached data region from detected anchors
-  lockedCaptureRegion: null,
-  tentativeAnchorBounds: null,
-  tentativeLockedCaptureRegion: null,
-  tentativeAnchors: null,
-  decodeFailCount: 0,  // Consecutive decode failures (triggers relock when too many)
-  activeCaptureMethod: null,
-  fixedLayout: null,
-  expectedPacketCount: 0,
-  preferredLayout: null,
-  lockedDenseBinaryLayout: null,
-  lockedDenseBinaryOffsets: null,
-  denseBinaryLockFailStreak: 0,
-  lastDenseBinaryConfidenceLogFrame: 0,
-  lockedLayoutFastPathMisses: 0,
-  luma1CalPassCount: 0,       // Consecutive CRC-valid calibration frames
-  luma1CalHoldUntilMs: 0,     // Decode throttle while cal frames keep passing
-  luma1CalLastLogMs: 0,
-  progressSamples: [],
-  lastReceivingUiUpdateMs: 0,
-  rxPerf: createReceiverPerfState(),
-  captureTuning: createCaptureTuningState(),
-  workerCaptureActive: false,
-  workerCapturePending: false,
-  offscreenCaptureActive: false,
-  workerCaptureSourceRect: null,
-  offscreenBitmapInFlightAt: null,
-  workerCaptureStartDeadlineId: null,
-  workerCaptureStopRequested: false,
-  workerCaptureStartPendingAfterStop: false,
-  frameAcceptedThisFrame: false,
-  frameInnovatedThisFrame: false,
-  lastReceiverFrameSignature: null,
-  lastImageData: null,
-  lastImageDataSeq: 0,
-  lastImageDataCapturedAtMs: 0,
-  labFrameTapEnabled: false,
-  arqTransport: null,
-  arqConnected: false,
-  arqHelperConnecting: false,
-  arqHelperAutoAttempted: false,
-  arqController: null,
-  arqFileId: null,
-  arqLastSeededSolved: null,
-  arqCompleteRetryTimer: null,
-  arqPendingSourceIds: new Map(),
-  workerCompletionSuppressed: false
-}
 
 // Check if requestVideoFrameCallback is available (better sync than requestAnimationFrame)
 const hasVideoFrameCallback = typeof HTMLVideoElement !== 'undefined' &&
@@ -4434,7 +3881,7 @@ async function processFrame(now, metadata) {
   }
 
   // Update debug canvas (skip the copy entirely while the panel is hidden)
-  if (isDiagFrame && receiverDiagPanelVisible) {
+  if (isDiagFrame && isReceiverDiagPanelVisible()) {
     const debugCanvas = document.getElementById('hdmi-uvc-receiver-debug-canvas')
     if (debugCanvas) {
       debugCanvas.width = Math.min(width, 640)
@@ -4529,7 +3976,7 @@ async function handleComplete() {
   state.fileDownloaded = false
   sendArqCompleteIfReady()
 
-  elements.completeName.textContent = meta.filename + ' (' + formatBytes(fileData.byteLength) + ')'
+  elements.completeName.textContent = meta.filename + ' (' + formatBytes(fileData.byteLength) + ') in ' + formatTime(elapsed * 1000)
   elements.completeRate.textContent = formatBytes(rate) + '/s'
   debugLog(`Complete: ${formatBytes(fileData.byteLength)} in ${elapsed.toFixed(1)}s (${formatBytes(rate)}/s)`)
 
@@ -4655,13 +4102,13 @@ async function handleDeviceChange() {
 
 // Reset and "Receive Another" destroy the in-memory file just like leaving
 // the screen does; ask first.
-function confirmDiscardPending() {
+async function confirmDiscardPending() {
   return !hasPendingDownload() ||
-    confirm('The received file has not been downloaded yet. Discard it and scan again?')
+    confirmDialog('The received file has not been downloaded yet. Discard it and scan again?')
 }
 
-function handleReceiveAnother() {
-  if (!confirmDiscardPending()) return
+async function handleReceiveAnother() {
+  if (!(await confirmDiscardPending())) return
   resetReceiver()
   startScanning()
 }
@@ -4732,8 +4179,8 @@ export function initHdmiUvcReceiver(errorHandler) {
   }
 
   elements.deviceDropdown.onchange = handleDeviceChange
-  elements.btnReset.onclick = () => {
-    if (!confirmDiscardPending()) return
+  elements.btnReset.onclick = async () => {
+    if (!(await confirmDiscardPending())) return
     resetReceiver()
     startScanning()
   }
@@ -4748,7 +4195,7 @@ export function initHdmiUvcReceiver(errorHandler) {
     panel: document.getElementById('hdmi-uvc-receiver-debug'),
     storageKey: 'hdmi-uvc-diag-visible-receiver',
     onChange: (visible) => {
-      receiverDiagPanelVisible = visible
+      setReceiverDiagPanelVisible(visible)
       if (visible) flushDebugLogRender()
     }
   })
@@ -4761,12 +4208,13 @@ export function initHdmiUvcReceiver(errorHandler) {
   // Debug panel buttons
   const copyBtn = document.getElementById('btn-hdmi-uvc-receiver-copy-log')
   if (copyBtn) {
+    const copyLog = () => copyWithButtonFeedback(copyBtn, debugLogBuffer.getCopyText())
     copyBtn.addEventListener('pointerdown', (event) => {
       event.preventDefault()
-      copyReceiverDebugLog(copyBtn)
+      copyLog()
     })
     copyBtn.onclick = (event) => {
-      if (event.detail === 0) copyReceiverDebugLog(copyBtn)
+      if (event.detail === 0) copyLog()
     }
   }
   const clearBtn = document.getElementById('btn-hdmi-uvc-receiver-clear-log')
@@ -4792,53 +4240,6 @@ export function initHdmiUvcReceiver(errorHandler) {
     `Worker mode: ${WORKER_MODE} ` +
     `perf=${PERF_MODE ? 'on' : 'off'}`
   )
-}
-
-// Pure helper extracted so Phase 1's stall-counter contract is unit-testable
-// without standing up a DOM/video pipeline. Mirrors the signalling rules used
-// in acceptPackets + finalizeFramePerf: the frame-accepted flag ticks on any
-// accepted packet, the innovated flag only when innovation occurred.
-export function updateFrameAcceptSignals(prev, { acceptedAnyPacket, innovationCount }) {
-  return {
-    frameAcceptedThisFrame: prev.frameAcceptedThisFrame || !!acceptedAnyPacket,
-    frameInnovatedThisFrame: prev.frameInnovatedThisFrame || innovationCount > 0
-  }
-}
-
-export function testReceiverFrameAcceptSignals() {
-  const zero = { frameAcceptedThisFrame: false, frameInnovatedThisFrame: false }
-
-  // A duplicate-only frame: accepted but no innovation.
-  const dup = updateFrameAcceptSignals(zero, { acceptedAnyPacket: true, innovationCount: 0 })
-  if (!dup.frameAcceptedThisFrame || dup.frameInnovatedThisFrame) {
-    console.log('FAIL dup:', dup); return false
-  }
-
-  // An innovating frame: both flags on.
-  const innov = updateFrameAcceptSignals(zero, { acceptedAnyPacket: true, innovationCount: 2 })
-  if (!innov.frameAcceptedThisFrame || !innov.frameInnovatedThisFrame) {
-    console.log('FAIL innov:', innov); return false
-  }
-
-  // A frame that didn't accept anything: both flags stay false.
-  const empty = updateFrameAcceptSignals(zero, { acceptedAnyPacket: false, innovationCount: 0 })
-  if (empty.frameAcceptedThisFrame || empty.frameInnovatedThisFrame) {
-    console.log('FAIL empty:', empty); return false
-  }
-
-  // Flags are sticky within a frame: once true they stay true even if a later
-  // inner call reports the opposite. (The per-frame reset happens in the
-  // caller, finalizeFramePerf, not in this helper.)
-  const sticky = updateFrameAcceptSignals(
-    { frameAcceptedThisFrame: true, frameInnovatedThisFrame: true },
-    { acceptedAnyPacket: false, innovationCount: 0 }
-  )
-  if (!sticky.frameAcceptedThisFrame || !sticky.frameInnovatedThisFrame) {
-    console.log('FAIL sticky:', sticky); return false
-  }
-
-  console.log('Receiver frame-accept signals test: PASS')
-  return true
 }
 
 export function testDenseBinaryLockedLayoutOffsetsCoverBinary2() {

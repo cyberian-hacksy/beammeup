@@ -32,18 +32,18 @@ import { testKeyboardBase32Roundtrip, testKeyboardAlphabetIsPhysicalAndDistinct,
 import { testKeyboardReceiverSendsOneBase32LinePerMessage, testKeyboardReceiverReusePortIsGestureFree } from './lib/arq/transports/keyboard-receiver.js'
 import { testKeyboardSenderDecodesKeystrokeLine, testKeyboardSenderIgnoresForeignAndModifiedKeys, testKeyboardSenderResetsRunawayLine, testKeyboardSenderCloseStopsConsuming } from './lib/arq/transports/keyboard-sender.js'
 import {
-  testPass2TwoStageSchedule,
-  testParitySweepCounter,
-  testPresentationScreenSelection,
-  testPresentationWindowFeatures,
-  testExternalDisplayReadiness,
-  testExternalPresentationNativeMetrics,
-  testExternalFullscreenUsesSelectedScreen,
-  testExternalFullscreenFailureStopsBeforeMainFallback,
-  testExternalPreparedStartUsesManualGate,
   testHdmiUvcSenderDefaults,
   testBinary1RecommendedFpsIs60,
   testLabCardFullscreenExitRequiresReadyRestore,
+  testBinary1UsesTimerPacedRender,
+  testBinary1PacingLocksTimer,
+  testBinary1CadenceFpsPresets,
+  testDenseBinaryStrictGeometryGate,
+  testYoloFollowsBackchannel
+} from './lib/hdmi-uvc/hdmi-uvc-sender.js'
+import {
+  testPass2TwoStageSchedule,
+  testParitySweepCounter,
   testDenseBinaryMixedReplayPass1SourceOnly,
   testYoloModeSourceOnlyAllPasses,
   testDenseBinaryMixedReplayPass2ChangesAfterParitySweep,
@@ -61,30 +61,35 @@ import {
   testBinary1Pass2ReplaysFromStart,
   testBinary1StartsDataImmediately,
   testBinary1Pass2StartsMixedReplay,
-  testBinary1UsesTimerPacedRender,
-  testBinary1PacingLocksTimer,
-  testSenderFrameSignatureSummary,
-  testSenderFrameSymbolKindSummary,
   testDenseBinaryPass2SweepMixDiagnostic,
   testDenseBinaryPass2SweepMixPatterns,
-  testBinary1CadenceFpsPresets,
   testDenseBinaryLateMixDiagnostic,
   testDenseBinaryDegreeDiagnostic,
   testDenseBinaryLateMixPatterns,
   testDenseBinaryFountainTailPatterns,
   testDenseBinaryPass3MixDiagnostic,
   testDenseBinaryPass3MixPatterns,
-  testDenseBinaryStrictGeometryGate,
   testDenseBinaryMetadataUsesSparseSchedule,
   testDenseBinaryMetadataSlotRotatesOnlyWhenSent,
   testSenderWorkListSchedule,
   testArqBatchEmitsClaimedMetadataAtWorkListTail,
   testArqRepairBatchCarriesMetadataWhenRequested,
-  testArqBeaconBatchCarriesReplayData,
-  testYoloFollowsBackchannel
-} from './lib/hdmi-uvc/hdmi-uvc-sender.js'
+  testArqBeaconBatchCarriesReplayData
+} from './lib/hdmi-uvc/hdmi-uvc-sender-schedule.js'
 import {
-  testReceiverFrameAcceptSignals,
+  testSenderFrameSignatureSummary,
+  testSenderFrameSymbolKindSummary
+} from './lib/hdmi-uvc/hdmi-uvc-sender-perf.js'
+import {
+  testPresentationScreenSelection,
+  testPresentationWindowFeatures,
+  testExternalDisplayReadiness,
+  testExternalPresentationNativeMetrics,
+  testExternalFullscreenUsesSelectedScreen,
+  testExternalFullscreenFailureStopsBeforeMainFallback
+} from './lib/hdmi-uvc/hdmi-uvc-presentation.js'
+import { testReceiverFrameAcceptSignals } from './lib/hdmi-uvc/hdmi-uvc-receiver-perf.js'
+import {
   testDenseBinaryLockedLayoutOffsetsCoverBinary2,
   testLockedFastPerfBreakdownSummary,
   testReceiverFrameUseSummary,
@@ -364,7 +369,6 @@ export function registerAllTests() {
   window.testExternalPresentationNativeMetrics = testExternalPresentationNativeMetrics
   window.testExternalFullscreenUsesSelectedScreen = testExternalFullscreenUsesSelectedScreen
   window.testExternalFullscreenFailureStopsBeforeMainFallback = testExternalFullscreenFailureStopsBeforeMainFallback
-  window.testExternalPreparedStartUsesManualGate = testExternalPreparedStartUsesManualGate
   window.testHdmiUvcSenderDefaults = testHdmiUvcSenderDefaults
   window.testBinary1RecommendedFpsIs60 = testBinary1RecommendedFpsIs60
   window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
@@ -602,7 +606,6 @@ export async function runAllTests() {
     externalPresentationNativeMetrics: testExternalPresentationNativeMetrics(),
     externalFullscreenUsesSelectedScreen: testExternalFullscreenUsesSelectedScreen(),
     externalFullscreenFailureStopsBeforeMainFallback: await testExternalFullscreenFailureStopsBeforeMainFallback(),
-    externalPreparedStartManualGate: testExternalPreparedStartUsesManualGate(),
     hdmiUvcSenderDefaults: testHdmiUvcSenderDefaults(),
     binary1Recommended60Fps: testBinary1RecommendedFpsIs60(),
     labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),

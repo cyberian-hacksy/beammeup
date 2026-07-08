@@ -9,9 +9,16 @@
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
+  <!-- Error Banner: first in flow so it pushes screens down instead of
+       covering the header (a persistent error must not block the Back button) -->
+  <div id="error-banner" class="hidden" role="alert">
+    <span id="error-message"></span>
+    <button id="error-dismiss" aria-label="Dismiss error">&times;</button>
+  </div>
+
   <!-- Mode Selector -->
   <div id="mode-select" class="screen active">
-    <img src="./logo.png" alt="Beam Me Up" class="app-logo" width="96" height="96">
+    <img src="./logo.png" alt="" class="app-logo" width="96" height="96">
     <h1>BEAM ME UP</h1>
     <p>Air-Gap File Transfer</p>
     <div class="transfer-sections">
@@ -21,7 +28,7 @@
           <button id="btn-send" aria-label="Send via QR">SEND</button>
           <button id="btn-receive" aria-label="Receive via QR">RECEIVE</button>
         </div>
-        <p class="section-desc">Standard QR format<br>~4 KB/s</p>
+        <p class="section-desc">Standard QR format<br>~4&nbsp;KB/s &middot; up to 20&nbsp;MB</p>
       </div>
       <div class="transfer-divider"></div>
       <div class="transfer-section">
@@ -30,7 +37,7 @@
           <button id="btn-cimbar-send" aria-label="Send via CIMBAR">SEND</button>
           <button id="btn-cimbar-receive" aria-label="Receive via CIMBAR">RECEIVE</button>
         </div>
-        <p class="section-desc" id="cimbar-desc">High-density color<br>~100 KB/s</p>
+        <p class="section-desc" id="cimbar-desc">High-density color<br>~100&nbsp;KB/s &middot; up to 33&nbsp;MB</p>
       </div>
       <div class="transfer-divider"></div>
       <div class="transfer-section">
@@ -39,14 +46,14 @@
           <button id="btn-hdmi-uvc-send" aria-label="Send via HDMI-UVC">SEND</button>
           <button id="btn-hdmi-uvc-receive" aria-label="Receive via HDMI-UVC">RECEIVE</button>
         </div>
-        <p class="section-desc">Direct HDMI capture<br>~20 MB/s</p>
+        <p class="section-desc">Direct HDMI capture<br>~20&nbsp;MB/s &middot; up to 1&nbsp;GB</p>
       </div>
     </div>
   </div>
 
   <!-- Sender Screen -->
   <div id="sender" class="screen">
-    <header><button class="back-btn">&larr; Back</button><span>SEND MODE</span></header>
+    <header><button class="back-btn">&larr; Back</button><h1>SEND MODE</h1></header>
     <main>
       <input type="file" id="file-input" class="visually-hidden" tabindex="-1" aria-hidden="true">
 
@@ -80,7 +87,7 @@
           <span id="speed-display">Normal (100ms)</span>
         </div>
         <div class="file-status">
-          <span id="file-info">No file</span>
+          <span id="file-info" class="file-info">No file</span>
           <span id="stat-symbol" class="symbol-count"></span>
         </div>
         <div class="action-buttons">
@@ -93,7 +100,7 @@
 
   <!-- Receiver Screen -->
   <div id="receiver" class="screen">
-    <header><button class="back-btn">&larr; Back</button><span>RECEIVE MODE</span></header>
+    <header><button class="back-btn">&larr; Back</button><h1>RECEIVE MODE</h1></header>
     <main>
       <div class="video-container">
         <video id="camera-video" autoplay playsinline muted></video>
@@ -120,7 +127,7 @@
       <div class="receiver-status" id="receiver-status-bar">
         <div class="status-scanning" id="status-scanning">
           <span id="scanning-label">Scanning&hellip;</span>
-          <span id="stat-symbols">0 codes</span>
+          <span id="stat-symbols" class="stat-count">0 codes</span>
           <button id="btn-reset-receiver" class="reset-btn">Reset</button>
         </div>
         <div class="status-receiving hidden" id="status-receiving">
@@ -153,6 +160,7 @@
       <div id="debug-panel" class="debug-panel" style="display:none;">
         <div class="debug-panel-header">
           <div id="debug-current" class="debug-current">waiting&hellip;</div>
+          <button id="btn-clear-log" class="debug-btn debug-btn-clear" type="button">Clear</button>
           <button id="btn-copy-log" class="debug-btn debug-btn-copy" type="button">Copy</button>
         </div>
         <div id="debug-log" class="debug-log"></div>
@@ -162,7 +170,7 @@
 
   <!-- CIMBAR Sender Screen -->
   <div id="cimbar-sender" class="screen">
-    <header><button class="back-btn">&larr; Back</button><span>CIMBAR SEND</span></header>
+    <header><button class="back-btn">&larr; Back</button><h1>CIMBAR SEND</h1></header>
     <main>
       <input type="file" id="cimbar-file-input" class="visually-hidden" tabindex="-1" aria-hidden="true">
 
@@ -187,7 +195,7 @@
           <span id="cimbar-speed-display">Normal (15 FPS)</span>
         </div>
         <div class="file-status">
-          <span id="cimbar-file-info">No file</span>
+          <span id="cimbar-file-info" class="file-info">No file</span>
           <span id="cimbar-estimate" class="estimate"></span>
         </div>
         <div class="action-buttons">
@@ -200,7 +208,7 @@
 
   <!-- CIMBAR Receiver Screen -->
   <div id="cimbar-receiver" class="screen">
-    <header><button class="back-btn">&larr; Back</button><span>CIMBAR RECEIVE</span></header>
+    <header><button class="back-btn">&larr; Back</button><h1>CIMBAR RECEIVE</h1></header>
     <main>
       <div class="video-container">
         <video id="cimbar-video" autoplay playsinline muted></video>
@@ -213,12 +221,16 @@
         <button id="btn-cimbar-camera-switch" class="floating-camera-btn" title="Switch camera" aria-label="Switch camera">
           <span class="camera-icon" aria-hidden="true"></span>
         </button>
+        <div id="cimbar-camera-picker" class="camera-picker hidden">
+          <label for="cimbar-camera-dropdown" class="visually-hidden">Select camera</label>
+          <select id="cimbar-camera-dropdown"></select>
+        </div>
       </div>
 
       <div class="receiver-status" id="cimbar-status-bar">
         <div class="status-scanning" id="cimbar-status-scanning">
           <span id="cimbar-scanning-label">Scanning&hellip;</span>
-          <span id="cimbar-stat-frames">0 frames</span>
+          <span id="cimbar-stat-frames" class="stat-count">0 frames</span>
           <button id="btn-cimbar-reset" class="reset-btn">Reset</button>
         </div>
         <div class="status-receiving hidden" id="cimbar-status-receiving">
@@ -249,7 +261,7 @@
 
   <!-- HDMI-UVC Sender Screen -->
   <div id="hdmi-uvc-sender" class="screen">
-    <header><button class="back-btn">&larr; Back</button><span>HDMI-UVC SEND</span></header>
+    <header><button class="back-btn">&larr; Back</button><h1>HDMI-UVC SEND</h1></header>
     <main>
       <input type="file" id="hdmi-uvc-file-input" class="visually-hidden" tabindex="-1" aria-hidden="true">
 
@@ -267,7 +279,7 @@
 
       <div class="sender-controls" id="hdmi-uvc-sender-controls">
         <div class="file-status">
-          <span id="hdmi-uvc-file-info">No file</span>
+          <span id="hdmi-uvc-file-info" class="file-info">No file</span>
           <span id="hdmi-uvc-estimate" class="estimate"></span>
         </div>
         <div class="yolo-control">
@@ -293,7 +305,7 @@
         <div class="debug-panel-header">
           <div id="hdmi-uvc-sender-debug-current" class="debug-current">waiting&hellip;</div>
           <button id="btn-hdmi-uvc-sender-clear-log" class="debug-btn debug-btn-clear" type="button">Clear</button>
-          <button id="btn-hdmi-uvc-sender-copy-log" class="debug-btn debug-btn-copy" type="button">Copy Log</button>
+          <button id="btn-hdmi-uvc-sender-copy-log" class="debug-btn debug-btn-copy" type="button">Copy</button>
         </div>
         <div id="hdmi-uvc-sender-debug-log" class="debug-log tall"></div>
       </div>
@@ -302,7 +314,7 @@
 
   <!-- HDMI-UVC Receiver Screen -->
   <div id="hdmi-uvc-receiver" class="screen">
-    <header><button class="back-btn">&larr; Back</button><span>HDMI-UVC RECEIVE</span></header>
+    <header><button class="back-btn">&larr; Back</button><h1>HDMI-UVC RECEIVE</h1></header>
     <main>
       <div class="video-container">
         <video id="hdmi-uvc-video" autoplay playsinline muted></video>
@@ -322,7 +334,7 @@
       <div class="receiver-status" id="hdmi-uvc-status-bar">
         <div class="status-scanning" id="hdmi-uvc-status-scanning">
           <span id="hdmi-uvc-scanning-label">Scanning&hellip;</span>
-          <span id="hdmi-uvc-stat-frames">0 frames</span>
+          <span id="hdmi-uvc-stat-frames" class="stat-count">0 frames</span>
           <button id="btn-hdmi-uvc-reset" class="reset-btn">Reset</button>
         </div>
         <div class="status-receiving hidden" id="hdmi-uvc-status-receiving">
@@ -360,7 +372,7 @@
         <div class="debug-panel-header">
           <div id="hdmi-uvc-receiver-debug-current" class="debug-current">waiting&hellip;</div>
           <button id="btn-hdmi-uvc-receiver-clear-log" class="debug-btn debug-btn-clear" type="button">Clear</button>
-          <button id="btn-hdmi-uvc-receiver-copy-log" class="debug-btn debug-btn-copy" type="button">Copy Log</button>
+          <button id="btn-hdmi-uvc-receiver-copy-log" class="debug-btn debug-btn-copy" type="button">Copy</button>
         </div>
         <div id="hdmi-uvc-diag-settings" class="diag-settings"></div>
         <div id="hdmi-uvc-receiver-debug-log" class="debug-log tall"></div>
@@ -375,11 +387,14 @@
   <!-- Screen-reader announcements for state transitions -->
   <div id="sr-announce" class="visually-hidden" aria-live="polite"></div>
 
-  <!-- Error Banner -->
-  <div id="error-banner" class="hidden" role="alert">
-    <span id="error-message"></span>
-    <button id="error-dismiss" aria-label="Dismiss error">&times;</button>
-  </div>
+  <!-- Styled replacement for window.confirm() (see lib/confirm-dialog.js) -->
+  <dialog id="confirm-dialog" class="confirm-dialog">
+    <p id="confirm-dialog-message"></p>
+    <div class="confirm-dialog-actions">
+      <button id="confirm-dialog-cancel" class="secondary" type="button" autofocus>Cancel</button>
+      <button id="confirm-dialog-confirm" class="danger" type="button">Discard</button>
+    </div>
+  </dialog>
 
   <script type="module" src="./app.js"></script>
 </body>

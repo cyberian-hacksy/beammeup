@@ -1,4 +1,17 @@
-export function createReceiverDebugLogBuffer({ maxLines = 500, visibleLines = 120 } = {}) {
+// Debug-log plumbing shared by the HDMI-UVC sender and receiver: bounded
+// ring buffer, panel factory (throttled render + debugLog/debugCurrent
+// primitives), and the diagnostics-panel visibility toggle.
+
+// Master switch for debug-log collection. Lines always accumulate in the
+// ring buffer (cheap); all DOM output is gated separately by the
+// user-facing Diagnostics toggle.
+const DEBUG_MODE = true
+
+// Mirror debug lines to the browser console only when explicitly flipped on;
+// the panel (and Copy Log) is the supported way to read them.
+const DEBUG_CONSOLE = false
+
+export function createDebugLogBuffer({ maxLines = 500, visibleLines = 120 } = {}) {
   const lines = []
   let copyTextCache = ''
   let renderTextCache = ''
@@ -50,6 +63,85 @@ export function createReceiverDebugLogBuffer({ maxLines = 500, visibleLines = 12
   }
 }
 
+// A debug panel: ring buffer plus the throttled DOM rendering around it.
+// The sender and receiver each create one with their own element ids and
+// cadence; everything else (timestamping, visibility gating, console mirror)
+// is identical between the two sides.
+export function createDebugLogPanel({
+  logElementId,
+  currentElementId,
+  consoleTag,
+  maxLines = 500,
+  visibleLines = 120,
+  renderIntervalMs = 120
+}) {
+  const buffer = createDebugLogBuffer({ maxLines, visibleLines })
+  let renderTimer = null
+  // The diagnostics panel ships hidden; while hidden we keep appending to the
+  // buffer (so history is there when it opens) but skip all DOM writes.
+  let panelVisible = false
+
+  function render() {
+    const el = typeof document !== 'undefined'
+      ? document.getElementById(logElementId)
+      : null
+    if (!el) return
+    el.textContent = buffer.getRenderText()
+    el.scrollTop = el.scrollHeight
+  }
+
+  function scheduleRender() {
+    if (!panelVisible || renderTimer !== null) return
+    renderTimer = setTimeout(() => {
+      renderTimer = null
+      if (panelVisible) render()
+    }, renderIntervalMs)
+  }
+
+  return {
+    buffer,
+    render,
+
+    flush() {
+      if (renderTimer !== null) {
+        clearTimeout(renderTimer)
+        renderTimer = null
+      }
+      if (panelVisible) render()
+    },
+
+    setVisible(visible) {
+      panelVisible = visible
+    },
+
+    isVisible() {
+      return panelVisible
+    },
+
+    debugLog(text) {
+      if (!DEBUG_MODE) return
+      const timestamp = new Date().toLocaleTimeString('en-US', {
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        fractionalSecondDigits: 3
+      })
+      buffer.append(timestamp + ' ' + text)
+      scheduleRender()
+      if (DEBUG_CONSOLE) {
+        console.log(consoleTag, text)
+      }
+    },
+
+    debugCurrent(text) {
+      if (!DEBUG_MODE || !panelVisible) return
+      const el = document.getElementById(currentElementId)
+      if (el) el.textContent = text
+    }
+  }
+}
+
 // Show/hide toggle for a diagnostics panel. Panels ship hidden; the choice is
 // persisted per storageKey so people debugging a rig keep the panel open
 // across reloads. onChange(visible) fires on init and every toggle so callers
@@ -71,18 +163,18 @@ export function initDiagnosticsPanelToggle({ button, panel, storageKey, onChange
   apply()
 }
 
-export function testReceiverDebugLogBufferKeepsCopyFullAndRenderBounded() {
+export function testDebugLogBufferKeepsCopyFullAndRenderBounded() {
   try {
-    const buffer = createReceiverDebugLogBuffer({ maxLines: 6, visibleLines: 3 })
+    const buffer = createDebugLogBuffer({ maxLines: 6, visibleLines: 3 })
     for (let i = 1; i <= 7; i++) buffer.append(`line ${i}`)
     const copyText = buffer.getCopyText()
     const renderText = buffer.getRenderText()
     const pass = copyText === ['line 2', 'line 3', 'line 4', 'line 5', 'line 6', 'line 7'].join('\n') &&
       renderText === ['line 5', 'line 6', 'line 7'].join('\n')
-    console.log('Receiver debug log bounded render test:', pass ? 'PASS' : 'FAIL', { copyText, renderText })
+    console.log('Debug log bounded render test:', pass ? 'PASS' : 'FAIL', { copyText, renderText })
     return pass
   } catch (err) {
-    console.log('Receiver debug log bounded render test: FAIL', err?.message || err)
+    console.log('Debug log bounded render test: FAIL', err?.message || err)
     return false
   }
 }

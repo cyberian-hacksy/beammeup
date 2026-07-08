@@ -4,7 +4,7 @@ import { MAX_FILE_SIZE, METADATA_INTERVAL, DATA_PRESETS, SIZE_PRESETS, SPEED_PRE
 import { createPacket } from './packet.js'
 import { createEncoder } from './encoder.js'
 import { formatBytes } from './format.js'
-import { announce } from './feedback.js'
+import { announce, flashHighlight } from './feedback.js'
 
 // Sender state
 const state = {
@@ -569,9 +569,7 @@ function applyModeDefaults(mode, { notify = true } = {}) {
     const modeNames = ['BW', 'CMY', 'RGB']
     announce('Data, size and speed presets adjusted for ' + modeNames[mode] + ' mode')
     for (const el of [elements.dataDisplay, elements.sizeDisplay, elements.speedDisplay]) {
-      el.classList.remove('preset-flash')
-      void el.offsetWidth // restart the animation on back-to-back mode changes
-      el.classList.add('preset-flash')
+      flashHighlight(el)
     }
   }
 }

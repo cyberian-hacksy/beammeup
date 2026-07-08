@@ -5,7 +5,8 @@ import { QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from '
 import { calibrateFromFinders, normalizeRgb } from './calibration.js'
 import { ColorQRDecoder } from './color-decoder.js'
 import { formatBytes, formatTime } from './format.js'
-import { playBeep, announce } from './feedback.js'
+import { playBeep, announce, copyWithButtonFeedback } from './feedback.js'
+import { confirmDialog } from './confirm-dialog.js'
 
 // Debug mode - enabled via ?test URL parameter (exact param, not substring)
 const DEBUG_MODE = typeof location !== 'undefined' && new URLSearchParams(location.search).has('test')
@@ -1418,6 +1419,7 @@ export function initReceiver(errorHandler) {
     receiverModeButtons: document.querySelectorAll('#receiver-mode-selector .mode-btn'),
     // Debug elements
     btnCopyLog: document.getElementById('btn-copy-log'),
+    btnClearLog: document.getElementById('btn-clear-log'),
     debugLog: document.getElementById('debug-log'),
     debugPanel: document.getElementById('debug-panel')
   }
@@ -1439,25 +1441,12 @@ export function initReceiver(errorHandler) {
   elements.btnDownload.onclick = downloadFile
   elements.btnReceiveAnother.onclick = restartReceiver
   elements.btnResetReceiver.onclick = restartReceiver
-  elements.btnCopyLog.onclick = async () => {
-    try {
-      await navigator.clipboard.writeText(elements.debugLog.textContent)
-      elements.btnCopyLog.textContent = 'Copied!'
-      setTimeout(() => { elements.btnCopyLog.textContent = 'Copy' }, 1500)
-    } catch (err) {
-      // Fallback for iOS
-      const text = elements.debugLog.textContent
-      const textarea = document.createElement('textarea')
-      textarea.value = text
-      textarea.style.position = 'fixed'
-      textarea.style.opacity = '0'
-      document.body.appendChild(textarea)
-      textarea.focus()
-      textarea.select()
-      document.execCommand('copy')
-      document.body.removeChild(textarea)
-      elements.btnCopyLog.textContent = 'Copied!'
-      setTimeout(() => { elements.btnCopyLog.textContent = 'Copy' }, 1500)
+  elements.btnCopyLog.onclick = () =>
+    copyWithButtonFeedback(elements.btnCopyLog, elements.debugLog.textContent)
+  if (elements.btnClearLog) {
+    elements.btnClearLog.onclick = () => {
+      elements.debugLog.textContent = ''
+      debugLog('=== LOG CLEARED ===', true)
     }
   }
 
@@ -1487,7 +1476,7 @@ async function restartReceiver() {
   // Reset and "Receive Another" destroy the in-memory file just like leaving
   // the screen does; ask first.
   if (hasPendingDownload() &&
-      !confirm('The received file has not been downloaded yet. Discard it and scan again?')) {
+      !(await confirmDialog('The received file has not been downloaded yet. Discard it and scan again?'))) {
     return
   }
   resetReceiver()
