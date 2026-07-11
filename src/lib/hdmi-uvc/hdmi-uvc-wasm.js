@@ -14,7 +14,9 @@ import { crc32 as jsCrc32 } from './crc32.js'
 import {
   createPacket,
   PACKET_HEADER_SIZE,
-  parsePacket
+  parsePacket,
+  isMetadataFlag,
+  packetModeFromFlags
 } from '../packet.js'
 
 const WASM_FILENAME = 'hdmi_uvc.wasm'
@@ -568,8 +570,8 @@ export function wasmProbeExpectedPackets(framePayload, expectedPacketSize, optio
       k: records.getUint32(base + 8, true),
       symbolId: records.getUint32(base + 12, true),
       blockSize: expectedPacketSize - PACKET_HEADER_SIZE,
-      isMetadata: (versionAndFlags & 1) === 1,
-      mode: (versionAndFlags >> 1) & 0x03,
+      isMetadata: isMetadataFlag(versionAndFlags),
+      mode: packetModeFromFlags(versionAndFlags),
       payloadCrc: records.getUint32(base + 20, true),
       payload
     })

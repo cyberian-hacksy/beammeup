@@ -1,10 +1,12 @@
 // Console test suite. Only loaded into action when ?test is present (or
 // window.runAllTests() is called manually) — keep production startup free of
-// test registration. Note the test *functions* still live in the production
-// modules they exercise, so they remain part of the bundle; this module only
-// gates their registration and execution.
+// test registration. Test functions live in `*.tests.js` files next to the
+// modules they exercise; modules expose test-only internals via a named
+// `_internals` export.
 
 import { testPRNG } from './lib/prng.js'
+import { testPaletteOrderingsConsistent } from './lib/color/palette.tests.js'
+import { testModeProfileTable } from './lib/hdmi-uvc/hdmi-uvc-constants.tests.js'
 import { testPacketRoundtrip } from './lib/packet.js'
 import { testXorBytesInto } from './lib/xor.js'
 import { testMetadataRoundtrip, testMetadataNoRedundancyFlag, testMetadataRepairIdleFlag } from './lib/metadata.js'
@@ -17,7 +19,7 @@ import {
   testCodecRoundtripNoRedundancy,
   testNoRedundancyLoopRecovers,
   testTailSolverTriggerAllowsWiderDenseBinaryTail
-} from './lib/decoder.js'
+} from './lib/decoder.tests.js'
 import { testParityMap, testParityRecovery, testGF2SolverSmall, testGF2SolverLarge, testSourceToParityAdjacency } from './lib/precode.js'
 import { testArqMessageRoundtrip, testArqMessageRejectsCorruption, testMissingSetCodecRoundtrip, testMissingSetAdaptiveChoosesSmaller, testMissingSetCodecHighUint32Roundtrip, testMissingSetSparseLargeRangeUsesDeltaEncoding, testMissingSetBitmapDecodeBoundsToPayload, testMissingSetRangeEncodingCompressesBursts, testMissingSetCappedFitsBudgetAndKeepsPrefix, testEncodeNackHonorsPayloadCap } from './lib/arq/arq-protocol.js'
 import { testFragmentReassembleRoundtrip, testFragmentOutOfOrderAndDup, testFragmentMissingDrops, testFragmentSupportsLargeCounts, testFragmentReusedIdResetsStaleEntry, testFragmentReusedIdConflictResetsStaleEntry } from './lib/arq/arq-fragment.js'
@@ -34,13 +36,12 @@ import { testKeyboardSenderDecodesKeystrokeLine, testKeyboardSenderIgnoresForeig
 import {
   testHdmiUvcSenderDefaults,
   testBinary1RecommendedFpsIs60,
-  testLabCardFullscreenExitRequiresReadyRestore,
   testBinary1UsesTimerPacedRender,
   testBinary1PacingLocksTimer,
   testBinary1CadenceFpsPresets,
   testDenseBinaryStrictGeometryGate,
   testYoloFollowsBackchannel
-} from './lib/hdmi-uvc/hdmi-uvc-sender.js'
+} from './lib/hdmi-uvc/hdmi-uvc-sender.tests.js'
 import {
   testPass2TwoStageSchedule,
   testParitySweepCounter,
@@ -75,7 +76,7 @@ import {
   testArqBatchEmitsClaimedMetadataAtWorkListTail,
   testArqRepairBatchCarriesMetadataWhenRequested,
   testArqBeaconBatchCarriesReplayData
-} from './lib/hdmi-uvc/hdmi-uvc-sender-schedule.js'
+} from './lib/hdmi-uvc/hdmi-uvc-sender-schedule.tests.js'
 import {
   testSenderFrameSignatureSummary,
   testSenderFrameSymbolKindSummary
@@ -156,7 +157,7 @@ import {
   testFrameRefactorPreservesCodebook3Bytes,
   testFrameRefactorPreservesGlyph5Bytes,
   testDecodeDataRegionRoundtripsAllModes
-} from './lib/hdmi-uvc/hdmi-uvc-frame.js'
+} from './lib/hdmi-uvc/hdmi-uvc-frame.tests.js'
 import {
   testCaptureMethodDecision,
   testWorkerTrackTransferFallbackUsesMain,
@@ -212,11 +213,13 @@ import {
   testMeasureCardSerReportsCoverageAndWorstTile,
   testEstimatedAnchorsKeepMatchingNativeRegion,
   testMeasureCardSerReturnsNullWithoutAnchors
-} from './lib/hdmi-uvc/hdmi-uvc-lab.js'
+} from './lib/hdmi-uvc/hdmi-uvc-lab.tests.js'
 
 // Expose tests globally so individual ones can be re-run from the console.
 export function registerAllTests() {
   window.testPRNG = testPRNG
+  window.testPaletteOrderingsConsistent = testPaletteOrderingsConsistent
+  window.testModeProfileTable = testModeProfileTable
   window.testPacketRoundtrip = testPacketRoundtrip
   window.testXorBytesInto = testXorBytesInto
   window.testMetadataRoundtrip = testMetadataRoundtrip
@@ -371,7 +374,6 @@ export function registerAllTests() {
   window.testExternalFullscreenFailureStopsBeforeMainFallback = testExternalFullscreenFailureStopsBeforeMainFallback
   window.testHdmiUvcSenderDefaults = testHdmiUvcSenderDefaults
   window.testBinary1RecommendedFpsIs60 = testBinary1RecommendedFpsIs60
-  window.testLabCardFullscreenExitRequiresReadyRestore = testLabCardFullscreenExitRequiresReadyRestore
   window.testDenseBinaryMixedReplayPass1SourceOnly = testDenseBinaryMixedReplayPass1SourceOnly
   window.testYoloModeSourceOnlyAllPasses = testYoloModeSourceOnlyAllPasses
   window.testDenseBinaryMixedReplayPass2ChangesAfterParitySweep = testDenseBinaryMixedReplayPass2ChangesAfterParitySweep
@@ -457,6 +459,8 @@ export async function runAllTests() {
 
   const results = {
     prng: testPRNG(),
+    paletteOrderings: testPaletteOrderingsConsistent(),
+    modeProfileTable: testModeProfileTable(),
     packet: testPacketRoundtrip(),
     xorBytesInto: testXorBytesInto(),
     metadata: testMetadataRoundtrip(),
@@ -608,7 +612,6 @@ export async function runAllTests() {
     externalFullscreenFailureStopsBeforeMainFallback: await testExternalFullscreenFailureStopsBeforeMainFallback(),
     hdmiUvcSenderDefaults: testHdmiUvcSenderDefaults(),
     binary1Recommended60Fps: testBinary1RecommendedFpsIs60(),
-    labCardFullscreenExitRestore: testLabCardFullscreenExitRequiresReadyRestore(),
     denseBinaryMixedReplayPass1SourceOnly: testDenseBinaryMixedReplayPass1SourceOnly(),
     yoloModeSourceOnlyAllPasses: testYoloModeSourceOnlyAllPasses(),
     denseBinaryMixedReplayPass2ParitySweepTransition: testDenseBinaryMixedReplayPass2ChangesAfterParitySweep(),

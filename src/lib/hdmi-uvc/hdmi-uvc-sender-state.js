@@ -10,7 +10,8 @@ import {
   FPS_PRESETS,
   DEFAULT_FPS_PRESET,
   RENDER_SIZE_PRESETS,
-  DEFAULT_RENDER_SIZE_PRESET
+  DEFAULT_RENDER_SIZE_PRESET,
+  isDenseBinaryMode
 } from './hdmi-uvc-constants.js'
 import { createSenderPerfState } from './hdmi-uvc-sender-perf.js'
 
@@ -33,7 +34,6 @@ export const state = {
   isSending: false,
   isPaused: false,
   isAwaitingStart: false,
-  labCardActive: false,
   systematicIndex: 0,
   systematicStride: 1,
   intermediateSystematicStride: 1,
@@ -73,17 +73,6 @@ export function getFps() {
 export function getRenderSizePreset(id = state.renderSizePresetId) {
   return RENDER_SIZE_PRESETS.find((preset) => preset.id === id) ||
     RENDER_SIZE_PRESETS[0]
-}
-
-export function isDenseBinaryMode(mode = state.mode) {
-  return mode === HDMI_MODE.BINARY_3 ||
-    mode === HDMI_MODE.BINARY_2 ||
-    mode === HDMI_MODE.BINARY_1 ||
-    mode === HDMI_MODE.LUMA_1
-}
-
-export function usesBinary1DenseDefaults(mode = state.mode) {
-  return mode === HDMI_MODE.BINARY_1 || mode === HDMI_MODE.LUMA_1
 }
 
 export function modeRequiresNative1080p(mode) {

@@ -2,6 +2,8 @@
 import qrcode from 'qrcode-generator'
 import { MAX_FILE_SIZE, METADATA_INTERVAL, DATA_PRESETS, SIZE_PRESETS, SPEED_PRESETS, QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
 import { createPacket } from './packet.js'
+import { PALETTE_RGB } from './color/palette.js'
+import { wireDropZone } from './shared/dropzone.js'
 import { createEncoder } from './encoder.js'
 import { formatBytes } from './format.js'
 import { announce, flashHighlight } from './feedback.js'
@@ -37,16 +39,7 @@ function cmyToRgb(c, m, y) {
 
 // Fixed 8-color RGB palette for Palette mode
 // Index encodes: bit2=R, bit1=G, bit0=B (inverted for QR: high index = dark)
-const PALETTE_RGB = [
-  [255, 255, 255], // 0: White (000)
-  [255, 255, 0],   // 1: Yellow (001)
-  [255, 0, 255],   // 2: Magenta (010)
-  [255, 0, 0],     // 3: Red (011)
-  [0, 255, 255],   // 4: Cyan (100)
-  [0, 255, 0],     // 5: Green (101)
-  [0, 0, 255],     // 6: Blue (110)
-  [0, 0, 0]        // 7: Black (111)
-]
+// Shared table — see color/palette.js for the ordering contract.
 
 // Palette patch configuration for HCC2D calibration
 // Each corner has 2 patches arranged to show all 8 palette colors
@@ -459,57 +452,6 @@ async function processFile(file) {
 }
 
 // Handle file selection
-async function handleFileSelect(e) {
-  await processFile(e.target.files[0])
-}
-
-// Handle drop zone click
-function handleDropZoneClick() {
-  // Only trigger file picker if no file is loaded
-  if (!state.encoder) {
-    elements.fileInput.click()
-  }
-}
-
-// The drop zone is a div with role="button"; Enter/Space must work like click
-function handleDropZoneKeydown(e) {
-  if ((e.key === 'Enter' || e.key === ' ') && !state.encoder) {
-    e.preventDefault()
-    elements.fileInput.click()
-  }
-}
-
-// Handle drag over
-function handleDragOver(e) {
-  e.preventDefault()
-  e.stopPropagation()
-  if (!state.encoder) {
-    elements.qrContainer.classList.add('dragover')
-  }
-}
-
-// Handle drag leave
-function handleDragLeave(e) {
-  e.preventDefault()
-  e.stopPropagation()
-  elements.qrContainer.classList.remove('dragover')
-}
-
-// Handle drop
-async function handleDrop(e) {
-  e.preventDefault()
-  e.stopPropagation()
-  elements.qrContainer.classList.remove('dragover')
-
-  // Only accept drop if no file is loaded
-  if (state.encoder) return
-
-  const files = e.dataTransfer.files
-  if (files.length > 0) {
-    await processFile(files[0])
-  }
-}
-
 // Handle data preset change
 function handleDataPresetChange() {
   const index = parseInt(elements.dataSlider.value)
@@ -684,7 +626,6 @@ export function initSender(errorHandler) {
   applyModeDefaults(state.mode, { notify: false })
 
   // Bind event handlers
-  elements.fileInput.onchange = handleFileSelect
   elements.dataSlider.oninput = handleDataPresetChange
   elements.sizeSlider.oninput = handleSizePresetChange
   elements.speedSlider.oninput = handleSpeedPresetChange
@@ -696,10 +637,11 @@ export function initSender(errorHandler) {
     btn.onclick = () => handleModeChange(parseInt(btn.dataset.mode))
   })
 
-  // Drop zone handlers
-  elements.qrContainer.onclick = handleDropZoneClick
-  elements.qrContainer.onkeydown = handleDropZoneKeydown
-  elements.qrContainer.ondragover = handleDragOver
-  elements.qrContainer.ondragleave = handleDragLeave
-  elements.qrContainer.ondrop = handleDrop
+  // Drop zone + file input handlers
+  wireDropZone({
+    container: elements.qrContainer,
+    fileInput: elements.fileInput,
+    hasFile: () => !!state.encoder,
+    onFile: processFile
+  })
 }

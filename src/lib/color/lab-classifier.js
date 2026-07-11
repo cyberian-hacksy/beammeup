@@ -1,5 +1,7 @@
 // LABColorClassifier - Color classification using CIE LAB color space
 // LAB separates lightness (L) from chromaticity (a, b), making it robust to brightness changes
+import { gammaDecodeChannel } from '../gamma.js'
+import { EXPECTED_RGB_BY_COLOR_INDEX } from './palette.js'
 
 /**
  * CMY color targets with their LAB chromaticity coordinates (a, b)
@@ -49,15 +51,10 @@ export class LABColorClassifier {
    * Uses D65 illuminant (standard daylight)
    */
   rgbToLab(r, g, b) {
-    // Step 1: sRGB to linear RGB
-    let rLin = r / 255
-    let gLin = g / 255
-    let bLin = b / 255
-
-    // Inverse gamma correction (sRGB)
-    rLin = rLin > 0.04045 ? Math.pow((rLin + 0.055) / 1.055, 2.4) : rLin / 12.92
-    gLin = gLin > 0.04045 ? Math.pow((gLin + 0.055) / 1.055, 2.4) : gLin / 12.92
-    bLin = bLin > 0.04045 ? Math.pow((bLin + 0.055) / 1.055, 2.4) : bLin / 12.92
+    // Step 1: sRGB [0,255] to linear RGB [0,1] (shared transfer function)
+    const rLin = gammaDecodeChannel(r)
+    const gLin = gammaDecodeChannel(g)
+    const bLin = gammaDecodeChannel(b)
 
     // Step 2: Linear RGB to XYZ (sRGB matrix, D65)
     const x = rLin * 0.4124564 + gLin * 0.3575761 + bLin * 0.1804375
@@ -195,16 +192,6 @@ export class LABColorClassifier {
    * Get the expected RGB for a color index
    */
   getExpectedRGB(colorIndex) {
-    const rgbTable = [
-      [255, 255, 255], // 0: White
-      [0, 255, 255],   // 1: Cyan
-      [255, 0, 255],   // 2: Magenta
-      [255, 255, 0],   // 3: Yellow
-      [0, 0, 255],     // 4: Blue
-      [0, 255, 0],     // 5: Green
-      [255, 0, 0],     // 6: Red
-      [0, 0, 0]        // 7: Black
-    ]
-    return rgbTable[colorIndex] || [128, 128, 128]
+    return EXPECTED_RGB_BY_COLOR_INDEX[colorIndex] || [128, 128, 128]
   }
 }

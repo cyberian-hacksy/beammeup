@@ -57,62 +57,61 @@ export const HDMI_MODE_NAMES = {
 
 export const DEFAULT_HDMI_MODE = HDMI_MODE.BINARY_1
 
+// Per-mode profile table — the single place that knows each mode's derived
+// properties. Adding a mode means adding one row here (plus its codec in
+// hdmi-uvc-frame.js) instead of editing parallel switches.
+//   dataBlockSize:    cell pitch in pixels (legacy/default)
+//   bitsPerBlock:     payload bits carried per cell
+//   headerBlockSize:  cell pitch used to encode the 22-byte frame header —
+//                     dense modes keep the robust 4px pitch for the header
+//                     while shrinking only the payload cells
+//   payloadBlockSize: cell pitch used to encode file payload bits
+//   denseBinary:      uses the dense-binary frame layout + locked readers
+//   denseLuma1:       dense-binary layout with 4-level luma payload cells
+//   binary1Defaults:  shares BINARY_1's batching/porch/schedule defaults
+export const MODE_PROFILES = {
+  [HDMI_MODE.RAW_RGB]:    { dataBlockSize: 4, bitsPerBlock: 2, headerBlockSize: 4, payloadBlockSize: 4, denseBinary: false, denseLuma1: false, binary1Defaults: false },
+  [HDMI_MODE.RAW_GRAY]:   { dataBlockSize: 4, bitsPerBlock: 2, headerBlockSize: 4, payloadBlockSize: 4, denseBinary: false, denseLuma1: false, binary1Defaults: false },
+  [HDMI_MODE.COMPAT_4]:   { dataBlockSize: 4, bitsPerBlock: 1, headerBlockSize: 4, payloadBlockSize: 4, denseBinary: false, denseLuma1: false, binary1Defaults: false },
+  [HDMI_MODE.LUMA_2]:     { dataBlockSize: 4, bitsPerBlock: 2, headerBlockSize: 4, payloadBlockSize: 4, denseBinary: false, denseLuma1: false, binary1Defaults: false },
+  [HDMI_MODE.CODEBOOK_3]: { dataBlockSize: 4, bitsPerBlock: 3, headerBlockSize: 4, payloadBlockSize: 4, denseBinary: false, denseLuma1: false, binary1Defaults: false },
+  [HDMI_MODE.GLYPH_5]:    { dataBlockSize: 8, bitsPerBlock: 5, headerBlockSize: 8, payloadBlockSize: 8, denseBinary: false, denseLuma1: false, binary1Defaults: false },
+  [HDMI_MODE.BINARY_3]:   { dataBlockSize: 3, bitsPerBlock: 1, headerBlockSize: 4, payloadBlockSize: 3, denseBinary: true,  denseLuma1: false, binary1Defaults: false },
+  [HDMI_MODE.BINARY_2]:   { dataBlockSize: 2, bitsPerBlock: 1, headerBlockSize: 4, payloadBlockSize: 2, denseBinary: true,  denseLuma1: false, binary1Defaults: false },
+  [HDMI_MODE.BINARY_1]:   { dataBlockSize: 1, bitsPerBlock: 1, headerBlockSize: 4, payloadBlockSize: 1, denseBinary: true,  denseLuma1: false, binary1Defaults: true },
+  [HDMI_MODE.LUMA_1]:     { dataBlockSize: 1, bitsPerBlock: 2, headerBlockSize: 4, payloadBlockSize: 1, denseBinary: true,  denseLuma1: true,  binary1Defaults: true }
+}
+
+export function getModeProfile(mode) {
+  return MODE_PROFILES[mode] || null
+}
+
 export function getModeDataBlockSize(mode) {
-  switch (mode) {
-    case HDMI_MODE.RAW_RGB:
-    case HDMI_MODE.RAW_GRAY:
-    case HDMI_MODE.LUMA_2:
-    case HDMI_MODE.CODEBOOK_3:
-      return 4
-    case HDMI_MODE.BINARY_3:
-      return 3
-    case HDMI_MODE.BINARY_2:
-      return 2
-    case HDMI_MODE.BINARY_1:
-    case HDMI_MODE.LUMA_1:
-      return 1
-    case HDMI_MODE.GLYPH_5:
-      return 8
-    case HDMI_MODE.COMPAT_4:
-      return 4
-    default:
-      return null
-  }
+  return MODE_PROFILES[mode]?.dataBlockSize ?? null
 }
 
 export function getModeBitsPerBlock(mode) {
-  switch (mode) {
-    case HDMI_MODE.RAW_RGB:
-    case HDMI_MODE.RAW_GRAY:
-    case HDMI_MODE.LUMA_2:
-    case HDMI_MODE.LUMA_1:
-      return 2
-    case HDMI_MODE.CODEBOOK_3:
-      return 3
-    case HDMI_MODE.GLYPH_5:
-      return 5
-    case HDMI_MODE.BINARY_3:
-    case HDMI_MODE.BINARY_2:
-    case HDMI_MODE.BINARY_1:
-    case HDMI_MODE.COMPAT_4:
-      return 1
-    default:
-      return null
-  }
+  return MODE_PROFILES[mode]?.bitsPerBlock ?? null
 }
 
-// Header block size: the cell pitch used to encode the 22-byte frame header.
-// Current modes match getModeDataBlockSize; BINARY_3 will keep this at 4 while
-// shrinking only the payload cells.
 export function getModeHeaderBlockSize(mode) {
-  if (mode === HDMI_MODE.BINARY_3 || mode === HDMI_MODE.BINARY_2 || mode === HDMI_MODE.BINARY_1 || mode === HDMI_MODE.LUMA_1) return 4
-  return getModeDataBlockSize(mode)
+  return MODE_PROFILES[mode]?.headerBlockSize ?? null
 }
 
-// Payload block size: the cell pitch used to encode file payload bits. Current
-// modes match getModeDataBlockSize; BINARY_3 will return 3 here.
 export function getModePayloadBlockSize(mode) {
-  return getModeDataBlockSize(mode)
+  return MODE_PROFILES[mode]?.payloadBlockSize ?? null
+}
+
+export function isDenseBinaryMode(mode) {
+  return MODE_PROFILES[mode]?.denseBinary ?? false
+}
+
+export function isDenseLuma1Mode(mode) {
+  return MODE_PROFILES[mode]?.denseLuma1 ?? false
+}
+
+export function usesBinary1DenseDefaults(mode) {
+  return MODE_PROFILES[mode]?.binary1Defaults ?? false
 }
 
 // Frame rate presets

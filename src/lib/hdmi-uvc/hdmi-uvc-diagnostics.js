@@ -50,14 +50,6 @@ const DEFINITIONS = {
     labels: { off: 'Off' },
     title: 'Perf'
   },
-  worker: {
-    urlKey: 'worker',
-    default: 'off',
-    allowed: ['off'],
-    reloadRequired: true,
-    labels: { off: 'Off' },
-    title: 'Worker'
-  },
   pass2: {
     urlKey: 'pass2',
     default: 'p2',
@@ -253,7 +245,6 @@ export function listModifiedDiagnostics() {
 export function getCaptureMethod() { return getDiagnostic('captureMethod') }
 export function getWasmClassifierEnabled() { return getDiagnostic('wasmClassifier') !== 'off' }
 export function isPerfMode() { return getDiagnostic('perf') === 'on' }
-export function getWorkerMode() { return getDiagnostic('worker') }
 export function getPass2Variant() { return getDiagnostic('pass2') }
 export function getDenseBinaryProfile() { return getDiagnostic('denseBinaryProfile') }
 export function getDenseBinaryLateMix() { return getDiagnostic('denseBinaryLateMix') }

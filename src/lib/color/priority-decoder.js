@@ -17,7 +17,7 @@ export class PriorityDecoder {
    * @param {ModuleGrid} moduleGrid - Module position mapper
    * @param {DriftTracker} driftTracker - Per-module drift tracker
    * @param {ColorCorrector} colorCorrector - Color correction
-   * @param {RelativeColorClassifier} classifier - Color classifier
+   * @param {LABColorClassifier} classifier - Color classifier
    */
   constructor(moduleGrid, driftTracker, colorCorrector, classifier) {
     this.grid = moduleGrid

@@ -1,36 +1,33 @@
-// HDMI-UVC receiver worker — decode pump that can run anchor detection,
-// decoder ingest, and file reconstruction off the main thread. Constructed
-// from the receiver via Vite's ?worker&inline so all imports below bundle
-// into a single inline blob and survive vite-plugin-singlefile.
+// HDMI-UVC receiver worker — capture pipeline that runs frame capture,
+// anchor lock, decode, and decoder ingest off the main thread, plus the
+// shadow-decoder services (ingest/reset/reconstruct) the main thread uses
+// while worker capture owns the decoder. Constructed from the receiver via
+// Vite's ?worker&inline so all imports below bundle into a single inline
+// blob and survive vite-plugin-singlefile.
 //
 // Protocol (main → worker):
 //   { type: 'ping', id }
-//   { type: 'hash', id, buffer, width, height }          // sub-phase 1 diagnostic
-//   { type: 'detectAnchors', id, buffer, width, height } // sub-phase 2
-//   { type: 'initDecoder' }                              // sub-phase 3
-//   { type: 'ingestBatch', id, parsedList }              // sub-phase 3 (async)
-//   { type: 'decodeAndIngest', id, buffer, width, region, expectedPacketSize }
-//   { type: 'resetDecoder' }                             // sub-phase 3
-//   { type: 'noteFrameBoundary', id? }                   // sub-phase 3
-//   { type: 'reconstruct', id }                          // sub-phase 3
-//   { type: 'startCaptureWithTrack', track, region, expectedPacketSize }   // Phase 3.3
-//   { type: 'startCaptureWithOffscreen', region, expectedPacketSize }      // Phase 3.5
-//   { type: 'captureBitmap', bitmap, expectedPacketSize }                  // Phase 3.5
-//   { type: 'updateCaptureRegion', region, expectedPacketSize }            // Phase 3.3
-//   { type: 'setLabFrameTap', enabled }                                    // Phase 2 lab
-//   { type: 'stopCapture' }                                                // Phase 3.3
+//   { type: 'initDecoder' }
+//   { type: 'ingestBatch', id, parsedList }
+//   { type: 'resetDecoder' }
+//   { type: 'noteFrameBoundary', id? }
+//   { type: 'reconstruct', id }
+//   { type: 'startCaptureWithTrack', track, region, expectedPacketSize }
+//   { type: 'startCaptureWithOffscreen', region, expectedPacketSize }
+//   { type: 'captureBitmap', bitmap, expectedPacketSize }
+//   { type: 'updateCaptureRegion', region, expectedPacketSize }
+//   { type: 'setLabFrameTap', enabled }
+//   { type: 'stopCapture' }
 //
 // Protocol (worker → main):
 //   { type: 'ready', protocolVersion }
 //   { type: 'pong', id }
-//   { type: 'hashResult', id, hash, byteLength, width, height, elapsedMs }
-//   { type: 'anchorsResult', id, anchors, region, elapsedMs }
 //   { type: 'decoderDelta', ... }   // emitted on every ingest/reset
 //   { type: 'reconstructResult', id, data?, error? }
-//   { type: 'captureStarted', method: 'track'|'offscreen' }                // Phase 3.3
+//   { type: 'captureStarted', method: 'track'|'offscreen' }
 //   { type: 'captureFrame', decodeResult, innovations, accepted, newSession,
-//     completionEvent, solved, K, K_prime, symbolBreakdown, ... }          // Phase 3.3
-//   { type: 'captureStopped' }                                             // Phase 3.3
+//     completionEvent, solved, K, K_prime, symbolBreakdown, ... }
+//   { type: 'captureStopped' }
 //   { type: 'error', id?, message }
 
 import { detectAnchors, dataRegionFromAnchors, decodeDataRegion } from './hdmi-uvc-frame.js'
@@ -53,56 +50,6 @@ const WORKER_PROTOCOL_VERSION = 2
 // Keep the shadow decoder singleton so initDecoder can be called multiple
 // times in a session (e.g., receive-another flow) without leaking state.
 let decoder = null
-
-function fnv1a32(bytes) {
-  let hash = 0x811c9dc5
-  for (let i = 0; i < bytes.length; i++) {
-    hash ^= bytes[i]
-    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0
-  }
-  return hash >>> 0
-}
-
-function handleHash(msg) {
-  const start = performance.now()
-  const bytes = new Uint8ClampedArray(msg.buffer)
-  const hash = fnv1a32(bytes)
-  const elapsedMs = performance.now() - start
-  return {
-    type: 'hashResult',
-    id: msg.id,
-    hash,
-    byteLength: bytes.length,
-    width: msg.width,
-    height: msg.height,
-    elapsedMs
-  }
-}
-
-function handleDetectAnchors(msg) {
-  const start = performance.now()
-  const bytes = new Uint8ClampedArray(msg.buffer)
-  const anchors = detectAnchors(bytes, msg.width, msg.height)
-  const region = anchors.length >= 2 ? dataRegionFromAnchors(anchors) : null
-  const elapsedMs = performance.now() - start
-  return {
-    type: 'anchorsResult',
-    id: msg.id,
-    anchors: serializeAnchors(anchors),
-    region: serializeRegion(region),
-    elapsedMs
-  }
-}
-
-function serializeAnchors(anchors) {
-  if (!anchors) return []
-  const out = new Array(anchors.length)
-  for (let i = 0; i < anchors.length; i++) {
-    const a = anchors[i]
-    out[i] = { x: a.x, y: a.y, corner: a.corner, blockSize: a.blockSize }
-  }
-  return out
-}
 
 function serializeRegion(region) {
   if (!region) return null
@@ -190,106 +137,6 @@ function decoderPacketSession(d = decoder) {
   const k = d.K_prime
   if (fileId == null && k == null) return null
   return { fileId, k }
-}
-
-function handleDecodeAndIngest(msg) {
-  const start = performance.now()
-  const bytes = new Uint8ClampedArray(msg.buffer)
-  const region = msg.region
-  const decodeResult = decodeDataRegion(bytes, msg.width, region)
-
-  if (!decodeResult) {
-    return {
-      type: 'decodeAndIngestResult',
-      id: msg.id,
-      decodeResult: null,
-      elapsedMs: performance.now() - start
-    }
-  }
-
-  // CRC-invalid frames: return the decode result and let the main thread
-  // drive the salvage paths locally. They're rare and stateful (fixed
-  // layout, phase recovery, headerless) and not worth moving until the
-  // common case proves worth it. Transfer the payload buffer so the main
-  // thread gets it zero-copy.
-  if (!decodeResult.crcValid) {
-    const p = decodeResult.payload
-    const buf = p ? p.buffer.slice(p.byteOffset, p.byteOffset + p.byteLength) : null
-    const c = decodeResult.confidence
-    const confidenceBuf = c ? c.buffer.slice(c.byteOffset, c.byteOffset + c.byteLength) : null
-    const reply = {
-      type: 'decodeAndIngestResult',
-      id: msg.id,
-      decodeResult: {
-        crcValid: false,
-        header: serializeDecodeHeader(decodeResult.header),
-        payload: buf,
-        confidence: confidenceBuf,
-        _diag: decodeResult._diag || null
-      },
-      elapsedMs: performance.now() - start
-    }
-    const transfer = [buf, confidenceBuf].filter(Boolean)
-    return transfer.length ? { reply, transfer } : reply
-  }
-
-  const d = ensureDecoder()
-  const extract = extractValidPacketsFromPayload(decodeResult.payload, msg.expectedPacketSize, {
-    confidence: decodeResult.confidence || null,
-    session: decoderPacketSession(d)
-  })
-  const parsedList = extract.packets
-  let innovations = 0
-  let newSession = false
-  for (const parsed of parsedList) {
-    if (!parsed) continue
-    let r = d.receiveParsed(parsed)
-    if (r === 'new_session') {
-      newSession = true
-      if (typeof d.reset === 'function') d.reset()
-      r = d.receiveParsed(parsed)
-    }
-    if (r === true) innovations++
-  }
-  const isComplete = typeof d.isComplete === 'function' ? d.isComplete() : false
-
-  return {
-    type: 'decodeAndIngestResult',
-    id: msg.id,
-    decodeResult: {
-      crcValid: true,
-      header: serializeDecodeHeader(decodeResult.header),
-      // The main thread uses only the header + slot count from the payload
-      // for UI/logging; don't ship the raw bytes back.
-      payloadLength: decodeResult.payload ? decodeResult.payload.length : 0,
-      slotCount: extract.slotCount || parsedList.length,
-      _diag: decodeResult._diag || null
-    },
-    innovations,
-    accepted: parsedList.length,
-    newSession,
-    completionEvent: isComplete,
-    arqPackets: arqObservationsEnabled ? buildArqPacketObservations(parsedList) : [],
-    solved: d.solved,
-    solvedTotal: d.solvedTotal,
-    // O(K) array; only shipped while the ARQ back-channel needs it for
-    // seeding the receiver controller's received-set.
-    solvedSourceIds: arqObservationsEnabled ? (d.solvedSourceIds ?? null) : null,
-    fileId: d.fileId ?? null,
-    K: d.K ?? null,
-    K_prime: d.K_prime ?? null,
-    blockSize: d.blockSize ?? 0,
-    progress: d.progress ?? 0,
-    uniqueSymbols: d.uniqueSymbols ?? 0,
-    pendingSymbolCount: d.pendingSymbolCount ?? 0,
-    unresolvedSourceCount: d.unresolvedSourceCount ?? null,
-    metadata: d.metadata ?? null,
-    telemetry: d.telemetry ?? null,
-    isComplete,
-    symbolBreakdown: currentSymbolBreakdown(),
-    salvaged: extract.salvaged || 0,
-    elapsedMs: performance.now() - start
-  }
 }
 
 function handleIngestBatch(msg) {
@@ -781,26 +628,12 @@ self.onmessage = (event) => {
             }))
         }
         break
-      case 'hash': {
-        reply = handleHash(msg)
-        break
-      }
-      case 'detectAnchors': {
-        reply = handleDetectAnchors(msg)
-        break
-      }
       case 'initDecoder':
         reply = handleInitDecoder()
         break
       case 'ingestBatch':
         reply = handleIngestBatch(msg)
         break
-      case 'decodeAndIngest': {
-        const res = handleDecodeAndIngest(msg)
-        if (res && res.reply) { reply = res.reply; transfer = res.transfer }
-        else reply = res
-        break
-      }
       case 'resetDecoder':
         reply = handleResetDecoder()
         break

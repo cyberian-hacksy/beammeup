@@ -1,6 +1,7 @@
 // CIMBAR Sender module - handles file encoding and CIMBAR display
 import { loadCimbarWasm, getModule } from './cimbar-loader.js'
 import { formatBytes, formatTime } from '../format.js'
+import { wireDropZone } from '../shared/dropzone.js'
 
 const MAX_FILE_SIZE = 33 * 1024 * 1024 // 33MB (CIMBAR limit)
 
@@ -300,50 +301,6 @@ async function processFile(file) {
   }
 }
 
-function handleFileSelect(e) {
-  processFile(e.target.files[0])
-}
-
-function handleDropZoneClick() {
-  if (!state.fileData) {
-    elements.fileInput.click()
-  }
-}
-
-// The drop zone is a div with role="button"; Enter/Space must work like click
-function handleDropZoneKeydown(e) {
-  if ((e.key === 'Enter' || e.key === ' ') && !state.fileData) {
-    e.preventDefault()
-    elements.fileInput.click()
-  }
-}
-
-function handleDragOver(e) {
-  e.preventDefault()
-  e.stopPropagation()
-  if (!state.fileData) {
-    elements.container.classList.add('dragover')
-  }
-}
-
-function handleDragLeave(e) {
-  e.preventDefault()
-  e.stopPropagation()
-  elements.container.classList.remove('dragover')
-}
-
-async function handleDrop(e) {
-  e.preventDefault()
-  e.stopPropagation()
-  elements.container.classList.remove('dragover')
-
-  if (state.fileData) return
-
-  const files = e.dataTransfer.files
-  if (files.length > 0) {
-    await processFile(files[0])
-  }
-}
 
 function handleSizeChange() {
   const index = parseInt(elements.sizeSlider.value)
@@ -403,15 +360,15 @@ export function initCimbarSender(errorHandler) {
   handleSizeChange()
   handleSpeedChange()
 
-  elements.fileInput.onchange = handleFileSelect
   elements.sizeSlider.oninput = handleSizeChange
   elements.speedSlider.oninput = handleSpeedChange
   elements.btnAction.onclick = handleActionClick
   elements.btnStop.onclick = stopSending
 
-  elements.container.onclick = handleDropZoneClick
-  elements.container.onkeydown = handleDropZoneKeydown
-  elements.container.ondragover = handleDragOver
-  elements.container.ondragleave = handleDragLeave
-  elements.container.ondrop = handleDrop
+  wireDropZone({
+    container: elements.container,
+    fileInput: elements.fileInput,
+    hasFile: () => !!state.fileData,
+    onFile: processFile
+  })
 }

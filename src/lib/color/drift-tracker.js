@@ -71,7 +71,7 @@ export class DriftTracker {
    * @param {ModuleGrid} moduleGrid - Grid for position mapping
    * @param {ImageData} imageData - Frame pixel data
    * @param {ColorCorrector} colorCorrector - Color correction
-   * @param {RelativeColorClassifier} classifier - Color classifier
+   * @param {LABColorClassifier} classifier - Color classifier
    * @returns {{bits, confidence, drift, sampledRGB, correctedRGB}|null}
    */
   classifyWithDrift(row, col, moduleGrid, imageData, colorCorrector, classifier) {

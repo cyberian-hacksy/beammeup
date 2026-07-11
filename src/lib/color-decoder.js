@@ -6,7 +6,6 @@ const DEBUG_MODE = typeof location !== 'undefined' && new URLSearchParams(locati
 
 import { ModuleGrid } from './color/module-grid.js'
 import { ColorCorrector } from './color/color-corrector.js'
-import { RelativeColorClassifier } from './color/relative-classifier.js'
 import { LABColorClassifier } from './color/lab-classifier.js'
 import { DriftTracker } from './color/drift-tracker.js'
 import { PriorityDecoder } from './color/priority-decoder.js'
@@ -19,43 +18,17 @@ import { PriorityDecoder } from './color/priority-decoder.js'
  * 4. Generate binary channel images for jsQR
  */
 export class ColorQRDecoder {
-  constructor(classifierType = 'lab') {
+  constructor() {
     this.grid = null
     this.corrector = new ColorCorrector()
-    this.classifierType = classifierType
-    this.classifier = this.createClassifier(classifierType)
+    this.classifierType = 'lab'
+    this.classifier = new LABColorClassifier()
     this.drift = null
     this.decoder = null
 
     // Persist drift tracker across frames for continuity
     this.persistentDrift = null
     this.lastGridSize = 0
-  }
-
-  /**
-   * Create a color classifier of the specified type
-   * @param {string} type - 'lab' or 'relative'
-   */
-  createClassifier(type) {
-    switch (type) {
-      case 'lab':
-        return new LABColorClassifier()
-      case 'relative':
-      default:
-        return new RelativeColorClassifier()
-    }
-  }
-
-  /**
-   * Switch to a different classifier type
-   * @param {string} type - 'lab' or 'relative'
-   */
-  setClassifierType(type) {
-    if (this.classifierType !== type) {
-      this.classifierType = type
-      this.classifier = this.createClassifier(type)
-      if (DEBUG_MODE) console.log(`[ColorQRDecoder] switched to ${type} classifier`)
-    }
   }
 
   /**
@@ -150,13 +123,13 @@ export class ColorQRDecoder {
   }
 
   /**
-   * Detect QR version from the location data
-   * Finder patterns are always 7 modules, so we can estimate version from QR size
+   * Compute the shared geometric frame of a detected QR: pixel width along the
+   * top edge, unit direction vectors, and (when the grid is known) module size.
+   * Used by version detection and both finder-sampling passes so the geometry
+   * math lives in one place.
    */
-  detectVersion(qrLocation) {
+  getFinderBasis(qrLocation) {
     const { topLeftCorner, topRightCorner, bottomLeftCorner } = qrLocation
-
-    // Calculate QR dimensions in pixels
     const qrWidth = Math.sqrt(
       Math.pow(topRightCorner.x - topLeftCorner.x, 2) +
       Math.pow(topRightCorner.y - topLeftCorner.y, 2)
@@ -165,7 +138,30 @@ export class ColorQRDecoder {
       Math.pow(bottomLeftCorner.x - topLeftCorner.x, 2) +
       Math.pow(bottomLeftCorner.y - topLeftCorner.y, 2)
     )
+    return {
+      topLeftCorner,
+      topRightCorner,
+      bottomLeftCorner,
+      qrWidth,
+      qrHeight,
+      moduleSize: this.grid ? qrWidth / this.grid.size : null,
+      toRight: {
+        x: (topRightCorner.x - topLeftCorner.x) / qrWidth,
+        y: (topRightCorner.y - topLeftCorner.y) / qrWidth
+      },
+      toBottom: {
+        x: (bottomLeftCorner.x - topLeftCorner.x) / qrWidth,
+        y: (bottomLeftCorner.y - topLeftCorner.y) / qrWidth
+      }
+    }
+  }
 
+  /**
+   * Detect QR version from the location data
+   * Finder patterns are always 7 modules, so we can estimate version from QR size
+   */
+  detectVersion(qrLocation) {
+    const { qrWidth, qrHeight } = this.getFinderBasis(qrLocation)
     const avgSize = (qrWidth + qrHeight) / 2
 
     // Find the version that gives module size closest to ideal (8-12 pixels)
@@ -202,25 +198,9 @@ export class ColorQRDecoder {
    */
   sampleFinderCenters(imageData, qrLocation) {
     const samples = []
-    const { topLeftCorner, topRightCorner, bottomLeftCorner } = qrLocation
-
-    // Calculate approximate module size and offset to center
-    const qrWidth = Math.sqrt(
-      Math.pow(topRightCorner.x - topLeftCorner.x, 2) +
-      Math.pow(topRightCorner.y - topLeftCorner.y, 2)
-    )
-    const moduleSize = qrWidth / this.grid.size
+    const { topLeftCorner, topRightCorner, bottomLeftCorner, moduleSize, toRight, toBottom } =
+      this.getFinderBasis(qrLocation)
     const offsetToCenter = moduleSize * 3.5  // Center is 3.5 modules in from corner
-
-    // Direction vectors
-    const toRight = {
-      x: (topRightCorner.x - topLeftCorner.x) / qrWidth,
-      y: (topRightCorner.y - topLeftCorner.y) / qrWidth
-    }
-    const toBottom = {
-      x: (bottomLeftCorner.x - topLeftCorner.x) / qrWidth,
-      y: (bottomLeftCorner.y - topLeftCorner.y) / qrWidth
-    }
 
     // Top-left finder center
     const tlCenterX = topLeftCorner.x + offsetToCenter * toRight.x + offsetToCenter * toBottom.x
@@ -245,23 +225,7 @@ export class ColorQRDecoder {
    */
   sampleFinderRings(imageData, qrLocation) {
     const samples = []
-    const { topLeftCorner, topRightCorner, bottomLeftCorner } = qrLocation
-
-    const qrWidth = Math.sqrt(
-      Math.pow(topRightCorner.x - topLeftCorner.x, 2) +
-      Math.pow(topRightCorner.y - topLeftCorner.y, 2)
-    )
-    const moduleSize = qrWidth / this.grid.size
-
-    // Direction vectors
-    const toRight = {
-      x: (topRightCorner.x - topLeftCorner.x) / qrWidth,
-      y: (topRightCorner.y - topLeftCorner.y) / qrWidth
-    }
-    const toBottom = {
-      x: (bottomLeftCorner.x - topLeftCorner.x) / qrWidth,
-      y: (bottomLeftCorner.y - topLeftCorner.y) / qrWidth
-    }
+    const { topLeftCorner, moduleSize, toRight, toBottom } = this.getFinderBasis(qrLocation)
 
     // White ring is at 1.5 modules from corner, 3.5 modules along each edge
     const whiteOffset = moduleSize * 1.5

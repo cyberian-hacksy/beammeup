@@ -1,12 +1,13 @@
 // Receiver module - handles camera scanning and QR decoding
 import jsQR from 'jsqr'
 import { createDecoder } from './decoder.js'
-import { QR_MODE, MODE_MARGIN_RATIOS, PATCH_SIZE_RATIO, PATCH_GAP_RATIO } from './constants.js'
-import { calibrateFromFinders, normalizeRgb } from './calibration.js'
+import { QR_MODE } from './constants.js'
 import { ColorQRDecoder } from './color-decoder.js'
 import { formatBytes, formatTime } from './format.js'
 import { playBeep, announce, copyWithButtonFeedback } from './feedback.js'
 import { confirmDialog } from './confirm-dialog.js'
+import { triggerBlobDownload } from './shared/download.js'
+import { isMobileUA, listVideoInputs, populateCameraSelect, nextCamera } from './shared/camera.js'
 
 // Debug mode - enabled via ?test URL parameter (exact param, not substring)
 const DEBUG_MODE = typeof location !== 'undefined' && new URLSearchParams(location.search).has('test')
@@ -36,9 +37,6 @@ const state = {
   // Debug counters
   frameCount: 0,
   detectCount: 0,
-  // Calibration smoothing
-  smoothWhite: null,       // Smoothed white reference [r,g,b]
-  smoothBlack: null,       // Smoothed black reference [r,g,b]
   // New libcimbar-based color decoder
   colorDecoder: null,
   // Set once metadata arrives so "Receiving <file>" is announced only once
@@ -52,12 +50,10 @@ let elements = null
 let showError = (msg) => console.error(msg)
 
 // Debug helpers
-let lastLoggedState = ''
 let lastLoggedSymIds = ''
 let lastLoggedDecodePattern = ''
 let lastLoggedSymCount = 0
 let logEntryCount = 0
-let lastLoggedThresholds = { r: 0, g: 0, b: 0 }
 
 function debugStatus(text) {
   const el = document.getElementById('debug-current')
@@ -113,179 +109,6 @@ function debugLog(text, forceLog = false) {
 
 // ============ Color Mode Helpers ============
 
-// Fixed 8-color RGB palette for Palette mode (matches sender)
-const PALETTE_RGB = [
-  [255, 255, 255], // 0: White
-  [255, 255, 0],   // 1: Yellow
-  [255, 0, 255],   // 2: Magenta
-  [255, 0, 0],     // 3: Red
-  [0, 255, 255],   // 4: Cyan
-  [0, 255, 0],     // 5: Green
-  [0, 0, 255],     // 6: Blue
-  [0, 0, 0]        // 7: Black
-]
-
-// Patch configuration for sampling HCC2D calibration patches
-const PALETTE_PATCH_CONFIG = [
-  { corner: 'TL', offset: 0, paletteIndex: 0 },
-  { corner: 'TL', offset: 1, paletteIndex: 3 },
-  { corner: 'TR', offset: 0, paletteIndex: 5 },
-  { corner: 'TR', offset: 1, paletteIndex: 4 },
-  { corner: 'BL', offset: 0, paletteIndex: 6 },
-  { corner: 'BL', offset: 1, paletteIndex: 2 },
-  { corner: 'BR', offset: 0, paletteIndex: 1 },
-  { corner: 'BR', offset: 1, paletteIndex: 7 },
-]
-
-// Adaptive thresholds for PCCC channel classification
-// These auto-adjust based on observed normalized values
-const adaptiveThresholds = {
-  r: 0.62,  // Initial Cyan threshold (higher due to red bias)
-  g: 0.52,  // Initial Magenta threshold
-  b: 0.52,  // Initial Yellow threshold
-
-  // Running stats for adaptation (exponential moving average)
-  // Initial values closer to observed reality for faster convergence
-  rRunningMin: 0.45, rRunningMax: 0.75,
-  gRunningMin: 0.40, gRunningMax: 0.65,
-  bRunningMin: 0.40, bRunningMax: 0.65,
-  frameCount: 0,
-
-  // Update thresholds based on observed min/max
-  update(rMin, rMax, gMin, gMax, bMin, bMax) {
-    // Use faster adaptation for first 20 frames, then slower for stability
-    const alpha = this.frameCount < 20 ? 0.4 : 0.15
-
-    // Update running min/max with smoothing
-    this.rRunningMin = alpha * rMin + (1 - alpha) * this.rRunningMin
-    this.rRunningMax = alpha * rMax + (1 - alpha) * this.rRunningMax
-    this.gRunningMin = alpha * gMin + (1 - alpha) * this.gRunningMin
-    this.gRunningMax = alpha * gMax + (1 - alpha) * this.gRunningMax
-    this.bRunningMin = alpha * bMin + (1 - alpha) * this.bRunningMin
-    this.bRunningMax = alpha * bMax + (1 - alpha) * this.bRunningMax
-
-    // Calculate new thresholds as midpoint between min and max
-    // with a slight bias toward higher values (since we see high bias)
-    const bias = 0.55  // 0.5 = exact middle, higher = bias toward max
-    this.r = this.rRunningMin + (this.rRunningMax - this.rRunningMin) * bias
-    this.g = this.gRunningMin + (this.gRunningMax - this.gRunningMin) * bias
-    this.b = this.bRunningMin + (this.bRunningMax - this.bRunningMin) * bias
-
-    // Clamp to reasonable range
-    this.r = Math.max(0.4, Math.min(0.85, this.r))
-    this.g = Math.max(0.4, Math.min(0.75, this.g))
-    this.b = Math.max(0.4, Math.min(0.75, this.b))
-
-    this.frameCount++
-
-    // Log threshold changes: only when significant (3+ points) or every 50 frames
-    const tR = Math.round(this.r * 100)
-    const tG = Math.round(this.g * 100)
-    const tB = Math.round(this.b * 100)
-    const significantChange = Math.abs(tR - lastLoggedThresholds.r) >= 3 ||
-                              Math.abs(tG - lastLoggedThresholds.g) >= 3 ||
-                              Math.abs(tB - lastLoggedThresholds.b) >= 3
-    const periodicLog = this.frameCount % 50 === 0
-
-    if (significantChange || periodicLog) {
-      lastLoggedThresholds = { r: tR, g: tG, b: tB }
-      // Log range info too for context
-      const rngR = Math.round(this.rRunningMin * 100) + '-' + Math.round(this.rRunningMax * 100)
-      const rngG = Math.round(this.gRunningMin * 100) + '-' + Math.round(this.gRunningMax * 100)
-      const rngB = Math.round(this.bRunningMin * 100) + '-' + Math.round(this.bRunningMax * 100)
-      debugLog('>>> THRESH #' + this.frameCount + ' tR' + tR + ' tG' + tG + ' tB' + tB + ' | R:' + rngR + ' G:' + rngG + ' B:' + rngB)
-    }
-  },
-
-  reset() {
-    // Initial thresholds based on typical camera bias
-    this.r = 0.62
-    this.g = 0.52
-    this.b = 0.52
-    // Initial running min/max closer to observed reality
-    this.rRunningMin = 0.45; this.rRunningMax = 0.75
-    this.gRunningMin = 0.40; this.gRunningMax = 0.65
-    this.bRunningMin = 0.40; this.bRunningMax = 0.65
-    this.frameCount = 0
-    lastLoggedThresholds = { r: 0, g: 0, b: 0 }
-  }
-}
-
-// Debug: track normalized value distribution per frame
-// Filter out clipped/extreme values to get reliable stats
-const normStats = {
-  rSum: 0, gSum: 0, bSum: 0,
-  rMin: 1, gMin: 1, bMin: 1,
-  rMax: 0, gMax: 0, bMax: 0,
-  count: 0,
-  // Track "valid" min/max (excluding outliers near 0 or 1)
-  rValidMin: 1, gValidMin: 1, bValidMin: 1,
-  rValidMax: 0, gValidMax: 0, bValidMax: 0,
-  validCount: 0,
-  reset() {
-    this.rSum = this.gSum = this.bSum = 0
-    this.rMin = this.gMin = this.bMin = 1
-    this.rMax = this.gMax = this.bMax = 0
-    this.count = 0
-    this.rValidMin = this.gValidMin = this.bValidMin = 1
-    this.rValidMax = this.gValidMax = this.bValidMax = 0
-    this.validCount = 0
-  },
-  add(r, g, b) {
-    this.rSum += r; this.gSum += g; this.bSum += b
-    this.rMin = Math.min(this.rMin, r); this.gMin = Math.min(this.gMin, g); this.bMin = Math.min(this.bMin, b)
-    this.rMax = Math.max(this.rMax, r); this.gMax = Math.max(this.gMax, g); this.bMax = Math.max(this.bMax, b)
-    this.count++
-    // Only track "valid" range for values not clipped (between 0.1 and 0.9)
-    // This filters out pixels that hit calibration limits
-    if (r > 0.1 && r < 0.9 && g > 0.1 && g < 0.9 && b > 0.1 && b < 0.9) {
-      this.rValidMin = Math.min(this.rValidMin, r)
-      this.gValidMin = Math.min(this.gValidMin, g)
-      this.bValidMin = Math.min(this.bValidMin, b)
-      this.rValidMax = Math.max(this.rValidMax, r)
-      this.gValidMax = Math.max(this.gValidMax, g)
-      this.bValidMax = Math.max(this.bValidMax, b)
-      this.validCount++
-    }
-  },
-  getStats() {
-    if (this.count === 0) return null
-    return {
-      rAvg: this.rSum / this.count,
-      gAvg: this.gSum / this.count,
-      bAvg: this.bSum / this.count,
-      rRange: [this.rMin, this.rMax],
-      gRange: [this.gMin, this.gMax],
-      bRange: [this.bMin, this.bMax]
-    }
-  },
-  // Update adaptive thresholds after each frame using valid (non-clipped) stats
-  updateAdaptive() {
-    if (this.validCount > 10) {
-      // Use valid min/max (filtered) for threshold adaptation
-      adaptiveThresholds.update(
-        this.rValidMin, this.rValidMax,
-        this.gValidMin, this.gValidMax,
-        this.bValidMin, this.bValidMax
-      )
-    }
-  }
-}
-
-// Check if position is finder or timing pattern
-function isFinderOrTiming(row, col, size) {
-  if (row < 8 && col < 8) return true
-  if (row < 8 && col >= size - 8) return true
-  if (row >= size - 8 && col < 8) return true
-  if (row === 6 || col === 6) return true
-  if (size > 25) {
-    const alignPos = size - 7
-    if (row >= alignPos - 2 && row <= alignPos + 2 &&
-        col >= alignPos - 2 && col <= alignPos + 2) return true
-  }
-  return false
-}
-
 // Convert image to grayscale for QR detection
 function toGrayscale(imageData) {
   const gray = new Uint8ClampedArray(imageData.width * imageData.height * 4)
@@ -302,360 +125,6 @@ function toGrayscale(imageData) {
   return gray
 }
 
-// Sample color from center of a region (5x5 average)
-function sampleColor(pixels, width, centerX, centerY) {
-  let rSum = 0, gSum = 0, bSum = 0, count = 0
-  const sampleRadius = 2
-
-  for (let dy = -sampleRadius; dy <= sampleRadius; dy++) {
-    for (let dx = -sampleRadius; dx <= sampleRadius; dx++) {
-      const x = Math.round(centerX + dx)
-      const y = Math.round(centerY + dy)
-      if (x >= 0 && x < width && y >= 0) {
-        const idx = (y * width + x) * 4
-        rSum += pixels[idx]
-        gSum += pixels[idx + 1]
-        bSum += pixels[idx + 2]
-        count++
-      }
-    }
-  }
-
-  if (count === 0) return null
-  return [Math.round(rSum / count), Math.round(gSum / count), Math.round(bSum / count)]
-}
-
-// Get patch position in image based on QR bounds (matches sender's ratio-based approach)
-// Calculates margin, patch size, and gap from the detected QR size using the same ratios as sender
-function getPatchPositionInImage(corner, offset, qrBounds) {
-  const { qrLeft, qrTop, qrWidth, qrHeight } = qrBounds
-
-  // Use ratio-based sizing (matches sender)
-  // qrWidth corresponds to the QR code size, margin is calculated from that
-  const margin = qrWidth * MODE_MARGIN_RATIOS[QR_MODE.PALETTE]
-  const patchSize = margin * PATCH_SIZE_RATIO
-  const gap = margin * PATCH_GAP_RATIO
-
-  let x, y
-  switch (corner) {
-    case 'TL':
-      x = qrLeft - margin + gap + offset * (patchSize + gap) + patchSize / 2
-      y = qrTop - margin + gap + patchSize / 2
-      break
-    case 'TR':
-      x = qrLeft + qrWidth + margin - gap - patchSize / 2 - offset * (patchSize + gap)
-      y = qrTop - margin + gap + patchSize / 2
-      break
-    case 'BL':
-      x = qrLeft - margin + gap + offset * (patchSize + gap) + patchSize / 2
-      y = qrTop + qrHeight + margin - gap - patchSize / 2
-      break
-    case 'BR':
-      x = qrLeft + qrWidth + margin - gap - patchSize / 2 - offset * (patchSize + gap)
-      y = qrTop + qrHeight + margin - gap - patchSize / 2
-      break
-  }
-
-  return { x, y }
-}
-
-// Sample calibration patches for Palette mode
-function samplePatchCalibration(pixels, imageSize, qrBounds) {
-  const palette = new Array(8).fill(null)
-  let successCount = 0
-  let debugPositions = []
-
-  for (const patch of PALETTE_PATCH_CONFIG) {
-    const pos = getPatchPositionInImage(patch.corner, patch.offset, qrBounds)
-
-    if (pos.x >= 0 && pos.x < imageSize && pos.y >= 0 && pos.y < imageSize) {
-      const color = sampleColor(pixels, imageSize, pos.x, pos.y)
-      if (color) {
-        palette[patch.paletteIndex] = color
-        successCount++
-        debugPositions.push(patch.corner + patch.offset + ':' + Math.round(pos.x) + ',' + Math.round(pos.y))
-      }
-    }
-  }
-
-  // Log patch positions periodically for debugging
-  if (paletteStats.frameCount % 100 === 0 && debugPositions.length > 0) {
-    const { qrLeft, qrTop, qrWidth, qrHeight } = qrBounds
-    debugLog('>>> PATCHPOS QR:' + Math.round(qrLeft) + ',' + Math.round(qrTop) + ' ' + Math.round(qrWidth) + 'x' + Math.round(qrHeight) + ' | ' + debugPositions.join(' '))
-  }
-
-  // Require at least 6 patches for patch-based calibration
-  if (successCount >= 6) {
-    for (let i = 0; i < 8; i++) {
-      if (!palette[i]) {
-        palette[i] = PALETTE_RGB[i]
-      }
-    }
-
-    // Validate palette: check that colors are sufficiently distinct
-    // White (0) should be bright, Black (7) should be dark
-    let white = palette[0]
-    let black = palette[7]
-    const red = palette[3]
-    let whiteBrightness = white[0] + white[1] + white[2]
-    let blackBrightness = black[0] + black[1] + black[2]
-
-    // If black is brighter than white, swap them (lighting/exposure issue)
-    if (blackBrightness > whiteBrightness) {
-      const temp = white; white = black; black = temp
-      const tempB = whiteBrightness; whiteBrightness = blackBrightness; blackBrightness = tempB
-      palette[0] = white
-      palette[7] = black
-    }
-
-    // Log sampled colors periodically for debugging
-    if (paletteStats.frameCount % 50 === 0) {
-      debugLog('>>> SAMPLED W:' + white.join(',') + '=' + whiteBrightness +
-               ' K:' + black.join(',') + '=' + blackBrightness +
-               ' R:' + red.join(','), true)
-    }
-
-    // Camera compresses dynamic range - white isn't 765, black isn't 0
-    // Relaxed thresholds: white > 350, black < 450, difference > 100
-    if (whiteBrightness < 350 || blackBrightness > 450 || whiteBrightness - blackBrightness < 100) {
-      // Palette looks invalid - colors not distinct enough
-      if (paletteStats.frameCount % 50 === 0) {
-        debugLog('>>> PATCH FAIL: brightness W' + whiteBrightness + ' K' + blackBrightness + ' diff' + (whiteBrightness - blackBrightness), true)
-      }
-      return null
-    }
-
-    // Check that at least some colors have distinct hues
-    // Red (3) should have high R, low G - relaxed from +50 to +30
-    if (red[0] < red[1] + 30) {
-      // Red doesn't look red
-      if (paletteStats.frameCount % 50 === 0) {
-        debugLog('>>> PATCH FAIL: red R' + red[0] + ' G' + red[1], true)
-      }
-      return null
-    }
-
-    return palette
-  }
-
-  // Not enough patches sampled
-  if (paletteStats.frameCount % 100 === 0) {
-    debugLog('>>> PATCH FAIL: only ' + successCount + '/8 patches', true)
-  }
-  return null
-}
-
-// Classify CMY color for PCCC mode
-function classifyCMY(r, g, b, white, black, collectStats = false) {
-  const [normR, normG, normB] = normalizeRgb(r, g, b, white, black, true)
-
-  // Collect stats for debugging (only sample every Nth pixel)
-  if (collectStats) {
-    normStats.add(normR, normG, normB)
-  }
-
-  // Use adaptive thresholds that auto-adjust based on observed values
-  return [
-    normR < adaptiveThresholds.r ? 1 : 0,
-    normG < adaptiveThresholds.g ? 1 : 0,
-    normB < adaptiveThresholds.b ? 1 : 0
-  ]
-}
-
-// Debug: track palette classification stats
-const paletteStats = {
-  counts: new Array(8).fill(0),
-  lastPalette: null,
-  frameCount: 0,
-  reset() {
-    this.counts = new Array(8).fill(0)
-    this.lastPalette = null
-    this.frameCount = 0
-  },
-  add(index) {
-    this.counts[index]++
-  },
-  logPalette(palette) {
-    if (this.frameCount % 100 === 0 && palette) {
-      // Log sampled palette colors periodically
-      const colors = palette.map((c, i) => i + ':' + c.join(',')).join(' | ')
-      debugLog('>>> PALETTE ' + colors)
-      // Log White/Black used for normalization
-      const w = palette[0], k = palette[7]
-      debugLog('>>> CALIB W:' + w.join(',') + ' K:' + k.join(','))
-      // Log adaptive thresholds
-      const t = rgbAdaptiveThresholds
-      debugLog('>>> RGB-THRESH R:' + Math.round(t.r * 100) + ' G:' + Math.round(t.g * 100) + ' B:' + Math.round(t.b * 100) +
-               ' | R:' + Math.round(t.rMin * 100) + '-' + Math.round(t.rMax * 100) +
-               ' G:' + Math.round(t.gMin * 100) + '-' + Math.round(t.gMax * 100) +
-               ' B:' + Math.round(t.bMin * 100) + '-' + Math.round(t.bMax * 100))
-    }
-    this.lastPalette = palette
-    this.frameCount++
-  },
-  getDistribution() {
-    const total = this.counts.reduce((a, b) => a + b, 0)
-    if (total === 0) return null
-    return this.counts.map(c => Math.round(100 * c / total))
-  }
-}
-
-// Adaptive thresholds for RGB/Palette mode (similar to CMY)
-const rgbAdaptiveThresholds = {
-  r: 0.50, g: 0.50, b: 0.50,
-  rMin: 0.3, rMax: 0.7,
-  gMin: 0.3, gMax: 0.7,
-  bMin: 0.3, bMax: 0.7,
-  frameCount: 0,
-
-  update(rMin, rMax, gMin, gMax, bMin, bMax) {
-    const alpha = this.frameCount < 20 ? 0.4 : 0.15
-    this.rMin = alpha * rMin + (1 - alpha) * this.rMin
-    this.rMax = alpha * rMax + (1 - alpha) * this.rMax
-    this.gMin = alpha * gMin + (1 - alpha) * this.gMin
-    this.gMax = alpha * gMax + (1 - alpha) * this.gMax
-    this.bMin = alpha * bMin + (1 - alpha) * this.bMin
-    this.bMax = alpha * bMax + (1 - alpha) * this.bMax
-
-    // Threshold at midpoint with slight bias
-    const bias = 0.50
-    this.r = this.rMin + (this.rMax - this.rMin) * bias
-    this.g = this.gMin + (this.gMax - this.gMin) * bias
-    this.b = this.bMin + (this.bMax - this.bMin) * bias
-
-    // Clamp to reasonable range
-    this.r = Math.max(0.3, Math.min(0.7, this.r))
-    this.g = Math.max(0.3, Math.min(0.7, this.g))
-    this.b = Math.max(0.3, Math.min(0.7, this.b))
-
-    this.frameCount++
-  },
-
-  reset() {
-    this.r = this.g = this.b = 0.50
-    this.rMin = this.gMin = this.bMin = 0.3
-    this.rMax = this.gMax = this.bMax = 0.7
-    this.frameCount = 0
-  }
-}
-
-// Track normalized RGB stats for adaptive thresholding
-const rgbNormStats = {
-  rMin: 1, rMax: 0, gMin: 1, gMax: 0, bMin: 1, bMax: 0, count: 0,
-  reset() {
-    this.rMin = this.gMin = this.bMin = 1
-    this.rMax = this.gMax = this.bMax = 0
-    this.count = 0
-  },
-  add(r, g, b) {
-    // Only track valid range (not clipped)
-    if (r > 0.1 && r < 0.9) { this.rMin = Math.min(this.rMin, r); this.rMax = Math.max(this.rMax, r) }
-    if (g > 0.1 && g < 0.9) { this.gMin = Math.min(this.gMin, g); this.gMax = Math.max(this.gMax, g) }
-    if (b > 0.1 && b < 0.9) { this.bMin = Math.min(this.bMin, b); this.bMax = Math.max(this.bMax, b) }
-    this.count++
-  },
-  updateAdaptive() {
-    if (this.count > 10) {
-      rgbAdaptiveThresholds.update(this.rMin, this.rMax, this.gMin, this.gMax, this.bMin, this.bMax)
-    }
-  }
-}
-
-// Classify RGB palette color for Palette mode
-// Uses White/Black from sampled palette for normalization + adaptive thresholds
-function classifyPalette(r, g, b, sampledPalette, calibration, collectStats = false) {
-  // Use White (index 0) and Black (index 7) from sampled palette for normalization
-  const white = sampledPalette ? sampledPalette[0] : calibration.white
-  const black = sampledPalette ? sampledPalette[7] : calibration.black
-
-  // Normalize each channel to 0-1 range (0 = black, 1 = white)
-  const [normR, normG, normB] = normalizeRgb(r, g, b, white, black, true)
-
-  // Collect stats for adaptive thresholding
-  if (collectStats) {
-    rgbNormStats.add(normR, normG, normB)
-  }
-
-  // Use adaptive thresholds: below = dark (bit 1), above = light (bit 0)
-  const rBit = normR < rgbAdaptiveThresholds.r ? 1 : 0
-  const gBit = normG < rgbAdaptiveThresholds.g ? 1 : 0
-  const bBit = normB < rgbAdaptiveThresholds.b ? 1 : 0
-
-  // Track stats for debugging
-  if (collectStats) {
-    const index = rBit * 4 + gBit * 2 + bBit
-    paletteStats.add(index)
-  }
-
-  return [rBit, gBit, bBit]
-}
-
-// Extract color channels from image and decode
-function extractColorChannels(imageData, qrBounds, mode, calibration, sampledPalette) {
-  const { qrLeft, qrTop, qrWidth, qrHeight } = qrBounds
-  const size = imageData.width
-  const pixels = imageData.data
-
-  // Reset stats for this frame
-  if (mode === QR_MODE.PCCC) {
-    normStats.reset()
-  } else if (mode === QR_MODE.PALETTE) {
-    rgbNormStats.reset()
-    // Log palette periodically for debugging
-    paletteStats.logPalette(sampledPalette)
-  }
-
-  // Allocate or reuse channel buffers
-  const bufferSize = size * size * 4
-  if (bufferSize !== state.lastBufferSize) {
-    state.channelBuffers = {
-      ch0: new Uint8ClampedArray(bufferSize),
-      ch1: new Uint8ClampedArray(bufferSize),
-      ch2: new Uint8ClampedArray(bufferSize)
-    }
-    state.lastBufferSize = bufferSize
-  }
-
-  const { ch0, ch1, ch2 } = state.channelBuffers
-  let sampleCounter = 0
-
-  for (let py = 0; py < size; py++) {
-    for (let px = 0; px < size; px++) {
-      const idx = (py * size + px) * 4
-      const r = pixels[idx]
-      const g = pixels[idx + 1]
-      const b = pixels[idx + 2]
-
-      let bits
-      if (px >= qrLeft && px < qrLeft + qrWidth && py >= qrTop && py < qrTop + qrHeight) {
-        if (mode === QR_MODE.PCCC) {
-          // Collect stats every 50th pixel to avoid performance hit
-          const collectStats = (++sampleCounter % 50 === 0)
-          bits = classifyCMY(r, g, b, calibration.white, calibration.black, collectStats)
-        } else {
-          // For PALETTE mode: use sampled palette if available, else use calibration for normalization
-          const collectStats = (++sampleCounter % 50 === 0)
-          bits = classifyPalette(r, g, b, sampledPalette, calibration, collectStats)
-        }
-      } else {
-        bits = [0, 0, 0] // Outside QR = white
-      }
-
-      // Create grayscale channel images (bit 1 = dark, bit 0 = light)
-      const g0 = bits[0] ? 0 : 255
-      const g1 = bits[1] ? 0 : 255
-      const g2 = bits[2] ? 0 : 255
-
-      ch0[idx] = ch0[idx + 1] = ch0[idx + 2] = g0; ch0[idx + 3] = 255
-      ch1[idx] = ch1[idx + 1] = ch1[idx + 2] = g1; ch1[idx + 3] = 255
-      ch2[idx] = ch2[idx + 1] = ch2[idx + 2] = g2; ch2[idx + 3] = 255
-    }
-  }
-
-  return { ch0, ch1, ch2, size }
-}
-
-// Update mode status display
 function updateModeStatus() {
   if (!elements.modeStatus) return
 
@@ -713,11 +182,10 @@ async function enumerateCameras() {
     const tempStream = await navigator.mediaDevices.getUserMedia({ video: true })
     tempStream.getTracks().forEach(t => t.stop())
 
-    const devices = await navigator.mediaDevices.enumerateDevices()
-    let cameras = devices.filter(d => d.kind === 'videoinput')
+    let cameras = await listVideoInputs()
 
     // Detect mobile (iOS/Android)
-    state.isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+    state.isMobile = isMobileUA()
 
     if (state.isMobile) {
       // On mobile: filter to front/back only
@@ -742,17 +210,7 @@ async function enumerateCameras() {
       // Desktop: show dropdown directly, hide toggle button
       elements.btnCameraSwitch.classList.add('hidden')
       elements.cameraPicker.classList.remove('hidden')
-
-      while (elements.cameraDropdown.firstChild) {
-        elements.cameraDropdown.removeChild(elements.cameraDropdown.firstChild)
-      }
-
-      cameras.forEach((cam, i) => {
-        const option = document.createElement('option')
-        option.value = cam.deviceId
-        option.textContent = cam.label || ('Camera ' + (i + 1))
-        elements.cameraDropdown.appendChild(option)
-      })
+      populateCameraSelect(elements.cameraDropdown, cameras)
     }
 
     state.cameras = cameras
@@ -814,11 +272,6 @@ async function startScanning(deviceId) {
     state.isScanning = true
     state.frameCount = 0
     state.detectCount = 0
-    state.smoothWhite = null
-    state.smoothBlack = null
-    adaptiveThresholds.reset()
-    rgbAdaptiveThresholds.reset()
-    paletteStats.reset()
     state.announcedReceiving = false
 
     showStatus('scanning')
@@ -881,13 +334,10 @@ async function switchCamera(deviceId) {
 // Toggle between front and back camera (mobile only)
 async function toggleMobileCamera(e) {
   e.stopPropagation()
-  if (state.cameras.length < 2) return
+  const next = nextCamera(state.cameras, state.currentCameraId)
+  if (!next) return
 
-  const currentIndex = state.cameras.findIndex(c => c.deviceId === state.currentCameraId)
-  const nextIndex = (currentIndex + 1) % state.cameras.length
-  const nextCamera = state.cameras[nextIndex]
-
-  await switchCamera(nextCamera.deviceId)
+  await switchCamera(next.deviceId)
 }
 
 // Process a decoded packet
@@ -904,11 +354,6 @@ function processPacket(bytes) {
     state.detectedMode = null
     state.frameCount = 0
     state.detectCount = 0
-    state.smoothWhite = null
-    state.smoothBlack = null
-    adaptiveThresholds.reset()
-    rgbAdaptiveThresholds.reset()
-    paletteStats.reset()
     state.announcedReceiving = false
     updateModeStatus()
     showStatus('scanning')
@@ -1322,17 +767,8 @@ async function onReceiveComplete() {
 // Download the received file
 function downloadFile() {
   if (!state.reconstructedBlob || !state.decoder || !state.decoder.metadata) return
-
-  const url = URL.createObjectURL(state.reconstructedBlob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = state.decoder.metadata.filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
+  triggerBlobDownload(state.reconstructedBlob, state.decoder.metadata.filename)
   state.fileDownloaded = true
-
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 // True while a fully received file is still only in memory. Navigation away
@@ -1355,10 +791,6 @@ export function resetReceiver() {
   // Reset debug counters
   state.frameCount = 0
   state.detectCount = 0
-  // Reset adaptive thresholds and palette stats
-  adaptiveThresholds.reset()
-  rgbAdaptiveThresholds.reset()
-  paletteStats.reset()
   // Reset color decoder
   if (state.colorDecoder) {
     state.colorDecoder.reset()

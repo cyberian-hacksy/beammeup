@@ -4,6 +4,7 @@ import { createEncoder } from '../encoder.js'
 import { METADATA_INTERVAL } from '../constants.js'
 import { PACKET_HEADER_SIZE } from '../packet.js'
 import { formatBytes } from '../format.js'
+import { wireDropZone } from '../shared/dropzone.js'
 import { announce, flashHighlight, copyWithButtonFeedback } from '../feedback.js'
 import { ArqSenderController, getArqSenderDisplayProgress } from '../arq/arq-sender.js'
 import { getTransport } from '../arq/backchannel.js'
@@ -16,7 +17,9 @@ import {
   FPS_PRESETS,
   DEFAULT_FPS_PRESET,
   RENDER_SIZE_PRESETS,
-  DEFAULT_RENDER_SIZE_PRESET
+  DEFAULT_RENDER_SIZE_PRESET,
+  isDenseBinaryMode,
+  usesBinary1DenseDefaults
 } from './hdmi-uvc-constants.js'
 import {
   buildFrame,
@@ -29,7 +32,6 @@ import {
   isNative1080pGeometry,
   setLuma1SenderMidLevels
 } from './hdmi-uvc-frame.js'
-import { buildCard, CARD_KIND } from './hdmi-uvc-lab.js'
 import { loadHdmiUvcWasm } from './hdmi-uvc-wasm.js'
 import {
   getDenseBinaryPass2SweepMix,
@@ -54,8 +56,6 @@ import {
   state,
   getFps,
   getRenderSizePreset,
-  isDenseBinaryMode,
-  usesBinary1DenseDefaults,
   modeRequiresNative1080p
 } from './hdmi-uvc-sender-state.js'
 import {
@@ -233,32 +233,6 @@ function syncYoloWithBackchannel(event) {
   state.yoloAutoEnabled = next.autoEnabled
 }
 
-export function testYoloFollowsBackchannel() {
-  const cases = [
-    // Connect with the box off and no manual choice: auto-enable.
-    [{ yolo: false, autoEnabled: false, manualThisSession: false, stored: false }, 'connected', { yolo: true, autoEnabled: true }],
-    // The user unchecked it this session: connecting must not re-check it.
-    [{ yolo: false, autoEnabled: false, manualThisSession: true, stored: false }, 'connected', { yolo: false, autoEnabled: false }],
-    // Already on by the user's own choice: connected leaves it manual.
-    [{ yolo: true, autoEnabled: false, manualThisSession: false, stored: true }, 'connected', { yolo: true, autoEnabled: false }],
-    // Disconnect reverts an auto-enable to the stored preference (off).
-    [{ yolo: true, autoEnabled: true, manualThisSession: false, stored: false }, 'disconnected', { yolo: false, autoEnabled: false }],
-    // ...and to the stored preference (on).
-    [{ yolo: true, autoEnabled: true, manualThisSession: false, stored: true }, 'disconnected', { yolo: true, autoEnabled: false }],
-    // Disconnect leaves a manual choice alone.
-    [{ yolo: true, autoEnabled: false, manualThisSession: true, stored: false }, 'disconnected', { yolo: true, autoEnabled: false }]
-  ]
-  for (const [current, event, expected] of cases) {
-    const got = resolveYoloAutoState(current, event)
-    if (got.yolo !== expected.yolo || got.autoEnabled !== expected.autoEnabled) {
-      console.log('yolo follows back-channel test: FAIL', { current, event, expected, got })
-      return false
-    }
-  }
-  console.log('yolo follows back-channel test: PASS')
-  return true
-}
-
 function resetSenderPerfState() {
   state.txPerf = createSenderPerfState()
 }
@@ -299,17 +273,6 @@ function logSenderSessionMetrics(phase, metrics, capacity) {
 
 let elements = null
 let showError = (msg) => console.error(msg)
-
-const LAB_CARD_KIND_BY_VALUE = {
-  binary4: CARD_KIND.BINARY_4,
-  binary3: CARD_KIND.BINARY_3,
-  binary2: CARD_KIND.BINARY_2,
-  binary1: CARD_KIND.BINARY_1,
-  luma2: CARD_KIND.LUMA_2,
-  codebook3: CARD_KIND.CODEBOOK_3,
-  glyph5: CARD_KIND.GLYPH_5,
-  candidate: CARD_KIND.CANDIDATE
-}
 
 function getLocalPresentationTarget() {
   return {
@@ -387,7 +350,6 @@ function resetPreparedSessionState() {
   state.isSending = false
   state.isPaused = false
   state.isAwaitingStart = false
-  state.labCardActive = false
   state.systematicIndex = 0
   state.systematicStride = 1
   state.intermediateSystematicStride = 1
@@ -1017,52 +979,6 @@ async function cancelArmedStart(reason = 'Armed start cancelled') {
   await restoreSenderReadyState()
 }
 
-async function renderLabCard(kind) {
-  try {
-    resetRenderSchedule()
-    resetHdmiFrameResources()
-    resetPreparedSessionState()
-    debugLog(`=== RENDER LAB CARD ${kind} ===`)
-
-    const { target, stableMetrics } = await preparePresentationForTransmission()
-    const { metrics } = measureAndApplyCanvasSize(stableMetrics, target)
-    const issue = getRenderScaleIssue(metrics, {
-      requireNative1080p: kind === CARD_KIND.BINARY_3 ||
-        kind === CARD_KIND.BINARY_2 ||
-        kind === CARD_KIND.BINARY_1 ||
-        kind === CARD_KIND.BINARY_4
-    })
-    if (issue) throw new Error(issue)
-
-    const card = buildCard(kind, metrics.width, metrics.height)
-    const imageData = new ImageData(new Uint8ClampedArray(card.imageData), metrics.width, metrics.height)
-    const ctx = target.canvas.getContext('2d')
-    ctx.putImageData(imageData, 0, 0)
-
-    elements.placeholder.style.display = 'none'
-    elements.overlay.classList.add('hidden')
-    setSignalLive(true)
-    state.labCardActive = true
-    window.__hdmiUvcCurrentCard = { kind, width: metrics.width, height: metrics.height }
-    debugLog(`Lab card rendered: ${kind} at ${metrics.width}x${metrics.height}`)
-    debugCurrent(`LAB ${kind} ${metrics.width}x${metrics.height}`)
-  } catch (err) {
-    console.error('HDMI-UVC lab render error:', err)
-    await restoreSenderReadyState()
-    showError('Failed to render lab card: ' + err.message)
-  }
-}
-
-function handleLabRenderClick() {
-  if (state.isSending || state.isPaused || state.isAwaitingStart) return
-  const kind = LAB_CARD_KIND_BY_VALUE[elements.labCardSelect?.value]
-  if (!kind) {
-    void restoreSenderReadyState()
-    return
-  }
-  void renderLabCard(kind)
-}
-
 async function startSending() {
   if (!state.fileData || !state.fileHash) return
 
@@ -1291,59 +1207,6 @@ async function processFile(file) {
   }
 }
 
-function handleFileSelect(e) {
-  processFile(e.target.files[0])
-}
-
-// The drop zone is a div with role="button"; Enter/Space must work like
-// click. While armed, the document-level handleKeydown already starts the
-// transfer, so this only opens the file picker.
-function handleDropZoneKeydown(e) {
-  if ((e.key === 'Enter' || e.key === ' ') && !state.fileData && !state.isAwaitingStart) {
-    e.preventDefault()
-    elements.fileInput.click()
-  }
-}
-
-function handleDropZoneClick() {
-  // While armed, a click/tap on the (fullscreen) pattern area starts the
-  // transfer — an alternative to Space/Enter for touch and mouse users.
-  if (state.isAwaitingStart) {
-    beginPreparedStart()
-    return
-  }
-  if (!state.fileData) {
-    elements.fileInput.click()
-  }
-}
-
-function handleDragOver(e) {
-  e.preventDefault()
-  e.stopPropagation()
-  if (!state.fileData) {
-    elements.container.classList.add('dragover')
-  }
-}
-
-function handleDragLeave(e) {
-  e.preventDefault()
-  e.stopPropagation()
-  elements.container.classList.remove('dragover')
-}
-
-async function handleDrop(e) {
-  e.preventDefault()
-  e.stopPropagation()
-  elements.container.classList.remove('dragover')
-
-  if (state.fileData) return
-
-  const files = e.dataTransfer.files
-  if (files.length > 0) {
-    await processFile(files[0])
-  }
-}
-
 function getFpsPresetIndexForRate(fps, fallbackIndex = DEFAULT_FPS_PRESET) {
   const index = FPS_PRESETS.findIndex(preset => preset.fps === fps)
   return String(index >= 0 ? index : fallbackIndex)
@@ -1385,21 +1248,10 @@ function handleFullscreenChange() {
     void cancelArmedStart('Fullscreen exited before transmission started')
     return
   }
-  if (shouldRestoreLabCardOnFullscreenExit(state, document.fullscreenElement)) {
-    void restoreSenderReadyState()
-    return
-  }
   // If we were sending and fullscreen was exited (e.g. by pressing Escape), pause
   if (state.isSending && !state.isPaused && !document.fullscreenElement) {
     pauseSending()
   }
-}
-
-function shouldRestoreLabCardOnFullscreenExit(senderState, fullscreenElement) {
-  return !!senderState?.labCardActive &&
-    !fullscreenElement &&
-    !senderState.isSending &&
-    !senderState.isAwaitingStart
 }
 
 async function exitFullscreenSafely() {
@@ -1460,7 +1312,6 @@ export function initHdmiUvcSender(errorHandler) {
   updateActionButton()
   updateEstimateSummary()
 
-  elements.fileInput.onchange = handleFileSelect
   elements.btnAction.onclick = handleActionClick
   elements.btnStop.onclick = stopSending
   if (elements.btnArqConnect) elements.btnArqConnect.onclick = connectArqBackchannel
@@ -1477,11 +1328,24 @@ export function initHdmiUvcSender(errorHandler) {
     }
   }
 
-  elements.container.onclick = handleDropZoneClick
-  elements.container.onkeydown = handleDropZoneKeydown
-  elements.container.ondragover = handleDragOver
-  elements.container.ondragleave = handleDragLeave
-  elements.container.ondrop = handleDrop
+  wireDropZone({
+    container: elements.container,
+    fileInput: elements.fileInput,
+    hasFile: () => !!state.fileData,
+    onFile: processFile,
+    // While armed, a click/tap on the (fullscreen) pattern area starts the
+    // transfer — an alternative to Space/Enter for touch and mouse users.
+    onClickCapture: () => {
+      if (state.isAwaitingStart) {
+        beginPreparedStart()
+        return true
+      }
+      return false
+    },
+    // While armed, the document-level handleKeydown already starts the
+    // transfer, so Enter/Space must not also open the file picker.
+    canOpenViaKeyboard: () => !state.fileData && !state.isAwaitingStart
+  })
 
   document.addEventListener('keydown', handleKeydown)
   document.addEventListener('fullscreenchange', handleFullscreenChange)
@@ -1519,124 +1383,9 @@ export function initHdmiUvcSender(errorHandler) {
   debugLog(`TX pace: ${getSenderRenderPace()}`)
 }
 
-export function testHdmiUvcSenderDefaults() {
-  // The sender is locked to 1x1 Luma4 at native 1080p / 60 fps.
-  const renderPreset = getRenderSizePreset()
-  const fps = getFps()
-  const pass = state.mode === HDMI_MODE.LUMA_1 &&
-    renderPreset.id === '1080p' &&
-    fps?.fps === 60
-  console.log('HDMI-UVC sender defaults test:', pass ? 'PASS' : 'FAIL', {
-    mode: HDMI_MODE_NAMES[state.mode],
-    renderPresetId: renderPreset.id,
-    fps
-  })
-  return pass
-}
-
-export function testBinary1RecommendedFpsIs60() {
-  const binary1Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_1))]
-  const binary2Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_2))]
-  const luma1Preset = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.LUMA_1))]
-  const pass = binary1Preset?.fps === 60 &&
-    binary2Preset?.fps === 60 &&
-    luma1Preset?.fps === 60
-  console.log('BINARY_1 60fps recommendation test:', pass ? 'PASS' : 'FAIL', {
-    binary1: binary1Preset,
-    binary2: binary2Preset,
-    luma1: luma1Preset
-  })
-  return pass
-}
-
-export function testLabCardFullscreenExitRequiresReadyRestore() {
-  const activeLab = { labCardActive: true, isSending: false, isAwaitingStart: false }
-  const sending = { labCardActive: true, isSending: true, isAwaitingStart: false }
-  const armed = { labCardActive: true, isSending: false, isAwaitingStart: true }
-  const inactive = { labCardActive: false, isSending: false, isAwaitingStart: false }
-  const pass = shouldRestoreLabCardOnFullscreenExit(activeLab, null) === true &&
-    shouldRestoreLabCardOnFullscreenExit(activeLab, {}) === false &&
-    shouldRestoreLabCardOnFullscreenExit(sending, null) === false &&
-    shouldRestoreLabCardOnFullscreenExit(armed, null) === false &&
-    shouldRestoreLabCardOnFullscreenExit(inactive, null) === false
-  console.log('Lab card fullscreen exit restore test:', pass ? 'PASS' : 'FAIL')
-  return pass
-}
-
-export function testBinary1UsesTimerPacedRender() {
-  const pass = getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 60 }, 'timer') === 'timer' &&
-    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 58 }, 'timer') === 'timer' &&
-    getSenderRenderPace(HDMI_MODE.BINARY_2, { fps: 60 }, 'timer') === 'timer' &&
-    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 30 }, 'timer') === 'timer'
-  console.log('BINARY_1 timer-paced render policy test:', pass ? 'PASS' : 'FAIL')
-  return pass
-}
-
-export function testBinary1PacingLocksTimer() {
-  const def = getDiagnosticDefinition('txPace')
-  const pass = def?.default === 'timer' &&
-    def.allowed?.length === 1 &&
-    def.allowed[0] === 'timer' &&
-    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 60 }, 'timer') === 'timer' &&
-    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 60 }, 'raf') === 'timer' &&
-    getSenderRenderPace(HDMI_MODE.BINARY_1, { fps: 58 }, 'raf') === 'timer' &&
-    getSenderRenderPace(HDMI_MODE.BINARY_2, { fps: 60 }, 'raf') === 'timer'
-  console.log('BINARY_1 timer-only pacing test:', pass ? 'PASS' : 'FAIL', { definition: def })
-  return pass
-}
-
-export function testBinary1CadenceFpsPresets() {
-  const fpsValues = FPS_PRESETS.map(preset => preset.fps)
-  const recommended = FPS_PRESETS[Number(getRecommendedFpsPreset(HDMI_MODE.BINARY_1))]
-  const pass = fpsValues.includes(55) &&
-    fpsValues.includes(58) &&
-    fpsValues.includes(60) &&
-    recommended?.fps === 60
-  console.log('BINARY_1 cadence FPS preset test:', pass ? 'PASS' : 'FAIL', {
-    fpsValues,
-    recommended
-  })
-  return pass
-}
-
-export function testDenseBinaryStrictGeometryGate() {
-  try {
-    const badViewport = {
-      renderPresetId: 'viewport',
-      renderPresetName: 'Viewport',
-      width: 1728,
-      height: 1084,
-      displayWidth: 1728,
-      displayHeight: 1084,
-      displayX: 0,
-      displayY: 0,
-      displayScale: 1,
-      physicalDisplayWidth: 1728,
-      physicalDisplayHeight: 1084,
-      effectiveDisplayScale: 1,
-      fullscreenActive: true
-    }
-    const native1080 = {
-      ...badViewport,
-      renderPresetId: '1080p',
-      renderPresetName: '1080p',
-      width: 1920,
-      height: 1080,
-      displayWidth: 1920,
-      displayHeight: 1080,
-      physicalDisplayWidth: 1920,
-      physicalDisplayHeight: 1080
-    }
-    const pass = modeRequiresNative1080p(HDMI_MODE.BINARY_3) &&
-      modeRequiresNative1080p(HDMI_MODE.BINARY_2) &&
-      modeRequiresNative1080p(HDMI_MODE.BINARY_1) &&
-      !modeRequiresNative1080p(HDMI_MODE.COMPAT_4) &&
-      !!getRenderScaleIssue(badViewport, { requireNative1080p: modeRequiresNative1080p(HDMI_MODE.BINARY_3) }) &&
-      getRenderScaleIssue(native1080, { requireNative1080p: modeRequiresNative1080p(HDMI_MODE.BINARY_3) }) === null
-    console.log('dense-binary strict geometry gate test:', pass ? 'PASS' : 'FAIL')
-    return pass
-  } catch (err) {
-    console.log('dense-binary strict geometry gate test: FAIL', err?.message || err)
-    return false
-  }
+// Exposed for hdmi-uvc-sender.tests.js only — not part of the runtime API.
+export const _internals = {
+  getRenderScaleIssue,
+  getSenderRenderPace,
+  getRecommendedFpsPreset
 }

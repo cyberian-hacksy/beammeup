@@ -87,11 +87,22 @@ export function parsePacket(data) {
     k: readUint24(view, 5),
     symbolId: readUint24(view, 8),
     blockSize,
-    isMetadata: (flags & 1) === 1,
-    mode: (flags >> 1) & 0x03,
+    isMetadata: isMetadataFlag(flags),
+    mode: packetModeFromFlags(flags),
     payloadCrc,
     payload
   }
+}
+
+// Flag-bit layout of the version/flags byte, shared with the HDMI-UVC fast
+// paths that read versionAndFlags out of WASM/worker-produced records instead
+// of parsing raw header bytes. Keep these in sync with parsePacket above.
+export function isMetadataFlag(versionAndFlags) {
+  return (versionAndFlags & 1) === 1
+}
+
+export function packetModeFromFlags(versionAndFlags) {
+  return (versionAndFlags >> 1) & 0x03
 }
 
 export function parsePacketHeaderUnchecked(data) {
@@ -114,8 +125,8 @@ export function parsePacketHeaderUnchecked(data) {
     k: readUint24(view, 5),
     symbolId: readUint24(view, 8),
     blockSize: payloadLength,
-    isMetadata: (flags & 1) === 1,
-    mode: (flags >> 1) & 0x03,
+    isMetadata: isMetadataFlag(flags),
+    mode: packetModeFromFlags(flags),
     payloadCrc: view.getUint32(11, false),
     payloadOffset: PACKET_HEADER_SIZE,
     payloadLength

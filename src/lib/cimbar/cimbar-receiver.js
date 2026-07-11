@@ -3,6 +3,8 @@ import { loadCimbarWasm, getModule } from './cimbar-loader.js'
 import { formatBytes, formatTime } from '../format.js'
 import { playBeep, announce } from '../feedback.js'
 import { confirmDialog } from '../confirm-dialog.js'
+import { triggerBlobDownload } from '../shared/download.js'
+import { isMobileUA, listVideoInputs, populateCameraSelect, nextCamera } from '../shared/camera.js'
 
 // Receiver state
 const state = {
@@ -148,29 +150,19 @@ async function initCamera() {
 // Platform-adaptive camera controls (matches the QR receiver): mobile keeps
 // the cycle button, desktop gets a labeled dropdown; both hide with 1 camera.
 async function refreshCameraControls() {
-  const devices = await navigator.mediaDevices.enumerateDevices()
-  state.cameras = devices.filter(d => d.kind === 'videoinput')
+  state.cameras = await listVideoInputs()
 
   const activeId = state.stream?.getVideoTracks()[0]?.getSettings().deviceId
   if (activeId) state.currentDeviceId = activeId
 
-  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+  const isMobile = isMobileUA()
   const hasChoice = state.cameras.length > 1
 
   elements.cameraSwitchBtn.classList.toggle('hidden', !(hasChoice && isMobile))
   elements.cameraPicker.classList.toggle('hidden', !(hasChoice && !isMobile))
 
   if (hasChoice && !isMobile) {
-    while (elements.cameraDropdown.firstChild) {
-      elements.cameraDropdown.removeChild(elements.cameraDropdown.firstChild)
-    }
-    state.cameras.forEach((cam, i) => {
-      const option = document.createElement('option')
-      option.value = cam.deviceId
-      option.textContent = cam.label || ('Camera ' + (i + 1))
-      elements.cameraDropdown.appendChild(option)
-    })
-    if (state.currentDeviceId) elements.cameraDropdown.value = state.currentDeviceId
+    populateCameraSelect(elements.cameraDropdown, state.cameras, { selectedId: state.currentDeviceId })
   }
 }
 
@@ -189,10 +181,8 @@ function switchToDevice(deviceId) {
 }
 
 function switchCamera() {
-  if (state.cameras.length < 2) return
-  const idx = state.cameras.findIndex(c => c.deviceId === state.currentDeviceId)
-  const next = state.cameras[(idx + 1) % state.cameras.length]
-  switchToDevice(next.deviceId)
+  const next = nextCamera(state.cameras, state.currentDeviceId)
+  if (next) switchToDevice(next.deviceId)
 }
 
 // Check if we can use VideoFrame API (not available on iOS Safari)
@@ -481,14 +471,7 @@ function downloadFile() {
   Module._free(decompBuff)
 
   const blob = new Blob(chunks, { type: 'application/octet-stream' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = state.fileName || 'download'
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  triggerBlobDownload(blob, state.fileName || 'download')
   state.fileDownloaded = true
 }
 

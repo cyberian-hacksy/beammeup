@@ -1,6 +1,3 @@
-import jsQR from 'jsqr'
-import qrcode from 'qrcode-generator'
-
 // Import UI modules
 import { initSender, resetSender, isSenderBusy as isQrSenderBusy } from './lib/sender.js'
 import { initReceiver, resetReceiver, autoStartReceiver, hasPendingDownload as hasQrPendingDownload, isReceiving as isQrReceiving } from './lib/receiver.js'
@@ -19,10 +16,6 @@ import { initHdmiUvcReceiver, resetHdmiUvcReceiver, autoStartHdmiUvcReceiver, ha
 import { registerAllTests, runAllTests } from './test-suite.js'
 
 import { confirmDialog } from './lib/confirm-dialog.js'
-
-// Make libraries available globally
-window.jsQR = jsQR
-window['qrcode'] = qrcode
 
 // ============ ERROR HANDLING ============
 // Errors stay up until dismissed: auto-hiding a role="alert" the user
