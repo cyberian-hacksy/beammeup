@@ -30,7 +30,15 @@ import { testBackchannelRegistry, testBackchannelDefaultMtuIsBleSafe, testKeyboa
 import { testKeyboardTransportRegisteredWithNackCap, testResolveArqTransportNamePrefersQueryThenStorage, testGetSelectedArqTransportNameAlwaysRegistered } from './lib/arq/default-transports.js'
 import { testArqTransportPreferencePersistsValidNamesOnly } from './lib/arq/arq-transport-ui.js'
 import { testArqHelperStatusView, testShouldAutoConnectArqHelper, testArqHelperStatusViewIsTransportAware } from './lib/arq/helper-status.js'
-import { testBleGattSenderCopiesNotificationBuffer, testBleGattSenderUsesBroadDiscoveryWithOptionalService } from './lib/arq/transports/ble-gatt-sender.js'
+import {
+  testBleGattSenderCopiesNotificationBuffer,
+  testBleGattSenderUsesFilteredDiscovery,
+  testBleGattPickArqDevicePrefersNamePrefix,
+  testBleGattAcquireSkipsChooserForGrantedDevice,
+  testBleGattAcquireFallsBackToSessionCache,
+  testBleGattAcquireTimesOutToChooser,
+  testBleGattStaleGattFallsBackToChooser
+} from './lib/arq/transports/ble-gatt-sender.js'
 import { testKeyboardBase32Roundtrip, testKeyboardAlphabetIsPhysicalAndDistinct, testKeyboardCodecRoundtripsThroughEventCodes } from './lib/arq/transports/keyboard-codec.js'
 import { testKeyboardReceiverSendsOneBase32LinePerMessage, testKeyboardReceiverReusePortIsGestureFree, testKeyboardReceiverIdentifyWritesRawAnsiKey } from './lib/arq/transports/keyboard-receiver.js'
 import { testKeyboardSenderDecodesKeystrokeLine, testKeyboardSenderIgnoresForeignAndModifiedKeys, testKeyboardSenderResetsRunawayLine, testKeyboardSenderCloseStopsConsuming } from './lib/arq/transports/keyboard-sender.js'
@@ -281,7 +289,12 @@ export function registerAllTests() {
   window.testShouldAutoConnectArqHelper = testShouldAutoConnectArqHelper
   window.testArqHelperStatusViewIsTransportAware = testArqHelperStatusViewIsTransportAware
   window.testBleGattSenderCopiesNotificationBuffer = testBleGattSenderCopiesNotificationBuffer
-  window.testBleGattSenderUsesBroadDiscoveryWithOptionalService = testBleGattSenderUsesBroadDiscoveryWithOptionalService
+  window.testBleGattSenderUsesFilteredDiscovery = testBleGattSenderUsesFilteredDiscovery
+  window.testBleGattPickArqDevicePrefersNamePrefix = testBleGattPickArqDevicePrefersNamePrefix
+  window.testBleGattAcquireSkipsChooserForGrantedDevice = testBleGattAcquireSkipsChooserForGrantedDevice
+  window.testBleGattAcquireFallsBackToSessionCache = testBleGattAcquireFallsBackToSessionCache
+  window.testBleGattAcquireTimesOutToChooser = testBleGattAcquireTimesOutToChooser
+  window.testBleGattStaleGattFallsBackToChooser = testBleGattStaleGattFallsBackToChooser
   window.testMissingSetRangeEncodingCompressesBursts = testMissingSetRangeEncodingCompressesBursts
   window.testMissingSetCappedFitsBudgetAndKeepsPrefix = testMissingSetCappedFitsBudgetAndKeepsPrefix
   window.testEncodeNackHonorsPayloadCap = testEncodeNackHonorsPayloadCap
@@ -529,7 +542,12 @@ export async function runAllTests() {
     arqHelperStatusTransportAware: testArqHelperStatusViewIsTransportAware(),
     arqHelperAutoConnectPolicy: testShouldAutoConnectArqHelper(),
     arqBleSenderCopiesNotification: testBleGattSenderCopiesNotificationBuffer(),
-    arqBleSenderDiscoveryOptions: testBleGattSenderUsesBroadDiscoveryWithOptionalService(),
+    arqBleSenderDiscoveryOptions: testBleGattSenderUsesFilteredDiscovery(),
+    arqBlePickArqDevice: testBleGattPickArqDevicePrefersNamePrefix(),
+    arqBleAcquireSkipsChooser: await testBleGattAcquireSkipsChooserForGrantedDevice(),
+    arqBleAcquireSessionCache: await testBleGattAcquireFallsBackToSessionCache(),
+    arqBleAcquireTimeoutChooser: await testBleGattAcquireTimesOutToChooser(),
+    arqBleStaleGattFallback: await testBleGattStaleGattFallsBackToChooser(),
     arqKeyboardNackCapLine: testKeyboardNackCapFitsOneShortLine(),
     arqKeyboardTransportRegistered: testKeyboardTransportRegisteredWithNackCap(),
     arqTransportNameResolution: testResolveArqTransportNamePrefersQueryThenStorage(),

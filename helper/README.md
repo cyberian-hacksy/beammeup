@@ -99,6 +99,25 @@ helper automatically. If the helper is running, it connects and shows
 `Helper connected`. If it is not running, it shows `Start BeamMeUp Helper`;
 start the packaged helper and press `Retry helper`.
 
+## Sender-side device chooser
+
+The sender's Bluetooth chooser is filtered to devices advertising the
+`BeamMeUp` name prefix or the ARQ service UUID, so the helper is normally the
+only entry. Within one browser session, reconnecting reuses the already-granted
+device without showing the chooser at all.
+
+To skip the chooser across page reloads and browser restarts too, enable two
+Chrome flags on the sender machine (both experimental, optional):
+
+```text
+chrome://flags/#enable-experimental-web-platform-features   (getDevices API)
+chrome://flags/#enable-web-bluetooth-new-permissions-backend (persistent grants)
+```
+
+With those set, the Connect button reconnects straight to the previously
+granted helper whenever it is advertising, and only falls back to the chooser
+when none is reachable.
+
 The receiver browser sends already-fragmented ARQ messages to the WebSocket.
 The helper forwards each binary WebSocket message unchanged as one BLE
 notification on service `0000fff0-0000-1000-8000-00805f9b34fb`,
