@@ -102,6 +102,7 @@ import {
   applyArqReceiverHelperStatus,
   autoConnectArqHelper,
   connectArqHelper,
+  identifyMacKeyboard,
   noteArqParsedPackets,
   requestArqFullRepair,
   resetArqReceiverSession,
@@ -3964,6 +3965,13 @@ export function initHdmiUvcReceiver(errorHandler) {
   elements.btnDownload.onclick = downloadFile
   elements.btnAnother.onclick = handleReceiveAnother
   if (elements.btnHelperConnect) elements.btnHelperConnect.onclick = () => connectArqHelper()
+  // The macOS Keyboard Setup Assistant only exists for the keyboard dongle
+  // transport, so the answer button is hidden for BLE-GATT.
+  const btnKbdIdentify = document.getElementById('btn-hdmi-uvc-kbd-identify')
+  if (btnKbdIdentify) {
+    btnKbdIdentify.onclick = () => identifyMacKeyboard()
+    if (getSelectedArqTransportName() === 'keyboard') btnKbdIdentify.classList.remove('hidden')
+  }
   applyArqReceiverHelperStatus(state.arqConnected ? ARQ_HELPER_STATUS.CONNECTED : ARQ_HELPER_STATUS.OFFLINE)
 
   // Diagnostics panel: hidden by default, toggle persisted across sessions.

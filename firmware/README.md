@@ -8,8 +8,12 @@ serial port become keystrokes; `\n` becomes Enter. The alphabet is mirrored
 in `src/lib/arq/transports/keyboard-codec.js` — keep `include/keymap.h` in
 sync with it.
 
-Target board: **ESP32-S3-DevKitC-1 (N32R16V)**. The S3 is BLE-only (no
-Bluetooth Classic), which is why this is a HID-over-GATT keyboard.
+Target board: **Seeed XIAO ESP32S3** (default env; the board in hand). An
+**ESP32-S3-DevKitC-1** env is kept selectable via `pio run -e
+esp32-s3-devkitc-1`. The S3 is BLE-only (no Bluetooth Classic), which is
+why this is a HID-over-GATT keyboard. The firmware itself is board-agnostic
+(native USB CDC + radio, no pins), so porting is just a `platformio.ini`
+env.
 
 ## Build & flash
 
@@ -18,19 +22,36 @@ Requires the [PlatformIO CLI](https://platformio.org/install/cli) (`pio`).
 ```bash
 cd firmware
 pio run                 # build
-pio run -t upload       # flash via the port labeled "USB" (native USB)
+pio run -t upload       # flash via native USB (XIAO: the only USB-C port)
 pio device monitor      # watch the startup banner / connection logs
 ```
 
-If the board will not enter the bootloader, hold **BOOT**, tap **RESET**,
-release BOOT, then retry the upload.
+On macOS the XIAO env flashes through a custom `--no-stub` esptool command
+(see the comment in `platformio.ini`); the stock stub upload dies with
+"No serial data received". Verified working 2026-07-18 (XIAO enumerates as
+`/dev/cu.usbmodem*`, VID:PID 303A:1001).
+
+If the board will not enter the bootloader, hold **BOOT** (the tiny **B**
+button on the XIAO), tap **RESET** (**R**), release BOOT, then retry the
+upload.
 
 ## Bring-up checklist (design §10)
 
 1. Flash; confirm the board enumerates as a USB CDC serial port and the
    monitor shows `BeamMeUp-Kbd ready: advertising as a BLE HID keyboard`.
 2. On the **sender** machine, pair the Bluetooth device `BeamMeUp-Kbd`;
-   confirm the OS lists it as a keyboard.
+   confirm the OS lists it as a keyboard. Just-Works pairing (no passkey) is
+   confirmed working on macOS (2026-07-18).
+   - **macOS Keyboard Setup Assistant:** macOS pops this on every *fresh*
+     pairing of any BLE keyboard and blocks until a key is pressed — a
+     problem for a headless dongle. The firmware auto-answers it: on a
+     first-time pairing (armed by a boot with no bonds or by the `!` serial
+     escape) it types the ANSI-identify key once, surviving macOS's
+     connect/reconnect dance. It stays silent on normal reconnects, so no
+     stray keystroke reaches the focused sender window. If the single shot
+     ever mistimes, click **Identify keyboard (macOS)** in the receiver UI
+     (keyboard transport only) to send it manually. See the KSA block in
+     `src/main.cpp` for the state machine.
 3. Focus a text editor on the sender, then from the **receiver** send a test
    line to the dongle's serial port, e.g.:
    ```bash

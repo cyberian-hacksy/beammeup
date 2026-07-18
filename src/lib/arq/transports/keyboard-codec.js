@@ -37,6 +37,14 @@ function buildAlphabet() {
 export const KEYBOARD_ALPHABET = buildAlphabet()
 export const KEYBOARD_DELIMITER = { serialChar: '\n', code: 'Enter', usage: 0x28 }
 
+// macOS launches the Keyboard Setup Assistant on every fresh pairing of a BLE
+// HID keyboard and asks for the key right of left-Shift to detect the layout.
+// Writing this serial char makes the dongle press that key (US ANSI 'z',
+// event.code 'KeyZ', HID usage 0x1D — firmware KSA_ANSI_USAGE), dismissing the
+// dialog. The dongle auto-answers fresh pairings itself; this backs up the
+// manual receiver button for when that single shot mistimes.
+export const MAC_KSA_IDENTIFY_SERIAL_CHAR = 'z'
+
 const VALUE_TO_CHAR = KEYBOARD_ALPHABET.map(e => e.serialChar)
 const CHAR_TO_VALUE = new Map(KEYBOARD_ALPHABET.map((e, i) => [e.serialChar, i]))
 const CODE_TO_VALUE = new Map(KEYBOARD_ALPHABET.map((e, i) => [e.code, i]))

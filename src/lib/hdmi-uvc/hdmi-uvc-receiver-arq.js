@@ -93,6 +93,23 @@ export async function connectArqHelper(options = {}) {
   }
 }
 
+// Manual backstop for the macOS Keyboard Setup Assistant (design §10): the
+// dongle auto-answers fresh pairings, but if that single shot mistimes the
+// user clicks the receiver button, which lands here. Keyboard transport only.
+export async function identifyMacKeyboard() {
+  const transport = state.arqTransport
+  if (!transport || typeof transport.identifyMacKeyboard !== 'function') {
+    hooks.showError('Connect the keyboard dongle first (keyboard transport only)')
+    return
+  }
+  try {
+    await transport.identifyMacKeyboard()
+    debugLog('Sent macOS Keyboard Setup Assistant identify keystroke')
+  } catch (err) {
+    hooks.showError('Identify keyboard failed: ' + err.message)
+  }
+}
+
 export function autoConnectArqHelper() {
   if (!shouldAutoConnectArqHelper({
     connected: state.arqConnected,

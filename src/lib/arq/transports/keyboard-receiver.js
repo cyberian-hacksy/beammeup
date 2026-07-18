@@ -3,7 +3,7 @@
 // dongle turns the line into BLE HID keystrokes on the sender (see
 // keyboard-codec.js and the 2026-07-06 design doc).
 
-import { encodeBase32 } from './keyboard-codec.js'
+import { encodeBase32, MAC_KSA_IDENTIFY_SERIAL_CHAR } from './keyboard-codec.js'
 
 export const KEYBOARD_SERIAL_BAUD_RATE = 115200
 
@@ -38,6 +38,20 @@ export async function testKeyboardReceiverSendsOneBase32LinePerMessage() {
     port.openedWith?.baudRate === KEYBOARD_SERIAL_BAUD_RATE &&
     text === encodeBase32(msg) + '\n'
   console.log('keyboard receiver sends base32 line:', pass ? 'PASS' : 'FAIL', JSON.stringify(text))
+  return pass
+}
+
+export async function testKeyboardReceiverIdentifyWritesRawAnsiKey() {
+  const { port, written } = makeFakeSerialRig()
+  const t = new KeyboardReceiverTransport({
+    serial: { requestPort: async () => port }
+  })
+  await t.init({})
+  await t.identifyMacKeyboard()
+  const text = written[0] ? new TextDecoder().decode(written[0]) : ''
+  // A single raw 'z' — no base32 framing, no '\n' (Enter) appended.
+  const pass = text === MAC_KSA_IDENTIFY_SERIAL_CHAR && !text.includes('\n')
+  console.log('keyboard receiver identify sends raw ANSI key:', pass ? 'PASS' : 'FAIL', JSON.stringify(text))
   return pass
 }
 
@@ -116,6 +130,14 @@ export class KeyboardReceiverTransport {
   async send(bytes) {
     if (!this.writer) throw new Error('Keyboard dongle serial port is not connected')
     await this.writer.write(this.textEncoder.encode(encodeBase32(bytes) + '\n'))
+  }
+
+  // Manual macOS Keyboard Setup Assistant answer (design §10): write the raw
+  // identify char — a single keystroke, no base32, no Enter — so the dongle
+  // presses the ANSI-identifying key on the sender.
+  async identifyMacKeyboard() {
+    if (!this.writer) throw new Error('Keyboard dongle serial port is not connected')
+    await this.writer.write(this.textEncoder.encode(MAC_KSA_IDENTIFY_SERIAL_CHAR))
   }
 
   close() {

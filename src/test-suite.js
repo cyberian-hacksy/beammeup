@@ -31,7 +31,7 @@ import { testKeyboardTransportRegisteredWithNackCap, testResolveArqTransportName
 import { testArqHelperStatusView, testShouldAutoConnectArqHelper, testArqHelperStatusViewIsTransportAware } from './lib/arq/helper-status.js'
 import { testBleGattSenderCopiesNotificationBuffer, testBleGattSenderUsesBroadDiscoveryWithOptionalService } from './lib/arq/transports/ble-gatt-sender.js'
 import { testKeyboardBase32Roundtrip, testKeyboardAlphabetIsPhysicalAndDistinct, testKeyboardCodecRoundtripsThroughEventCodes } from './lib/arq/transports/keyboard-codec.js'
-import { testKeyboardReceiverSendsOneBase32LinePerMessage, testKeyboardReceiverReusePortIsGestureFree } from './lib/arq/transports/keyboard-receiver.js'
+import { testKeyboardReceiverSendsOneBase32LinePerMessage, testKeyboardReceiverReusePortIsGestureFree, testKeyboardReceiverIdentifyWritesRawAnsiKey } from './lib/arq/transports/keyboard-receiver.js'
 import { testKeyboardSenderDecodesKeystrokeLine, testKeyboardSenderIgnoresForeignAndModifiedKeys, testKeyboardSenderResetsRunawayLine, testKeyboardSenderCloseStopsConsuming } from './lib/arq/transports/keyboard-sender.js'
 import {
   testHdmiUvcSenderDefaults,
@@ -295,6 +295,7 @@ export function registerAllTests() {
   window.testKeyboardCodecRoundtripsThroughEventCodes = testKeyboardCodecRoundtripsThroughEventCodes
   window.testKeyboardReceiverSendsOneBase32LinePerMessage = testKeyboardReceiverSendsOneBase32LinePerMessage
   window.testKeyboardReceiverReusePortIsGestureFree = testKeyboardReceiverReusePortIsGestureFree
+  window.testKeyboardReceiverIdentifyWritesRawAnsiKey = testKeyboardReceiverIdentifyWritesRawAnsiKey
   window.testKeyboardSenderDecodesKeystrokeLine = testKeyboardSenderDecodesKeystrokeLine
   window.testKeyboardSenderIgnoresForeignAndModifiedKeys = testKeyboardSenderIgnoresForeignAndModifiedKeys
   window.testKeyboardSenderResetsRunawayLine = testKeyboardSenderResetsRunawayLine
@@ -536,6 +537,7 @@ export async function runAllTests() {
     arqKeyboardEventCodes: testKeyboardCodecRoundtripsThroughEventCodes(),
     arqKeyboardReceiverLine: await testKeyboardReceiverSendsOneBase32LinePerMessage(),
     arqKeyboardReceiverReusePort: await testKeyboardReceiverReusePortIsGestureFree(),
+    arqKeyboardReceiverIdentify: await testKeyboardReceiverIdentifyWritesRawAnsiKey(),
     arqKeyboardSenderDecodesLine: await testKeyboardSenderDecodesKeystrokeLine(),
     arqKeyboardSenderIgnoresForeign: await testKeyboardSenderIgnoresForeignAndModifiedKeys(),
     arqKeyboardSenderRunawayReset: await testKeyboardSenderResetsRunawayLine(),
