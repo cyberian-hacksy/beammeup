@@ -710,6 +710,18 @@ button.diag-toggle {
 .arq-status.connected {
   color: #00d4ff;
 }
+.arq-transport-label {
+  font-size: 0.8125rem;
+  color: #99a;
+}
+.arq-transport-select {
+  font-size: 0.8125rem;
+  padding: 0.25rem 0.4rem;
+  background: #1a1a24;
+  color: #ccd;
+  border: 1px solid #33334a;
+  border-radius: 4px;
+}
 .control-hint {
   font-size: 0.75rem;
   color: #99a;

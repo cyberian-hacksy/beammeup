@@ -9,6 +9,7 @@ import { announce, flashHighlight, copyWithButtonFeedback } from '../feedback.js
 import { ArqSenderController, getArqSenderDisplayProgress } from '../arq/arq-sender.js'
 import { getTransport } from '../arq/backchannel.js'
 import { getSelectedArqTransportName } from '../arq/default-transports.js'
+import { initArqTransportSelect } from '../arq/arq-transport-ui.js'
 import { getArqSenderConnectPrompt } from '../arq/helper-status.js'
 import {
   HDMI_UVC_MAX_FILE_SIZE,
@@ -135,6 +136,13 @@ async function completeArqSending() {
 
 function handleArqBackchannelMessage(bytes) {
   if (!state.arqController) return
+  // First inbound line is proof the back-channel is actually live — for the
+  // keyboard transport "connected" only means the keydown listener is armed,
+  // so without this a mismatched/unfocused sender looks connected but silent.
+  if (!state.arqSawInbound) {
+    state.arqSawInbound = true
+    debugLog('ARQ back-channel: first inbound line received')
+  }
   const msg = state.arqController.onMessage(bytes, performance.now())
   if (!msg) return
   if (state.arqController.mode === 'repair') {
@@ -153,6 +161,7 @@ function handleArqBackchannelMessage(bytes) {
 async function connectArqBackchannel() {
   if (state.isSending || state.isAwaitingStart || state.arqConnecting) return
   state.arqConnecting = true
+  state.arqSawInbound = false
   try {
     state.arqTransport?.close()
     const transportName = getSelectedArqTransportName()
@@ -1315,6 +1324,16 @@ export function initHdmiUvcSender(errorHandler) {
   elements.btnAction.onclick = handleActionClick
   elements.btnStop.onclick = stopSending
   if (elements.btnArqConnect) elements.btnArqConnect.onclick = connectArqBackchannel
+  // Switching transport drops any live back-channel so the next connect uses
+  // the new one. Both ends must be set to the same transport to talk.
+  initArqTransportSelect(document.getElementById('hdmi-uvc-arq-transport'), {
+    onChange: () => {
+      state.arqTransport?.close()
+      state.arqTransport = null
+      state.arqConnected = false
+      updateArqSenderStatus('Back-channel offline', false)
+    }
+  })
 
   if (elements.yoloToggle) {
     const storedYolo = readStoredYoloPreference()

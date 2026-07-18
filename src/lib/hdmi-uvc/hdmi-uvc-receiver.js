@@ -10,6 +10,7 @@ import { ArqReceiverController, getArqBeaconLogAction } from '../arq/arq-receive
 import { ARQ_HELPER_STATUS, getArqHelperStatusView, shouldAutoConnectArqHelper } from '../arq/helper-status.js'
 import { getTransport } from '../arq/backchannel.js'
 import { getSelectedArqTransportName } from '../arq/default-transports.js'
+import { initArqTransportSelect } from '../arq/arq-transport-ui.js'
 import {
   BLOCK_SIZE,
   DEVICE_STORAGE_KEY,
@@ -3968,10 +3969,22 @@ export function initHdmiUvcReceiver(errorHandler) {
   // The macOS Keyboard Setup Assistant only exists for the keyboard dongle
   // transport, so the answer button is hidden for BLE-GATT.
   const btnKbdIdentify = document.getElementById('btn-hdmi-uvc-kbd-identify')
-  if (btnKbdIdentify) {
-    btnKbdIdentify.onclick = () => identifyMacKeyboard()
-    if (getSelectedArqTransportName() === 'keyboard') btnKbdIdentify.classList.remove('hidden')
+  const syncKbdIdentifyVisibility = (name) => {
+    if (btnKbdIdentify) btnKbdIdentify.classList.toggle('hidden', name !== 'keyboard')
   }
+  if (btnKbdIdentify) btnKbdIdentify.onclick = () => identifyMacKeyboard()
+  // Switching transport drops any live helper connection so the next connect
+  // uses the new one. Both ends must be set to the same transport to talk.
+  initArqTransportSelect(document.getElementById('hdmi-uvc-helper-transport'), {
+    onChange: (name) => {
+      state.arqTransport?.close()
+      state.arqTransport = null
+      state.arqConnected = false
+      applyArqReceiverHelperStatus(ARQ_HELPER_STATUS.OFFLINE)
+      syncKbdIdentifyVisibility(name)
+    }
+  })
+  syncKbdIdentifyVisibility(getSelectedArqTransportName())
   applyArqReceiverHelperStatus(state.arqConnected ? ARQ_HELPER_STATUS.CONNECTED : ARQ_HELPER_STATUS.OFFLINE)
 
   // Diagnostics panel: hidden by default, toggle persisted across sessions.

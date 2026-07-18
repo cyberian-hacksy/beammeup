@@ -290,6 +290,8 @@
           <p class="control-hint">Skips parity/fountain redundancy; missed blocks are re-requested over the Bluetooth back-channel. Auto-enables when the back-channel connects; usually slower without it.</p>
         </div>
         <div class="arq-backchannel">
+          <label class="arq-transport-label" for="hdmi-uvc-arq-transport">Back-channel</label>
+          <select id="hdmi-uvc-arq-transport" class="arq-transport-select"></select>
           <button id="btn-hdmi-uvc-arq-connect" class="secondary" type="button">Connect back-channel</button>
           <span id="hdmi-uvc-arq-status" class="arq-status">Back-channel offline</span>
         </div>
@@ -326,6 +328,8 @@
         <select id="hdmi-uvc-device-dropdown"></select>
       </div>
       <div class="arq-backchannel">
+        <label class="arq-transport-label" for="hdmi-uvc-helper-transport">Back-channel</label>
+        <select id="hdmi-uvc-helper-transport" class="arq-transport-select"></select>
         <button id="btn-hdmi-uvc-helper-connect" class="secondary" type="button">Connect helper</button>
         <button id="btn-hdmi-uvc-kbd-identify" class="secondary hidden" type="button" title="If macOS shows the Keyboard Setup Assistant when pairing the dongle, click to answer it">Identify keyboard (macOS)</button>
         <span id="hdmi-uvc-helper-status" class="arq-status">Helper offline</span>

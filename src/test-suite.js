@@ -28,6 +28,7 @@ import { testArqSenderConsumesNackIntoWorkList, testArqSenderIgnoresStaleSeq, te
 import { testArqGoodputBeatsReloop } from './lib/arq/arq-sim.js'
 import { testBackchannelRegistry, testBackchannelDefaultMtuIsBleSafe, testKeyboardNackCapFitsOneShortLine } from './lib/arq/backchannel.js'
 import { testKeyboardTransportRegisteredWithNackCap, testResolveArqTransportNamePrefersQueryThenStorage, testGetSelectedArqTransportNameAlwaysRegistered } from './lib/arq/default-transports.js'
+import { testArqTransportPreferencePersistsValidNamesOnly } from './lib/arq/arq-transport-ui.js'
 import { testArqHelperStatusView, testShouldAutoConnectArqHelper, testArqHelperStatusViewIsTransportAware } from './lib/arq/helper-status.js'
 import { testBleGattSenderCopiesNotificationBuffer, testBleGattSenderUsesBroadDiscoveryWithOptionalService } from './lib/arq/transports/ble-gatt-sender.js'
 import { testKeyboardBase32Roundtrip, testKeyboardAlphabetIsPhysicalAndDistinct, testKeyboardCodecRoundtripsThroughEventCodes } from './lib/arq/transports/keyboard-codec.js'
@@ -290,6 +291,7 @@ export function registerAllTests() {
   window.testKeyboardTransportRegisteredWithNackCap = testKeyboardTransportRegisteredWithNackCap
   window.testResolveArqTransportNamePrefersQueryThenStorage = testResolveArqTransportNamePrefersQueryThenStorage
   window.testGetSelectedArqTransportNameAlwaysRegistered = testGetSelectedArqTransportNameAlwaysRegistered
+  window.testArqTransportPreferencePersistsValidNamesOnly = testArqTransportPreferencePersistsValidNamesOnly
   window.testKeyboardBase32Roundtrip = testKeyboardBase32Roundtrip
   window.testKeyboardAlphabetIsPhysicalAndDistinct = testKeyboardAlphabetIsPhysicalAndDistinct
   window.testKeyboardCodecRoundtripsThroughEventCodes = testKeyboardCodecRoundtripsThroughEventCodes
@@ -532,6 +534,7 @@ export async function runAllTests() {
     arqKeyboardTransportRegistered: testKeyboardTransportRegisteredWithNackCap(),
     arqTransportNameResolution: testResolveArqTransportNamePrefersQueryThenStorage(),
     arqTransportNameSelected: testGetSelectedArqTransportNameAlwaysRegistered(),
+    arqTransportPreferencePersists: testArqTransportPreferencePersistsValidNamesOnly(),
     arqKeyboardBase32: testKeyboardBase32Roundtrip(),
     arqKeyboardAlphabet: testKeyboardAlphabetIsPhysicalAndDistinct(),
     arqKeyboardEventCodes: testKeyboardCodecRoundtripsThroughEventCodes(),
