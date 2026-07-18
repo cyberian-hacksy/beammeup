@@ -5,8 +5,10 @@ from bless import BlessServer, GATTAttributePermissions, GATTCharacteristicPrope
 
 try:
     from .origin_policy import OriginPolicy
+    from .bt_hints import gatt_failure_hint
 except ImportError:
     from origin_policy import OriginPolicy
+    from bt_hints import gatt_failure_hint
 
 
 SERVICE_UUID = "0000fff0-0000-1000-8000-00805f9b34fb"
@@ -73,6 +75,38 @@ class ArqGattBridge:
             await asyncio.sleep(NOTIFY_PACING_S)
 
 
+async def probe_bluetooth():
+    """Best-effort Windows probe of (has_adapter, peripheral_role, radio_state).
+
+    Returns Nones wherever the answer is unknown (non-Windows, winrt missing,
+    or the query itself failing) — never raises.
+    """
+    try:
+        try:
+            from winrt.windows.devices.bluetooth import BluetoothAdapter
+        except ImportError:
+            from bleak_winrt.windows.devices.bluetooth import BluetoothAdapter
+    except ImportError:
+        return None, None, None
+    try:
+        adapter = await BluetoothAdapter.get_default_async()
+    except Exception:
+        return None, None, None
+    if adapter is None:
+        return False, None, None
+    role = None
+    state = None
+    try:
+        role = bool(adapter.is_peripheral_role_supported)
+    except Exception:
+        pass
+    try:
+        state = int((await adapter.get_radio_async()).state)
+    except Exception:
+        pass
+    return True, role, state
+
+
 def _request_origin(websocket):
     request = getattr(websocket, "request", None)
     headers = getattr(request, "headers", None)
@@ -87,7 +121,14 @@ def _request_origin(websocket):
 async def main():
     bridge = ArqGattBridge()
     policy = OriginPolicy()
-    await bridge.start()
+    try:
+        await bridge.start()
+    except RuntimeError as err:
+        # bless (PyPI) swallows the WinRT BluetoothError code, so decode the
+        # situation ourselves instead of dying with a bare traceback.
+        print(f"Failed to start the BLE GATT service: {err}")
+        print(gatt_failure_hint(*await probe_bluetooth()))
+        raise SystemExit(1)
 
     async def handle_ws(websocket):
         origin = _request_origin(websocket)
